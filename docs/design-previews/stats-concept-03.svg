@@ -1,0 +1,72 @@
+<svg width="430" height="932" viewBox="0 0 430 932" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg3" x1="0" y1="0" x2="430" y2="932" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#10131A"/>
+      <stop offset="1" stop-color="#06070A"/>
+    </linearGradient>
+    <linearGradient id="card3" x1="32" y1="120" x2="400" y2="860" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#171C26"/>
+      <stop offset="1" stop-color="#0E1218"/>
+    </linearGradient>
+    <linearGradient id="ember" x1="56" y1="270" x2="350" y2="470" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF856C"/>
+      <stop offset="1" stop-color="#FFB36B"/>
+    </linearGradient>
+    <linearGradient id="cool" x1="56" y1="270" x2="350" y2="470" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6D8BFF"/>
+      <stop offset="1" stop-color="#59E2D0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="430" height="932" rx="36" fill="url(#bg3)"/>
+  <circle cx="356" cy="118" r="108" fill="#22161A" opacity="0.5"/>
+  <circle cx="78" cy="190" r="112" fill="#162433" opacity="0.48"/>
+
+  <text x="32" y="64" fill="#FFFFFF" font-size="30" font-weight="700" font-family="Arial, sans-serif">Stats</text>
+  <text x="32" y="92" fill="#8C92A3" font-size="13" font-family="Arial, sans-serif">Ratings and taste need premium cards with clearer information lanes</text>
+
+  <rect x="32" y="126" width="366" height="236" rx="30" fill="url(#card3)" stroke="#232A36"/>
+  <text x="56" y="164" fill="#FFFFFF" font-size="22" font-weight="700" font-family="Arial, sans-serif">Taste Profile</text>
+  <text x="56" y="188" fill="#8F96A7" font-size="13" font-family="Arial, sans-serif">One focused statement card instead of several disconnected mini blocks</text>
+  <rect x="56" y="210" width="318" height="1" fill="#202634"/>
+
+  <text x="56" y="248" fill="#8F96A7" font-size="12" font-family="Arial, sans-serif">Preference spectrum</text>
+  <rect x="56" y="270" width="318" height="16" rx="8" fill="#1A202C"/>
+  <rect x="56" y="270" width="214" height="16" rx="8" fill="url(#ember)"/>
+  <circle cx="270" cy="278" r="12" fill="#0F1218" stroke="#FFD0A0" stroke-width="3"/>
+  <text x="56" y="316" fill="#FFFFFF" font-size="26" font-weight="700" font-family="Arial, sans-serif">Bold explorer</text>
+  <text x="56" y="342" fill="#98A0B1" font-size="13" font-family="Arial, sans-serif">You lean toward atmospheric, high-intensity stories with strong payoff.</text>
+
+  <rect x="56" y="382" width="171" height="132" rx="24" fill="#141923" stroke="#242C39"/>
+  <text x="76" y="416" fill="#8F96A7" font-size="13" font-family="Arial, sans-serif">Rating Distribution</text>
+  <rect x="84" y="448" width="18" height="42" rx="9" fill="#2A3040"/>
+  <rect x="110" y="430" width="18" height="60" rx="9" fill="#49506A"/>
+  <rect x="136" y="404" width="18" height="86" rx="9" fill="url(#cool)"/>
+  <rect x="162" y="420" width="18" height="70" rx="9" fill="#5D6882"/>
+  <rect x="188" y="444" width="18" height="46" rx="9" fill="#343C4D"/>
+  <text x="76" y="534" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Peaks around 7 to 8</text>
+
+  <rect x="243" y="382" width="131" height="132" rx="24" fill="#141923" stroke="#242C39"/>
+  <text x="263" y="416" fill="#8F96A7" font-size="13" font-family="Arial, sans-serif">Avg score</text>
+  <text x="263" y="460" fill="#FFFFFF" font-size="30" font-weight="700" font-family="Arial, sans-serif">7.8</text>
+  <text x="263" y="489" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Mostly generous</text>
+
+  <rect x="32" y="542" width="366" height="164" rx="30" fill="url(#card3)" stroke="#232A36"/>
+  <text x="56" y="580" fill="#FFFFFF" font-size="22" font-weight="700" font-family="Arial, sans-serif">Monthly Taste Arc</text>
+  <text x="56" y="604" fill="#8F96A7" font-size="13" font-family="Arial, sans-serif">The timeline becomes a proper story card with stronger guides</text>
+  <rect x="56" y="626" width="318" height="1" fill="#202634"/>
+  <path d="M60 670C88 688 110 648 138 654C168 660 186 706 214 696C242 686 260 630 288 638C316 646 340 690 370 668" stroke="url(#cool)" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="214" cy="696" r="5" fill="#0F1218" stroke="#6D8BFF" stroke-width="3"/>
+  <circle cx="288" cy="638" r="5" fill="#0F1218" stroke="#59E2D0" stroke-width="3"/>
+  <text x="60" y="694" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Jan</text>
+  <text x="150" y="694" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Mar</text>
+  <text x="240" y="694" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">May</text>
+  <text x="330" y="694" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Jul</text>
+
+  <rect x="32" y="730" width="366" height="154" rx="30" fill="url(#card3)" stroke="#232A36"/>
+  <text x="56" y="768" fill="#FFFFFF" font-size="22" font-weight="700" font-family="Arial, sans-serif">Viewer Persona</text>
+  <text x="56" y="792" fill="#8F96A7" font-size="13" font-family="Arial, sans-serif">Persona should read like a polished profile card, not leftover text</text>
+  <rect x="56" y="816" width="132" height="36" rx="18" fill="#221A1A"/>
+  <text x="88" y="839" fill="#FF9E80" font-size="13" font-weight="700" font-family="Arial, sans-serif">Curated risk-taker</text>
+  <text x="206" y="838" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Strong preference for moody, high-engagement stories</text>
+</svg>

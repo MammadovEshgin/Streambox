@@ -1,0 +1,94 @@
+<svg width="430" height="932" viewBox="0 0 430 932" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="20" y1="10" x2="400" y2="932" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#10131B"/>
+      <stop offset="1" stop-color="#06070B"/>
+    </linearGradient>
+    <linearGradient id="card" x1="40" y1="120" x2="390" y2="900" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#171B24"/>
+      <stop offset="1" stop-color="#0F1218"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="56" y1="180" x2="210" y2="340" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF8574"/>
+      <stop offset="1" stop-color="#FF5E7E"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="1 0 0 0 0.78 0 1 0 0 0.32 0 0 1 0 0.44 0 0 0 0.32 0"/>
+    </filter>
+  </defs>
+
+  <rect width="430" height="932" rx="36" fill="url(#bg)"/>
+  <circle cx="350" cy="120" r="110" fill="#1B2334" opacity="0.55"/>
+  <circle cx="84" cy="220" r="90" fill="#23181B" opacity="0.65"/>
+
+  <text x="32" y="64" fill="#FFFFFF" font-size="30" font-weight="700" font-family="Arial, sans-serif">Stats</text>
+  <text x="32" y="92" fill="#8C92A3" font-size="13" font-family="Arial, sans-serif">A calmer, clearer analytics dashboard</text>
+
+  <rect x="32" y="116" width="114" height="38" rx="19" fill="#7A5CFF"/>
+  <text x="69" y="140" fill="#FFFFFF" font-size="14" font-weight="700" font-family="Arial, sans-serif">Movies</text>
+  <rect x="154" y="116" width="102" height="38" rx="19" fill="#171C26" stroke="#252B38"/>
+  <text x="187" y="140" fill="#A8AEC0" font-size="14" font-weight="700" font-family="Arial, sans-serif">Series</text>
+
+  <rect x="32" y="176" width="366" height="178" rx="28" fill="url(#card)" stroke="#232A36"/>
+  <text x="56" y="214" fill="#8F96A7" font-size="13" font-family="Arial, sans-serif">This month</text>
+  <text x="56" y="260" fill="#FFFFFF" font-size="42" font-weight="700" font-family="Arial, sans-serif">48</text>
+  <text x="120" y="260" fill="#B2B8C7" font-size="18" font-family="Arial, sans-serif">titles watched</text>
+  <text x="56" y="287" fill="#98A0B1" font-size="13" font-family="Arial, sans-serif">Your activity is 12% above last month</text>
+
+  <rect x="56" y="306" width="318" height="2" rx="1" fill="#202634"/>
+  <rect x="56" y="322" width="92" height="4" rx="2" fill="#2A3040"/>
+  <rect x="56" y="322" width="64" height="4" rx="2" fill="url(#accent)"/>
+
+  <g opacity="0.95">
+    <path d="M56 338C76 340 92 336 107 330C123 324 138 309 154 312C172 315 182 335 198 336C218 337 224 317 243 315C264 313 273 333 292 338C312 343 322 328 340 326C353 325 363 330 374 332" stroke="url(#accent)" stroke-width="3.5" stroke-linecap="round"/>
+    <circle cx="243" cy="315" r="5.5" fill="#0E1118" stroke="#FF6A7C" stroke-width="3"/>
+    <line x1="243" y1="289" x2="243" y2="345" stroke="#606A80" stroke-dasharray="3 5"/>
+  </g>
+
+  <rect x="32" y="378" width="175" height="124" rx="24" fill="url(#card)" stroke="#232A36"/>
+  <text x="52" y="410" fill="#8F96A7" font-size="13" font-family="Arial, sans-serif">Watch rhythm</text>
+  <text x="52" y="447" fill="#FFFFFF" font-size="26" font-weight="700" font-family="Arial, sans-serif">6.4h</text>
+  <text x="112" y="447" fill="#AAB0C1" font-size="15" font-family="Arial, sans-serif">avg weekly</text>
+  <rect x="52" y="464" width="135" height="8" rx="4" fill="#212734"/>
+  <rect x="52" y="464" width="98" height="8" rx="4" fill="#7A5CFF"/>
+  <text x="52" y="490" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Best streak: 9 days</text>
+
+  <rect x="223" y="378" width="175" height="124" rx="24" fill="url(#card)" stroke="#232A36"/>
+  <text x="243" y="410" fill="#8F96A7" font-size="13" font-family="Arial, sans-serif">Average rating</text>
+  <text x="243" y="447" fill="#FFFFFF" font-size="26" font-weight="700" font-family="Arial, sans-serif">7.8</text>
+  <text x="286" y="447" fill="#AAB0C1" font-size="15" font-family="Arial, sans-serif">out of 10</text>
+  <g filter="url(#glow)">
+    <circle cx="347" cy="445" r="16" fill="#FF6678" opacity="0.35"/>
+  </g>
+  <circle cx="347" cy="445" r="14" fill="#11151D" stroke="#FF6678" stroke-width="4"/>
+  <text x="242" y="490" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Taste profile: bold but balanced</text>
+
+  <rect x="32" y="526" width="366" height="172" rx="28" fill="url(#card)" stroke="#232A36"/>
+  <text x="56" y="562" fill="#FFFFFF" font-size="21" font-weight="700" font-family="Arial, sans-serif">Watch Activity</text>
+  <text x="56" y="586" fill="#8F96A7" font-size="13" font-family="Arial, sans-serif">Bars live inside one strong container instead of floating alone</text>
+  <rect x="56" y="610" width="318" height="1" fill="#202634"/>
+  <rect x="60" y="650" width="17" height="18" rx="8.5" fill="#2C3342"/>
+  <rect x="86" y="634" width="17" height="34" rx="8.5" fill="#363F52"/>
+  <rect x="112" y="622" width="17" height="46" rx="8.5" fill="#4A5670"/>
+  <rect x="138" y="640" width="17" height="28" rx="8.5" fill="#343C4D"/>
+  <rect x="164" y="602" width="17" height="66" rx="8.5" fill="#7A5CFF"/>
+  <rect x="190" y="588" width="17" height="80" rx="8.5" fill="#A770FF"/>
+  <rect x="216" y="612" width="17" height="56" rx="8.5" fill="#5D6882"/>
+  <rect x="242" y="596" width="17" height="72" rx="8.5" fill="#7A5CFF"/>
+  <rect x="268" y="624" width="17" height="44" rx="8.5" fill="#465066"/>
+  <rect x="294" y="638" width="17" height="30" rx="8.5" fill="#343C4D"/>
+  <rect x="320" y="614" width="17" height="54" rx="8.5" fill="#5D6882"/>
+  <rect x="346" y="628" width="17" height="40" rx="8.5" fill="#40495D"/>
+  <text x="56" y="688" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Total in period</text>
+  <text x="56" y="714" fill="#FFFFFF" font-size="22" font-weight="700" font-family="Arial, sans-serif">31</text>
+  <text x="300" y="688" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Peak week</text>
+  <text x="338" y="714" fill="#FFFFFF" font-size="22" font-weight="700" font-family="Arial, sans-serif">7</text>
+
+  <rect x="32" y="722" width="366" height="154" rx="28" fill="url(#card)" stroke="#232A36"/>
+  <text x="56" y="758" fill="#FFFFFF" font-size="21" font-weight="700" font-family="Arial, sans-serif">Section rhythm</text>
+  <text x="56" y="782" fill="#8F96A7" font-size="13" font-family="Arial, sans-serif">A page of larger grouped cards, fewer borders, and stronger hierarchy</text>
+  <rect x="56" y="806" width="318" height="1" fill="#202634"/>
+  <text x="56" y="832" fill="#FFFFFF" font-size="14" font-weight="700" font-family="Arial, sans-serif">Group related stats together</text>
+  <text x="56" y="854" fill="#98A0B1" font-size="12" font-family="Arial, sans-serif">Genres, ratings, and patterns should each feel like one designed block.</text>
+</svg>

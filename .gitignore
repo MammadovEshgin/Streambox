@@ -1,0 +1,40 @@
+# dependencies
+node_modules/
+
+# expo and react-native
+.expo/
+dist/
+web-build/
+android-build/
+ios-build/
+
+# production
+build/
+
+# local env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env*.local
+
+# debug artifacts
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tmp_dizipal_*.html
+design*.png
+design*.webp
+profilepic.jpg
+check_end_depth.js
+find_unbalanced.js
+trace_braces.js
+nul
+
+# editor/system
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
