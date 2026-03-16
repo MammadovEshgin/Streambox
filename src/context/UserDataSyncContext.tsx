@@ -14,13 +14,14 @@ const UserDataSyncContext = createContext<UserDataSyncContextValue | null>(null)
 export function UserDataSyncProvider({ children }: PropsWithChildren) {
   const { user } = useAuth();
   const { notifyStorageChanged, reloadPersistedSettings } = useAppSettings();
-  const [isReady, setIsReady] = useState(!user);
+  const userId = user?.id ?? null;
+  const [isReady, setIsReady] = useState(!userId);
 
   useEffect(() => {
     let active = true;
 
     async function runBootstrap() {
-      if (!user) {
+      if (!userId) {
         if (active) {
           setIsReady(true);
         }
@@ -35,6 +36,8 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
         await bootstrapSupabaseUserData();
         await reloadPersistedSettings();
         notifyStorageChanged();
+      } catch (e) {
+        console.error("[UserDataSync] bootstrap failed:", e);
       } finally {
         if (active) {
           setIsReady(true);
@@ -47,10 +50,10 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
     return () => {
       active = false;
     };
-  }, [notifyStorageChanged, reloadPersistedSettings, user]);
+  }, [notifyStorageChanged, reloadPersistedSettings, userId]);
 
   useEffect(() => {
-    if (!user) {
+    if (!userId) {
       return;
     }
 
@@ -63,7 +66,7 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
         return;
       }
 
-      void flushSupabaseUserDataSync(user.id).then(async () => {
+      void flushSupabaseUserDataSync(userId).then(async () => {
         await reloadPersistedSettings();
         notifyStorageChanged();
       });
@@ -72,7 +75,7 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
     return () => {
       subscription.remove();
     };
-  }, [notifyStorageChanged, reloadPersistedSettings, user]);
+  }, [notifyStorageChanged, reloadPersistedSettings, userId]);
 
   const value = useMemo<UserDataSyncContextValue>(() => ({ isReady }), [isReady]);
 

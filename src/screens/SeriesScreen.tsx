@@ -17,6 +17,7 @@ import Animated, {
 import styled, { useTheme } from "styled-components/native";
 
 import {
+  GENRE_ID_MAP,
   MediaItem,
   getImdbTop250SeriesPage,
   getSeriesOfTheDay,
@@ -118,24 +119,31 @@ const HeroMetaText = styled.Text`
   letter-spacing: 0.1px;
 `;
 
-const HeroButton = styled.View`
-  margin-top: 14px;
-  align-self: flex-start;
-  height: 38px;
-  padding: 0 14px;
-  border-radius: 10px;
-  background-color: ${({ theme }) => theme.colors.primary};
-  flex-direction: row;
-  align-items: center;
+const HeroDescription = styled.Text`
+  margin-top: 10px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  line-height: 17px;
 `;
 
-const HeroButtonText = styled.Text`
-  margin-left: 6px;
-  color: #ffffff;
-  font-size: 13px;
-  line-height: 16px;
-  font-weight: 700;
-  letter-spacing: 0.16px;
+const HeroChipRow = styled.View`
+  margin-top: 10px;
+  flex-direction: row;
+  gap: 6px;
+`;
+
+const HeroGenreChip = styled.View`
+  border-width: 1px;
+  border-color: rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  padding: 3px 8px;
+`;
+
+const HeroChipText = styled.Text`
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
 `;
 
 const HeroGlow = styled(LinearGradient)`
@@ -488,10 +496,18 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
                     <Feather name="star" size={12} color="#FFD700" />
                     <HeroMetaText> {seriesOfDay.rating.toFixed(1)}</HeroMetaText>
                   </HeroMeta>
-                  <HeroButton>
-                    <Feather name="play" size={13} color="#FFFFFF" />
-                    <HeroButtonText>Watch Now</HeroButtonText>
-                  </HeroButton>
+                  {seriesOfDay.overview ? (
+                    <HeroDescription numberOfLines={2}>{seriesOfDay.overview}</HeroDescription>
+                  ) : null}
+                  {seriesOfDay.genreIds && seriesOfDay.genreIds.length > 0 ? (
+                    <HeroChipRow>
+                      {seriesOfDay.genreIds.slice(0, 3).map((id) => GENRE_ID_MAP[id]).filter(Boolean).map((name) => (
+                        <HeroGenreChip key={name}>
+                          <HeroChipText>{name}</HeroChipText>
+                        </HeroGenreChip>
+                      ))}
+                    </HeroChipRow>
+                  ) : null}
                 </HeroContent>
               </HeroPress>
             ) : (

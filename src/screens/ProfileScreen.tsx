@@ -849,7 +849,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           {/* Banner */}
           <BannerWrap onPress={() => setFullViewType("banner")}>
             {bannerImageUri ? (
-              <BannerImage source={{ uri: `${bannerImageUri}?t=${bannerKey}` }} resizeMode="cover" />
+              <BannerImage source={{ uri: `${bannerImageUri}${bannerImageUri.includes("?") ? "&" : "?"}t=${bannerKey}` }} resizeMode="cover" />
             ) : (
               <BannerPlaceholder>
                 <Feather name="image" size={28} color={currentTheme.colors.textSecondary} />
@@ -872,7 +872,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
               <AvatarCircle>
                 <AvatarInner>
                   {profileImageUri ? (
-                    <AvatarImage source={{ uri: `${profileImageUri}?t=${avatarKey}` }} resizeMode="cover" />
+                    <AvatarImage source={{ uri: `${profileImageUri}${profileImageUri.includes("?") ? "&" : "?"}t=${avatarKey}` }} resizeMode="cover" />
                   ) : (
                     <Feather name="user" size={32} color={currentTheme.colors.primary} />
                   )}
@@ -1050,7 +1050,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
           {fullViewType === "avatar" && profileImageUri ? (
             <FullViewImage
-              source={{ uri: `${profileImageUri}?t=${avatarKey}` }}
+              source={{ uri: `${profileImageUri}${profileImageUri.includes("?") ? "&" : "?"}t=${avatarKey}` }}
               style={{ height: SCREEN_WIDTH }}
               resizeMode="contain"
             />
@@ -1060,7 +1060,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
           {fullViewType === "banner" && bannerImageUri ? (
             <FullViewImage
-              source={{ uri: `${bannerImageUri}?t=${bannerKey}` }}
+              source={{ uri: `${bannerImageUri}${bannerImageUri.includes("?") ? "&" : "?"}t=${bannerKey}` }}
               style={{ height: SCREEN_WIDTH * (9 / 16) }}
               resizeMode="contain"
             />
@@ -1108,7 +1108,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 {/* Banner preview + change */}
                 <Pressable onPress={() => void handlePickBannerImage()} style={{ height: 120, backgroundColor: currentTheme.colors.surfaceRaised }}>
                   {bannerImageUri ? (
-                    <BannerImage source={{ uri: `${bannerImageUri}?t=${bannerKey}` }} resizeMode="cover" style={{ height: 120 }} />
+                    <BannerImage source={{ uri: `${bannerImageUri}${bannerImageUri.includes("?") ? "&" : "?"}t=${bannerKey}` }} resizeMode="cover" style={{ height: 120 }} />
                   ) : null}
                   <Pressable
                     onPress={() => void handlePickBannerImage()}
@@ -1146,7 +1146,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                   }}
                 >
                   {profileImageUri ? (
-                    <AvatarImage source={{ uri: `${profileImageUri}?t=${avatarKey}` }} resizeMode="cover" />
+                    <AvatarImage source={{ uri: `${profileImageUri}${profileImageUri.includes("?") ? "&" : "?"}t=${avatarKey}` }} resizeMode="cover" />
                   ) : (
                     <Feather name="user" size={24} color={currentTheme.colors.primary} />
                   )}

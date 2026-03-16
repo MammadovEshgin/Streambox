@@ -255,6 +255,7 @@ export type MediaItem = {
   mediaType: MediaType;
   imdbId?: string | null;
   rank?: number;
+  genreIds?: number[];
 };
 
 export type CastMember = {
@@ -381,7 +382,7 @@ export type DiscoverCollectionSource =
   | "top_new_series"
   | "imdb_top_250_series";
 
-type TmdbImageSize = "w185" | "w342" | "w500" | "w780" | "original";
+type TmdbImageSize = "w185" | "w300" | "w342" | "w500" | "w780" | "original";
 
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p";
@@ -485,7 +486,8 @@ function normalizeMedia(item: TmdbMediaRecord, fallbackType: MediaType): MediaIt
     rating: Number.isFinite(item.vote_average) ? item.vote_average : 0,
     overview: item.overview ?? "",
     year: pickYear(item),
-    mediaType: item.media_type ?? fallbackType
+    mediaType: item.media_type ?? fallbackType,
+    genreIds: item.genre_ids ?? []
   };
 }
 
@@ -881,6 +883,39 @@ export function getTmdbImageUrl(path: string | null, size: TmdbImageSize = "w500
   }
 
   return `${TMDB_IMAGE_BASE_URL}/${size}${path}`;
+}
+
+export const GENRE_ID_MAP: Record<number, string> = {
+  28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+  99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
+  27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Sci-Fi",
+  10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
+  10759: "Action & Adventure", 10762: "Kids", 10763: "News", 10764: "Reality",
+  10765: "Sci-Fi & Fantasy", 10766: "Soap", 10767: "Talk", 10768: "War & Politics",
+};
+
+export async function getMovieLogos(id: number): Promise<string | null> {
+  try {
+    const { data } = await tmdbClient.get<{ logos: Array<{ file_path: string; iso_639_1: string | null }> }>(
+      `/movie/${id}/images`
+    );
+    const logo = data.logos?.find((l) => l.iso_639_1 === "en") ?? data.logos?.[0];
+    return logo ? logo.file_path : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getSeriesLogos(id: number): Promise<string | null> {
+  try {
+    const { data } = await tmdbClient.get<{ logos: Array<{ file_path: string; iso_639_1: string | null }> }>(
+      `/tv/${id}/images`
+    );
+    const logo = data.logos?.find((l) => l.iso_639_1 === "en") ?? data.logos?.[0];
+    return logo ? logo.file_path : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function getTrending(type: MediaType): Promise<MediaItem[]> {

@@ -9,6 +9,7 @@ import {
   type PersistedSettings,
 } from "../settings/settingsStorage";
 import { DEFAULT_THEME_ID, THEME_OPTIONS, type ThemeId } from "../theme/Theme";
+import * as FileSystem from "expo-file-system/legacy";
 import { supabase } from "./supabase";
 import {
   LIKED_MOVIES_STORAGE_KEY,
@@ -24,6 +25,7 @@ import {
 
 const SYNC_QUEUE_STORAGE_KEY = "@streambox/sync-queue-v1";
 const ACTIVE_SYNC_USER_KEY = "@streambox/active-sync-user-id-v1";
+const BOOTSTRAP_COMPLETE_KEY_PREFIX = "@streambox/bootstrap-complete-v1:";
 const PROFILE_ASSETS_BUCKET = "profile-assets";
 const SIGNED_ASSET_TTL_SECONDS = 60 * 60 * 24 * 365;
 const MAX_RECENTLY_VIEWED = 30;
@@ -339,7 +341,7 @@ function getEpisodeKey(seriesTmdbId: number, seasonNumber: number, episodeNumber
 }
 
 function getBootstrapCompleteKey(userId: string) {
-  return `@streambox/bootstrap-complete-v1:${userId}`;
+  return `${BOOTSTRAP_COMPLETE_KEY_PREFIX}${userId}`;
 }
 
 function getTodayDateKey(now: Date = new Date()) {
@@ -796,18 +798,175 @@ function convertRemoteDailyRecommendations(entries: RemoteDailyRecommendationEnt
   };
 }
 
-async function createSignedAssetUrl(path: string | null | undefined) {
-  if (!path) {
-    return null;
+// ---------------------------------------------------------------------------
+//  Profile-asset URL resolution (bulletproof, multi-strategy)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a displayable URL for a storage object.  Tries in order:
+ *   1. Signed URL  (works for private buckets)
+ *   2. Public URL  (works for public buckets)
+ *   3. Direct download URL construction (last resort)
+ * Returns `null` only when every strategy fails.
+ */
+async function resolveStorageUrl(storagePath: string): Promise<string | null> {
+  // Strategy 1 — signed URL (handles private buckets)
+  try {
+    const { data, error } = await supabase.storage
+      .from(PROFILE_ASSETS_BUCKET)
+      .createSignedUrl(storagePath, SIGNED_ASSET_TTL_SECONDS);
+    if (!error && data?.signedUrl) {
+      return data.signedUrl;
+    }
+    console.warn("[asset-resolve] signed-url failed:", error?.message);
+  } catch (e) {
+    console.warn("[asset-resolve] signed-url threw:", e);
   }
 
-  const { data, error } = await supabase.storage.from(PROFILE_ASSETS_BUCKET).createSignedUrl(path, SIGNED_ASSET_TTL_SECONDS);
-  if (error) {
-    throw error;
+  // Strategy 2 — public URL (handles public buckets, no auth needed)
+  try {
+    const { data } = supabase.storage
+      .from(PROFILE_ASSETS_BUCKET)
+      .getPublicUrl(storagePath);
+    if (data?.publicUrl) {
+      // Verify the URL is actually reachable (public buckets only)
+      const probe = await fetch(data.publicUrl, { method: "HEAD" });
+      if (probe.ok) {
+        return data.publicUrl;
+      }
+      console.warn("[asset-resolve] public-url not reachable:", probe.status);
+    }
+  } catch (e) {
+    console.warn("[asset-resolve] public-url threw:", e);
   }
 
-  return data.signedUrl;
+  // Strategy 3 — download binary and save to local cache file
+  try {
+    const { data: dlData, error: dlError } = await supabase.storage
+      .from(PROFILE_ASSETS_BUCKET)
+      .download(storagePath);
+    if (!dlError && dlData) {
+      const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
+      if (cacheDir) {
+        const safeFileName = storagePath.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const localPath = `${cacheDir}streambox-assets/${safeFileName}`;
+        await FileSystem.makeDirectoryAsync(`${cacheDir}streambox-assets/`, { intermediates: true });
+        // Convert blob → base64 → write to file
+        const base64 = await new Promise<string | null>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const result = typeof reader.result === "string" ? reader.result : null;
+            // Strip the data:…;base64, prefix
+            resolve(result ? result.split(",")[1] ?? null : null);
+          };
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(dlData);
+        });
+        if (base64) {
+          await FileSystem.writeAsStringAsync(localPath, base64, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          return localPath;
+        }
+      }
+    }
+    console.warn("[asset-resolve] download failed:", dlError?.message);
+  } catch (e) {
+    console.warn("[asset-resolve] download threw:", e);
+  }
+
+  return null;
 }
+
+/**
+ * Query the user_profiles table directly — the single source of truth for
+ * avatar / banner storage paths and their version counters.
+ * This is independent of the bootstrap RPC and immune to its field-naming.
+ */
+async function fetchProfileAssetsFromDB(): Promise<{
+  avatarPath: string | null;
+  bannerPath: string | null;
+  avatarVersion: number;
+  bannerVersion: number;
+}> {
+  const empty = { avatarPath: null, bannerPath: null, avatarVersion: 0, bannerVersion: 0 };
+  try {
+    const userId = await getCurrentUserId();
+    if (!userId) return empty;
+
+    const { data, error } = await supabase
+      .from("user_profiles")
+      .select("avatar_path, banner_path, avatar_version, banner_version")
+      .eq("id", userId)
+      .single();
+
+    if (error || !data) {
+      console.warn("[asset-resolve] user_profiles query failed:", error?.message);
+      return empty;
+    }
+
+    return {
+      avatarPath: typeof data.avatar_path === "string" && data.avatar_path.length > 0 ? data.avatar_path : null,
+      bannerPath: typeof data.banner_path === "string" && data.banner_path.length > 0 ? data.banner_path : null,
+      avatarVersion: typeof data.avatar_version === "number" ? data.avatar_version : 0,
+      bannerVersion: typeof data.banner_version === "number" ? data.banner_version : 0,
+    };
+  } catch (e) {
+    console.warn("[asset-resolve] user_profiles query threw:", e);
+    return empty;
+  }
+}
+
+/**
+ * Resolve displayable URIs for both avatar and banner in parallel.
+ * Uses the database as the single source of truth for storage paths,
+ * then resolves each path to a displayable URL via the multi-strategy
+ * resolver.  Falls back gracefully at every step.
+ */
+async function resolveProfileAssetUris(overrides?: {
+  avatarPath?: string | null;
+  bannerPath?: string | null;
+  avatarVersion?: number;
+  bannerVersion?: number;
+}): Promise<{
+  profileImageUri: string | null;
+  bannerImageUri: string | null;
+  profileImageStoragePath: string | null;
+  bannerImageStoragePath: string | null;
+  profileImageVersion: number;
+  bannerImageVersion: number;
+}> {
+  // 1. Get storage paths — prefer overrides from bootstrap, fall back to direct DB query
+  let avatarPath = overrides?.avatarPath ?? null;
+  let bannerPath = overrides?.bannerPath ?? null;
+  let avatarVersion = overrides?.avatarVersion ?? 0;
+  let bannerVersion = overrides?.bannerVersion ?? 0;
+
+  if (!avatarPath && !bannerPath) {
+    const db = await fetchProfileAssetsFromDB();
+    avatarPath = db.avatarPath;
+    bannerPath = db.bannerPath;
+    avatarVersion = db.avatarVersion;
+    bannerVersion = db.bannerVersion;
+  }
+
+  // 2. Resolve storage paths → displayable URLs in parallel
+  const [profileImageUri, bannerImageUri] = await Promise.all([
+    avatarPath ? resolveStorageUrl(avatarPath) : Promise.resolve(null),
+    bannerPath ? resolveStorageUrl(bannerPath) : Promise.resolve(null),
+  ]);
+
+  return {
+    profileImageUri,
+    bannerImageUri,
+    profileImageStoragePath: avatarPath,
+    bannerImageStoragePath: bannerPath,
+    profileImageVersion: avatarVersion,
+    bannerImageVersion: bannerVersion,
+  };
+}
+
+// ---------------------------------------------------------------------------
 
 async function fetchRemoteBootstrap(): Promise<RemoteBootstrap> {
   const { data, error } = await supabase.rpc("get_my_streambox_bootstrap");
@@ -819,6 +978,27 @@ async function fetchRemoteBootstrap(): Promise<RemoteBootstrap> {
 }
 
 async function createLocalSnapshotFromRemote(remote: RemoteBootstrap, baseSettings: PersistedSettings): Promise<LocalUserSnapshot> {
+  // Extract any asset hints the bootstrap RPC might return (camelCase or snake_case)
+  const rp = remote.profile as Record<string, unknown> | undefined;
+  const rpcAvatarPath = (rp?.avatarPath ?? rp?.avatar_path ?? null) as string | null;
+  const rpcBannerPath = (rp?.bannerPath ?? rp?.banner_path ?? null) as string | null;
+  const rpcAvatarVersion = (typeof rp?.avatarVersion === "number" ? rp.avatarVersion
+    : typeof rp?.avatar_version === "number" ? rp.avatar_version : null) as number | null;
+  const rpcBannerVersion = (typeof rp?.bannerVersion === "number" ? rp.bannerVersion
+    : typeof rp?.banner_version === "number" ? rp.banner_version : null) as number | null;
+
+  // Resolve asset URIs (uses DB as source of truth, multi-strategy URL resolution)
+  const needsAvatarResolve = !isLocalFileUri(baseSettings.profileImageUri);
+  const needsBannerResolve = !isLocalFileUri(baseSettings.bannerImageUri);
+  const assets = needsAvatarResolve || needsBannerResolve
+    ? await resolveProfileAssetUris({
+        avatarPath: rpcAvatarPath,
+        bannerPath: rpcBannerPath,
+        avatarVersion: rpcAvatarVersion ?? undefined,
+        bannerVersion: rpcBannerVersion ?? undefined,
+      })
+    : null;
+
   const nextSettings: PersistedSettings = normalizeSettings(
     {
       ...baseSettings,
@@ -831,34 +1011,24 @@ async function createLocalSnapshotFromRemote(remote: RemoteBootstrap, baseSettin
       profileBirthday:
         typeof remote.profile?.birthday === "string" ? formatBirthdayForLocal(remote.profile.birthday) : baseSettings.profileBirthday,
       joinedDate: typeof remote.profile?.joinedAt === "string" ? remote.profile.joinedAt : baseSettings.joinedDate,
-      profileImageStoragePath:
-        typeof remote.profile?.avatarPath === "string" ? remote.profile.avatarPath : baseSettings.profileImageStoragePath,
-      bannerImageStoragePath:
-        typeof remote.profile?.bannerPath === "string" ? remote.profile.bannerPath : baseSettings.bannerImageStoragePath,
-      profileImageVersion:
-        typeof remote.profile?.avatarVersion === "number" ? remote.profile.avatarVersion : baseSettings.profileImageVersion,
-      bannerImageVersion:
-        typeof remote.profile?.bannerVersion === "number" ? remote.profile.bannerVersion : baseSettings.bannerImageVersion,
+      profileImageStoragePath: assets?.profileImageStoragePath ?? baseSettings.profileImageStoragePath,
+      bannerImageStoragePath: assets?.bannerImageStoragePath ?? baseSettings.bannerImageStoragePath,
+      profileImageVersion: assets?.profileImageVersion ?? baseSettings.profileImageVersion,
+      bannerImageVersion: assets?.bannerImageVersion ?? baseSettings.bannerImageVersion,
       profileImageUri: baseSettings.profileImageUri,
       bannerImageUri: baseSettings.bannerImageUri,
     },
     DEFAULT_THEME_ID
   );
 
-  if (remote.profile?.avatarPath) {
-    nextSettings.profileImageUri = isLocalFileUri(baseSettings.profileImageUri)
-      ? baseSettings.profileImageUri
-      : await createSignedAssetUrl(remote.profile.avatarPath);
-  } else if (!isLocalFileUri(baseSettings.profileImageUri)) {
-    nextSettings.profileImageUri = null;
-  }
-
-  if (remote.profile?.bannerPath) {
-    nextSettings.bannerImageUri = isLocalFileUri(baseSettings.bannerImageUri)
-      ? baseSettings.bannerImageUri
-      : await createSignedAssetUrl(remote.profile.bannerPath);
-  } else if (!isLocalFileUri(baseSettings.bannerImageUri)) {
-    nextSettings.bannerImageUri = null;
+  // Apply resolved remote URIs — local file:// URIs always win over remote
+  if (assets) {
+    if (assets.profileImageUri && !isLocalFileUri(baseSettings.profileImageUri)) {
+      nextSettings.profileImageUri = assets.profileImageUri;
+    }
+    if (assets.bannerImageUri && !isLocalFileUri(baseSettings.bannerImageUri)) {
+      nextSettings.bannerImageUri = assets.bannerImageUri;
+    }
   }
 
   const watchlistEntries = Array.isArray(remote.watchlist) ? remote.watchlist : [];
@@ -1042,17 +1212,18 @@ async function backfillSnapshotToRemote(userId: string, snapshot: LocalUserSnaps
     preferences: {},
   };
 
+  const now = new Date().toISOString();
   const mediaRows = [
-    ...snapshot.movieWatchlist.map((tmdbId) => ({ user_id: userId, list_kind: "watchlist", media_type: "movie", tmdb_id: tmdbId, snapshot: {} })),
-    ...snapshot.seriesWatchlist.map((tmdbId) => ({ user_id: userId, list_kind: "watchlist", media_type: "tv", tmdb_id: tmdbId, snapshot: {} })),
-    ...snapshot.likedMovies.map((tmdbId) => ({ user_id: userId, list_kind: "liked", media_type: "movie", tmdb_id: tmdbId, snapshot: {} })),
-    ...snapshot.likedSeries.map((tmdbId) => ({ user_id: userId, list_kind: "liked", media_type: "tv", tmdb_id: tmdbId, snapshot: {} })),
+    ...snapshot.movieWatchlist.map((tmdbId) => ({ user_id: userId, list_kind: "watchlist", media_type: "movie", tmdb_id: tmdbId, collected_at: now, snapshot: {} })),
+    ...snapshot.seriesWatchlist.map((tmdbId) => ({ user_id: userId, list_kind: "watchlist", media_type: "tv", tmdb_id: tmdbId, collected_at: now, snapshot: {} })),
+    ...snapshot.likedMovies.map((tmdbId) => ({ user_id: userId, list_kind: "liked", media_type: "movie", tmdb_id: tmdbId, collected_at: now, snapshot: {} })),
+    ...snapshot.likedSeries.map((tmdbId) => ({ user_id: userId, list_kind: "liked", media_type: "tv", tmdb_id: tmdbId, collected_at: now, snapshot: {} })),
     ...snapshot.recentlyViewed.map((entry) => ({
       user_id: userId,
       list_kind: "recently_viewed",
       media_type: entry.mediaType,
       tmdb_id: entry.id,
-      collected_at: new Date(entry.timestamp).toISOString(),
+      collected_at: entry.timestamp ? new Date(entry.timestamp).toISOString() : now,
       snapshot: {},
     })),
   ];
@@ -1313,7 +1484,7 @@ async function executePendingOperation(operation: PendingSyncOperation) {
 
 
 export async function clearLocalUserDataCache() {
-  await AsyncStorage.multiRemove([
+  const keysToRemove = [
     APP_SETTINGS_STORAGE_KEY,
     WATCHLIST_STORAGE_KEY,
     SERIES_WATCHLIST_STORAGE_KEY,
@@ -1325,7 +1496,10 @@ export async function clearLocalUserDataCache() {
     MOVIE_OF_DAY_CURRENT_STORAGE_KEY,
     MOVIE_OF_DAY_HISTORY_STORAGE_KEY,
     ACTIVE_SYNC_USER_KEY,
-  ]);
+  ];
+  const allKeys = await AsyncStorage.getAllKeys();
+  const bootstrapKeys = allKeys.filter((key) => key.startsWith(BOOTSTRAP_COMPLETE_KEY_PREFIX));
+  await AsyncStorage.multiRemove([...keysToRemove, ...bootstrapKeys]);
 }
 export async function flushSupabaseUserDataSync(targetUserId?: string) {
   if (flushPromise) {
@@ -1368,6 +1542,7 @@ export async function flushSupabaseUserDataSync(targetUserId?: string) {
 export async function bootstrapSupabaseUserData() {
   const userId = await getCurrentUserId();
   if (!userId) {
+    console.warn("[bootstrap] no userId — skipping");
     return;
   }
 
@@ -1375,20 +1550,59 @@ export async function bootstrapSupabaseUserData() {
   const localSnapshot = await readLocalUserSnapshot();
   const bootstrapComplete = (await AsyncStorage.getItem(getBootstrapCompleteKey(userId))) === "1";
 
+  console.log("[bootstrap] userId:", userId, "previousUserId:", previousUserId, "bootstrapComplete:", bootstrapComplete);
+
   if (bootstrapComplete && previousUserId === userId) {
+    console.log("[bootstrap] fast path — flush only");
     await flushSupabaseUserDataSync(userId);
-    const queueAfterFlush = await readPendingQueue();
-    if (queueAfterFlush.some((entry) => entry.userId === userId)) {
-      await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, userId);
+    await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, userId);
+    // Fast path still needs to ensure profile assets are resolved
+    const settings = localSnapshot.settings;
+    if (!isLocalFileUri(settings.profileImageUri) || !isLocalFileUri(settings.bannerImageUri)) {
+        console.log("[bootstrap] fast path — resolving remote assets");
+        const assets = await resolveProfileAssetUris({
+          avatarPath: settings.profileImageStoragePath,
+          bannerPath: settings.bannerImageStoragePath,
+          avatarVersion: settings.profileImageVersion,
+          bannerVersion: settings.bannerImageVersion,
+        });
+        let changed = false;
+        if (assets.profileImageUri && !isLocalFileUri(settings.profileImageUri)) {
+          settings.profileImageUri = assets.profileImageUri;
+          settings.profileImageStoragePath = assets.profileImageStoragePath;
+          changed = true;
+        }
+        if (assets.bannerImageUri && !isLocalFileUri(settings.bannerImageUri)) {
+          settings.bannerImageUri = assets.bannerImageUri;
+          settings.bannerImageStoragePath = assets.bannerImageStoragePath;
+          changed = true;
+        }
+        if (changed) {
+          await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+        }
+      }
       return;
     }
-  }
-
   let remoteBootstrap: RemoteBootstrap;
   try {
     remoteBootstrap = await fetchRemoteBootstrap();
+    console.log("[bootstrap] RPC returned profile keys:", remote_profile_keys(remoteBootstrap));
   } catch (error) {
-    console.warn("Failed to bootstrap Supabase user data", error);
+    console.warn("[bootstrap] RPC failed:", error);
+    // RPC failed — still try to resolve assets directly from DB
+    console.log("[bootstrap] attempting direct asset resolution despite RPC failure");
+    const assets = await resolveProfileAssetUris();
+    if (assets.profileImageUri || assets.bannerImageUri) {
+      const settings = localSnapshot.settings;
+      if (assets.profileImageUri) settings.profileImageUri = assets.profileImageUri;
+      if (assets.bannerImageUri) settings.bannerImageUri = assets.bannerImageUri;
+      if (assets.profileImageStoragePath) settings.profileImageStoragePath = assets.profileImageStoragePath;
+      if (assets.bannerImageStoragePath) settings.bannerImageStoragePath = assets.bannerImageStoragePath;
+      settings.profileImageVersion = assets.profileImageVersion;
+      settings.bannerImageVersion = assets.bannerImageVersion;
+      await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    }
+
     if (previousUserId && previousUserId !== userId) {
       await clearLocalUserDataCache();
       await writeLocalUserSnapshot({
@@ -1409,6 +1623,8 @@ export async function bootstrapSupabaseUserData() {
   }
 
   const canMergeLocal = !bootstrapComplete && (!previousUserId || previousUserId === userId);
+  console.log("[bootstrap] canMergeLocal:", canMergeLocal);
+
   if (canMergeLocal) {
     const mergedSnapshot = await mergeInitialSnapshot(localSnapshot, remoteBootstrap);
     await writeLocalUserSnapshot(mergedSnapshot);
@@ -1423,13 +1639,22 @@ export async function bootstrapSupabaseUserData() {
       await writeLocalUserSnapshot(canonicalSnapshot);
     }
   } else {
+    console.log("[bootstrap] else branch — full remote restore");
     const baseSettings = previousUserId === userId ? localSnapshot.settings : createDefaultSettings(DEFAULT_THEME_ID);
     const remoteSnapshot = await createLocalSnapshotFromRemote(remoteBootstrap, baseSettings);
+    console.log("[bootstrap] resolved profileImageUri:", remoteSnapshot.settings.profileImageUri ? "SET" : "NULL");
+    console.log("[bootstrap] resolved bannerImageUri:", remoteSnapshot.settings.bannerImageUri ? "SET" : "NULL");
     await writeLocalUserSnapshot(remoteSnapshot);
   }
 
   await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, userId);
   await AsyncStorage.setItem(getBootstrapCompleteKey(userId), "1");
+}
+
+/** Helper to log which keys the RPC returned for the profile object */
+function remote_profile_keys(bootstrap: RemoteBootstrap): string {
+  if (!bootstrap.profile) return "(no profile)";
+  return Object.keys(bootstrap.profile).join(", ");
 }
 
 export async function enqueueProfileSettingsSync(settings: PersistedSettings, auditMetadata: SyncMetadata = {}) {
