@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(node:*)",
+      "Bash(xxd:*)",
+      "Bash(npx tsc:*)",
+      "WebSearch",
+      "WebFetch(domain:vidsrc.to)",
+      "WebFetch(domain:www.superembed.stream)",
+      "WebFetch(domain:autoembed.co)",
+      "WebFetch(domain:www.2embed.stream)",
+      "WebFetch(domain:cinesrc.st)",
+      "WebFetch(domain:vembed.online)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.embed-api.stream)",
+      "WebFetch(domain:123embed.net)",
+      "WebFetch(domain:superembed.docs.apiary.io)",
+      "Bash(cd /c/Users/e.a.mammadov/Desktop/app && npx tsx --test tests/**/*.test.ts 2>&1)",
+      "Bash(grep:*)",
+      "Bash(cd /c/Users/e.a.mammadov/Desktop/app && npm install react-native-webview 2>&1)",
+      "WebFetch(domain:torrentio.strem.fun)",
+      "WebFetch(domain:api.strem.io)",
+      "WebFetch(domain:nuviostreams.hayd.uk)",
+      "WebFetch(domain:stremio.github.io)",
+      "Bash(cd /c/Users/e.a.mammadov/Desktop/app && npm uninstall react-native-webview 2>&1)",
+      "Bash(tr ;:*)",
+      "Bash(npx expo:*)",
+      "WebFetch(domain:www.hdfilmcehennemi.nl)"
+    ]
+  }
+}
