@@ -1,6 +1,7 @@
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { Feather, MaterialIcons } from "@expo/vector-icons";
+import axios from "axios";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated,
@@ -13,7 +14,7 @@ import {
   View,
   useWindowDimensions
 } from "react-native";
-import { useVideoPlayer, VideoView, type SubtitleTrack } from "expo-video";
+import { useVideoPlayer, VideoView, type ContentType, type SubtitleTrack } from "expo-video";
 import YoutubeIframe from "react-native-youtube-iframe";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
@@ -86,6 +87,9 @@ const MOVIE_FACTS = [
   "The first movie ever made was just 2 seconds long — 'Roundhay Garden Scene' (1888)."
 ];
 
+const PLAYER_HTTP_UA =
+  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+
 const SERIES_FACTS = [
   "The Sopranos used real mobsters as consultants to ensure the dialogue and behavior were authentic.",
   "Breaking Bad creator Vince Gilligan originally wanted the show to take place in Riverside, California.",
@@ -141,6 +145,18 @@ const SERIES_FACTS = [
 
 type PlayerScreenProps = NativeStackScreenProps<HomeStackParamList, "Player">;
 
+type DirectSubtitleOption = {
+  url: string;
+  label: string;
+  lang: string;
+};
+
+type ParsedSubtitleCue = {
+  start: number;
+  end: number;
+  text: string;
+};
+
 function getSubtitleTrackLabel(track: SubtitleTrack): string {
   const label = track.label?.trim();
   if (label) return label;
@@ -149,6 +165,198 @@ function getSubtitleTrackLabel(track: SubtitleTrack): string {
   if (language) return language.toUpperCase();
 
   return "Subtitle";
+}
+
+function decodeSubtitleText(value: string): string {
+  return value
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
+function parseVttTimestamp(value: string): number | null {
+  const trimmed = value.trim().replace(",", ".");
+  const parts = trimmed.split(":").map((part) => Number(part));
+
+  if (parts.some((part) => Number.isNaN(part))) return null;
+
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+
+  return null;
+}
+
+/**
+ * Extract the timestamp portion from the end-part of a VTT/SRT timing line.
+ * After splitting "00:10.000 --> 00:13.083 align:start" by "-->",
+ * endRaw is " 00:13.083 align:start". We need just "00:13.083".
+ * Using `.split(" ")[0]` fails when there's a leading space (produces "").
+ */
+function extractTimestampFromEndPart(endRaw: string): string {
+  const trimmed = endRaw.trim();
+  // Take everything up to the first space (cue settings come after)
+  const spaceIdx = trimmed.indexOf(" ");
+  return spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
+}
+
+function parseWebVtt(content: string): ParsedSubtitleCue[] {
+  // Normalize all line ending variants: \r\n, \r (old Mac), \n
+  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  // First try splitting by double newlines (standard VTT)
+  let blocks = normalized.split(/\n{2,}/);
+
+  // If we only get 1-2 blocks but there are multiple --> timestamps,
+  // the file uses single-newline separation — parse line-by-line instead
+  const arrowCount = (normalized.match(/-->/g) || []).length;
+  if (blocks.length <= 2 && arrowCount > 1) {
+    return parseWebVttLineByLine(normalized);
+  }
+
+  const cues: ParsedSubtitleCue[] = [];
+
+  for (const block of blocks) {
+    const lines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) continue;
+    if (lines[0].toUpperCase().startsWith("WEBVTT")) continue;
+    if (lines[0].startsWith("NOTE")) continue;
+
+    const timeLineIndex = lines.findIndex((line) => line.includes("-->"));
+    if (timeLineIndex === -1) continue;
+
+    const [startRaw, endRaw] = lines[timeLineIndex].split("-->");
+    const start = parseVttTimestamp(startRaw);
+    const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
+    if (start == null || end == null) continue;
+
+    const text = decodeSubtitleText(lines.slice(timeLineIndex + 1).join("\n")).trim();
+    if (!text) continue;
+
+    cues.push({ start, end, text });
+  }
+
+  return cues;
+}
+
+/** Fallback parser for VTT files that use single-newline separation between cues */
+function parseWebVttLineByLine(normalized: string): ParsedSubtitleCue[] {
+  const lines = normalized.split("\n");
+  const cues: ParsedSubtitleCue[] = [];
+  let i = 0;
+
+  // Skip WEBVTT header
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    if (trimmed.toUpperCase().startsWith("WEBVTT") || trimmed === "" || trimmed.startsWith("NOTE")) {
+      i++;
+      continue;
+    }
+    break;
+  }
+
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+
+    // Skip empty lines and numeric cue IDs
+    if (!trimmed || /^\d+$/.test(trimmed)) {
+      i++;
+      continue;
+    }
+
+    // Look for a timestamp line
+    if (trimmed.includes("-->")) {
+      const [startRaw, endRaw] = trimmed.split("-->");
+      const start = parseVttTimestamp(startRaw);
+      const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
+      i++;
+
+      if (start == null || end == null) continue;
+
+      // Collect text lines until next timestamp or empty line
+      const textLines: string[] = [];
+      while (i < lines.length) {
+        const nextTrimmed = lines[i].trim();
+        if (!nextTrimmed || nextTrimmed.includes("-->") || /^\d+$/.test(nextTrimmed)) break;
+        textLines.push(nextTrimmed);
+        i++;
+      }
+
+      const text = decodeSubtitleText(textLines.join("\n")).trim();
+      if (text) {
+        cues.push({ start, end, text });
+      }
+    } else {
+      i++;
+    }
+  }
+
+  return cues;
+}
+
+function parseSubRip(content: string): ParsedSubtitleCue[] {
+  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const blocks = normalized.split(/\n{2,}/);
+  const cues: ParsedSubtitleCue[] = [];
+
+  for (const block of blocks) {
+    const lines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) continue;
+
+    const timeLineIndex = lines.findIndex((line) => line.includes("-->"));
+    if (timeLineIndex === -1) continue;
+
+    const [startRaw, endRaw] = lines[timeLineIndex].split("-->");
+    const start = parseVttTimestamp(startRaw);
+    const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
+    if (start == null || end == null) continue;
+
+    const text = decodeSubtitleText(lines.slice(timeLineIndex + 1).join("\n")).trim();
+    if (!text) continue;
+
+    cues.push({ start, end, text });
+  }
+
+  return cues;
+}
+
+function parseSubtitleDocument(content: string): ParsedSubtitleCue[] {
+  const vttCues = parseWebVtt(content);
+  if (vttCues.length > 0) return vttCues;
+  return parseSubRip(content);
+}
+
+function normalizeSubtitleUrl(url: string, ...bases: Array<string | null | undefined>): string {
+  const trimmed = (url ?? "").trim();
+  if (!trimmed) return "";
+
+  for (const base of bases) {
+    if (!base) continue;
+    try {
+      return new URL(trimmed, base).toString();
+    } catch {
+      // Try next base.
+    }
+  }
+
+  return trimmed;
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +533,31 @@ const styles = StyleSheet.create({
   subtitleMenuCheck: {
     marginLeft: 10
   },
+  subtitleOverlay: {
+    position: "absolute",
+    left: 18,
+    right: 18,
+    bottom: 28,
+    zIndex: 95,
+    alignItems: "center"
+  },
+  subtitleOverlayBubble: {
+    maxWidth: "92%",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "transparent"
+  },
+  subtitleOverlayText: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    lineHeight: 22,
+    textAlign: "center",
+    fontWeight: "600",
+    textShadowColor: "rgba(0,0,0,0.9)",
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3
+  },
   errorOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
@@ -438,12 +671,11 @@ function PlayerLoadingOverlay({
     <View style={styles.loaderOverlay}>
       <View style={styles.loaderContent}>
         <MovieLoader size={44} />
-        <Reanimated.Text
-          entering={FadeIn.duration(400)}
-          style={styles.loaderTitle}
-        >
-          {title}{seasonNumber != null && episodeNumber != null ? ` S${seasonNumber} E${episodeNumber}` : ""}
-        </Reanimated.Text>
+        <Reanimated.View entering={FadeIn.duration(400)}>
+          <Text style={styles.loaderTitle}>
+            {title}{seasonNumber != null && episodeNumber != null ? ` S${seasonNumber} E${episodeNumber}` : ""}
+          </Text>
+        </Reanimated.View>
       </View>
 
       {showFact && (
@@ -1702,6 +1934,7 @@ function getDizipalInjectAfter() {
 // Screen
 // ---------------------------------------------------------------------------
 export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
+  const theme = useTheme();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const webViewRef = useRef<WebView>(null);
   const [playerResult, setPlayerResult] = useState<WebPlayerResult | null>(null);
@@ -1713,6 +1946,9 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const [availableSubtitleTracks, setAvailableSubtitleTracks] = useState<SubtitleTrack[]>([]);
   const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState<SubtitleTrack | null>(null);
   const [isSubtitleMenuOpen, setIsSubtitleMenuOpen] = useState(false);
+  const [selectedExternalSubtitle, setSelectedExternalSubtitle] = useState<DirectSubtitleOption | null>(null);
+  const [externalSubtitleCues, setExternalSubtitleCues] = useState<ParsedSubtitleCue[]>([]);
+  const [activeSubtitleText, setActiveSubtitleText] = useState<string | null>(null);
 
   // â”€â”€ Track recent playback entry only â”€â”€
   const { addToRecentlyWatched } = useRecentlyWatched();
@@ -1832,6 +2068,9 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setAvailableSubtitleTracks([]);
     setSelectedSubtitleTrack(null);
     setIsSubtitleMenuOpen(false);
+    setSelectedExternalSubtitle(null);
+    setExternalSubtitleCues([]);
+    setActiveSubtitleText(null);
 
     if (route.params.trailerUrl) {
       // Show trailer directly
@@ -1952,17 +2191,34 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   // Load the source when directStreamUrl becomes available
   const streamReferer = playerResult?.source === "dizipal_direct" ? playerResult.referer ?? "" : "";
+  const directStreamType = playerResult?.source === "dizipal_direct" ? playerResult.streamType ?? "" : "";
+  const directEmbedUrl = playerResult?.source === "dizipal_direct" ? playerResult.embedUrl ?? "" : "";
+  const directSubtitleOptions =
+    playerResult?.source === "dizipal_direct"
+      ? (playerResult.subtitles ?? []).map((subtitle) => ({
+          ...subtitle,
+          url: normalizeSubtitleUrl(
+            subtitle.url,
+            directEmbedUrl,
+            playerResult.url,
+            streamReferer,
+            directStreamUrl
+          )
+        }))
+      : [];
   useEffect(() => {
     if (!videoPlayer || !directStreamUrl) return;
 
     console.log("[Player] Loading direct stream:", directStreamUrl, "referer:", streamReferer);
+    const contentType: ContentType | undefined = directStreamType === "m3u8" ? "hls" : undefined;
     const source = {
       uri: directStreamUrl,
-      headers: streamReferer ? { Referer: streamReferer } : undefined
+      headers: streamReferer ? { Referer: streamReferer } : undefined,
+      contentType
     };
-    videoPlayer.replace(source);
+    void videoPlayer.replaceAsync(source);
     // Don't call play() here â€” wait for readyToPlay status so play() doesn't silently fail
-  }, [videoPlayer, directStreamUrl, streamReferer]);
+  }, [videoPlayer, directStreamUrl, streamReferer, directStreamType]);
 
   useEffect(() => {
     if (!videoPlayer) return;
@@ -2015,19 +2271,119 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [videoPlayer]);
 
   useEffect(() => {
+    if (!selectedExternalSubtitle) {
+      setExternalSubtitleCues([]);
+      setActiveSubtitleText(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const subtitleReferer = directEmbedUrl || streamReferer;
+    const subtitleOrigin = subtitleReferer
+      ? (() => {
+          try {
+            return new URL(subtitleReferer).origin;
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined;
+
+    const headers = {
+      Accept: "text/vtt,text/plain,application/x-subrip,*/*",
+      "User-Agent": PLAYER_HTTP_UA,
+      ...(subtitleReferer ? { Referer: subtitleReferer } : {}),
+      ...(subtitleOrigin ? { Origin: subtitleOrigin } : {})
+    };
+
+    axios
+      .get<string>(selectedExternalSubtitle.url, {
+        timeout: 10000,
+        responseType: "text",
+        headers,
+        transformResponse: [(data) => (typeof data === "string" ? data : String(data ?? ""))]
+      })
+      .then((response) => {
+        if (cancelled) return;
+        console.log(
+          "[Player] Subtitle response preview:",
+          response.data.slice(0, 200).replace(/\s+/g, " ")
+        );
+        const cues = parseSubtitleDocument(response.data);
+        console.log("[Player] Parsed external subtitles:", selectedExternalSubtitle.label, cues.length);
+        if (cues.length === 0) {
+          // Log raw bytes to debug encoding issues
+          const rawChars = response.data.slice(0, 60);
+          console.log("[Player] Subtitle raw char codes:", Array.from(rawChars).map((c: string) => c.charCodeAt(0)).join(","));
+        }
+        setExternalSubtitleCues(cues);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.log("[Player] Failed to load external subtitles:", selectedExternalSubtitle.url, error?.message ?? String(error));
+        setExternalSubtitleCues([]);
+        setActiveSubtitleText(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [directEmbedUrl, selectedExternalSubtitle, streamReferer]);
+
+  useEffect(() => {
+    if (!videoPlayer || !selectedExternalSubtitle) {
+      setActiveSubtitleText(null);
+      return;
+    }
+
+    const syncSubtitle = (currentTime: number) => {
+      if (externalSubtitleCues.length === 0) {
+        setActiveSubtitleText(null);
+        return;
+      }
+
+      const cue = externalSubtitleCues.find((item) => currentTime >= item.start && currentTime <= item.end);
+      setActiveSubtitleText(cue?.text ?? null);
+    };
+
+    syncSubtitle(videoPlayer.currentTime ?? 0);
+    const intervalId = setInterval(() => {
+      syncSubtitle(videoPlayer.currentTime ?? 0);
+    }, 250);
+
+    return () => {
+      clearInterval(intervalId);
+      setActiveSubtitleText(null);
+    };
+  }, [videoPlayer, selectedExternalSubtitle, externalSubtitleCues]);
+
+  useEffect(() => {
     if (playerResult?.source !== "dizipal_direct") {
       setIsSubtitleMenuOpen(false);
     }
   }, [playerResult?.source]);
 
   const toggleDirectSubtitleMenu = useCallback(() => {
-    if (availableSubtitleTracks.length === 0) return;
+    if (directSubtitleOptions.length === 0 && availableSubtitleTracks.length === 0) return;
     setIsSubtitleMenuOpen((current) => !current);
-  }, [availableSubtitleTracks.length]);
+  }, [directSubtitleOptions.length, availableSubtitleTracks.length]);
 
   const selectSubtitleTrack = useCallback((track: SubtitleTrack | null) => {
     videoPlayer.subtitleTrack = track;
     setSelectedSubtitleTrack(track);
+    setSelectedExternalSubtitle(null);
+    setExternalSubtitleCues([]);
+    setActiveSubtitleText(null);
+    setIsSubtitleMenuOpen(false);
+  }, [videoPlayer]);
+
+  const selectExternalSubtitle = useCallback((subtitle: DirectSubtitleOption | null) => {
+    videoPlayer.subtitleTrack = null;
+    setSelectedSubtitleTrack(null);
+    setSelectedExternalSubtitle(subtitle);
+    setExternalSubtitleCues([]);
+    setActiveSubtitleText(null);
     setIsSubtitleMenuOpen(false);
   }, [videoPlayer]);
 
@@ -2079,8 +2435,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             <View style={styles.ccButton}>
               <TouchableOpacity
                 onPress={toggleDirectSubtitleMenu}
-                activeOpacity={availableSubtitleTracks.length > 0 ? 0.8 : 1}
-                style={[styles.closeButtonInner, availableSubtitleTracks.length === 0 && styles.controlButtonDisabled]}
+                activeOpacity={directSubtitleOptions.length > 0 || availableSubtitleTracks.length > 0 ? 0.8 : 1}
+                style={[
+                  styles.closeButtonInner,
+                  directSubtitleOptions.length === 0 &&
+                  availableSubtitleTracks.length === 0 &&
+                  styles.controlButtonDisabled
+                ]}
               >
                 <MaterialIcons name="closed-caption" size={20} color="#FFFFFF" />
               </TouchableOpacity>
@@ -2091,30 +2452,72 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
                 <Text style={styles.subtitleMenuHeader}>Subtitles</Text>
                 <TouchableOpacity
                   activeOpacity={0.8}
-                  style={[styles.subtitleMenuItem, selectedSubtitleTrack == null && styles.subtitleMenuItemActive]}
-                  onPress={() => selectSubtitleTrack(null)}
+                  style={[
+                    styles.subtitleMenuItem,
+                    selectedExternalSubtitle == null && selectedSubtitleTrack == null && styles.subtitleMenuItemActive
+                  ]}
+                  onPress={() => {
+                    if (directSubtitleOptions.length > 0) {
+                      selectExternalSubtitle(null);
+                    } else {
+                      selectSubtitleTrack(null);
+                    }
+                  }}
                 >
                   <Text style={styles.subtitleMenuItemLabel}>Off</Text>
-                  {selectedSubtitleTrack == null && <Feather name="check" size={15} color="#FFFFFF" />}
+                  {selectedExternalSubtitle == null && selectedSubtitleTrack == null && (
+                    <Feather name="check" size={15} color="#FFFFFF" />
+                  )}
                 </TouchableOpacity>
-                {availableSubtitleTracks.map((track) => {
-                  const isActive = selectedSubtitleTrack?.id === track.id;
+                {directSubtitleOptions.length > 0
+                  ? directSubtitleOptions.map((subtitle) => {
+                      const isActive = selectedExternalSubtitle?.url === subtitle.url;
 
-                  return (
-                    <TouchableOpacity
-                      key={track.id}
-                      activeOpacity={0.8}
-                      style={[styles.subtitleMenuItem, isActive && styles.subtitleMenuItemActive]}
-                      onPress={() => selectSubtitleTrack(track)}
-                    >
-                      <Text style={styles.subtitleMenuItemLabel}>{getSubtitleTrackLabel(track)}</Text>
-                      <View style={styles.subtitleMenuItemTrailing}>
-                        <Text style={styles.subtitleMenuItemMeta}>{track.language || "SUB"}</Text>
-                        {isActive && <Feather name="check" size={15} color="#FFFFFF" style={styles.subtitleMenuCheck} />}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
+                      return (
+                        <TouchableOpacity
+                          key={subtitle.url}
+                          activeOpacity={0.8}
+                          style={[styles.subtitleMenuItem, isActive && styles.subtitleMenuItemActive]}
+                          onPress={() => selectExternalSubtitle(subtitle)}
+                        >
+                          <Text style={styles.subtitleMenuItemLabel}>{subtitle.label}</Text>
+                          <View style={styles.subtitleMenuItemTrailing}>
+                            <Text style={styles.subtitleMenuItemMeta}>{subtitle.lang || "SUB"}</Text>
+                            {isActive && (
+                              <Feather name="check" size={15} color="#FFFFFF" style={styles.subtitleMenuCheck} />
+                            )}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })
+                  : availableSubtitleTracks.map((track) => {
+                      const isActive = selectedSubtitleTrack?.id === track.id;
+
+                      return (
+                        <TouchableOpacity
+                          key={track.id}
+                          activeOpacity={0.8}
+                          style={[styles.subtitleMenuItem, isActive && styles.subtitleMenuItemActive]}
+                          onPress={() => selectSubtitleTrack(track)}
+                        >
+                          <Text style={styles.subtitleMenuItemLabel}>{getSubtitleTrackLabel(track)}</Text>
+                          <View style={styles.subtitleMenuItemTrailing}>
+                            <Text style={styles.subtitleMenuItemMeta}>{track.language || "SUB"}</Text>
+                            {isActive && (
+                              <Feather name="check" size={15} color="#FFFFFF" style={styles.subtitleMenuCheck} />
+                            )}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+              </View>
+            )}
+
+            {activeSubtitleText && (
+              <View pointerEvents="none" style={styles.subtitleOverlay}>
+                <View style={styles.subtitleOverlayBubble}>
+                  <Text style={styles.subtitleOverlayText}>{activeSubtitleText}</Text>
+                </View>
               </View>
             )}
           </>
@@ -2172,7 +2575,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       {/* Not Available */}
       {isNotAvailable && !isResolving && (
         <View style={styles.notAvailableOverlay}>
-          <Text style={styles.notAvailableEmoji}>ðŸŽ¬</Text>
+          <Text style={styles.notAvailableEmoji}>🎬</Text>
           <Text style={styles.notAvailableTitle}>Not Available Yet</Text>
           <Text style={styles.notAvailableSubtitle}>
             Sorry, "{route.params.title}" is not available in our movie catalog yet.
@@ -2180,7 +2583,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           <Text style={styles.notAvailableHint}>
             We're always adding new content. Please check back later!
           </Text>
-          <TouchableOpacity style={styles.goBackButton} onPress={handleClose} activeOpacity={0.8}>
+          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.8}>
             <Text style={styles.goBackText}>Go Back</Text>
           </TouchableOpacity>
         </View>

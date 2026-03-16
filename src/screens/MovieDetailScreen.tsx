@@ -78,7 +78,6 @@ const Title = styled.Text`
 
 const PillsRow = styled.View`
   flex-direction: row;
-  flex-wrap: wrap;
   margin-top: 10px;
 `;
 

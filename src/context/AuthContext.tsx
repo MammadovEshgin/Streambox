@@ -3,7 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { AppState, type AppStateStatus } from "react-native";
 import type { Session, User } from "@supabase/supabase-js";
 
-import { clearLocalUserDataCache, logSupabaseUserEvent } from "../services/userDataSync";
+import { clearLocalUserDataCache, flushSupabaseUserDataSync, logSupabaseUserEvent } from "../services/userDataSync";
 import { supabase } from "../services/supabase";
 
 const LAST_ACTIVE_KEY = "@streambox/last-active-ts";
@@ -117,12 +117,18 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }, [session]);
 
   const handleSignOut = useCallback(async () => {
+    // Remove first-open key BEFORE clearing session so the welcome screen shows
+    await AsyncStorage.removeItem(FIRST_OPEN_KEY).catch(() => undefined);
+
     // Clear session immediately for instant UI response
     setSession(null);
 
     // Run all cleanup in parallel in the background without blocking the UI transition
     const runCleanup = async () => {
       try {
+        // Flush any pending uploads (e.g. profile pic/banner) before clearing local data
+        await flushSupabaseUserDataSync().catch(() => undefined);
+
         const cleanup = [
           AsyncStorage.removeItem(LAST_ACTIVE_KEY).catch(() => undefined),
           AsyncStorage.removeItem(FIRST_OPEN_KEY).catch(() => undefined),

@@ -4,6 +4,7 @@ import {
   MediaItem,
   MovieTasteProfile,
   discoverMoviesForTaste,
+  getMovieDetails,
   getMovieTasteProfile,
   getTrendingPage
 } from "../api/tmdb";
@@ -296,12 +297,37 @@ async function pickFallbackMovie(historyTmdbIds: Set<number>, historyImdbIds: Se
   return null;
 }
 
-async function persistDailyPick(dateKey: string, movie: MediaItem | null) {
+async function persistCurrentMovie(dateKey: string, movie: MediaItem | null) {
   const payload: StoredMovieOfDay = {
     dateKey,
     movie
   };
   await AsyncStorage.setItem(CURRENT_MOVIE_KEY, JSON.stringify(payload));
+}
+
+async function hydrateMovieGenres(movie: MediaItem | null): Promise<MediaItem | null> {
+  if (!movie) {
+    return null;
+  }
+
+  if (Array.isArray(movie.genreIds) && movie.genreIds.length > 0) {
+    return movie;
+  }
+
+  try {
+    const details = await getMovieDetails(String(movie.id));
+    return {
+      ...movie,
+      genreIds: details.genreIds,
+      imdbId: movie.imdbId ?? details.imdbId ?? null
+    };
+  } catch {
+    return movie;
+  }
+}
+
+async function persistDailyPick(dateKey: string, movie: MediaItem | null) {
+  await persistCurrentMovie(dateKey, movie);
   if (movie) {
     await enqueueDailyRecommendationSync(movie as unknown as Record<string, unknown>, dateKey);
   }
@@ -330,7 +356,11 @@ export async function getPersonalizedMovieOfTheDay(likedMovieIds: number[]): Pro
 
   const current = normalizeCurrent(storedCurrentRaw);
   if (current?.dateKey === dateKey) {
-    return current.movie;
+    const hydratedCurrent = await hydrateMovieGenres(current.movie);
+    if (hydratedCurrent !== current.movie) {
+      await persistCurrentMovie(dateKey, hydratedCurrent);
+    }
+    return hydratedCurrent;
   }
 
   const history = normalizeHistory(historyRaw);
@@ -340,12 +370,13 @@ export async function getPersonalizedMovieOfTheDay(likedMovieIds: number[]): Pro
   const personalized = await pickFromPersonalizedCandidates(likedMovieIds, historyTmdbIds, historyImdbIds);
   const fallback = personalized ?? (await pickFallbackMovie(historyTmdbIds, historyImdbIds));
 
-  await persistDailyPick(dateKey, fallback);
-  if (fallback) {
-    await persistHistory(fallback, history);
+  const hydratedFallback = await hydrateMovieGenres(fallback);
+  await persistDailyPick(dateKey, hydratedFallback);
+  if (hydratedFallback) {
+    await persistHistory(hydratedFallback, history);
   }
 
-  return fallback;
+  return hydratedFallback;
 }
 
 

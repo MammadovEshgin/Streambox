@@ -13,7 +13,7 @@ import {
   FilterState,
   hasActiveFilters as checkActiveFilters
 } from "../components/home/FilterModal";
-import { HeroCard } from "../components/home/HeroCard";
+import { SpotlightCarousel } from "../components/home/SpotlightCarousel";
 import { HomeHeader } from "../components/home/HomeHeader";
 import { MediaCard } from "../components/home/MediaCard";
 import { HomeStackParamList } from "../navigation/types";
@@ -218,8 +218,9 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     void loadDiscovery(Boolean(cachedDiscovery));
   }, [cachedDiscovery, loadDiscovery]);
 
-  const featured = useMemo(() => {
-    return popularMovies[0] ?? trendingMovies[0] ?? trendingSeries[0] ?? null;
+  const spotlightItems = useMemo(() => {
+    const pool = popularMovies.length > 0 ? popularMovies : [...trendingMovies, ...trendingSeries];
+    return pool.filter((i) => i.backdropPath).slice(0, 5);
   }, [popularMovies, trendingMovies, trendingSeries]);
 
   const handleSearchSubmit = useCallback(
@@ -282,7 +283,10 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
           />
 
           <HeroWrap>
-            <HeroCard item={featured} />
+            <SpotlightCarousel
+              items={spotlightItems}
+              onPressItem={handleSelectItem}
+            />
             {errorMessage ? <ErrorText>{errorMessage}</ErrorText> : null}
           </HeroWrap>
 

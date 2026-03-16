@@ -836,58 +836,99 @@ async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<Diz
 }
 
 export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {
-  // Strategy: Try HDFilmCehennemi FIRST as it is more stable and has better quality.
-  const candidates = await searchHdFilmCehennemiCandidates(request.title, request.castNames ?? [], request.year);
+  const isSeries = request.mediaType !== "movie";
 
-  for (const hdfilmUrl of candidates) {
-    if (request.mediaType === "movie") {
+  // For series: Try Dizipal FIRST, then HDFilm as fallback.
+  // For movies: Try HDFilm FIRST, then Dizipal as fallback.
+
+  if (isSeries) {
+    // --- Series: Dizipal first ---
+    const dizipalResult = await resolvePlayableDizipalUrl(request);
+    if (dizipalResult) {
+      const { pageUrl, stream, embedUrl } = dizipalResult;
+
+      if (stream) {
+        return {
+          url: pageUrl,
+          source: "dizipal_direct",
+          streamUrl: stream.streamUrl,
+          streamType: stream.streamType,
+          poster: stream.poster,
+          referer: stream.referer,
+          embedUrl: embedUrl ?? undefined,
+          subtitles: stream.subtitles,
+        };
+      }
+
+      if (embedUrl) {
+        return {
+          url: embedUrl,
+          source: "dizipal_embed",
+          embedUrl,
+        };
+      }
+
+      return { url: pageUrl, source: "dizipal" };
+    }
+
+    // Fallback: Try HDFilm for series
+    console.log("[WebPlayer] Dizipal unavailable for series, falling back to HDFilm");
+    const candidates = await searchHdFilmCehennemiCandidates(request.title, request.castNames ?? [], request.year);
+    for (const hdfilmUrl of candidates) {
+      if (request.seasonNumber && request.episodeNumber) {
+        const episodeUrl = await resolvePlayableSeriesEpisodeUrl(
+          hdfilmUrl,
+          request.seasonNumber,
+          request.episodeNumber
+        );
+        if (episodeUrl) {
+          return { url: episodeUrl, source: "hdfilm" };
+        }
+        console.log(`[WebPlayer] HDFilm series candidate [${candidates.indexOf(hdfilmUrl)}] no episode S${request.seasonNumber}E${request.episodeNumber}`);
+      } else {
+        return { url: hdfilmUrl, source: "hdfilm" };
+      }
+    }
+  } else {
+    // --- Movies: HDFilm first ---
+    const candidates = await searchHdFilmCehennemiCandidates(request.title, request.castNames ?? [], request.year);
+    for (const hdfilmUrl of candidates) {
       const videoAvailable = await hasActualVideo(hdfilmUrl);
       if (videoAvailable) {
         return { url: hdfilmUrl, source: "hdfilm" };
       }
       console.log(`[WebPlayer] HDFilm movie candidate [${candidates.indexOf(hdfilmUrl)}] no video: ${hdfilmUrl}`);
-    } else if (request.seasonNumber && request.episodeNumber) {
-      const episodeUrl = await resolvePlayableSeriesEpisodeUrl(
-        hdfilmUrl,
-        request.seasonNumber,
-        request.episodeNumber
-      );
-      if (episodeUrl) {
-        return { url: episodeUrl, source: "hdfilm" };
+    }
+
+    // Fallback: Try Dizipal for movies
+    console.log("[WebPlayer] HDFilm unavailable for movie, falling back to Dizipal");
+    const dizipalResult = await resolvePlayableDizipalUrl(request);
+    if (dizipalResult) {
+      const { pageUrl, stream, embedUrl } = dizipalResult;
+
+      if (stream) {
+        return {
+          url: pageUrl,
+          source: "dizipal_direct",
+          streamUrl: stream.streamUrl,
+          streamType: stream.streamType,
+          poster: stream.poster,
+          referer: stream.referer,
+          embedUrl: embedUrl ?? undefined,
+          subtitles: stream.subtitles,
+        };
       }
-      console.log(`[WebPlayer] HDFilm series candidate [${candidates.indexOf(hdfilmUrl)}] no episode S${request.seasonNumber}E${request.episodeNumber}`);
-    } else {
-      // Fallback for types without explicit episode checks
-      return { url: hdfilmUrl, source: "hdfilm" };
+
+      if (embedUrl) {
+        return {
+          url: embedUrl,
+          source: "dizipal_embed",
+          embedUrl,
+        };
+      }
+
+      return { url: pageUrl, source: "dizipal" };
     }
-  }
-
-  // Fallback: Try Dizipal if HDFilm is unavailable or broken.
-  const dizipalResult = await resolvePlayableDizipalUrl(request);
-  if (dizipalResult) {
-    const { pageUrl, stream, embedUrl } = dizipalResult;
-
-    if (stream) {
-      return {
-        url: pageUrl,
-        source: "dizipal_direct",
-        streamUrl: stream.streamUrl,
-        streamType: stream.streamType,
-        poster: stream.poster,
-        referer: stream.referer,
-        subtitles: stream.subtitles,
-      };
-    }
-
-    if (embedUrl) {
-      return {
-        url: embedUrl,
-        source: "dizipal_embed",
-        embedUrl,
-      };
-    }
-
-    return { url: pageUrl, source: "dizipal" };
   }
 
   return { url: "", source: "not_found" };
