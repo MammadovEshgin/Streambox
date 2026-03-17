@@ -1,44 +1,32 @@
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { useCallback, useState } from "react";
-import Animated, { useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import styled from "styled-components/native";
 
 import { CastMember, CrewMember, getTmdbImageUrl } from "../../api/tmdb";
 
 const Root = styled.View``;
 
-const TabBarContainer = styled.View`
+const ButtonsContainer = styled.View`
   flex-direction: row;
-  align-items: center;
+  gap: 10px;
   margin-bottom: 12px;
-`;
-
-const TabBarBackground = styled.View`
-  flex-direction: row;
-  background-color: rgba(255, 255, 255, 0.06);
-  border-radius: 24px;
-  padding: 4px;
 `;
 
 const TabButton = styled.Pressable<{ isActive: boolean }>`
   flex: 1;
-  padding-horizontal: 16px;
-  padding-vertical: 8px;
+  padding-vertical: 10px;
   align-items: center;
   justify-content: center;
+  border-radius: 6px;
+  background-color: ${({ isActive, theme }) => (isActive ? theme.colors.primary : theme.colors.surfaceRaised)};
 `;
 
 const TabLabel = styled.Text<{ isActive: boolean }>`
-  color: ${({ isActive, theme }) => (isActive ? theme.colors.textPrimary : theme.colors.textSecondary)};
+  color: ${({ isActive, theme }) => (isActive ? "#FFFFFF" : theme.colors.textPrimary)};
   font-size: 14px;
-  font-weight: ${({ isActive }) => (isActive ? "700" : "500")};
+  font-weight: 600;
   letter-spacing: 0.1px;
-`;
-
-const TabIndicator = styled(Animated.View)`
-  position: absolute;
-  background-color: rgba(255, 255, 255, 0.12);
-  border-radius: 20px;
 `;
 
 const ListContainer = styled.View`
@@ -59,6 +47,8 @@ const AvatarWrap = styled.View`
   background-color: ${({ theme }) => theme.colors.surface};
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.border};
+  align-items: center;
+  justify-content: center;
 `;
 
 const Avatar = styled.Image`
@@ -66,17 +56,12 @@ const Avatar = styled.Image`
   height: 100%;
 `;
 
-const Placeholder = styled.View`
-  flex: 1;
+const PlaceholderIcon = styled.View`
+  width: 100%;
+  height: 100%;
   align-items: center;
   justify-content: center;
   background-color: ${({ theme }) => theme.colors.surface};
-`;
-
-const PlaceholderText = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 10px;
-  letter-spacing: 0.3px;
 `;
 
 const CastActorName = styled.Text`
@@ -104,14 +89,14 @@ const CrewActorName = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
   font-size: 11px;
   line-height: 14px;
-  font-weight: 700;
+  font-weight: 600;
 `;
 
 const JobTitle = styled.Text`
   margin-top: 2px;
-  color: ${({ theme }) => theme.colors.primary};
-  font-size: 10px;
-  line-height: 13px;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-size: 9px;
+  line-height: 12px;
 `;
 
 type CastCrewSectionProps = {
@@ -119,6 +104,25 @@ type CastCrewSectionProps = {
   crew: CrewMember[];
   onPressCastItem?: (item: CastMember) => void;
 };
+
+const JOB_PRIORITY: Record<string, number> = {
+  "Director": 1,
+  "Writer": 2,
+  "Screenplay": 2,
+  "Art Director": 3,
+  "Producer": 4,
+  "Executive Producer": 4,
+  "Director of Photography": 5,
+  "Original Music Composer": 5
+};
+
+function getCrewPriority(job: string): number {
+  return JOB_PRIORITY[job] ?? 999;
+}
+
+function sortCrewByImportance(crew: CrewMember[]): CrewMember[] {
+  return [...crew].sort((a, b) => getCrewPriority(a.job) - getCrewPriority(b.job));
+}
 
 function CastItem({ item, onPressItem }: { item: CastMember; onPressItem?: (item: CastMember) => void }) {
   const avatarUri = getTmdbImageUrl(item.profilePath, "w185");
@@ -129,9 +133,9 @@ function CastItem({ item, onPressItem }: { item: CastMember; onPressItem?: (item
         {avatarUri ? (
           <Avatar source={{ uri: avatarUri }} resizeMode="cover" />
         ) : (
-          <Placeholder>
-            <PlaceholderText>No Image</PlaceholderText>
-          </Placeholder>
+          <PlaceholderIcon>
+            <MaterialCommunityIcons name="account-outline" size={32} color="#666666" />
+          </PlaceholderIcon>
         )}
       </AvatarWrap>
       <CastActorName numberOfLines={1}>{item.name}</CastActorName>
@@ -149,9 +153,9 @@ function CrewItem({ item }: { item: CrewMember }) {
         {avatarUri ? (
           <Avatar source={{ uri: avatarUri }} resizeMode="cover" />
         ) : (
-          <Placeholder>
-            <PlaceholderText>No Image</PlaceholderText>
-          </Placeholder>
+          <PlaceholderIcon>
+            <MaterialCommunityIcons name="account-outline" size={32} color="#666666" />
+          </PlaceholderIcon>
         )}
       </AvatarWrap>
       <CrewActorName numberOfLines={1}>{item.name}</CrewActorName>
@@ -163,8 +167,7 @@ function CrewItem({ item }: { item: CrewMember }) {
 export function CastCrewSection({ cast, crew, onPressCastItem }: CastCrewSectionProps) {
   const isCrewEmpty = crew.length === 0;
   const [activeTabIndex, setActiveTabIndex] = useState(0);
-  const indicatorWidth = useSharedValue(0);
-  const indicatorLeft = useSharedValue(0);
+  const sortedCrew = sortCrewByImportance(crew);
 
   const renderCastItem = useCallback(
     ({ item }: ListRenderItemInfo<CastMember>) => {
@@ -177,36 +180,17 @@ export function CastCrewSection({ cast, crew, onPressCastItem }: CastCrewSection
     return <CrewItem item={item} />;
   }, []);
 
-  const indicatorStyle = useAnimatedStyle(() => {
-    return {
-      width: indicatorWidth.value,
-      left: indicatorLeft.value
-    };
-  });
-
-  const handleTabPress = useCallback((tabIndex: number) => {
-    setActiveTabIndex(tabIndex);
-
-    // Calculate dimensions for the indicator based on tab index
-    const tabWidth = 50; // approximate width per tab
-    indicatorWidth.value = withTiming(tabWidth, { duration: 200 });
-    indicatorLeft.value = withTiming(tabIndex * (tabWidth + 8) + 4, { duration: 200 });
-  }, []);
-
   return (
     <Root>
       {!isCrewEmpty && (
-        <TabBarContainer>
-          <TabBarBackground>
-            <TabIndicator style={indicatorStyle} />
-            <TabButton isActive={activeTabIndex === 0} onPress={() => handleTabPress(0)}>
-              <TabLabel isActive={activeTabIndex === 0}>Cast</TabLabel>
-            </TabButton>
-            <TabButton isActive={activeTabIndex === 1} onPress={() => handleTabPress(1)}>
-              <TabLabel isActive={activeTabIndex === 1}>Crew</TabLabel>
-            </TabButton>
-          </TabBarBackground>
-        </TabBarContainer>
+        <ButtonsContainer>
+          <TabButton isActive={activeTabIndex === 0} onPress={() => setActiveTabIndex(0)}>
+            <TabLabel isActive={activeTabIndex === 0}>Cast</TabLabel>
+          </TabButton>
+          <TabButton isActive={activeTabIndex === 1} onPress={() => setActiveTabIndex(1)}>
+            <TabLabel isActive={activeTabIndex === 1}>Crew</TabLabel>
+          </TabButton>
+        </ButtonsContainer>
       )}
       <ListContainer>
         {activeTabIndex === 0 ? (
@@ -219,7 +203,7 @@ export function CastCrewSection({ cast, crew, onPressCastItem }: CastCrewSection
           />
         ) : (
           <FlashList
-            data={crew}
+            data={sortedCrew}
             horizontal
             keyExtractor={(item) => String(item.id)}
             renderItem={renderCrewItem}
