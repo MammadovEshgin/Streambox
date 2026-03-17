@@ -272,6 +272,14 @@ export type DirectorMember = {
   profilePath: string | null;
 };
 
+export type CrewMember = {
+  id: number;
+  name: string;
+  job: string;
+  department: string;
+  profilePath: string | null;
+};
+
 export type MovieDetails = {
   id: number;
   title: string;
@@ -289,6 +297,7 @@ export type MovieDetails = {
   collectionId: number | null;
   cast: CastMember[];
   directors: DirectorMember[];
+  crew: CrewMember[];
 };
 
 export type SeriesSeason = {
@@ -330,6 +339,7 @@ export type SeriesDetails = {
   seasons: SeriesSeason[];
   cast: CastMember[];
   directors: DirectorMember[];
+  crew: CrewMember[];
 };
 
 export type ExternalRatings = {
@@ -529,6 +539,40 @@ function pickDirectorMembers(crew: TmdbCrewRecord[] = []): DirectorMember[] {
       name: entry.name,
       profilePath: entry.profile_path ?? null
     }));
+}
+
+function pickKeyCrewMembers(crew: TmdbCrewRecord[] = []): CrewMember[] {
+  const keyJobs = new Set([
+    "Director",
+    "Writer",
+    "Screenplay",
+    "Producer",
+    "Executive Producer",
+    "Director of Photography",
+    "Original Music Composer"
+  ]);
+
+  const seenIds = new Set<number>();
+  const result: CrewMember[] = [];
+
+  for (const entry of crew) {
+    if (entry.job && keyJobs.has(entry.job) && !seenIds.has(entry.id)) {
+      seenIds.add(entry.id);
+      result.push({
+        id: entry.id,
+        name: entry.name,
+        job: entry.job,
+        department: entry.department ?? "",
+        profilePath: entry.profile_path ?? null
+      });
+
+      if (result.length >= 15) {
+        break;
+      }
+    }
+  }
+
+  return result;
 }
 
 function normalizeSeriesSeason(item: TmdbTvSeasonRecord): SeriesSeason {
@@ -1284,7 +1328,8 @@ export async function getMovieDetails(id: string): Promise<MovieDetails> {
     imdbId: details.imdb_id ?? null,
     collectionId: details.belongs_to_collection?.id ?? null,
     cast,
-    directors: pickDirectorMembers(creditsResponse.data.crew ?? [])
+    directors: pickDirectorMembers(creditsResponse.data.crew ?? []),
+    crew: pickKeyCrewMembers(creditsResponse.data.crew ?? [])
   };
 }
 
@@ -1334,7 +1379,8 @@ export async function getSeriesDetails(id: string): Promise<SeriesDetails> {
     episodeRuntimeMinutes,
     seasons,
     cast,
-    directors
+    directors,
+    crew: pickKeyCrewMembers(data.credits?.crew ?? [])
   };
 }
 
