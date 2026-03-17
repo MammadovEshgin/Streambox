@@ -23,7 +23,7 @@ import {
   getMovieTrailerUrl,
   getSmartSimilarMovies
 } from "../api/tmdb";
-import { CastList } from "../components/detail/CastList";
+import { CastCrewSection } from "../components/detail/CastCrewSection";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { RatingServiceIcon } from "../components/common/RatingServiceIcon";
 import { DetailHeader } from "../components/detail/DetailHeader";
@@ -195,7 +195,7 @@ const SectionTitle = styled.Text`
 `;
 
 const CastWrap = styled.View`
-  height: 126px;
+  height: 200px;
 `;
 
 const SynopsisText = styled.Text`
@@ -621,12 +621,13 @@ if (!details) {
 
           <Animated.View entering={FadeInDown.duration(420).delay(220)}>
             <SectionHeader>
-              <SectionTitle>Cast</SectionTitle>
+              <SectionTitle>Cast & Crew</SectionTitle>
             </SectionHeader>
             <CastWrap>
-              <CastList
+              <CastCrewSection
                 cast={details.cast}
-                onPressItem={(member) => {
+                crew={details.crew}
+                onPressCastItem={(member) => {
                   navigation.navigate("ActorDetail", { actorId: String(member.id) });
                 }}
               />

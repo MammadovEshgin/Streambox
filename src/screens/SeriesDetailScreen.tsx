@@ -35,7 +35,7 @@ import {
 } from "../api/tmdb";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { RatingServiceIcon } from "../components/common/RatingServiceIcon";
-import { CastList } from "../components/detail/CastList";
+import { CastCrewSection } from "../components/detail/CastCrewSection";
 import { DetailHeader } from "../components/detail/DetailHeader";
 import { MetaPill } from "../components/detail/MetaPill";
 import {
@@ -330,7 +330,7 @@ const EmptyEpisodes = styled.Text`
 `;
 
 const CastWrap = styled.View`
-  height: 126px;
+  height: 200px;
 `;
 
 const SimilarWrap = styled.View`
@@ -1010,12 +1010,13 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
 
           <Animated.View entering={FadeInDown.duration(420).delay(210)}>
             <SectionHeader>
-              <SectionTitle>Cast</SectionTitle>
+              <SectionTitle>Cast & Crew</SectionTitle>
             </SectionHeader>
             <CastWrap>
-              <CastList
+              <CastCrewSection
                 cast={details.cast}
-                onPressItem={(member) => {
+                crew={details.crew}
+                onPressCastItem={(member) => {
                   navigation.navigate("ActorDetail", { actorId: String(member.id) });
                 }}
               />
