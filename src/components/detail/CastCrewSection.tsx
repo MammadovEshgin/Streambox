@@ -4,29 +4,35 @@ import { useCallback, useState } from "react";
 import styled from "styled-components/native";
 
 import { CastMember, CrewMember, getTmdbImageUrl } from "../../api/tmdb";
+import { withAlpha } from "../../theme/Theme";
 
 const Root = styled.View``;
 
 const ButtonsContainer = styled.View`
   flex-direction: row;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 12px;
 `;
 
 const TabButton = styled.Pressable<{ isActive: boolean }>`
-  flex: 1;
-  padding-vertical: 10px;
+  min-height: 32px;
+  padding: 7px 14px;
+  border-radius: 3px;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
-  background-color: ${({ isActive, theme }) => (isActive ? theme.colors.primary : theme.colors.surfaceRaised)};
+  border-width: 1px;
+  border-color: ${({ isActive, theme }) =>
+    isActive ? withAlpha(theme.colors.primary, 0.32) : withAlpha(theme.colors.textPrimary, 0.06)};
+  background-color: ${({ isActive, theme }) =>
+    isActive ? withAlpha(theme.colors.primary, 0.14) : "transparent"};
 `;
 
 const TabLabel = styled.Text<{ isActive: boolean }>`
-  color: ${({ isActive, theme }) => (isActive ? "#FFFFFF" : theme.colors.textPrimary)};
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.1px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: ${({ isActive, theme }) => (isActive ? theme.colors.textPrimary : withAlpha(theme.colors.textPrimary, 0.45))};
 `;
 
 const ListContainer = styled.View`
