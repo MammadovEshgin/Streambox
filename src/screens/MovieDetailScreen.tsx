@@ -630,6 +630,9 @@ if (!details) {
                 onPressCastItem={(member) => {
                   navigation.navigate("ActorDetail", { actorId: String(member.id) });
                 }}
+                onPressCrewItem={(member) => {
+                  navigation.navigate("ActorDetail", { actorId: String(member.id) });
+                }}
               />
             </CastWrap>
           </Animated.View>
