@@ -126,8 +126,27 @@ function getCrewPriority(job: string): number {
   return JOB_PRIORITY[job] ?? 999;
 }
 
+function sortCastByImage(cast: CastMember[]): CastMember[] {
+  return [...cast].sort((a, b) => {
+    const aHasImage = !!a.profilePath;
+    const bHasImage = !!b.profilePath;
+    if (aHasImage === bHasImage) return 0;
+    return aHasImage ? -1 : 1;
+  });
+}
+
 function sortCrewByImportance(crew: CrewMember[]): CrewMember[] {
-  return [...crew].sort((a, b) => getCrewPriority(a.job) - getCrewPriority(b.job));
+  return [...crew].sort((a, b) => {
+    // First sort by importance
+    const priorityDiff = getCrewPriority(a.job) - getCrewPriority(b.job);
+    if (priorityDiff !== 0) return priorityDiff;
+
+    // Then put those with images first
+    const aHasImage = !!a.profilePath;
+    const bHasImage = !!b.profilePath;
+    if (aHasImage === bHasImage) return 0;
+    return aHasImage ? -1 : 1;
+  });
 }
 
 function CastItem({ item, onPressItem }: { item: CastMember; onPressItem?: (item: CastMember) => void }) {
@@ -173,6 +192,7 @@ function CrewItem({ item }: { item: CrewMember }) {
 export function CastCrewSection({ cast, crew, onPressCastItem }: CastCrewSectionProps) {
   const isCrewEmpty = crew.length === 0;
   const [activeTabIndex, setActiveTabIndex] = useState(0);
+  const sortedCast = sortCastByImage(cast);
   const sortedCrew = sortCrewByImportance(crew);
 
   const renderCastItem = useCallback(
@@ -201,7 +221,7 @@ export function CastCrewSection({ cast, crew, onPressCastItem }: CastCrewSection
       <ListContainer>
         {activeTabIndex === 0 ? (
           <FlashList
-            data={cast}
+            data={sortedCast}
             horizontal
             keyExtractor={(item) => String(item.id)}
             renderItem={renderCastItem}
