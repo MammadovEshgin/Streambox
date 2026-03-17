@@ -242,6 +242,18 @@ type TmdbCreditsResponse = {
 
 type TmdbPersonMovieCreditsResponse = {
   cast: TmdbMovieCreditRecord[];
+  crew?: Array<{
+    id: number;
+    title?: string;
+    poster_path: string | null;
+    backdrop_path: string | null;
+    vote_average: number;
+    overview: string;
+    release_date?: string;
+    popularity?: number;
+    job?: string;
+    department?: string;
+  }>;
 };
 
 export type MediaItem = {
@@ -1999,7 +2011,22 @@ export async function getPersonDetails(id: string): Promise<PersonDetails> {
   ]);
 
   const person = personResponse.data;
-  const knownForMovies = creditsResponse.data.cast
+
+  // Combine cast and crew works
+  const allWorks = [
+    ...creditsResponse.data.cast,
+    ...(creditsResponse.data.crew ?? [])
+  ];
+
+  // Deduplicate by ID and sort by popularity
+  const seenIds = new Set<number>();
+  const uniqueWorks = allWorks.filter(item => {
+    if (seenIds.has(item.id)) return false;
+    seenIds.add(item.id);
+    return true;
+  });
+
+  const knownForMovies = uniqueWorks
     .slice()
     .sort((left, right) => (right.popularity ?? 0) - (left.popularity ?? 0))
     .slice(0, 12)
