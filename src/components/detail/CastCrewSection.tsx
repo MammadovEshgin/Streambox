@@ -109,6 +109,7 @@ type CastCrewSectionProps = {
   cast: CastMember[];
   crew: CrewMember[];
   onPressCastItem?: (item: CastMember) => void;
+  onPressCrewItem?: (item: CrewMember) => void;
 };
 
 const JOB_PRIORITY: Record<string, number> = {
@@ -169,11 +170,11 @@ function CastItem({ item, onPressItem }: { item: CastMember; onPressItem?: (item
   );
 }
 
-function CrewItem({ item }: { item: CrewMember }) {
+function CrewItem({ item, onPressItem }: { item: CrewMember; onPressItem?: (item: CrewMember) => void }) {
   const avatarUri = getTmdbImageUrl(item.profilePath, "w185");
 
   return (
-    <CrewItemRoot>
+    <CrewItemRoot onPress={() => onPressItem?.(item)}>
       <AvatarWrap>
         {avatarUri ? (
           <Avatar source={{ uri: avatarUri }} resizeMode="cover" />
@@ -189,7 +190,7 @@ function CrewItem({ item }: { item: CrewMember }) {
   );
 }
 
-export function CastCrewSection({ cast, crew, onPressCastItem }: CastCrewSectionProps) {
+export function CastCrewSection({ cast, crew, onPressCastItem, onPressCrewItem }: CastCrewSectionProps) {
   const isCrewEmpty = crew.length === 0;
   const [activeTabIndex, setActiveTabIndex] = useState(0);
   const sortedCast = sortCastByImage(cast);
@@ -202,9 +203,12 @@ export function CastCrewSection({ cast, crew, onPressCastItem }: CastCrewSection
     [onPressCastItem]
   );
 
-  const renderCrewItem = useCallback(({ item }: ListRenderItemInfo<CrewMember>) => {
-    return <CrewItem item={item} />;
-  }, []);
+  const renderCrewItem = useCallback(
+    ({ item }: ListRenderItemInfo<CrewMember>) => {
+      return <CrewItem item={item} onPressItem={onPressCrewItem} />;
+    },
+    [onPressCrewItem]
+  );
 
   return (
     <Root>
