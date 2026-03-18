@@ -1,4 +1,4 @@
-﻿import axios, { AxiosHeaders } from "axios";
+import axios, { AxiosHeaders } from "axios";
 import { getAlternateTmdbAuthMode, resolveTmdbAuth, TmdbAuthMode } from "./tmdbAuth";
 import { getCachedOmdbRatings } from "./ratingsProxy";
 
@@ -257,7 +257,7 @@ type TmdbPersonMovieCreditsResponse = {
 };
 
 export type MediaItem = {
-  id: number;
+  id: number | string;
   title: string;
   posterPath: string | null;
   backdropPath: string | null;
@@ -402,7 +402,8 @@ export type DiscoverCollectionSource =
   | "top_new_movies"
   | "imdb_top_250"
   | "top_new_series"
-  | "imdb_top_250_series";
+  | "imdb_top_250_series"
+  | "az_classics";
 
 type TmdbImageSize = "w185" | "w300" | "w342" | "w500" | "w780" | "original";
 
@@ -936,6 +937,10 @@ async function getLetterboxdRating(imdbId: string): Promise<string | null> {
 export function getTmdbImageUrl(path: string | null, size: TmdbImageSize = "w500"): string | null {
   if (!path) {
     return null;
+  }
+
+  if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(path) || path.startsWith("data:")) {
+    return path;
   }
 
   return `${TMDB_IMAGE_BASE_URL}/${size}${path}`;
@@ -1598,7 +1603,7 @@ function finalizeSmartSimilarResults(
   minResults = MIN_SMART_SIMILAR_RESULTS,
   maxResults = MAX_SMART_SIMILAR_RESULTS
 ): MediaItem[] {
-  const selected = new Map<number, MediaItem>();
+  const selected = new Map<number | string, MediaItem>();
 
   const appendMatches = (eligibleTiers: CandidateEligibility[]) => {
     for (const entry of scored) {

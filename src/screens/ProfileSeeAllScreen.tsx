@@ -180,7 +180,9 @@ const LoadingWrap = styled.View`
 
 type Cache = Map<string, MediaItem>;
 
-async function hydrateList(ids: number[], type: MediaType, cache: Cache): Promise<MediaItem[]> {
+import { getAzClassicMovieSummary } from "../api/azClassics";
+
+async function hydrateList(ids: (number | string)[], type: MediaType, cache: Cache): Promise<MediaItem[]> {
   const items: MediaItem[] = [];
   const fetcher = type === "movie" ? getMovieSummary : getSeriesSummary;
 
@@ -192,9 +194,17 @@ async function hydrateList(ids: number[], type: MediaType, cache: Cache): Promis
         return;
       }
       try {
-        const item = await fetcher(id);
-        cache.set(key, item);
-        items.push(item);
+        let item: MediaItem | null = null;
+        if (typeof id === "string" && id.includes("-")) {
+          item = await getAzClassicMovieSummary(id);
+        } else {
+          item = await fetcher(Number(id));
+        }
+
+        if (item) {
+          cache.set(key, item);
+          items.push(item);
+        }
       } catch {
         // skip
       }
@@ -279,7 +289,11 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
   const handlePressItem = useCallback(
     (item: MediaItem) => {
       if (item.mediaType === "movie") {
-        navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        if (typeof item.id === "string" && item.id.includes("-")) {
+          navigation.navigate("AzClassicDetail", { movieId: item.id });
+        } else {
+          navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        }
       } else {
         navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
       }
@@ -289,7 +303,10 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<MediaItem>) => {
-      const posterUri = getTmdbImageUrl(item.posterPath, "w342");
+      const posterUri =
+        item.posterPath?.startsWith("http")
+          ? item.posterPath
+          : getTmdbImageUrl(item.posterPath, "w342");
       return (
         <CardRoot onPress={() => handlePressItem(item)}>
           <PosterFrame>
@@ -300,10 +317,12 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
                 <NoImageText>No Image</NoImageText>
               </NoImage>
             )}
-            <Badge>
-              <Feather name="star" size={10} color="#FFD700" style={{ marginRight: 3 }} />
-              <BadgeValue>{item.rating.toFixed(1)}</BadgeValue>
-            </Badge>
+            {typeof item.id !== "string" && !item.imdbId?.startsWith("az-") && (
+              <Badge>
+                <Feather name="star" size={10} color="#FFD700" style={{ marginRight: 3 }} />
+                <BadgeValue>{item.rating.toFixed(1)}</BadgeValue>
+              </Badge>
+            )}
           </PosterFrame>
           <Title numberOfLines={1}>{item.title}</Title>
           <Meta>{item.year}</Meta>

@@ -77,7 +77,6 @@ const ActionButtonBody = styled(Animated.View)`
   border-radius: 12px;
   align-items: center;
   justify-content: center;
-  padding-left: 3px;
 `;
 
 const TrailerButton = styled(Pressable)<{ $topOffset: number }>`
@@ -100,6 +99,9 @@ type DetailHeaderProps = {
   showWatchlistAction?: boolean;
   onTrailer?: () => void;
   showTrailerAction?: boolean;
+  isLiked?: boolean;
+  onToggleLike?: () => void;
+  showLikeAction?: boolean;
 };
 
 export function DetailHeader({
@@ -110,14 +112,27 @@ export function DetailHeader({
   onToggleWatchlist,
   showWatchlistAction = true,
   onTrailer,
-  showTrailerAction = false
+  showTrailerAction = false,
+  isLiked = false,
+  onToggleLike,
+  showLikeAction = true
 }: DetailHeaderProps) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const [isHighResLoaded, setIsHighResLoaded] = useState(false);
   const watchlistProgress = useSharedValue(isInWatchlist ? 1 : 0);
-  const lowResUri = getTmdbImageUrl(backdropPath ?? posterPath, "w185");
-  const highResUri = getTmdbImageUrl(backdropPath ?? posterPath, "w780");
+  const loveProgress = useSharedValue(isLiked ? 1 : 0);
+
+  const getImageUrl = (path: string | null, size: any) => {
+    if (!path) return null;
+    if (path.startsWith("http://") || path.startsWith("https://")) {
+      return path;
+    }
+    return getTmdbImageUrl(path, size);
+  };
+
+  const lowResUri = getImageUrl(backdropPath ?? posterPath, "w185");
+  const highResUri = getImageUrl(backdropPath ?? posterPath, "w780");
 
   useEffect(() => {
     watchlistProgress.value = withTiming(isInWatchlist ? 1 : 0, {
@@ -125,6 +140,13 @@ export function DetailHeader({
       easing: Easing.out(Easing.cubic)
     });
   }, [isInWatchlist, watchlistProgress]);
+
+  useEffect(() => {
+    loveProgress.value = withTiming(isLiked ? 1 : 0, {
+      duration: 230,
+      easing: Easing.out(Easing.cubic)
+    });
+  }, [isLiked, loveProgress]);
 
   const watchlistOutlineStyle = useAnimatedStyle(() => {
     return {
@@ -140,8 +162,23 @@ export function DetailHeader({
     };
   });
 
+  const loveOutlineStyle = useAnimatedStyle(() => {
+    return {
+      position: "absolute",
+      opacity: 1 - loveProgress.value
+    };
+  });
+
+  const loveFilledStyle = useAnimatedStyle(() => {
+    return {
+      position: "absolute",
+      opacity: loveProgress.value
+    };
+  });
+
   const watchlistTopOffset = insets.top + 8;
-  const trailerTopOffset = watchlistTopOffset + 50;
+  const likeTopOffset = showWatchlistAction ? watchlistTopOffset + 50 : watchlistTopOffset;
+  const trailerTopOffset = (showLikeAction ? likeTopOffset + 50 : (showWatchlistAction ? watchlistTopOffset + 50 : watchlistTopOffset));
 
   return (
     <HeaderRoot>
@@ -162,6 +199,7 @@ export function DetailHeader({
       <BackButton onPress={onBack} $topOffset={insets.top + 8}>
         <Feather name="arrow-left" size={18} color={theme.colors.textPrimary} />
       </BackButton>
+
       {showWatchlistAction ? (
         <ActionButton onPress={onToggleWatchlist} $topOffset={watchlistTopOffset}>
           <ActionButtonBody>
@@ -174,6 +212,20 @@ export function DetailHeader({
           </ActionButtonBody>
         </ActionButton>
       ) : null}
+
+      {showLikeAction ? (
+        <ActionButton onPress={onToggleLike} $topOffset={likeTopOffset}>
+          <ActionButtonBody>
+            <Animated.View style={loveOutlineStyle}>
+              <MaterialCommunityIcons name="heart-outline" size={22} color={theme.colors.textPrimary} />
+            </Animated.View>
+            <Animated.View style={loveFilledStyle}>
+              <MaterialCommunityIcons name="heart" size={22} color={theme.colors.primary} />
+            </Animated.View>
+          </ActionButtonBody>
+        </ActionButton>
+      ) : null}
+
       {showTrailerAction && onTrailer ? (
         <TrailerButton onPress={onTrailer} $topOffset={trailerTopOffset}>
           <MaterialCommunityIcons name="movie-open-outline" size={22} color={theme.colors.textPrimary} />

@@ -220,7 +220,11 @@ export function WatchedGridScreen({ route, navigation }: Props) {
   const handlePressItem = useCallback(
     (item: WatchHistoryEntry) => {
       if (item.mediaType === "movie") {
-        navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        if (typeof item.id === "string" && item.id.includes("-")) {
+          navigation.navigate("AzClassicDetail", { movieId: item.id });
+        } else {
+          navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        }
       } else {
         navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
       }
@@ -230,7 +234,12 @@ export function WatchedGridScreen({ route, navigation }: Props) {
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<WatchHistoryEntry>) => {
-      const posterUri = item.posterPath ? getTmdbImageUrl(item.posterPath, "w342") : null;
+      const posterUri =
+        item.posterPath?.startsWith("http")
+          ? item.posterPath
+          : item.posterPath
+          ? getTmdbImageUrl(item.posterPath, "w342")
+          : null;
       return (
         <CardRoot onPress={() => handlePressItem(item)}>
           <PosterFrame>
@@ -241,10 +250,12 @@ export function WatchedGridScreen({ route, navigation }: Props) {
                 <NoImageText>No Image</NoImageText>
               </NoImage>
             )}
-            <Badge>
-              <Feather name="star" size={10} color="#FFD700" style={{ marginRight: 3 }} />
-              <BadgeValue>{item.voteAverage.toFixed(1)}</BadgeValue>
-            </Badge>
+            {typeof item.id !== "string" && (
+              <Badge>
+                <Feather name="star" size={10} color="#FFD700" style={{ marginRight: 3 }} />
+                <BadgeValue>{item.voteAverage.toFixed(1)}</BadgeValue>
+              </Badge>
+            )}
           </PosterFrame>
           <Title numberOfLines={1}>{item.title}</Title>
           <Meta>{item.year}</Meta>

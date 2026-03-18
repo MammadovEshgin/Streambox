@@ -485,6 +485,7 @@ if (!details) {
               } : undefined);
             }
           }}
+          showLikeAction={false}
           showTrailerAction={!!trailerUrl}
           onTrailer={() => {
             if (trailerUrl) {

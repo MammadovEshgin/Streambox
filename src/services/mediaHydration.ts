@@ -1,4 +1,5 @@
-﻿import { getMovieSummary, getSeriesSummary, type MediaItem } from "../api/tmdb";
+import { getMovieSummary, getSeriesSummary, type MediaItem } from "../api/tmdb";
+import { getAzClassicMovieSummary } from "../api/azClassics";
 
 export type HydratedMediaCache = Map<string, MediaItem>;
 
@@ -9,8 +10,8 @@ export function getSharedHydratedMediaCache() {
 }
 
 export async function hydrateMediaIds(
-  movieIds: number[],
-  seriesIds: number[],
+  movieIds: (number | string)[],
+  seriesIds: (number | string)[],
   cache: HydratedMediaCache = sharedHydratedMediaCache
 ): Promise<MediaItem[]> {
   const movieItems = await Promise.all(
@@ -21,8 +22,17 @@ export async function hydrateMediaIds(
       }
 
       try {
-        const item = await getMovieSummary(id);
-        cache.set(key, item);
+        let item: MediaItem | null = null;
+        if (typeof id === "string" && id.includes("-")) {
+          // Likely a UUID for Azerbaijan Classics
+          item = await getAzClassicMovieSummary(id);
+        } else {
+          item = await getMovieSummary(Number(id));
+        }
+
+        if (item) {
+          cache.set(key, item);
+        }
         return item;
       } catch {
         return null;
@@ -38,7 +48,7 @@ export async function hydrateMediaIds(
       }
 
       try {
-        const item = await getSeriesSummary(id);
+        const item = await getSeriesSummary(Number(id));
         cache.set(key, item);
         return item;
       } catch {

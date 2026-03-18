@@ -167,8 +167,13 @@ function Slide({
           )}
 
           <MetaRow>
-            <Feather name="star" size={14} color="#FFD700" />
-            <MetaText> {item.rating.toFixed(1)}  •  {item.year}</MetaText>
+            {typeof item.id !== "string" && !item.imdbId?.startsWith("az-") && (
+              <>
+                <Feather name="star" size={14} color="#FFD700" />
+                <MetaText> {item.rating.toFixed(1)}  •  </MetaText>
+              </>
+            )}
+            <MetaText>{item.year}</MetaText>
           </MetaRow>
 
           <DescriptionText numberOfLines={2}>{item.overview}</DescriptionText>
@@ -202,7 +207,7 @@ export function SpotlightCarousel({
   const flatListRef = useRef<FlatList>(null);
   const scrollX = useSharedValue(0);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [logos, setLogos] = useState<Record<number, string | null>>({});
+  const [logos, setLogos] = useState<Record<number | string, string | null>>({});
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const userInteractedRef = useRef(false);
   const count = items.length;
@@ -217,13 +222,15 @@ export function SpotlightCarousel({
   // Fetch logos on mount
   useEffect(() => {
     Promise.all(
-      items.map(async (item) => {
-        const fn = item.mediaType === "movie" ? getMovieLogos : getSeriesLogos;
-        const path = await fn(item.id);
-        return [item.id, path] as const;
-      })
+      items
+        .filter((item) => typeof item.id === "number")
+        .map(async (item) => {
+          const fn = item.mediaType === "movie" ? getMovieLogos : getSeriesLogos;
+          const path = await fn(Number(item.id));
+          return [item.id, path] as const;
+        })
     ).then((results) => {
-      const map: Record<number, string | null> = {};
+      const map: Record<number | string, string | null> = {};
       for (const [id, path] of results) map[id] = path;
       setLogos(map);
     });
