@@ -127,26 +127,32 @@ function getCrewPriority(job: string): number {
   return JOB_PRIORITY[job] ?? 999;
 }
 
+function compareByImagePresence(profilePathA: string | null | undefined, profilePathB: string | null | undefined): number {
+  const hasImageA = !!profilePathA;
+  const hasImageB = !!profilePathB;
+
+  if (hasImageA === hasImageB) {
+    return 0;
+  }
+
+  return hasImageA ? -1 : 1;
+}
+
 function sortCastByImage(cast: CastMember[]): CastMember[] {
   return [...cast].sort((a, b) => {
-    const aHasImage = !!a.profilePath;
-    const bHasImage = !!b.profilePath;
-    if (aHasImage === bHasImage) return 0;
-    return aHasImage ? -1 : 1;
+    return compareByImagePresence(a.profilePath, b.profilePath);
   });
 }
 
 function sortCrewByImportance(crew: CrewMember[]): CrewMember[] {
   return [...crew].sort((a, b) => {
-    // First sort by importance
+    const imageDiff = compareByImagePresence(a.profilePath, b.profilePath);
+    if (imageDiff !== 0) return imageDiff;
+
     const priorityDiff = getCrewPriority(a.job) - getCrewPriority(b.job);
     if (priorityDiff !== 0) return priorityDiff;
 
-    // Then put those with images first
-    const aHasImage = !!a.profilePath;
-    const bHasImage = !!b.profilePath;
-    if (aHasImage === bHasImage) return 0;
-    return aHasImage ? -1 : 1;
+    return 0;
   });
 }
 
