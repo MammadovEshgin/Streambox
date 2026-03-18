@@ -35,7 +35,7 @@ import {
 } from "../api/tmdb";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { RatingServiceIcon } from "../components/common/RatingServiceIcon";
-import { CastList } from "../components/detail/CastList";
+import { CastCrewSection } from "../components/detail/CastCrewSection";
 import { DetailHeader } from "../components/detail/DetailHeader";
 import { MetaPill } from "../components/detail/MetaPill";
 import {
@@ -69,6 +69,8 @@ const Body = styled.View`
   padding: 14px 16px 28px;
 `;
 
+const TopInfo = styled.View``;
+
 const DateText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
   font-size: 12px;
@@ -91,10 +93,16 @@ const PillsRow = styled.View`
 `;
 
 const RatingsRow = styled.View`
-  margin-top: 12px;
+  margin-top: 14px;
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
+`;
+
+const RatingsStrip = styled.View`
+  flex-direction: row;
+  align-items: center;
+  padding: 4px 0;
 `;
 
 const RatingEntry = styled.View`
@@ -119,7 +127,7 @@ const SourceValue = styled.Text`
 `;
 
 const LoveButtonPress = styled.Pressable`
-  margin-left: 6px;
+  margin-left: 4px;
 `;
 
 const LoveButtonBody = styled(Animated.View)`
@@ -330,7 +338,7 @@ const EmptyEpisodes = styled.Text`
 `;
 
 const CastWrap = styled.View`
-  height: 126px;
+  height: 200px;
 `;
 
 const SimilarWrap = styled.View`
@@ -799,6 +807,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
           backdropPath={null}
           onBack={() => navigation.goBack()}
           showWatchlistAction={false}
+          showLikeAction={false}
         />
         <Body>
           <ErrorText>{errorMessage ?? "No detail data available."}</ErrorText>
@@ -825,95 +834,100 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
               } : undefined);
             }
           }}
+          showLikeAction={false}
         />
 
         <Body>
           <Animated.View entering={FadeInDown.duration(420).delay(70)}>
-            <DateText>{formatDate(details.firstAirDate)}</DateText>
-            <Title numberOfLines={2}>{details.title}</Title>
+            <TopInfo>
+              <DateText>{formatDate(details.firstAirDate)}</DateText>
+              <Title numberOfLines={2}>{details.title}</Title>
 
-            <PillsRow>
-              <MetaPill label={`${details.numberOfSeasons} Seasons`} />
-              <MetaPill label={`${details.numberOfEpisodes} Episodes`} />
-              {details.genres.slice(0, 2).map((genre) => (
-                <MetaPill key={genre} label={genre} />
-              ))}
-            </PillsRow>
+              <PillsRow>
+                <MetaPill label={`${details.numberOfSeasons} Seasons`} />
+                <MetaPill label={`${details.numberOfEpisodes} Episodes`} />
+                {details.genres.slice(0, 2).map((genre) => (
+                  <MetaPill key={genre} label={genre} />
+                ))}
+              </PillsRow>
 
-            <RatingsRow>
-              <Animated.View style={{ flexDirection: "row", alignItems: "center" }}>
-                <RatingEntry>
-                  <RatingServiceIcon service="imdb" size={14} />
-                  <SourceValue>{imdbDisplayValue}</SourceValue>
-                </RatingEntry>
-                <RatingDivider />
-                <RatingEntry>
-                  <RatingServiceIcon service="rottentomatoes" size={14} />
-                  <SourceValue>{rottenDisplayValue}</SourceValue>
-                </RatingEntry>
-                <RatingDivider />
-                <RatingEntry>
-                  <RatingServiceIcon service="metacritic" size={14} />
-                  <SourceValue>{metacriticDisplayValue}</SourceValue>
-                </RatingEntry>
-              </Animated.View>
-              <LoveButtonPress
-                onPress={() => {
-                  if (Number.isFinite(currentSeriesId)) {
-                    void toggleLikedSeries(currentSeriesId, details ? {
-                      title: details.title,
-                      imdbId: details.imdbId,
-                      posterPath: details.posterPath,
-                      year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
-                    } : undefined);
-                  }
-                }}
-              >
-                <LoveButtonBody>
-                  <Animated.View style={loveOutlineStyle}>
-                    <MaterialCommunityIcons name="heart-outline" size={18} color="#FFFFFF" />
-                  </Animated.View>
-                  <Animated.View style={loveFilledStyle}>
-                    <MaterialCommunityIcons name="heart" size={18} color="#E50914" />
-                  </Animated.View>
-                </LoveButtonBody>
-              </LoveButtonPress>
-            </RatingsRow>
-
-            <WatchNowWrap>
-              <ActionRow>
-                <PrimaryActionWrap>
-                  <TopWatchButton
-                    onPress={() => {
-                      navigation.navigate("Player", {
-                        mediaType: "tv",
-                        tmdbId: String(details.id),
-                        imdbId: details.imdbId,
+              <RatingsRow>
+                <RatingsStrip>
+                  <RatingEntry>
+                    <RatingServiceIcon service="imdb" size={14} />
+                    <SourceValue>{imdbDisplayValue}</SourceValue>
+                  </RatingEntry>
+                  <RatingDivider />
+                  <RatingEntry>
+                    <RatingServiceIcon service="rottentomatoes" size={14} />
+                    <SourceValue>{rottenDisplayValue}</SourceValue>
+                  </RatingEntry>
+                  <RatingDivider />
+                  <RatingEntry>
+                    <RatingServiceIcon service="metacritic" size={14} />
+                    <SourceValue>{metacriticDisplayValue}</SourceValue>
+                  </RatingEntry>
+                </RatingsStrip>
+                <LoveButtonPress
+                  onPress={() => {
+                    if (Number.isFinite(currentSeriesId)) {
+                      void toggleLikedSeries(currentSeriesId, details ? {
                         title: details.title,
-                        seasonNumber: nextEpisode?.season,
-                        episodeNumber: nextEpisode?.episode,
-                        year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null
-                      });
-                    }}
-                  >
-                    <Feather name="play-circle" size={20} color="#FFFFFF" />
-                    <TopWatchButtonText>
-                      {nextEpisode ? `Watch S${nextEpisode.season} E${nextEpisode.episode}` : "Watch Now"}
-                    </TopWatchButtonText>
-                  </TopWatchButton>
-                </PrimaryActionWrap>
-                <WatchedButton $active={isCurrentSeriesWatched} onPress={handleOpenWatchedDateModal}>
-                  <MaterialCommunityIcons
-                    name={isCurrentSeriesWatched ? "eye-check" : "eye-plus-outline"}
-                    size={22}
-                    color={isCurrentSeriesWatched ? currentTheme.colors.primary : currentTheme.colors.textPrimary}
-                  />
-                </WatchedButton>
-              </ActionRow>
-              {currentWatchedEntry ? (
-                <WatchedMetaText>Watched on {formatWatchedDateLabel(currentWatchedEntry.watchedAt)}</WatchedMetaText>
-              ) : null}
-            </WatchNowWrap>
+                        imdbId: details.imdbId,
+                        posterPath: details.posterPath,
+                        year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
+                      } : undefined);
+                    }
+                  }}
+                >
+                  <LoveButtonBody>
+                    <Animated.View style={loveOutlineStyle}>
+                      <MaterialCommunityIcons name="heart-outline" size={18} color="#FFFFFF" />
+                    </Animated.View>
+                    <Animated.View style={loveFilledStyle}>
+                      <MaterialCommunityIcons name="heart" size={18} color="#E50914" />
+                    </Animated.View>
+                  </LoveButtonBody>
+                </LoveButtonPress>
+              </RatingsRow>
+
+              <Animated.View entering={FadeInDown.duration(420).delay(130)}>
+                <WatchNowWrap>
+                  <ActionRow>
+                    <PrimaryActionWrap>
+                      <TopWatchButton
+                        onPress={() => {
+                          navigation.navigate("Player", {
+                            mediaType: "tv",
+                            tmdbId: String(details.id),
+                            imdbId: details.imdbId,
+                            title: details.title,
+                            seasonNumber: nextEpisode?.season,
+                            episodeNumber: nextEpisode?.episode,
+                            year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null
+                          });
+                        }}
+                      >
+                        <Feather name="play-circle" size={20} color="#FFFFFF" />
+                        <TopWatchButtonText>
+                          {nextEpisode ? `Watch S${nextEpisode.season} E${nextEpisode.episode}` : "Watch Now"}
+                        </TopWatchButtonText>
+                      </TopWatchButton>
+                    </PrimaryActionWrap>
+                    <WatchedButton $active={isCurrentSeriesWatched} onPress={handleOpenWatchedDateModal}>
+                      <MaterialCommunityIcons
+                        name={isCurrentSeriesWatched ? "eye-check" : "eye-plus-outline"}
+                        size={22}
+                        color={isCurrentSeriesWatched ? currentTheme.colors.primary : currentTheme.colors.textPrimary}
+                      />
+                    </WatchedButton>
+                  </ActionRow>
+                  {currentWatchedEntry ? (
+                    <WatchedMetaText>Watched on {formatWatchedDateLabel(currentWatchedEntry.watchedAt)}</WatchedMetaText>
+                  ) : null}
+                </WatchNowWrap>
+              </Animated.View>
+            </TopInfo>
           </Animated.View>
 
           <Animated.View entering={FadeInDown.duration(420).delay(130)}>
@@ -1010,12 +1024,16 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
 
           <Animated.View entering={FadeInDown.duration(420).delay(210)}>
             <SectionHeader>
-              <SectionTitle>Cast</SectionTitle>
+              <SectionTitle>Cast & Crew</SectionTitle>
             </SectionHeader>
             <CastWrap>
-              <CastList
+              <CastCrewSection
                 cast={details.cast}
-                onPressItem={(member) => {
+                crew={details.crew}
+                onPressCastItem={(member) => {
+                  navigation.navigate("ActorDetail", { actorId: String(member.id) });
+                }}
+                onPressCrewItem={(member) => {
                   navigation.navigate("ActorDetail", { actorId: String(member.id) });
                 }}
               />
