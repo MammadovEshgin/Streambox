@@ -2097,7 +2097,9 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       year: route.params.year,
       seasonNumber: route.params.seasonNumber,
       episodeNumber: route.params.episodeNumber,
-      castNames: route.params.castNames
+      castNames: route.params.castNames,
+      videoId: route.params.videoId,
+      isAzClassic: route.params.isAzClassic
     })
       .then((result) => {
         if (!cancelled) {

@@ -1,4 +1,4 @@
-﻿import { Feather } from "@expo/vector-icons";
+import { Feather } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -765,7 +765,11 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const handlePressItem = useCallback(
     (item: MediaItem) => {
       if (item.mediaType === "movie") {
-        navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        if (typeof item.id === "string" && item.id.includes("-")) {
+          navigation.navigate("AzClassicDetail", { movieId: item.id });
+        } else {
+          navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        }
       } else {
         navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
       }

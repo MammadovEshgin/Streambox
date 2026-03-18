@@ -21,6 +21,8 @@ export type WebPlayerRequest = {
   seasonNumber?: number;
   episodeNumber?: number;
   castNames?: string[];
+  videoId?: string | null;
+  isAzClassic?: boolean;
 };
 
 export type WebPlayerResult = {
@@ -296,14 +298,10 @@ async function hasActualVideo(pageUrl: string): Promise<boolean> {
   }
 }
 
-
 function matchesSeriesEpisodeUrl(url: string, seasonNumber: number, episodeNumber: number): boolean {
   const normalized = url.toLowerCase();
   
-  // Use regex to ensure exact number matching (not matching 'bolum-1' for 'bolum-12')
-  // Match forms like: sezon-1, 1-sezon, sezon1, s1, etc.
   const seasonRegex = new RegExp(`(sezon[/-]?${seasonNumber}\\b|\\b${seasonNumber}[/-]?sezon|\\bs${seasonNumber}\\b)`, 'i');
-  // Match forms like: bolum-2, 2-bolum, bolum2, ep2, etc.
   const episodeRegex = new RegExp(`(bolum[/-]?${episodeNumber}\\b|\\b${episodeNumber}[/-]?bolum|\\be${episodeNumber}\\b|ep[/-]?${episodeNumber}\\b)`, 'i');
 
   return seasonRegex.test(normalized) && episodeRegex.test(normalized);
@@ -314,7 +312,6 @@ async function findSeriesEpisodeUrl(
   seasonNumber: number,
   episodeNumber: number
 ): Promise<string | null> {
-  // If the page URL itself looks like the episode URL, return it
   if (matchesSeriesEpisodeUrl(seriesPageUrl, seasonNumber, episodeNumber)) {
     return seriesPageUrl;
   }
@@ -337,11 +334,9 @@ async function findSeriesEpisodeUrl(
       )
     );
 
-    // Try a direct match first
     const directMatch = episodeUrls.find((href) => matchesSeriesEpisodeUrl(href, seasonNumber, episodeNumber));
     if (directMatch) return directMatch;
     
-    // Sometimes episodes are listed as simplified links, try matching the end of the URL
     return episodeUrls.find(href => {
         const parts = href.split('/').filter(Boolean);
         const lastPart = parts[parts.length - 1] || "";
@@ -363,7 +358,6 @@ async function resolvePlayableSeriesEpisodeUrl(
     const episodeUrl = await findSeriesEpisodeUrl(seriesPageUrl, seasonNumber, episodeNumber);
     if (!episodeUrl) return null;
 
-    // Check if the episode page actually has a player
     const videoAvailable = await hasActualVideo(episodeUrl);
     if (!videoAvailable) return null;
 
@@ -476,15 +470,12 @@ type DizipalStreamInfo = {
 };
 
 function extractM3u8FromEmbedHtml(html: string): string | null {
-  // JWPlayer: sources: [{file:"...m3u8"}]
   const sourcesMatch = html.match(/sources\s*:\s*\[\s*\{[^}]*file\s*:\s*"([^"]+\.m3u8[^"]*)"/i);
   if (sourcesMatch?.[1]) return sourcesMatch[1];
 
-  // Generic: file:"...m3u8"
   const fileMatch = html.match(/file\s*:\s*"([^"]+\.m3u8[^"]*)"/i);
   if (fileMatch?.[1]) return fileMatch[1];
 
-  // src="...m3u8"
   const srcMatch = html.match(/src\s*=\s*["']([^"']+\.m3u8[^"']*)/i);
   if (srcMatch?.[1]) return srcMatch[1];
 
@@ -505,19 +496,15 @@ function extractSubtitlesFromEmbedHtml(html: string): Array<{ url: string; label
 }
 
 function extractVideoHash(embedUrl: string, html: string): string | null {
-  // 1. From the embed URL path: /video/<hash>
   const urlPathMatch = embedUrl.match(/\/video\/([a-f0-9]{20,})/i);
   if (urlPathMatch?.[1]) return urlPathMatch[1];
 
-  // 2. From the embed URL path: /embed-<hash>.html
   const embedPathMatch = embedUrl.match(/\/embed-([a-z0-9]{8,})\.html/i);
   if (embedPathMatch?.[1]) return embedPathMatch[1];
 
-  // 3. From HTML: FirePlayer("hash", ...)
   const firePlayerMatch = html.match(/FirePlayer\s*\(\s*["']([a-f0-9]{20,})["']/i);
   if (firePlayerMatch?.[1]) return firePlayerMatch[1];
 
-  // 4. From HTML: file_id cookie
   const fileIdMatch = html.match(/file_id['"]\s*,\s*['"](\d+)['"]/i);
   if (fileIdMatch?.[1]) return fileIdMatch[1];
 
@@ -525,7 +512,6 @@ function extractVideoHash(embedUrl: string, html: string): string | null {
 }
 
 function extractSubtitlesFromPlayerJs(html: string): SubtitleTrack[] {
-  // playerjsSubtitle = "[English]https://...eng.vtt,[Turkish]https://...tur.vtt"
   const match = html.match(/playerjsSubtitle\s*=\s*"([^"]+)"/);
   if (!match?.[1]) return [];
 
@@ -569,19 +555,15 @@ async function resolveViaGetVideoApi(embedUrl: string, html: string): Promise<Di
       }
     );
 
-    // Prefer securedLink (signed m3u8), fall back to videoSource
     const m3u8 = resp.data?.securedLink || resp.data?.videoSource || "";
     if (!m3u8 || (!m3u8.includes(".m3u8") && !m3u8.includes(".mp4"))) {
-      console.log("[Dizipal] getVideo API returned no usable URL:", resp.data);
       return null;
     }
 
-    // Extract subtitles from the embed page HTML
     const subs = [
       ...extractSubtitlesFromPlayerJs(html),
       ...extractSubtitlesFromEmbedHtml(html)
     ];
-    // Deduplicate by URL
     const seen = new Set<string>();
     const uniqueSubs = subs.filter((s) => {
       if (seen.has(s.url)) return false;
@@ -589,7 +571,6 @@ async function resolveViaGetVideoApi(embedUrl: string, html: string): Promise<Di
       return true;
     });
 
-    console.log(`[Dizipal] getVideo API resolved: ${m3u8}, subtitles: ${uniqueSubs.length}`);
     return {
       streamUrl: m3u8,
       streamType: m3u8.includes(".m3u8") ? "m3u8" : "mp4",
@@ -598,7 +579,6 @@ async function resolveViaGetVideoApi(embedUrl: string, html: string): Promise<Di
       subtitles: uniqueSubs
     };
   } catch (e) {
-    console.log("[Dizipal] getVideo API error:", e);
     return null;
   }
 }
@@ -616,12 +596,10 @@ async function resolveEmbedToM3u8(embedUrl: string, referer: string): Promise<Di
 
     const html = resp.data;
 
-    // Strategy 1: Direct m3u8 in HTML (wtsdde.cfd style — JWPlayer sources in page)
     const m3u8 = extractM3u8FromEmbedHtml(html);
     if (m3u8) {
       const subs = extractSubtitlesFromEmbedHtml(html);
       const embedOrigin = new URL(embedUrl).origin + "/";
-      console.log(`[Dizipal] Extracted m3u8 from HTML: ${m3u8}, subtitles: ${subs.length}`);
       return {
         streamUrl: m3u8,
         streamType: "m3u8",
@@ -631,14 +609,11 @@ async function resolveEmbedToM3u8(embedUrl: string, referer: string): Promise<Di
       };
     }
 
-    // Strategy 2: FirePlayer getVideo API (imagestoo.com style — dynamic fetch)
     const apiResult = await resolveViaGetVideoApi(embedUrl, html);
     if (apiResult) return apiResult;
 
-    console.log("[Dizipal] No m3u8 found via any strategy for embed:", embedUrl);
     return null;
   } catch (e) {
-    console.log("[Dizipal] resolveEmbedToM3u8 error:", e);
     return null;
   }
 }
@@ -654,16 +629,11 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
     if (!html) return null;
 
     const cfg = extractDizipalCfg(html);
-    if (!cfg) {
-      console.log("[Dizipal] No data-cfg found on page");
-      return null;
-    }
+    if (!cfg) return null;
 
-    // Extract base URL from the page URL for cookie domain
     const pageOrigin = new URL(pageUrl).origin;
     const baseUrl = pageOrigin.includes("dizipal") ? pageOrigin : getDizipalBaseUrl();
 
-    // Step 1: Fetch CSRF token
     let csrfToken = "";
     try {
       const tokenResp = await axios.get<string>(`${baseUrl}/ajax-token`, {
@@ -677,11 +647,9 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
       });
       csrfToken = typeof tokenResp.data === "string" ? tokenResp.data.trim() : String(tokenResp.data).trim();
     } catch (e) {
-      console.log("[Dizipal] Failed to fetch CSRF token:", e);
       return null;
     }
 
-    // Step 2: POST to ajax-player-config with cfg value
     const configResp = await axios.post<{
       success?: boolean;
       config?: { v?: string; t?: string; p?: string };
@@ -702,15 +670,10 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
     );
 
     const config = configResp.data?.config;
-    if (!configResp.data?.success || !config?.v) {
-      console.log("[Dizipal] ajax-player-config returned no stream URL:", configResp.data);
-      return null;
-    }
+    if (!configResp.data?.success || !config?.v) return null;
 
     const streamType = (config.t ?? "").toLowerCase();
-    console.log(`[Dizipal] ajax-player-config: ${config.v} (type: ${streamType})`);
 
-    // Direct m3u8/mp4 — return as-is
     if (streamType === "m3u8" || streamType === "mp4") {
       return {
         stream: {
@@ -724,24 +687,18 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
       };
     }
 
-    // Embed/iframe — return the embed URL (load in WebView for full player experience)
     if (streamType === "embed" || streamType === "iframe") {
       const normalizedEmbedUrl = normalizeDizipalEmbedUrl(config.v, pageUrl, baseUrl);
-      if (!normalizedEmbedUrl) {
-        console.log("[Dizipal] Invalid embed URL returned:", config.v);
-        return null;
-      }
+      if (!normalizedEmbedUrl) return null;
 
       const embedStream = await resolveEmbedToM3u8(normalizedEmbedUrl, pageUrl);
       if (embedStream) {
-        console.log(`[Dizipal] Embed extracted to direct stream: ${normalizedEmbedUrl}`);
         return {
           stream: embedStream,
           embedUrl: normalizedEmbedUrl
         };
       }
 
-      console.log(`[Dizipal] Embed URL available: ${normalizedEmbedUrl}`);
       return {
         stream: null,
         embedUrl: normalizedEmbedUrl
@@ -750,7 +707,6 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
 
     return null;
   } catch (e) {
-    console.log("[Dizipal] fetchDizipalStreamUrl error:", e);
     return null;
   }
 }
@@ -766,6 +722,7 @@ async function hasPlayableDizipalVideo(pageUrl: string): Promise<boolean> {
 
   return Boolean(cfg) && hasPlayerShell;
 }
+
 function matchesDizipalEpisodeUrl(url: string, seasonNumber: number, episodeNumber: number): boolean {
   const normalized = url.toLowerCase();
   return normalized.includes(`/bolum/`) && normalized.includes(`${seasonNumber}-sezon-${episodeNumber}-bolum`);
@@ -794,6 +751,32 @@ async function findDizipalEpisodeUrl(
   return episodeUrls.find((href) => matchesDizipalEpisodeUrl(href, seasonNumber, episodeNumber)) ?? null;
 }
 
+async function findAzClassicYoutubeVideoId(title: string, year?: string | null): Promise<string | null> {
+  try {
+    const query = encodeURIComponent(`${title} ${year || ""}`);
+    const searchUrl = `https://www.youtube.com/@AzerbaijanfilmStudio/search?query=${query}`;
+    
+    const response = await axios.get(searchUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "az,en;q=0.9"
+      },
+      timeout: 8000
+    });
+
+    const html = response.data;
+    const videoIdMatch = html.match(/"videoId":"([^"]+)"/);
+    if (videoIdMatch) return videoIdMatch[1];
+
+    const watchMatch = html.match(/\/watch\?v=([a-zA-Z0-9_-]{11})/);
+    if (watchMatch) return watchMatch[1];
+
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
 type DizipalResolveResult = {
   pageUrl: string;
   stream: DizipalStreamInfo | null;
@@ -802,9 +785,7 @@ type DizipalResolveResult = {
 
 async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<DizipalResolveResult | null> {
   const dizipalUrl = await searchDizipal(request.title, request.mediaType);
-  if (!dizipalUrl) {
-    return null;
-  }
+  if (!dizipalUrl) return null;
 
   let targetUrl = dizipalUrl;
 
@@ -816,37 +797,41 @@ async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<Diz
     );
     if (!episodeUrl) return null;
     targetUrl = episodeUrl;
-  } else if (request.mediaType === "tv") {
-    return null;
-  }
+  } else if (request.mediaType === "tv") return null;
 
-  // Try server-side stream extraction
   const result = await fetchDizipalStreamUrl(targetUrl);
-  if (result) {
-    return { pageUrl: targetUrl, stream: result.stream, embedUrl: result.embedUrl };
-  }
+  if (result) return { pageUrl: targetUrl, stream: result.stream, embedUrl: result.embedUrl };
 
-  // Fallback: check if page has a playable player shell (WebView automation)
   const playable = await hasPlayableDizipalVideo(targetUrl);
-  if (playable) {
-    return { pageUrl: targetUrl, stream: null, embedUrl: null };
-  }
+  if (playable) return { pageUrl: targetUrl, stream: null, embedUrl: null };
 
   return null;
 }
 
 export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {
+  if (request.videoId) {
+    return {
+      url: request.videoId,
+      source: "youtube_embed"
+    };
+  }
+
+  if (request.isAzClassic) {
+    const youtubeId = await findAzClassicYoutubeVideoId(request.title, request.year);
+    if (youtubeId) {
+      return {
+        url: youtubeId,
+        source: "youtube_embed"
+      };
+    }
+  }
+
   const isSeries = request.mediaType !== "movie";
 
-  // For series: Try Dizipal FIRST, then HDFilm as fallback.
-  // For movies: Try HDFilm FIRST, then Dizipal as fallback.
-
   if (isSeries) {
-    // --- Series: Dizipal first ---
     const dizipalResult = await resolvePlayableDizipalUrl(request);
     if (dizipalResult) {
       const { pageUrl, stream, embedUrl } = dizipalResult;
-
       if (stream) {
         return {
           url: pageUrl,
@@ -867,12 +852,9 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           embedUrl,
         };
       }
-
       return { url: pageUrl, source: "dizipal" };
     }
 
-    // Fallback: Try HDFilm for series
-    console.log("[WebPlayer] Dizipal unavailable for series, falling back to HDFilm");
     const candidates = await searchHdFilmCehennemiCandidates(request.title, request.castNames ?? [], request.year);
     for (const hdfilmUrl of candidates) {
       if (request.seasonNumber && request.episodeNumber) {
@@ -881,31 +863,19 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           request.seasonNumber,
           request.episodeNumber
         );
-        if (episodeUrl) {
-          return { url: episodeUrl, source: "hdfilm" };
-        }
-        console.log(`[WebPlayer] HDFilm series candidate [${candidates.indexOf(hdfilmUrl)}] no episode S${request.seasonNumber}E${request.episodeNumber}`);
-      } else {
-        return { url: hdfilmUrl, source: "hdfilm" };
-      }
+        if (episodeUrl) return { url: episodeUrl, source: "hdfilm" };
+      } else return { url: hdfilmUrl, source: "hdfilm" };
     }
   } else {
-    // --- Movies: HDFilm first ---
     const candidates = await searchHdFilmCehennemiCandidates(request.title, request.castNames ?? [], request.year);
     for (const hdfilmUrl of candidates) {
       const videoAvailable = await hasActualVideo(hdfilmUrl);
-      if (videoAvailable) {
-        return { url: hdfilmUrl, source: "hdfilm" };
-      }
-      console.log(`[WebPlayer] HDFilm movie candidate [${candidates.indexOf(hdfilmUrl)}] no video: ${hdfilmUrl}`);
+      if (videoAvailable) return { url: hdfilmUrl, source: "hdfilm" };
     }
 
-    // Fallback: Try Dizipal for movies
-    console.log("[WebPlayer] HDFilm unavailable for movie, falling back to Dizipal");
     const dizipalResult = await resolvePlayableDizipalUrl(request);
     if (dizipalResult) {
       const { pageUrl, stream, embedUrl } = dizipalResult;
-
       if (stream) {
         return {
           url: pageUrl,
@@ -926,7 +896,6 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           embedUrl,
         };
       }
-
       return { url: pageUrl, source: "dizipal" };
     }
   }

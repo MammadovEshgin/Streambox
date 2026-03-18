@@ -1,4 +1,4 @@
-﻿import AsyncStorage from "@react-native-async-storage/async-storage";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { MediaType } from "../api/tmdb";
@@ -14,16 +14,25 @@ type UseSyncedMediaIdListOptions = {
   notifyStorageChanges?: boolean;
 };
 
-function parseStoredIds(rawValue: string | null): number[] {
+function parseStoredIds(rawValue: string | null): (number | string)[] {
   if (!rawValue) {
     return [];
   }
 
   try {
     const parsed = JSON.parse(rawValue) as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))
-      : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((entry): entry is number | string => {
+      if (typeof entry === "number") {
+        return Number.isFinite(entry);
+      }
+      if (typeof entry === "string") {
+        return entry.trim().length > 0;
+      }
+      return false;
+    });
   } catch {
     return [];
   }
@@ -35,7 +44,7 @@ export function useSyncedMediaIdList({
   mediaType,
   notifyStorageChanges = false,
 }: UseSyncedMediaIdListOptions) {
-  const [items, setItems] = useState<number[]>([]);
+  const [items, setItems] = useState<(number | string)[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const { notifyStorageChanged, storageRevision } = useAppSettings();
 
@@ -53,7 +62,7 @@ export function useSyncedMediaIdList({
   }, [loadItems, storageRevision]);
 
   const persistItems = useCallback(
-    async (nextItems: number[]) => {
+    async (nextItems: (number | string)[]) => {
       setItems(nextItems);
       await AsyncStorage.setItem(storageKey, JSON.stringify(nextItems));
       if (notifyStorageChanges) {
@@ -63,10 +72,10 @@ export function useSyncedMediaIdList({
     [notifyStorageChanged, notifyStorageChanges, storageKey]
   );
 
-  const isIncluded = useCallback((id: number) => items.includes(id), [items]);
+  const isIncluded = useCallback((id: number | string) => items.includes(id), [items]);
 
   const toggle = useCallback(
-    async (id: number, details?: UserMediaSyncDetails | null) => {
+    async (id: number | string, details?: UserMediaSyncDetails | null) => {
       const exists = items.includes(id);
       const nextItems = exists ? items.filter((entry) => entry !== id) : [...items, id];
       await persistItems(nextItems);
@@ -82,7 +91,7 @@ export function useSyncedMediaIdList({
   );
 
   const remove = useCallback(
-    async (id: number, details?: UserMediaSyncDetails | null) => {
+    async (id: number | string, details?: UserMediaSyncDetails | null) => {
       if (!items.includes(id)) {
         return;
       }

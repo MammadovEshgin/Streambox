@@ -1,4 +1,4 @@
-﻿import AsyncStorage from "@react-native-async-storage/async-storage";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
@@ -16,7 +16,7 @@ import { WATCH_HISTORY_STORAGE_KEY } from "../services/userDataStorage";
 const METADATA_VERSION = 4;
 
 export type WatchHistoryEntry = {
-  id: number;
+  id: number | string;
   mediaType: MediaType;
   title: string;
   posterPath: string | null;
@@ -37,7 +37,7 @@ export type WatchHistoryEntry = {
 };
 
 type StoredEntry = Partial<WatchHistoryEntry> & {
-  id: number;
+  id: number | string;
   mediaType: MediaType;
   title: string;
   watchedAt: number;
@@ -121,6 +121,29 @@ function buildSeriesWatchEntry(details: SeriesDetails, watchedAt: number): Watch
   };
 }
 
+function buildAzClassicWatchEntry(details: any, watchedAt: number): WatchHistoryEntry {
+  return {
+    id: details.id,
+    mediaType: "movie",
+    title: details.title,
+    posterPath: details.posterUrl || details.posterPath || null,
+    genres: details.genre ? [details.genre] : (details.genres || []),
+    runtimeMinutes: details.runtimeMinutes || null,
+    episodeCount: null,
+    voteAverage: details.voteAverage || 0,
+    year: String(details.year || ""),
+    castIds: [],
+    castNames: Array.isArray(details.cast) ? details.cast.map((c: any) => c.name) : [],
+    castProfilePaths: Array.isArray(details.cast) ? details.cast.map((c: any) => c.photoUrl || null) : [],
+    castGenders: [],
+    directorIds: [],
+    directorNames: Array.isArray(details.crew) ? details.crew.filter((c: any) => c.role?.toLowerCase().includes("rejissor") || c.role?.toLowerCase().includes("director")).map((c: any) => c.name) : [],
+    directorProfilePaths: [],
+    watchedAt,
+    metadataVersion: METADATA_VERSION,
+  };
+}
+
 function sortEntries(entries: WatchHistoryEntry[]) {
   return [...entries].sort((left, right) => right.watchedAt - left.watchedAt);
 }
@@ -131,6 +154,14 @@ export function useWatchHistory() {
   const { notifyStorageChanged, storageRevision } = useAppSettings();
 
   const enrichEntry = useCallback(async (entry: WatchHistoryEntry): Promise<WatchHistoryEntry> => {
+    // Skip enrichment for internal media (string IDs)
+    if (typeof entry.id === "string") {
+      return {
+        ...entry,
+        metadataVersion: METADATA_VERSION,
+      };
+    }
+
     try {
       if (entry.mediaType === "movie") {
         const details = await getMovieDetails(String(entry.id));
@@ -252,8 +283,24 @@ export function useWatchHistory() {
     [entries, persistEntries]
   );
 
+  const saveAzClassicToWatchHistory = useCallback(
+    async (details: any, watchedAt: number, auditDetails?: UserMediaSyncDetails | null) => {
+      const nextEntry = buildAzClassicWatchEntry(details, watchedAt);
+      const filtered = entries.filter((entry) => !(entry.id === details.id && entry.mediaType === "movie"));
+      await persistEntries([nextEntry, ...filtered]);
+      await enqueueWatchHistoryUpsert(nextEntry, {
+        title: details.title,
+        imdbId: details.imdbId || null,
+        posterPath: details.posterUrl || details.posterPath || null,
+        year: String(details.year || ""),
+        ...auditDetails,
+      });
+    },
+    [entries, persistEntries]
+  );
+
   const removeFromWatchHistory = useCallback(
-    async (id: number, mediaType: MediaType, auditDetails?: UserMediaSyncDetails | null) => {
+    async (id: number | string, mediaType: MediaType, auditDetails?: UserMediaSyncDetails | null) => {
       const filtered = entries.filter((entry) => !(entry.id === id && entry.mediaType === mediaType));
       await persistEntries(filtered);
       await enqueueWatchHistoryDelete(mediaType, id, auditDetails ?? {});
@@ -262,12 +309,12 @@ export function useWatchHistory() {
   );
 
   const getWatchHistoryEntry = useCallback(
-    (id: number, mediaType: MediaType) => entries.find((entry) => entry.id === id && entry.mediaType === mediaType) ?? null,
+    (id: number | string, mediaType: MediaType) => entries.find((entry) => entry.id === id && entry.mediaType === mediaType) ?? null,
     [entries]
   );
 
   const isWatched = useCallback(
-    (id: number, mediaType: MediaType) => entries.some((entry) => entry.id === id && entry.mediaType === mediaType),
+    (id: number | string, mediaType: MediaType) => entries.some((entry) => entry.id === id && entry.mediaType === mediaType),
     [entries]
   );
 
@@ -281,6 +328,7 @@ export function useWatchHistory() {
       getWatchHistoryEntry,
       saveMovieToWatchHistory,
       saveSeriesToWatchHistory,
+      saveAzClassicToWatchHistory,
       removeFromWatchHistory,
       reload: loadEntries,
     }),
@@ -293,6 +341,7 @@ export function useWatchHistory() {
       removeFromWatchHistory,
       saveMovieToWatchHistory,
       saveSeriesToWatchHistory,
+      saveAzClassicToWatchHistory,
     ]
   );
 }

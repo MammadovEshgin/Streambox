@@ -79,10 +79,12 @@ const Meta = styled.Text`
 type MediaCardProps = {
   item: MediaItem;
   onPress?: PressableProps["onPress"];
+  posterUri?: string;
+  hideRating?: boolean;
 };
 
-export function MediaCard({ item, onPress }: MediaCardProps) {
-  const posterUri = getTmdbImageUrl(item.posterPath, "w342");
+export function MediaCard({ item, onPress, posterUri: customPosterUri, hideRating }: MediaCardProps) {
+  const posterUri = customPosterUri ?? getTmdbImageUrl(item.posterPath, "w342");
   const ratingText = item.rating.toFixed(1);
 
   return (
@@ -95,10 +97,12 @@ export function MediaCard({ item, onPress }: MediaCardProps) {
             <NoImageText>No Image</NoImageText>
           </NoImage>
         )}
-        <Badge>
-          <Feather name="star" size={11} color="#FFD700" style={{ marginRight: 4 }} />
-          <BadgeValue>{ratingText}</BadgeValue>
-        </Badge>
+        {!hideRating && typeof item.id !== "string" && !item.imdbId?.startsWith("az-") && (
+          <Badge>
+            <Feather name="star" size={11} color="#FFD700" style={{ marginRight: 4 }} />
+            <BadgeValue>{ratingText}</BadgeValue>
+          </Badge>
+        )}
       </PosterFrame>
       <Title numberOfLines={1}>{item.title}</Title>
       <MetaRow>

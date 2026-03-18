@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { AZ_CLASSICS_CACHE_KEY } from "../api/azClassics";
 import type { MediaType } from "../api/tmdb";
 import type { WatchHistoryEntry } from "../hooks/useWatchHistory";
 import {
@@ -10,6 +11,7 @@ import {
 } from "../settings/settingsStorage";
 import { DEFAULT_THEME_ID, THEME_OPTIONS, type ThemeId } from "../theme/Theme";
 import * as FileSystem from "expo-file-system/legacy";
+import { clearAzClassicImageCache } from "./azClassicImageCache";
 import { supabase } from "./supabase";
 import {
   LIKED_MOVIES_STORAGE_KEY,
@@ -39,8 +41,29 @@ type SyncAssetKind = "avatar" | "banner";
 
 type SyncMetadata = Record<string, unknown>;
 
+function getSyncIds(id: string | number | null | undefined) {
+  if (id === null || id === undefined) {
+    return { tmdb_id: null, internal_id: null };
+  }
+  const sId = String(id);
+  if (sId === "null" || sId === "undefined" || sId.trim() === "") {
+    return { tmdb_id: null, internal_id: null };
+  }
+  // UUID regex
+  const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sId);
+  if (isUUID) {
+    return { tmdb_id: null, internal_id: sId };
+  }
+  const numId = parseInt(sId, 10);
+  if (!isNaN(numId) && String(numId) === sId) {
+    return { tmdb_id: numId, internal_id: null };
+  }
+  // Fallback: If it's a string but doesn't match UUID format, treat as null to avoid DB errors
+  return { tmdb_id: null, internal_id: null };
+}
+
 type RecentlyWatchedEntry = {
-  id: number;
+  id: number | string;
   mediaType: MediaType;
   timestamp: number;
 };
@@ -51,16 +74,16 @@ type MovieOfDayCurrent = {
 };
 
 type MovieOfDayHistory = {
-  tmdbIds: number[];
+  tmdbIds: (number | string)[];
   imdbIds: string[];
 };
 
 type LocalUserSnapshot = {
   settings: PersistedSettings;
-  movieWatchlist: number[];
-  seriesWatchlist: number[];
-  likedMovies: number[];
-  likedSeries: number[];
+  movieWatchlist: (number | string)[];
+  seriesWatchlist: (number | string)[];
+  likedMovies: (number | string)[];
+  likedSeries: (number | string)[];
   watchHistory: WatchHistoryEntry[];
   recentlyViewed: RecentlyWatchedEntry[];
   watchedEpisodes: Record<string, boolean>;
@@ -114,7 +137,7 @@ type RemoteDailyRecommendationEntry = {
   recommendationKind: string;
   recommendationDate: string;
   mediaType: MediaType;
-  tmdbId: number | null;
+  tmdbId: number | string | null;
   imdbId: string | null;
   strategy: string | null;
   snapshot: SyncMetadata;
@@ -168,7 +191,7 @@ type QueuedMediaLibraryOperation = {
   operation: "upsert" | "delete";
   listKind: SyncListKind;
   mediaType: MediaType;
-  tmdbId: number;
+  tmdbId: number | string;
   imdbId: string | null;
   collectedAt: string;
   snapshot: SyncMetadata;
@@ -186,7 +209,7 @@ type QueuedWatchHistoryDeleteOperation = {
   kind: "watch_history_delete";
   userId: string;
   mediaType: MediaType;
-  tmdbId: number;
+  tmdbId: number | string;
   auditMetadata: SyncMetadata;
 };
 
@@ -292,6 +315,29 @@ function normalizeMediaSnapshot(details?: UserMediaSyncDetails | null): SyncMeta
   return snapshot;
 }
 
+function sanitizeParallelArray<T>(values: T[] | null | undefined, targetLength: number): T[] {
+  if (!Array.isArray(values) || targetLength <= 0) {
+    return [];
+  }
+
+  return values.slice(0, targetLength);
+}
+
+function buildWatchHistorySyncArrays(entry: WatchHistoryEntry) {
+  const castIds = Array.isArray(entry.castIds) ? entry.castIds : [];
+  const directorIds = Array.isArray(entry.directorIds) ? entry.directorIds : [];
+
+  return {
+    castIds,
+    castNames: sanitizeParallelArray(entry.castNames, castIds.length),
+    castProfilePaths: sanitizeParallelArray(entry.castProfilePaths, castIds.length),
+    castGenders: sanitizeParallelArray(entry.castGenders, castIds.length),
+    directorIds,
+    directorNames: sanitizeParallelArray(entry.directorNames, directorIds.length),
+    directorProfilePaths: sanitizeParallelArray(entry.directorProfilePaths, directorIds.length),
+  };
+}
+
 function formatBirthdayForDatabase(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -363,16 +409,25 @@ function normalizePersistedSettings(raw: string | null): PersistedSettings {
   }
 }
 
-function normalizeIdList(raw: string | null): number[] {
+function normalizeIdList(raw: string | null): (number | string)[] {
   if (!raw) {
     return [];
   }
 
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))
-      : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((entry): entry is number | string => {
+      if (typeof entry === "number") {
+        return Number.isFinite(entry);
+      }
+      if (typeof entry === "string") {
+        return entry.trim().length > 0 && entry !== "null" && entry !== "undefined";
+      }
+      return false;
+    });
   } catch {
     return [];
   }
@@ -392,7 +447,7 @@ function normalizeWatchHistory(raw: string | null): WatchHistoryEntry[] {
     return parsed
       .filter((entry): entry is Record<string, unknown> => isRecord(entry))
       .map((entry) => ({
-        id: typeof entry.id === "number" ? entry.id : 0,
+        id: (typeof entry.id === "number" || typeof entry.id === "string") ? entry.id : 0,
         mediaType: coerceMediaType(entry.mediaType),
         title: typeof entry.title === "string" ? entry.title : "",
         posterPath: typeof entry.posterPath === "string" ? entry.posterPath : null,
@@ -417,7 +472,10 @@ function normalizeWatchHistory(raw: string | null): WatchHistoryEntry[] {
         watchedAt: typeof entry.watchedAt === "number" ? entry.watchedAt : Date.now(),
         metadataVersion: typeof entry.metadataVersion === "number" ? entry.metadataVersion : 1,
       }))
-      .filter((entry) => entry.id > 0 && entry.title.trim().length > 0);
+      .filter((entry) => {
+        const hasId = typeof entry.id === "number" ? entry.id > 0 : (typeof entry.id === "string" && entry.id.trim().length > 0 && entry.id !== "null");
+        return hasId && entry.title.trim().length > 0;
+      });
   } catch {
     return [];
   }
@@ -437,11 +495,15 @@ function normalizeRecentlyViewed(raw: string | null): RecentlyWatchedEntry[] {
     return parsed
       .filter((entry): entry is Record<string, unknown> => isRecord(entry))
       .map((entry) => ({
-        id: typeof entry.id === "number" ? entry.id : 0,
+        id: (typeof entry.id === "number" || typeof entry.id === "string") ? entry.id : 0,
         mediaType: coerceMediaType(entry.mediaType),
         timestamp: typeof entry.timestamp === "number" ? entry.timestamp : Date.now(),
       }))
-      .filter((entry) => entry.id > 0)
+      .filter((entry) => {
+        if (typeof entry.id === "number") return entry.id > 0;
+        if (typeof entry.id === "string") return entry.id.trim().length > 0 && entry.id !== "null" && entry.id !== "undefined";
+        return false;
+      })
       .sort((left, right) => right.timestamp - left.timestamp)
       .slice(0, MAX_RECENTLY_VIEWED);
   } catch {
@@ -676,7 +738,7 @@ async function enqueuePendingOperation(operation: PendingSyncOperation) {
   await writePendingQueue(queue);
 }
 
-function unionIds(primary: number[], secondary: number[]) {
+function unionIds(primary: (number | string)[], secondary: (number | string)[]) {
   return Array.from(new Set([...primary, ...secondary]));
 }
 
@@ -1173,7 +1235,7 @@ function buildDailyRecommendationRows(snapshot: LocalUserSnapshot) {
   }
 
   snapshot.movieOfDayHistory.tmdbIds.forEach((tmdbId, index) => {
-    if (tmdbId <= 0) {
+    if (typeof tmdbId === "number" && tmdbId <= 0) {
       return;
     }
 
@@ -1213,43 +1275,55 @@ async function backfillSnapshotToRemote(userId: string, snapshot: LocalUserSnaps
   };
 
   const now = new Date().toISOString();
+  const buildMediaRow = (id: string | number, listKind: string, mediaType: string) => ({
+    user_id: userId,
+    list_kind: listKind,
+    media_type: mediaType,
+    collected_at: now,
+    snapshot: {},
+    ...getSyncIds(id)
+  });
+
   const mediaRows = [
-    ...snapshot.movieWatchlist.map((tmdbId) => ({ user_id: userId, list_kind: "watchlist", media_type: "movie", tmdb_id: tmdbId, collected_at: now, snapshot: {} })),
-    ...snapshot.seriesWatchlist.map((tmdbId) => ({ user_id: userId, list_kind: "watchlist", media_type: "tv", tmdb_id: tmdbId, collected_at: now, snapshot: {} })),
-    ...snapshot.likedMovies.map((tmdbId) => ({ user_id: userId, list_kind: "liked", media_type: "movie", tmdb_id: tmdbId, collected_at: now, snapshot: {} })),
-    ...snapshot.likedSeries.map((tmdbId) => ({ user_id: userId, list_kind: "liked", media_type: "tv", tmdb_id: tmdbId, collected_at: now, snapshot: {} })),
+    ...snapshot.movieWatchlist.map((id) => buildMediaRow(id, "watchlist", "movie")),
+    ...snapshot.seriesWatchlist.map((id) => buildMediaRow(id, "watchlist", "tv")),
+    ...snapshot.likedMovies.map((id) => buildMediaRow(id, "liked", "movie")),
+    ...snapshot.likedSeries.map((id) => buildMediaRow(id, "liked", "tv")),
     ...snapshot.recentlyViewed.map((entry) => ({
       user_id: userId,
       list_kind: "recently_viewed",
       media_type: entry.mediaType,
-      tmdb_id: entry.id,
       collected_at: entry.timestamp ? new Date(entry.timestamp).toISOString() : now,
       snapshot: {},
+      ...getSyncIds(entry.id)
     })),
   ];
 
-  const watchHistoryRows = snapshot.watchHistory.map((entry) => ({
-    user_id: userId,
-    media_type: entry.mediaType,
-    tmdb_id: entry.id,
-    title: entry.title,
-    poster_path: entry.posterPath,
-    genres: entry.genres,
-    runtime_minutes: entry.runtimeMinutes,
-    episode_count: entry.episodeCount,
-    vote_average: entry.voteAverage,
-    release_year: entry.year ? Number(entry.year) : null,
-    cast_ids: entry.castIds,
-    cast_names: entry.castNames,
-    cast_profile_paths: entry.castProfilePaths,
-    cast_genders: entry.castGenders,
-    director_ids: entry.directorIds,
-    director_names: entry.directorNames,
-    director_profile_paths: entry.directorProfilePaths,
-    watched_at: new Date(entry.watchedAt).toISOString(),
-    metadata_version: entry.metadataVersion,
-    snapshot: {},
-  }));
+  const watchHistoryRows = snapshot.watchHistory.map((entry) => {
+    const arrays = buildWatchHistorySyncArrays(entry);
+    return {
+      user_id: userId,
+      media_type: entry.mediaType,
+      title: entry.title,
+      poster_path: entry.posterPath,
+      genres: entry.genres,
+      runtime_minutes: entry.runtimeMinutes,
+      episode_count: entry.episodeCount,
+      vote_average: entry.voteAverage,
+      release_year: entry.year ? Number(entry.year) : null,
+      cast_ids: arrays.castIds,
+      cast_names: arrays.castNames,
+      cast_profile_paths: arrays.castProfilePaths,
+      cast_genders: arrays.castGenders,
+      director_ids: arrays.directorIds,
+      director_names: arrays.directorNames,
+      director_profile_paths: arrays.directorProfilePaths,
+      watched_at: new Date(entry.watchedAt).toISOString(),
+      metadata_version: entry.metadataVersion,
+      snapshot: {},
+      ...getSyncIds(entry.id)
+    };
+  });
 
   const episodeRows = Object.keys(snapshot.watchedEpisodes)
     .filter((key) => snapshot.watchedEpisodes[key] === true)
@@ -1276,13 +1350,31 @@ async function backfillSnapshotToRemote(userId: string, snapshot: LocalUserSnaps
   if (settingsError) throw settingsError;
 
   if (mediaRows.length > 0) {
-    const { error } = await supabase.from("user_media_library").upsert(mediaRows, { onConflict: "user_id,list_kind,media_type,tmdb_id" });
-    if (error) throw error;
+    const tmdbMedia = mediaRows.filter(r => r.tmdb_id !== null);
+    const internalMedia = mediaRows.filter(r => r.internal_id !== null);
+
+    if (tmdbMedia.length > 0) {
+      const { error } = await supabase.from("user_media_library").upsert(tmdbMedia, { onConflict: "user_id,list_kind,media_type,tmdb_id" });
+      if (error) throw error;
+    }
+    if (internalMedia.length > 0) {
+      const { error } = await supabase.from("user_media_library").upsert(internalMedia, { onConflict: "user_id,list_kind,media_type,internal_id" });
+      if (error) throw error;
+    }
   }
 
   if (watchHistoryRows.length > 0) {
-    const { error } = await supabase.from("user_watch_history").upsert(watchHistoryRows, { onConflict: "user_id,media_type,tmdb_id" });
-    if (error) throw error;
+    const tmdbHistory = watchHistoryRows.filter(r => r.tmdb_id !== null);
+    const internalHistory = watchHistoryRows.filter(r => r.internal_id !== null);
+
+    if (tmdbHistory.length > 0) {
+      const { error } = await supabase.from("user_watch_history").upsert(tmdbHistory, { onConflict: "user_id,media_type,tmdb_id" });
+      if (error) throw error;
+    }
+    if (internalHistory.length > 0) {
+      const { error } = await supabase.from("user_watch_history").upsert(internalHistory, { onConflict: "user_id,media_type,internal_id" });
+      if (error) throw error;
+    }
   }
 
   if (episodeRows.length > 0) {
@@ -1389,11 +1481,17 @@ async function executePendingOperation(operation: PendingSyncOperation) {
       return;
     }
     case "media_library": {
+      const ids = getSyncIds(operation.tmdbId);
+      if (!ids.tmdb_id && !ids.internal_id) {
+        console.warn("[sync] Skipping media_library sync due to invalid ID:", operation.tmdbId);
+        return;
+      }
       const { error } = await supabase.rpc("sync_streambox_media_library_item", {
         p_operation: operation.operation,
         p_list_kind: operation.listKind,
         p_media_type: operation.mediaType,
-        p_tmdb_id: operation.tmdbId,
+        p_tmdb_id: ids.tmdb_id,
+        p_internal_id: ids.internal_id,
         p_imdb_id: operation.imdbId,
         p_collected_at: operation.collectedAt,
         p_snapshot: operation.snapshot,
@@ -1404,9 +1502,16 @@ async function executePendingOperation(operation: PendingSyncOperation) {
     }
     case "watch_history_upsert": {
       const { entry } = operation;
+      const ids = getSyncIds(entry.id);
+      const arrays = buildWatchHistorySyncArrays(entry);
+      if (!ids.tmdb_id && !ids.internal_id) {
+        console.warn("[sync] Skipping watch_history_upsert due to invalid ID:", entry.id);
+        return;
+      }
       const { error } = await supabase.rpc("sync_streambox_watch_history_entry", {
         p_media_type: entry.mediaType,
-        p_tmdb_id: entry.id,
+        p_tmdb_id: ids.tmdb_id,
+        p_internal_id: ids.internal_id,
         p_imdb_id: operation.auditMetadata.imdbId ?? null,
         p_title: entry.title,
         p_poster_path: entry.posterPath,
@@ -1415,13 +1520,13 @@ async function executePendingOperation(operation: PendingSyncOperation) {
         p_episode_count: entry.episodeCount,
         p_vote_average: entry.voteAverage,
         p_release_year: entry.year ? Number(entry.year) : null,
-        p_cast_ids: entry.castIds,
-        p_cast_names: entry.castNames,
-        p_cast_profile_paths: entry.castProfilePaths,
-        p_cast_genders: entry.castGenders,
-        p_director_ids: entry.directorIds,
-        p_director_names: entry.directorNames,
-        p_director_profile_paths: entry.directorProfilePaths,
+        p_cast_ids: arrays.castIds,
+        p_cast_names: arrays.castNames,
+        p_cast_profile_paths: arrays.castProfilePaths,
+        p_cast_genders: arrays.castGenders,
+        p_director_ids: arrays.directorIds,
+        p_director_names: arrays.directorNames,
+        p_director_profile_paths: arrays.directorProfilePaths,
         p_watched_at: new Date(entry.watchedAt).toISOString(),
         p_metadata_version: entry.metadataVersion,
         p_snapshot: {},
@@ -1431,9 +1536,15 @@ async function executePendingOperation(operation: PendingSyncOperation) {
       return;
     }
     case "watch_history_delete": {
+      const ids = getSyncIds(operation.tmdbId);
+      if (!ids.tmdb_id && !ids.internal_id) {
+        console.warn("[sync] Skipping watch_history_delete due to invalid ID:", operation.tmdbId);
+        return;
+      }
       const { error } = await supabase.rpc("delete_streambox_watch_history_entry", {
         p_media_type: operation.mediaType,
-        p_tmdb_id: operation.tmdbId,
+        p_tmdb_id: ids.tmdb_id,
+        p_internal_id: ids.internal_id,
         p_audit_metadata: operation.auditMetadata,
       });
       if (error) throw error;
@@ -1496,10 +1607,14 @@ export async function clearLocalUserDataCache() {
     MOVIE_OF_DAY_CURRENT_STORAGE_KEY,
     MOVIE_OF_DAY_HISTORY_STORAGE_KEY,
     ACTIVE_SYNC_USER_KEY,
+    AZ_CLASSICS_CACHE_KEY,
   ];
   const allKeys = await AsyncStorage.getAllKeys();
   const bootstrapKeys = allKeys.filter((key) => key.startsWith(BOOTSTRAP_COMPLETE_KEY_PREFIX));
-  await AsyncStorage.multiRemove([...keysToRemove, ...bootstrapKeys]);
+  await Promise.all([
+    AsyncStorage.multiRemove([...keysToRemove, ...bootstrapKeys]),
+    clearAzClassicImageCache(),
+  ]);
 }
 export async function flushSupabaseUserDataSync(targetUserId?: string) {
   if (flushPromise) {
@@ -1699,7 +1814,7 @@ export async function enqueueMediaLibrarySync(
     operation: "upsert" | "delete";
     listKind: SyncListKind;
     mediaType: MediaType;
-    tmdbId: number;
+    tmdbId: number | string;
     details?: UserMediaSyncDetails | null;
     occurredAt?: string;
   }
@@ -1748,7 +1863,7 @@ export async function enqueueWatchHistoryUpsert(entry: WatchHistoryEntry, auditM
 
 export async function enqueueWatchHistoryDelete(
   mediaType: MediaType,
-  tmdbId: number,
+  tmdbId: number | string,
   auditMetadata: SyncMetadata = {}
 ) {
   const userId = await getCurrentUserId();

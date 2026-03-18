@@ -1,10 +1,11 @@
-﻿import { Feather, Ionicons } from "@expo/vector-icons";
+import { Feather, Ionicons } from "@expo/vector-icons";
 import { getFocusedRouteNameFromRoute } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { useTheme } from "styled-components/native";
 
 import { ActorDetailScreen } from "../screens/ActorDetailScreen";
+import { AzClassicDetailScreen } from "../screens/AzClassicDetailScreen";
 import { DiscoverGridScreen } from "../screens/DiscoverGridScreen";
 import { HomeScreen } from "../screens/HomeScreen";
 import { MovieDetailScreen } from "../screens/MovieDetailScreen";
@@ -36,6 +37,7 @@ function HomeStackScreen() {
       <HomeStack.Screen name="SearchResults" component={SearchResultsScreen} />
       <HomeStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <HomeStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
+      <HomeStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <HomeStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <HomeStack.Screen name="Player" component={PlayerScreen} />
     </HomeStack.Navigator>
@@ -50,6 +52,7 @@ function MoviesStackScreen() {
       <MoviesStack.Screen name="SearchResults" component={SearchResultsScreen} />
       <MoviesStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <MoviesStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
+      <MoviesStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <MoviesStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <MoviesStack.Screen name="Player" component={PlayerScreen} />
     </MoviesStack.Navigator>
@@ -76,6 +79,7 @@ function ProfileStackScreen() {
       <ProfileStack.Screen name="ProfileFeed" component={ProfileScreen} />
       <ProfileStack.Screen name="ProfileSeeAll" component={ProfileSeeAllScreen} />
       <ProfileStack.Screen name="ProfileSettings" component={ProfileSettingsScreen} />
+      <ProfileStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <ProfileStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <ProfileStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <ProfileStack.Screen name="ActorDetail" component={ActorDetailScreen} />
@@ -89,6 +93,7 @@ function StatsStackScreen() {
     <StatsStack.Navigator screenOptions={{ headerShown: false }}>
       <StatsStack.Screen name="StatsFeed" component={StatsScreen} />
       <StatsStack.Screen name="WatchedGrid" component={WatchedGridScreen} />
+      <StatsStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <StatsStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <StatsStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <StatsStack.Screen name="ActorDetail" component={ActorDetailScreen} />
@@ -97,7 +102,7 @@ function StatsStackScreen() {
   );
 }
 
-const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll"]);
+const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "AzClassicDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll"]);
 const STACK_TABS = new Set<keyof RootTabParamList>(["Discover", "Movies", "Series", "Stats", "Profile"]);
 
 export function Navigation() {

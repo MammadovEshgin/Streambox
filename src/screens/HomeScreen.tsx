@@ -5,6 +5,7 @@ import { ScrollView } from "react-native";
 import styled from "styled-components/native";
 
 import { MediaItem, getPopular, getTrending } from "../api/tmdb";
+import { getAzClassicMovies, AzClassicMovie } from "../api/azClassics";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import {
@@ -26,6 +27,7 @@ type HomeDiscoveryCache = {
   popularMovies: MediaItem[];
   trendingMovies: MediaItem[];
   trendingSeries: MediaItem[];
+  azClassics?: AzClassicMovie[];
 };
 
 const Layout = styled(ScrollView).attrs({
@@ -118,16 +120,35 @@ const ErrorText = styled.Text`
 
 type RailProps = {
   title: string;
-  data: MediaItem[];
-  onPressItem?: (item: MediaItem) => void;
+  data: (MediaItem | AzClassicMovie)[];
+  onPressItem?: (item: MediaItem | AzClassicMovie) => void;
   onPressSeeAll?: () => void;
 };
 
 function DiscoveryRail({ title, data, onPressItem, onPressSeeAll }: RailProps) {
-  const renderItem = useCallback(({ item }: ListRenderItemInfo<MediaItem>) => {
+  const renderItem = useCallback(({ item }: ListRenderItemInfo<MediaItem | AzClassicMovie>) => {
+    const isAzClassic = "posterUrl" in item && !("mediaType" in item);
+    const displayItem: MediaItem = isAzClassic
+      ? {
+          id: (item as AzClassicMovie).id as unknown as number,
+          title: (item as AzClassicMovie).title,
+          posterPath: "",
+          backdropPath: null,
+          mediaType: "movie" as const,
+          rating: 0,
+          overview: (item as AzClassicMovie).synopsis || "",
+          year: String((item as AzClassicMovie).year)
+        }
+      : (item as MediaItem);
+
     return (
       <RailCardWrap>
-        <MediaCard item={item} onPress={() => onPressItem?.(item)} />
+        <MediaCard
+          item={displayItem}
+          onPress={() => onPressItem?.(item)}
+          posterUri={isAzClassic ? ((item as AzClassicMovie).cachedPosterUrl ?? (item as AzClassicMovie).posterUrl ?? undefined) : undefined}
+          hideRating={isAzClassic}
+        />
       </RailCardWrap>
     );
   }, [onPressItem]);
@@ -149,7 +170,10 @@ function DiscoveryRail({ title, data, onPressItem, onPressSeeAll }: RailProps) {
           <FlashList
             data={data}
             horizontal
-            keyExtractor={(item) => `${item.mediaType}-${item.id}`}
+            keyExtractor={(item) => {
+              const isAzClassic = "posterUrl" in item && !("mediaType" in item);
+              return isAzClassic ? `az-${item.id}` : `${(item as MediaItem).mediaType}-${item.id}`;
+            }}
             renderItem={renderItem}
             showsHorizontalScrollIndicator={false}
           />
@@ -168,12 +192,13 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
   const [popularMovies, setPopularMovies] = useState<MediaItem[]>(cachedDiscovery?.popularMovies ?? []);
   const [trendingMovies, setTrendingMovies] = useState<MediaItem[]>(cachedDiscovery?.trendingMovies ?? []);
   const [trendingSeries, setTrendingSeries] = useState<MediaItem[]>(cachedDiscovery?.trendingSeries ?? []);
+  const [azClassics, setAzClassics] = useState<AzClassicMovie[]>(cachedDiscovery?.azClassics ?? []);
   const [isLoading, setIsLoading] = useState(!cachedDiscovery);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
 
-  const hasDiscoveryData = popularMovies.length > 0 || trendingMovies.length > 0 || trendingSeries.length > 0;
+  const hasDiscoveryData = popularMovies.length > 0 || trendingMovies.length > 0 || trendingSeries.length > 0 || azClassics.length > 0;
 
   const loadDiscovery = useCallback(async (background = false) => {
     if (!background && !hasDiscoveryData) {
@@ -181,22 +206,25 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     }
 
     try {
-      const [popular, movies, series] = await Promise.all([
+      const [popular, movies, series, classics] = await Promise.all([
         getPopular(),
         getTrending("movie"),
-        getTrending("tv")
+        getTrending("tv"),
+        getAzClassicMovies()
       ]);
 
       writeRuntimeCache<HomeDiscoveryCache>(HOME_DISCOVERY_CACHE_KEY, {
         popularMovies: popular,
         trendingMovies: movies,
         trendingSeries: series,
+        azClassics: classics
       });
 
       startTransition(() => {
         setPopularMovies(popular);
         setTrendingMovies(movies);
         setTrendingSeries(series);
+        setAzClassics(classics);
         setErrorMessage(null);
       });
     } catch (error) {
@@ -204,6 +232,8 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
       if (!hasDiscoveryData) {
         setErrorMessage(message);
       }
+      // Still set az classics to empty array if they fail to load
+      setAzClassics([]);
     } finally {
       setIsLoading(false);
     }
@@ -313,6 +343,21 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
               navigation.navigate("DiscoverGrid", {
                 source: "trending_series",
                 title: "Trending Series"
+              });
+            }}
+          />
+          <DiscoveryRail
+            title="Azerbaijan Classics"
+            data={azClassics}
+            onPressItem={(item) => {
+              if ("posterUrl" in item) {
+                navigation.navigate("AzClassicDetail", { movieId: item.id });
+              }
+            }}
+            onPressSeeAll={() => {
+              navigation.navigate("DiscoverGrid", {
+                source: "az_classics" as any,
+                title: "Azerbaijan Classics"
               });
             }}
           />

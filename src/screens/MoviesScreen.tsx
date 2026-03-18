@@ -1,4 +1,4 @@
-﻿import { Feather } from "@expo/vector-icons";
+import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -256,7 +256,7 @@ type RailSectionProps = {
 };
 
 function mergeUnique(existing: MediaItem[], incoming: MediaItem[]): MediaItem[] {
-  const keys = new Set(existing.map((item) => item.id));
+  const keys = new Set<number | string>(existing.map((item) => item.id));
   const merged = existing.slice();
 
   incoming.forEach((item) => {
@@ -367,7 +367,7 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
 
     try {
       const [featured, topNewFirstPage, imdbTop] = await Promise.all([
-        getPersonalizedMovieOfTheDay(likedMovies),
+        getPersonalizedMovieOfTheDay(likedMovies.filter((id): id is number => typeof id === "number")),
         getTopNewMoviesPage(1),
         getImdbTop250Page(1)
       ]);

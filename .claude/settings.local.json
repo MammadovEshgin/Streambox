@@ -27,7 +27,10 @@
       "Bash(cd /c/Users/e.a.mammadov/Desktop/app && npm uninstall react-native-webview 2>&1)",
       "Bash(tr ;:*)",
       "Bash(npx expo:*)",
-      "WebFetch(domain:www.hdfilmcehennemi.nl)"
+      "WebFetch(domain:www.hdfilmcehennemi.nl)",
+      "Bash(npm run:*)",
+      "Bash(git:*)",
+      "Bash(ls:*)"
     ]
   }
 }
