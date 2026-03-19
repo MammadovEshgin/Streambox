@@ -11,6 +11,7 @@
  */
 
 import axios from "axios";
+import { resolveDirectLink } from "./DirectLinkService";
 import { getProviderConfig } from "./providerConfigService";
 
 export type WebPlayerRequest = {
@@ -27,13 +28,14 @@ export type WebPlayerRequest = {
 
 export type WebPlayerResult = {
   url: string;
-  source: "hdfilm" | "dizipal" | "dizipal_embed" | "dizipal_direct" | "youtube_embed" | "not_found";
+  source: "hdfilm" | "dizipal" | "dizipal_embed" | "dizipal_direct" | "youtube_embed" | "direct" | "not_found";
   streamUrl?: string;
   streamType?: string;
   poster?: string;
   referer?: string;
   embedUrl?: string;
   subtitles?: Array<{ url: string; label: string; lang: string }>;
+  qualityOptions?: Array<{ label: string; height: number; url: string }>;
 };
 
 const UA =
@@ -824,6 +826,35 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
         source: "youtube_embed"
       };
     }
+  }
+
+  // 1. Try Direct Scrapers (Consumet & Stremio Addons) first for best experience
+  try {
+    const directResult = await resolveDirectLink({
+      title: request.title,
+      mediaType: request.mediaType,
+      tmdbId: request.imdbId?.startsWith("tt") ? undefined : request.imdbId ? String(request.imdbId) : undefined,
+      imdbId: request.imdbId?.startsWith("tt") ? request.imdbId : undefined,
+      seasonNumber: request.seasonNumber,
+      episodeNumber: request.episodeNumber
+    });
+
+    if (directResult && directResult.primary) {
+      return {
+        url: directResult.primary.url,
+        source: "direct",
+        streamUrl: directResult.primary.url,
+        streamType: directResult.primary.format === "hls" ? "m3u8" : "mp4",
+        subtitles: (directResult.primary.subtitles || []).map((s: any) => ({
+          url: s.url,
+          label: s.label,
+          lang: s.language
+        })),
+        qualityOptions: directResult.primary.qualityOptions
+      };
+    }
+  } catch (error) {
+    console.error("[WebPlayerService] Direct resolution failed:", error);
   }
 
   const isSeries = request.mediaType !== "movie";

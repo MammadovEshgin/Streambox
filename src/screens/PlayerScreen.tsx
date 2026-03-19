@@ -1950,6 +1950,9 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const [externalSubtitleCues, setExternalSubtitleCues] = useState<ParsedSubtitleCue[]>([]);
   const [activeSubtitleText, setActiveSubtitleText] = useState<string | null>(null);
 
+  const [currentStreamUrl, setCurrentStreamUrl] = useState<string | null>(null);
+  const [isQualityMenuOpen, setIsQualityMenuOpen] = useState(false);
+
   // â”€â”€ Track recent playback entry only â”€â”€
   const { addToRecentlyWatched } = useRecentlyWatched();
   const hasTrackedRef = useRef(false);
@@ -2086,6 +2089,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       } else {
         setPlayerResult({ url: route.params.trailerUrl, source: "hdfilm" });
       }
+      setCurrentStreamUrl(null);
       return;
     }
 
@@ -2105,6 +2109,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         if (!cancelled) {
           console.log("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
           setPlayerResult(result);
+          setCurrentStreamUrl(result.streamUrl ?? null);
           setIsResolving(false);
         }
       })
@@ -2185,18 +2190,20 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setLoadError("Failed to load. Please check your connection.");
   }, []);
 
-  // â”€â”€ Native video player for direct Dizipal streams â”€â”€
-  const directStreamUrl = playerResult?.source === "dizipal_direct" ? playerResult.streamUrl ?? null : null;
+  // Native video player for direct streams
+  const directStreamUrl = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") 
+    ? (currentStreamUrl || playerResult.streamUrl || null) 
+    : null;
   const videoPlayer = useVideoPlayer(null as string | null, (player) => {
     player.loop = false;
   });
 
   // Load the source when directStreamUrl becomes available
-  const streamReferer = playerResult?.source === "dizipal_direct" ? playerResult.referer ?? "" : "";
-  const directStreamType = playerResult?.source === "dizipal_direct" ? playerResult.streamType ?? "" : "";
-  const directEmbedUrl = playerResult?.source === "dizipal_direct" ? playerResult.embedUrl ?? "" : "";
+  const streamReferer = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.referer ?? "" : "";
+  const directStreamType = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.streamType ?? "" : "";
+  const directEmbedUrl = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.embedUrl ?? "" : "";
   const directSubtitleOptions =
-    playerResult?.source === "dizipal_direct"
+    (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct")
       ? (playerResult.subtitles ?? []).map((subtitle) => ({
           ...subtitle,
           url: normalizeSubtitleUrl(
@@ -2361,14 +2368,38 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [videoPlayer, selectedExternalSubtitle, externalSubtitleCues]);
 
   useEffect(() => {
-    if (playerResult?.source !== "dizipal_direct") {
+    if (playerResult?.source !== "dizipal_direct" && playerResult?.source !== "direct") {
       setIsSubtitleMenuOpen(false);
+      setIsQualityMenuOpen(false);
     }
   }, [playerResult?.source]);
+
+  const toggleQualityMenu = useCallback(() => {
+    if (!playerResult?.qualityOptions?.length) return;
+    setIsQualityMenuOpen((curr) => !curr);
+    setIsSubtitleMenuOpen(false);
+  }, [playerResult?.qualityOptions]);
+
+  const selectQuality = useCallback((url: string) => {
+    if (url === currentStreamUrl) return;
+    const currentTime = videoPlayer.currentTime;
+    setCurrentStreamUrl(url);
+    setIsQualityMenuOpen(false);
+    // Logic to seek back to currentTime after load is typically handled by statusChange or effect
+    videoPlayer.replaceAsync({
+      uri: url,
+      headers: streamReferer ? { Referer: streamReferer } : undefined,
+      contentType: directStreamType === "m3u8" ? "hls" : undefined
+    }).then(() => {
+      videoPlayer.currentTime = currentTime;
+      videoPlayer.play();
+    });
+  }, [videoPlayer, currentStreamUrl, streamReferer, directStreamType]);
 
   const toggleDirectSubtitleMenu = useCallback(() => {
     if (directSubtitleOptions.length === 0 && availableSubtitleTracks.length === 0) return;
     setIsSubtitleMenuOpen((current) => !current);
+    setIsQualityMenuOpen(false);
   }, [directSubtitleOptions.length, availableSubtitleTracks.length]);
 
   const selectSubtitleTrack = useCallback((track: SubtitleTrack | null) => {
@@ -2392,11 +2423,9 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const isLoading = isResolving || (!isPlaybackReady && playerResult?.source !== "not_found");
   const isNotAvailable = playerResult?.source === "not_found";
 
-  const isDirectStream = playerResult?.source === "dizipal_direct";
+  const isDirectStream = playerResult?.source === "dizipal_direct" || playerResult?.source === "direct";
 
-  // Direct stream: completely isolated render tree â€” no overlays, no Pressable, no zIndex siblings.
-  // This is required because Android SurfaceView (used by expo-video) does not receive touches
-  // when absoluteFill/zIndex sibling views exist in the same parent, even if unmounted.
+  // Direct stream: completely isolated render tree
   if (isDirectStream && directStreamUrl) {
     return (
       <View style={styles.root}>
@@ -2449,69 +2478,107 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               </TouchableOpacity>
             </View>
 
-            {isSubtitleMenuOpen && (
-              <View style={styles.subtitleMenu}>
-                <Text style={styles.subtitleMenuHeader}>Subtitles</Text>
+            {playerResult?.qualityOptions && playerResult.qualityOptions.length > 1 && (
+              <View style={[styles.ccButton, { right: 154 }]}>
                 <TouchableOpacity
+                  onPress={toggleQualityMenu}
                   activeOpacity={0.8}
-                  style={[
-                    styles.subtitleMenuItem,
-                    selectedExternalSubtitle == null && selectedSubtitleTrack == null && styles.subtitleMenuItemActive
-                  ]}
-                  onPress={() => {
-                    if (directSubtitleOptions.length > 0) {
-                      selectExternalSubtitle(null);
-                    } else {
-                      selectSubtitleTrack(null);
-                    }
-                  }}
+                  style={styles.closeButtonInner}
                 >
-                  <Text style={styles.subtitleMenuItemLabel}>Off</Text>
-                  {selectedExternalSubtitle == null && selectedSubtitleTrack == null && (
-                    <Feather name="check" size={15} color="#FFFFFF" />
-                  )}
+                  <MaterialIcons name="settings" size={20} color="#FFFFFF" />
                 </TouchableOpacity>
-                {directSubtitleOptions.length > 0
-                  ? directSubtitleOptions.map((subtitle) => {
-                      const isActive = selectedExternalSubtitle?.url === subtitle.url;
+              </View>
+            )}
 
+            {(isSubtitleMenuOpen || isQualityMenuOpen) && (
+              <View style={styles.subtitleMenu}>
+                {isSubtitleMenuOpen && (
+                  <>
+                    <Text style={styles.subtitleMenuHeader}>Subtitles</Text>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      style={[
+                        styles.subtitleMenuItem,
+                        selectedExternalSubtitle == null && selectedSubtitleTrack == null && styles.subtitleMenuItemActive
+                      ]}
+                      onPress={() => {
+                        if (directSubtitleOptions.length > 0) {
+                          selectExternalSubtitle(null);
+                        } else {
+                          selectSubtitleTrack(null);
+                        }
+                      }}
+                    >
+                      <Text style={styles.subtitleMenuItemLabel}>Off</Text>
+                      {selectedExternalSubtitle == null && selectedSubtitleTrack == null && (
+                        <Feather name="check" size={15} color="#FFFFFF" />
+                      )}
+                    </TouchableOpacity>
+                    {directSubtitleOptions.length > 0
+                      ? directSubtitleOptions.map((subtitle) => {
+                          const isActive = selectedExternalSubtitle?.url === subtitle.url;
+
+                          return (
+                            <TouchableOpacity
+                              key={subtitle.url}
+                              activeOpacity={0.8}
+                              style={[styles.subtitleMenuItem, isActive && styles.subtitleMenuItemActive]}
+                              onPress={() => selectExternalSubtitle(subtitle)}
+                            >
+                              <Text style={styles.subtitleMenuItemLabel}>{subtitle.label}</Text>
+                              <View style={styles.subtitleMenuItemTrailing}>
+                                <Text style={styles.subtitleMenuItemMeta}>{subtitle.lang || "SUB"}</Text>
+                                {isActive && (
+                                  <Feather name="check" size={15} color="#FFFFFF" style={styles.subtitleMenuCheck} />
+                                )}
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        })
+                      : availableSubtitleTracks.map((track) => {
+                          const isActive = selectedSubtitleTrack?.id === track.id;
+
+                          return (
+                            <TouchableOpacity
+                              key={track.id}
+                              activeOpacity={0.8}
+                              style={[styles.subtitleMenuItem, isActive && styles.subtitleMenuItemActive]}
+                              onPress={() => selectSubtitleTrack(track)}
+                            >
+                              <Text style={styles.subtitleMenuItemLabel}>{getSubtitleTrackLabel(track)}</Text>
+                              <View style={styles.subtitleMenuItemTrailing}>
+                                <Text style={styles.subtitleMenuItemMeta}>{track.language || "SUB"}</Text>
+                                {isActive && (
+                                  <Feather name="check" size={15} color="#FFFFFF" style={styles.subtitleMenuCheck} />
+                                )}
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        })}
+                  </>
+                )}
+
+                {isQualityMenuOpen && playerResult?.qualityOptions && (
+                  <>
+                    <Text style={styles.subtitleMenuHeader}>Quality</Text>
+                    {playerResult.qualityOptions.map((option) => {
+                      const isActive = option.url === currentStreamUrl;
                       return (
                         <TouchableOpacity
-                          key={subtitle.url}
+                          key={option.url}
                           activeOpacity={0.8}
                           style={[styles.subtitleMenuItem, isActive && styles.subtitleMenuItemActive]}
-                          onPress={() => selectExternalSubtitle(subtitle)}
+                          onPress={() => selectQuality(option.url)}
                         >
-                          <Text style={styles.subtitleMenuItemLabel}>{subtitle.label}</Text>
-                          <View style={styles.subtitleMenuItemTrailing}>
-                            <Text style={styles.subtitleMenuItemMeta}>{subtitle.lang || "SUB"}</Text>
-                            {isActive && (
-                              <Feather name="check" size={15} color="#FFFFFF" style={styles.subtitleMenuCheck} />
-                            )}
-                          </View>
-                        </TouchableOpacity>
-                      );
-                    })
-                  : availableSubtitleTracks.map((track) => {
-                      const isActive = selectedSubtitleTrack?.id === track.id;
-
-                      return (
-                        <TouchableOpacity
-                          key={track.id}
-                          activeOpacity={0.8}
-                          style={[styles.subtitleMenuItem, isActive && styles.subtitleMenuItemActive]}
-                          onPress={() => selectSubtitleTrack(track)}
-                        >
-                          <Text style={styles.subtitleMenuItemLabel}>{getSubtitleTrackLabel(track)}</Text>
-                          <View style={styles.subtitleMenuItemTrailing}>
-                            <Text style={styles.subtitleMenuItemMeta}>{track.language || "SUB"}</Text>
-                            {isActive && (
-                              <Feather name="check" size={15} color="#FFFFFF" style={styles.subtitleMenuCheck} />
-                            )}
-                          </View>
+                          <Text style={styles.subtitleMenuItemLabel}>{option.label}</Text>
+                          {isActive && (
+                            <Feather name="check" size={15} color="#FFFFFF" />
+                          )}
                         </TouchableOpacity>
                       );
                     })}
+                  </>
+                )}
               </View>
             )}
 
