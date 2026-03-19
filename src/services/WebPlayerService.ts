@@ -828,38 +828,20 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
     }
   }
 
-  // 1. Try Direct Scrapers (Consumet & Stremio Addons) first for best experience
-  try {
-    const directResult = await resolveDirectLink({
-      title: request.title,
-      mediaType: request.mediaType,
-      tmdbId: request.imdbId?.startsWith("tt") ? undefined : request.imdbId ? String(request.imdbId) : undefined,
-      imdbId: request.imdbId?.startsWith("tt") ? request.imdbId : undefined,
-      seasonNumber: request.seasonNumber,
-      episodeNumber: request.episodeNumber
-    });
-
-    if (directResult && directResult.primary) {
-      return {
-        url: directResult.primary.url,
-        source: "direct",
-        streamUrl: directResult.primary.url,
-        streamType: directResult.primary.format === "hls" ? "m3u8" : "mp4",
-        subtitles: (directResult.primary.subtitles || []).map((s: any) => ({
-          url: s.url,
-          label: s.label,
-          lang: s.language
-        })),
-        qualityOptions: directResult.primary.qualityOptions
-      };
-    }
-  } catch (error) {
-    console.error("[WebPlayerService] Direct resolution failed:", error);
-  }
-
   const isSeries = request.mediaType !== "movie";
-
   if (isSeries) {
+    const candidates = await searchHdFilmCehennemiCandidates(request.title, request.castNames ?? [], request.year);
+    for (const hdfilmUrl of candidates) {
+      if (request.seasonNumber && request.episodeNumber) {
+        const episodeUrl = await resolvePlayableSeriesEpisodeUrl(
+          hdfilmUrl,
+          request.seasonNumber,
+          request.episodeNumber
+        );
+        if (episodeUrl) return { url: episodeUrl, source: "hdfilm" };
+      } else return { url: hdfilmUrl, source: "hdfilm" };
+    }
+
     const dizipalResult = await resolvePlayableDizipalUrl(request);
     if (dizipalResult) {
       const { pageUrl, stream, embedUrl } = dizipalResult;
@@ -870,7 +852,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           streamUrl: stream.streamUrl,
           streamType: stream.streamType,
           poster: stream.poster,
-          referer: stream.referer,
+          referer: stream.referer || "",
           embedUrl: embedUrl ?? undefined,
           subtitles: stream.subtitles,
         };
@@ -884,18 +866,6 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
         };
       }
       return { url: pageUrl, source: "dizipal" };
-    }
-
-    const candidates = await searchHdFilmCehennemiCandidates(request.title, request.castNames ?? [], request.year);
-    for (const hdfilmUrl of candidates) {
-      if (request.seasonNumber && request.episodeNumber) {
-        const episodeUrl = await resolvePlayableSeriesEpisodeUrl(
-          hdfilmUrl,
-          request.seasonNumber,
-          request.episodeNumber
-        );
-        if (episodeUrl) return { url: episodeUrl, source: "hdfilm" };
-      } else return { url: hdfilmUrl, source: "hdfilm" };
     }
   } else {
     const candidates = await searchHdFilmCehennemiCandidates(request.title, request.castNames ?? [], request.year);
@@ -929,6 +899,40 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
       }
       return { url: pageUrl, source: "dizipal" };
     }
+  }
+
+  // 3. Try Direct Scrapers (Consumet & Stremio Addons) final fallback for best quality
+  try {
+    const directResult = await resolveDirectLink({
+      title: request.title,
+      mediaType: request.mediaType,
+      tmdbId: request.imdbId?.startsWith("tt") ? undefined : request.imdbId ? String(request.imdbId) : undefined,
+      imdbId: request.imdbId?.startsWith("tt") ? request.imdbId : undefined,
+      seasonNumber: request.seasonNumber,
+      episodeNumber: request.episodeNumber
+    });
+
+    if (directResult && directResult.primary) {
+      const { primary } = directResult;
+      // Extract referer from headers if available
+      const referer = primary.headers?.Referer || primary.headers?.referer || "";
+
+      return {
+        url: primary.url,
+        source: "direct",
+        streamUrl: primary.url,
+        streamType: primary.format === "hls" ? "m3u8" : "mp4",
+        referer,
+        subtitles: (primary.subtitles || []).map((s: any) => ({
+          url: s.url,
+          label: s.label,
+          lang: s.language
+        })),
+        qualityOptions: primary.qualityOptions
+      };
+    }
+  } catch (error) {
+    console.error("[WebPlayerService] Direct resolution failed:", error);
   }
 
   return { url: "", source: "not_found" };

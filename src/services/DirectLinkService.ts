@@ -485,6 +485,7 @@ async function fetchConsumetStreams(
         frameRate: null,
         latencyMs,
         score: 0,
+        headers: streams.headers || {},
         subtitles: (streams.subtitles || [])
           .filter((sub) => {
             const lang = sub.lang.toLowerCase();
@@ -503,7 +504,7 @@ async function fetchConsumetStreams(
         }))
       };
 
-      return { ...candidate, score: scoreCandidate(candidate) + 1000 }; // Boost Consumet as it is high quality
+      return { ...candidate, score: scoreCandidate(candidate) + 1000 };
     });
 
   return candidates;
@@ -624,14 +625,21 @@ async function enrichHlsCandidate(candidate: StreamCandidate): Promise<StreamCan
   // Merge with any quality options already known from stream title
   const qualityOptions = hlsQualityOptions.length > 0 ? hlsQualityOptions : (candidate.qualityOptions ?? []);
 
-  // Pick the best rendition URL to play directly (NO auto quality)
-  // Prefer 1080p, fallback to 720p, fallback to master URL
-  const best1080 = qualityOptions.find((q) => q.height === 1080);
-  const best720 = qualityOptions.find((q) => q.height === 720);
-  const bestRendition = best1080 ?? best720;
-  const playUrl = bestRendition?.url ?? masterUrl;
-  const playHeight = bestRendition?.height ?? metadata.height;
+  // Keep the master URL for direct play to ensure audio and subtitle tracks are correctly negotiated
+  const playUrl = masterUrl;
+  const playHeight = metadata.height;
   const playLabel = playHeight ? `${playHeight}p` : metadata.qualityLabel;
+
+  // Build quality options list starting with an 'Auto' entry
+  const finalQualityOptions: QualityOption[] = [];
+  if (qualityOptions.length > 0) {
+    finalQualityOptions.push({
+      label: "Auto (Best)",
+      height: 0,
+      url: masterUrl
+    });
+    finalQualityOptions.push(...qualityOptions);
+  }
 
   const enriched: StreamCandidate = {
     ...candidate,
@@ -641,7 +649,7 @@ async function enrichHlsCandidate(candidate: StreamCandidate): Promise<StreamCan
     frameRate: metadata.frameRate ?? candidate.frameRate,
     qualityLabel: playLabel ?? candidate.qualityLabel,
     subtitles: filteredSubtitles.length > 0 ? filteredSubtitles : candidate.subtitles,
-    qualityOptions: qualityOptions.length > 0 ? qualityOptions : undefined
+    qualityOptions: finalQualityOptions.length > 0 ? finalQualityOptions : undefined
   };
 
   return { ...enriched, score: scoreCandidate(enriched) };

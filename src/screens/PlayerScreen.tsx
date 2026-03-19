@@ -2204,16 +2204,18 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const directEmbedUrl = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.embedUrl ?? "" : "";
   const directSubtitleOptions =
     (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct")
-      ? (playerResult.subtitles ?? []).map((subtitle) => ({
-          ...subtitle,
-          url: normalizeSubtitleUrl(
-            subtitle.url,
-            directEmbedUrl,
-            playerResult.url,
-            streamReferer,
-            directStreamUrl
-          )
-        }))
+      ? (playerResult.subtitles ?? [])
+          .filter(s => !s.url.includes(".m3u8")) // Skip HLS subtitle playlists for external side-loading
+          .map((subtitle) => ({
+            ...subtitle,
+            url: normalizeSubtitleUrl(
+              subtitle.url,
+              directEmbedUrl,
+              playerResult.url,
+              streamReferer,
+              directStreamUrl
+            )
+          }))
       : [];
   useEffect(() => {
     if (!videoPlayer || !directStreamUrl) return;
@@ -2222,7 +2224,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     const contentType: ContentType | undefined = directStreamType === "m3u8" ? "hls" : undefined;
     const source = {
       uri: directStreamUrl,
-      headers: streamReferer ? { Referer: streamReferer } : undefined,
+      headers: {
+        ...(streamReferer ? { Referer: streamReferer } : {}),
+        "User-Agent": PLAYER_HTTP_UA
+      },
       contentType
     };
     void videoPlayer.replaceAsync(source);
@@ -2280,7 +2285,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [videoPlayer]);
 
   useEffect(() => {
-    if (!selectedExternalSubtitle) {
+    if (!selectedExternalSubtitle || selectedExternalSubtitle.url.includes(".m3u8")) {
       setExternalSubtitleCues([]);
       setActiveSubtitleText(null);
       return;
