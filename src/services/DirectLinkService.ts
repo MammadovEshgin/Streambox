@@ -1,4 +1,5 @@
 import axios from "axios";
+import { consumetApi } from "../api/consumet";
 
 import type { MediaType } from "../api/tmdb";
 
@@ -34,7 +35,7 @@ export type SubtitleTrack = {
 
 export type StreamResolveRequest = {
   mediaType: MediaType;
-  tmdbId: string;
+  tmdbId?: string | null;
   imdbId?: string | null;
   seasonNumber?: number;
   episodeNumber?: number;
@@ -425,6 +426,90 @@ async function fetchAddonStreams(
 }
 
 // ---------------------------------------------------------------------------
+// Fetch streams from Consumet (FlixHQ)
+// ---------------------------------------------------------------------------
+async function fetchConsumetStreams(
+  request: StreamResolveRequest
+): Promise<StreamCandidate[]> {
+  const { title, mediaType, seasonNumber, episodeNumber } = request;
+  if (!title) return [];
+
+  // 1. Search for title
+  const searchResults = await consumetApi.search(title);
+  if (searchResults.length === 0) return [];
+
+  // 2. Find best match by title and type
+  const targetType = mediaType === "movie" ? "Movie" : "TV Series";
+  const match = searchResults.find((s) => {
+    const isSameType = s.type === targetType;
+    const isSameTitle = s.title.toLowerCase() === title.toLowerCase();
+    return isSameType && isSameTitle;
+  }) || searchResults[0];
+
+  if (!match) return [];
+
+  // 3. Get media info to get episode ID
+  const info = await consumetApi.getInfo(match.id);
+  if (!info) return [];
+
+  let episodeId = match.id;
+  if (mediaType === "tv" && seasonNumber && episodeNumber) {
+    const ep = info.episodes.find(
+      (e) => e.season === seasonNumber && e.number === episodeNumber
+    );
+    if (!ep) return [];
+    episodeId = ep.id;
+  }
+
+  // 4. Get stream sources
+  const streams = await consumetApi.getStreams(episodeId, match.id);
+  if (!streams || !streams.sources.length) return [];
+
+  // 5. Build candidates from sources
+  const startedAt = Date.now();
+  const latencyMs = Date.now() - startedAt;
+
+  // Consumet filters: Only HLS/MP4, skip if no URL
+  const candidates: StreamCandidate[] = streams.sources
+    .map((source) => {
+      const format = source.isM3U8 ? "hls" : "mp4";
+      const height = toQualityHeight(source.quality);
+
+      const candidate: StreamCandidate = {
+        providerId: "consumet",
+        url: source.url,
+        format,
+        qualityLabel: source.quality,
+        width: null,
+        height,
+        frameRate: null,
+        latencyMs,
+        score: 0,
+        subtitles: (streams.subtitles || [])
+          .filter((sub) => {
+            const lang = sub.lang.toLowerCase();
+            return lang.includes("english") || lang.includes("turkish") || lang === "en" || lang === "tr";
+          })
+          .map((sub, idx) => ({
+            id: `consumet-sub-${idx}`,
+            language: sub.lang.toLowerCase().startsWith("en") ? "en" : "tr",
+            label: sub.lang,
+            url: sub.url
+          })),
+        qualityOptions: streams.sources.map((s) => ({
+          label: s.quality,
+          height: toQualityHeight(s.quality) || 0,
+          url: s.url
+        }))
+      };
+
+      return { ...candidate, score: scoreCandidate(candidate) + 1000 }; // Boost Consumet as it is high quality
+    });
+
+  return candidates;
+}
+
+// ---------------------------------------------------------------------------
 // HLS manifest enrichment (subtitle + quality parsing)
 // ---------------------------------------------------------------------------
 function resolveRelativeUrl(baseUrl: string, relativeUrl: string): string {
@@ -594,12 +679,14 @@ export async function resolveDirectLink(
   const allCandidates: StreamCandidate[] = [];
 
   // Query all addon instances in parallel
-  const results = await Promise.allSettled(
-    ADDON_INSTANCES.map((addon) => fetchAddonStreams(addon, request))
-  );
+  const results = await Promise.allSettled([
+    fetchConsumetStreams(request),
+    ...ADDON_INSTANCES.map((addon) => fetchAddonStreams(addon, request))
+  ]);
 
   for (const [index, result] of results.entries()) {
-    const addonId = ADDON_INSTANCES[index]?.id ?? `addon-${index}`;
+    // Offset for consumet being first in list
+    const addonId = index === 0 ? "consumet" : ADDON_INSTANCES[index - 1]?.id ?? `addon-${index}`;
     attemptedProviders.push(addonId);
     if (result.status === "fulfilled") {
       allCandidates.push(...result.value);
