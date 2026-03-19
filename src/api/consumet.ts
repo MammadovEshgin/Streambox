@@ -43,6 +43,7 @@ export type ConsumetSubtitle = {
 export type ConsumetStream = {
   sources: ConsumetSource[];
   subtitles: ConsumetSubtitle[];
+  headers?: Record<string, string>;
 };
 
 const client = axios.create({
