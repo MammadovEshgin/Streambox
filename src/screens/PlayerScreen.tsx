@@ -1967,21 +1967,52 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     }
   }, [addToRecentlyWatched, route.params.tmdbId, route.params.mediaType, route.params.trailerUrl]);
 
-  // â”€â”€ Auto-hide close button â”€â”€
-  const [showCloseBtn, setShowCloseBtn] = useState(true);
-  const closeBtnOpacity = useRef(new Animated.Value(1)).current;
+  // â”€â”€ Auto-hide overlay controls â”€â”€
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const controlsOpacity = useRef(new Animated.Value(1)).current;
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const AUTO_HIDE_MS = 5000;
 
-  const scheduleHideClose = useCallback(() => {
+  const scheduleHideControls = useCallback(() => {
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     hideTimerRef.current = setTimeout(() => {
-      Animated.timing(closeBtnOpacity, {
+      Animated.timing(controlsOpacity, {
         toValue: 0,
         duration: 300,
         useNativeDriver: true
-      }).start(() => setShowCloseBtn(false));
-    }, 3000);
-  }, [closeBtnOpacity]);
+      }).start(() => setControlsVisible(false));
+    }, AUTO_HIDE_MS);
+  }, [controlsOpacity]);
+
+  const showControls = useCallback(() => {
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    setControlsVisible(true);
+    controlsOpacity.setValue(1);
+    scheduleHideControls();
+  }, [controlsOpacity, scheduleHideControls]);
+
+  const hideControlsNow = useCallback(() => {
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    Animated.timing(controlsOpacity, {
+      toValue: 0,
+      duration: 200,
+      useNativeDriver: true
+    }).start(() => setControlsVisible(false));
+  }, [controlsOpacity]);
+
+  const toggleControls = useCallback(() => {
+    if (isSubtitleMenuOpen || isQualityMenuOpen) return;
+    if (controlsVisible) {
+      hideControlsNow();
+    } else {
+      showControls();
+    }
+  }, [controlsVisible, isSubtitleMenuOpen, isQualityMenuOpen, showControls, hideControlsNow]);
+
+  // Legacy alias so the WebView path keeps working without renaming everything
+  const showCloseBtn = controlsVisible;
+  const closeBtnOpacity = controlsOpacity;
+  const scheduleHideClose = scheduleHideControls;
 
   const toggleVideoFit = useCallback(() => {
     const nextFit = videoFit === 'contain' ? 'cover' : 'contain';
@@ -2031,28 +2062,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       true;
     `;
     webViewRef.current?.injectJavaScript(js);
-    scheduleHideClose();
-  }, [videoFit, scheduleHideClose]);
+    showControls();
+  }, [videoFit, showControls]);
 
-  const toggleCloseBtn = useCallback(() => {
-    if (showCloseBtn) {
-      // Hide immediately
-      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-      Animated.timing(closeBtnOpacity, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: true
-      }).start(() => setShowCloseBtn(false));
-    } else {
-      // Show
-      setShowCloseBtn(true);
-      Animated.timing(closeBtnOpacity, {
-        toValue: 1,
-        duration: 200,
-        useNativeDriver: true
-      }).start(() => scheduleHideClose());
-    }
-  }, [showCloseBtn, closeBtnOpacity, scheduleHideClose]);
+  const toggleCloseBtn = toggleControls;
 
   // Start the auto-hide timer when the player finishes loading
   useEffect(() => {
@@ -2226,6 +2239,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       uri: directStreamUrl,
       headers: {
         ...(streamReferer ? { Referer: streamReferer } : {}),
+        ...(streamReferer ? { Origin: new URL(streamReferer).origin } : {}),
         "User-Agent": PLAYER_HTTP_UA
       },
       contentType
@@ -2381,16 +2395,23 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   const toggleQualityMenu = useCallback(() => {
     if (!playerResult?.qualityOptions?.length) return;
-    setIsQualityMenuOpen((curr) => !curr);
+    setIsQualityMenuOpen((curr) => {
+      if (!curr) {
+        if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      } else {
+        scheduleHideClose();
+      }
+      return !curr;
+    });
     setIsSubtitleMenuOpen(false);
-  }, [playerResult?.qualityOptions]);
+  }, [playerResult?.qualityOptions, scheduleHideClose]);
 
   const selectQuality = useCallback((url: string) => {
     if (url === currentStreamUrl) return;
     const currentTime = videoPlayer.currentTime;
     setCurrentStreamUrl(url);
     setIsQualityMenuOpen(false);
-    // Logic to seek back to currentTime after load is typically handled by statusChange or effect
+    scheduleHideClose();
     videoPlayer.replaceAsync({
       uri: url,
       headers: streamReferer ? { Referer: streamReferer } : undefined,
@@ -2403,9 +2424,18 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   const toggleDirectSubtitleMenu = useCallback(() => {
     if (directSubtitleOptions.length === 0 && availableSubtitleTracks.length === 0) return;
-    setIsSubtitleMenuOpen((current) => !current);
+    setIsSubtitleMenuOpen((current) => {
+      if (!current) {
+        // Opening menu — pause auto-hide
+        if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      } else {
+        // Closing menu — restart auto-hide
+        scheduleHideClose();
+      }
+      return !current;
+    });
     setIsQualityMenuOpen(false);
-  }, [directSubtitleOptions.length, availableSubtitleTracks.length]);
+  }, [directSubtitleOptions.length, availableSubtitleTracks.length, scheduleHideClose]);
 
   const selectSubtitleTrack = useCallback((track: SubtitleTrack | null) => {
     videoPlayer.subtitleTrack = track;
@@ -2414,7 +2444,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setExternalSubtitleCues([]);
     setActiveSubtitleText(null);
     setIsSubtitleMenuOpen(false);
-  }, [videoPlayer]);
+    scheduleHideClose();
+  }, [videoPlayer, scheduleHideClose]);
 
   const selectExternalSubtitle = useCallback((subtitle: DirectSubtitleOption | null) => {
     videoPlayer.subtitleTrack = null;
@@ -2423,7 +2454,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setExternalSubtitleCues([]);
     setActiveSubtitleText(null);
     setIsSubtitleMenuOpen(false);
-  }, [videoPlayer]);
+    scheduleHideClose();
+  }, [videoPlayer, scheduleHideClose]);
 
   const isLoading = isResolving || (!isPlaybackReady && playerResult?.source !== "not_found");
   const isNotAvailable = playerResult?.source === "not_found";
@@ -2433,7 +2465,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   // Direct stream: completely isolated render tree
   if (isDirectStream && directStreamUrl) {
     return (
-      <View style={styles.root}>
+      <Pressable style={styles.root} onPress={toggleCloseBtn}>
         {isLoading && (
           <PlayerLoadingOverlay
             title={route.params.title}
@@ -2454,21 +2486,21 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         {!isLoading && isSubtitleMenuOpen && (
           <Pressable style={styles.subtitleMenuBackdrop} onPress={() => setIsSubtitleMenuOpen(false)} />
         )}
-        {!isLoading && (
+        {!isLoading && showCloseBtn && (
           <>
-            <View style={styles.closeButton}>
+            <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
               <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner}>
                 <Feather name="x" size={18} color="#FFFFFF" />
               </TouchableOpacity>
-            </View>
+            </Animated.View>
 
-            <View style={styles.scalingButton}>
+            <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
               <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner}>
                 <Feather name={videoFit === "contain" ? "maximize" : "minimize"} size={18} color="#FFFFFF" />
               </TouchableOpacity>
-            </View>
+            </Animated.View>
 
-            <View style={styles.ccButton}>
+            <Animated.View style={[styles.ccButton, { opacity: closeBtnOpacity }]}>
               <TouchableOpacity
                 onPress={toggleDirectSubtitleMenu}
                 activeOpacity={directSubtitleOptions.length > 0 || availableSubtitleTracks.length > 0 ? 0.8 : 1}
@@ -2481,10 +2513,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               >
                 <MaterialIcons name="closed-caption" size={20} color="#FFFFFF" />
               </TouchableOpacity>
-            </View>
+            </Animated.View>
 
             {playerResult?.qualityOptions && playerResult.qualityOptions.length > 1 && (
-              <View style={[styles.ccButton, { right: 154 }]}>
+              <Animated.View style={[styles.ccButton, { right: 154, opacity: closeBtnOpacity }]}>
                 <TouchableOpacity
                   onPress={toggleQualityMenu}
                   activeOpacity={0.8}
@@ -2492,7 +2524,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
                 >
                   <MaterialIcons name="settings" size={20} color="#FFFFFF" />
                 </TouchableOpacity>
-              </View>
+              </Animated.View>
             )}
 
             {(isSubtitleMenuOpen || isQualityMenuOpen) && (
@@ -2587,16 +2619,16 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               </View>
             )}
 
-            {activeSubtitleText && (
-              <View pointerEvents="none" style={styles.subtitleOverlay}>
-                <View style={styles.subtitleOverlayBubble}>
-                  <Text style={styles.subtitleOverlayText}>{activeSubtitleText}</Text>
-                </View>
-              </View>
-            )}
           </>
         )}
-      </View>
+        {!isLoading && activeSubtitleText && (
+          <View pointerEvents="none" style={styles.subtitleOverlay}>
+            <View style={styles.subtitleOverlayBubble}>
+              <Text style={styles.subtitleOverlayText}>{activeSubtitleText}</Text>
+            </View>
+          </View>
+        )}
+      </Pressable>
     );
   }
 

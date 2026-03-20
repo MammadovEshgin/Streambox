@@ -60,6 +60,10 @@ function getDizipalReferer(): string {
 type SearchResult = {
   href: string;
   text: string;
+  /** Parsed title from <h4 class="title"> — may be "Turkish Title - English Title" */
+  title: string;
+  /** Parsed year from <span class="year"> */
+  resultYear: string;
 };
 
 type DizipalSearchResponse = {
@@ -89,26 +93,95 @@ function extractText(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-function scoreMatch(resultText: string, target: string, year?: string | null): number {
-  const normalizedResult = resultText.toLowerCase().replace(/[^a-z0-9\s]/g, "");
-  const normalizedTarget = target.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+/** Extract title from <h4 class="title">...</h4>, decode HTML entities */
+function extractH4Title(html: string): string {
+  const match = html.match(/<h4[^>]*class=["']title["'][^>]*>(.*?)<\/h4>/i);
+  if (!match?.[1]) return "";
+  return match[1]
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&Ccedil;/g, "Ç").replace(/&ccedil;/g, "ç")
+    .replace(/&Ouml;/g, "Ö").replace(/&ouml;/g, "ö")
+    .replace(/&Uuml;/g, "Ü").replace(/&uuml;/g, "ü")
+    .replace(/&Iuml;/g, "İ").replace(/&#304;/g, "İ")
+    .replace(/&[a-zA-Z]+;/g, " ") // remaining entities → space
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Extract year from <span class="year">2021</span> */
+function extractResultYear(html: string): string {
+  const match = html.match(/<span[^>]*class=["']year["'][^>]*>(\d{4})<\/span>/i);
+  return match?.[1] ?? "";
+}
+
+/**
+ * For HDFilm results with format "Turkish Title - English Title",
+ * split and return all title variants to match against.
+ */
+function splitDualTitle(title: string): string[] {
+  const parts = title.split(/\s+-\s+/).map(p => p.trim()).filter(Boolean);
+  // Also add the full combined title
+  return [title, ...parts];
+}
+
+export function scoreMatch(resultText: string, target: string, year?: string | number | null): number {
+  if (!resultText || !target) return 0;
+  const normalizedResult = resultText.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  const normalizedTarget = target.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  const yearStr = year ? String(year) : null;
+
+  // Strip year from result text for title-only comparison (sites often append "2021", "1080p" etc.)
+  const resultWithoutYear = yearStr
+    ? normalizedResult.replace(new RegExp(`\\b${yearStr}\\b`, "g"), "").replace(/\s+/g, " ").trim()
+    : normalizedResult;
+
+  // Strip common quality/format tags from result for cleaner title matching
+  const resultTitle = resultWithoutYear
+    .replace(/\b(1080p|720p|480p|360p|hd|full hd|4k|uhd|bluray|webrip|webdl|hdcam)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
   let score = 0;
-  if (normalizedResult === normalizedTarget) score = 100;
-  else if (normalizedResult.startsWith(normalizedTarget)) score = 90;
-  else if (normalizedResult.includes(normalizedTarget)) score = 75;
-  else {
+
+  // Exact title match (after stripping year/quality) — strongest signal
+  if (resultTitle === normalizedTarget) {
+    score = 100;
+  } else if (normalizedResult === normalizedTarget) {
+    score = 100;
+  } else if (resultTitle.startsWith(normalizedTarget + " ") || resultTitle.startsWith(normalizedTarget)) {
+    // Result starts with target but has extra words (e.g. "dune part two" for "dune")
+    // Penalize proportional to how many extra words there are
+    const targetWordCount = normalizedTarget.split(/\s+/).length;
+    const resultWordCount = resultTitle.split(/\s+/).length;
+    const extraRatio = targetWordCount / Math.max(resultWordCount, 1);
+    score = Math.round(60 + extraRatio * 30); // Range: 60-90, exact prefix = 90
+  } else if (resultTitle.includes(normalizedTarget)) {
+    // Target is a substring but not at the start (e.g. "planet dune" for "dune")
+    // This is a weak match — heavily penalize
+    const targetWordCount = normalizedTarget.split(/\s+/).length;
+    const resultWordCount = resultTitle.split(/\s+/).length;
+    const extraRatio = targetWordCount / Math.max(resultWordCount, 1);
+    score = Math.round(30 + extraRatio * 20); // Range: 30-50, much lower than prefix
+  } else {
+    // Word overlap fallback
     const targetWords = normalizedTarget.split(/\s+/).filter(Boolean);
-    const resultWords = normalizedResult.split(/\s+/).filter(Boolean);
+    const resultWords = resultTitle.split(/\s+/).filter(Boolean);
     if (targetWords.length > 0) {
-      score = Math.round(
-        (targetWords.filter((word) => resultWords.includes(word)).length / targetWords.length) * 60
-      );
+      const matchedCount = targetWords.filter((word) => resultWords.includes(word)).length;
+      const overlapRatio = matchedCount / targetWords.length;
+      // Also penalize if result has many extra unmatched words
+      const precision = resultWords.length > 0 ? matchedCount / resultWords.length : 0;
+      score = Math.round((overlapRatio * 0.7 + precision * 0.3) * 50);
     }
   }
 
   // Boost for year match
-  if (year && resultText.includes(year)) {
+  if (yearStr && resultText.includes(yearStr)) {
     score += 20;
   }
 
@@ -138,31 +211,34 @@ function generateSearchQueries(title: string, year?: string | null): string[] {
     }
   }
 
-  if (year) {
-    add(`${title} ${year}`);
-  }
-  
-  if (title.includes(":")) add(title.split(":")[0].trim());
-  if (title.includes(" - ")) add(title.split(" - ")[0].trim());
+  // 1. Original title first — highest-fidelity match
+  add(title);
 
+  // 2. Title + year for disambiguation
+  if (year) add(`${title} ${year}`);
+
+  // 3. Clean punctuation that search engines may choke on
   const cleanTitle = title
-    .replace(/[:''\u2019\u201C\u201D"]/g, "")
+    .replace(/['''\u2019]/g, "")         // strip apostrophes (Don't → Dont)
+    .replace(/[:,\u201C\u201D"!?.,]/g, " ") // replace separators with space
     .replace(/[&]/g, "and")
     .replace(/[^\w\s-]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
-  if (year) {
-    add(`${cleanTitle} ${year}`);
-  }
-
+  if (year) add(`${cleanTitle} ${year}`);
   add(cleanTitle);
-  add(title);
 
+  // 4. Prefix before colon/dash (for subtitled movies like "Alien: Romulus")
+  if (title.includes(":")) add(title.split(":")[0].trim());
+  if (title.includes(" - ")) add(title.split(" - ")[0].trim());
+
+  // 5. Partial word combinations for very long titles
   const significantWords = cleanTitle.split(/\s+/).filter((word) => word.length >= 2);
   if (significantWords.length > 4) add(significantWords.slice(0, 4).join(" "));
   if (significantWords.length > 3) add(significantWords.slice(0, 3).join(" "));
 
+  // 6. Without articles as last resort
   const withoutArticles = cleanTitle
     .replace(/\b(the|a|an|of|and|in|at|to|for|on|with|by)\b/gi, "")
     .replace(/\s+/g, " ")
@@ -183,14 +259,14 @@ function toAbsoluteUrl(baseUrl: string, href: string): string | null {
 async function queryHdFilm(query: string): Promise<SearchResult[]> {
   try {
     const response = await axios.get<{ results?: string[] }>(
-      `${getHdfilmBaseUrl()}/search?q=${encodeURIComponent(query)}`,
+      `${getHdfilmBaseUrl()}/search/?q=${encodeURIComponent(query)}`,
       {
         timeout: 6000,
         headers: {
           "X-Requested-With": "fetch",
-          Accept: "application/json",
+          "Accept": "application/json",
           "User-Agent": UA,
-          Referer: getHdfilmReferer()
+          "Referer": getHdfilmReferer()
         }
       }
     );
@@ -199,9 +275,15 @@ async function queryHdFilm(query: string): Promise<SearchResult[]> {
     if (!Array.isArray(rawResults) || rawResults.length === 0) return [];
 
     return rawResults
-      .map((html) => ({ href: extractHref(html) ?? "", text: extractText(html) }))
+      .map((html) => ({
+        href: extractHref(html) ?? "",
+        text: extractText(html),
+        title: extractH4Title(html),
+        resultYear: extractResultYear(html)
+      }))
       .filter((result) => result.href.length > 0);
-  } catch {
+  } catch (error: any) {
+    console.log(`[WebPlayer] HdFilm search error for "${query}":`, error?.message);
     return [];
   }
 }
@@ -240,42 +322,89 @@ async function verifyCast(pageUrl: string, castNames: string[]): Promise<number>
   }
 }
 
-async function searchHdFilmCehennemiCandidates(title: string, castNames: string[], year?: string | null): Promise<string[]> {
+/**
+ * Score an HDFilm search result against the target title + year.
+ *
+ * HDFilm titles often use the format "Turkish Title - English Title".
+ * We split on " - " and score each part independently, taking the best.
+ * The year from the structured <span class="year"> is used for disambiguation.
+ */
+function scoreHdFilmResult(result: SearchResult, target: string, targetYear?: string | null): number {
+  const titleVariants = splitDualTitle(result.title);
+  // Also try the full extracted text as a last-resort variant
+  const allVariants = [...titleVariants, result.text];
+
+  let bestScore = 0;
+  for (const variant of allVariants) {
+    const s = scoreMatch(variant, target);
+    if (s > bestScore) bestScore = s;
+  }
+
+  // Year handling: when we know the target year, year match is critical for disambiguation.
+  // Two movies with the same title (e.g. "Dune" 1984 vs 2021) must be separated decisively.
+  if (targetYear && result.resultYear) {
+    if (result.resultYear === targetYear) {
+      bestScore += 50; // strong boost for correct year
+    } else if (bestScore >= 80) {
+      // High title match but WRONG year — penalize heavily so year-matching results always win
+      bestScore -= 40;
+    }
+  }
+
+  return bestScore;
+}
+
+/**
+ * Find the single best HDFilm match for the given title + year.
+ * Returns the URL of the best match, or null if nothing relevant is found.
+ *
+ * Strategy:
+ *  - Score every result using structured title parsing (Turkish-English split)
+ *  - Year match gives +50, year mismatch on close titles gives -40
+ *  - Return only the #1 result — no array, no fallback to wrong movies
+ */
+async function findBestHdFilmMatch(title: string, castNames: string[], year?: string | null): Promise<string | null> {
   const queries = generateSearchQueries(title, year);
   const allResults = new Map<string, SearchResult>();
 
-  for (const query of queries) {
-    const results = await queryHdFilm(query);
+  for (let qi = 0; qi < queries.length; qi++) {
+    const results = await queryHdFilm(queries[qi]);
     for (const result of results) {
-      if (!allResults.has(result.href)) allResults.set(result.href, result);
+      const absoluteHref = toAbsoluteUrl(getHdfilmBaseUrl(), result.href);
+      if (absoluteHref && !allResults.has(absoluteHref)) {
+        allResults.set(absoluteHref, { ...result, href: absoluteHref });
+      }
     }
 
-    const currentScored = [...allResults.values()].map(r => scoreMatch(r.text, title, year));
-    if (currentScored.some(s => s >= 85) || queries.indexOf(query) >= 2) {
-      break;
-    }
+    const bestSoFar = Math.max(0, ...[...allResults.values()].map(r => scoreHdFilmResult(r, title, year)));
+    if (bestSoFar >= 120) break;
+    if (qi >= 4) break;
   }
 
-  if (allResults.size === 0) return [];
+  if (allResults.size === 0) return null;
 
   const scored = [...allResults.entries()]
-    .map(([href, result]) => ({ href, text: result.text, titleScore: scoreMatch(result.text, title, year) }))
-    .filter((result) => result.titleScore > 15)
+    .map(([href, result]) => ({
+      href,
+      titleScore: scoreHdFilmResult(result, title, year)
+    }))
+    .filter((entry) => entry.titleScore > 10)
     .sort((a, b) => b.titleScore - a.titleScore);
 
-  if (scored.length === 0) return [];
-  
-  // Return top candidates to try, prioritized by cast if available
-  const topCandidates = scored.slice(0, 3);
-  if (castNames.length > 0) {
-    const scoredWithCast = await Promise.all(topCandidates.map(async c => ({
+  if (scored.length === 0) return null;
+
+  // If ambiguous (no clear winner by title+year), use cast to pick between top candidates
+  if (scored.length > 1 && scored[0].titleScore < 120 && castNames.length > 0) {
+    const top3 = scored.slice(0, 3);
+    const withCast = await Promise.all(top3.map(async c => ({
       href: c.href,
-      castMatches: await verifyCast(c.href, castNames)
+      totalScore: c.titleScore * 10 + await verifyCast(c.href, castNames)
     })));
-    return scoredWithCast.sort((a, b) => b.castMatches - a.castMatches).map(c => c.href);
+    withCast.sort((a, b) => b.totalScore - a.totalScore);
+    return withCast[0].href;
   }
 
-  return topCandidates.map(s => s.href);
+  return scored[0].href;
 }
 
 async function hasActualVideo(pageUrl: string): Promise<boolean> {
@@ -290,7 +419,7 @@ async function hasActualVideo(pageUrl: string): Promise<boolean> {
     });
 
     const html = response.data;
-    const hasRapidrame = /rapidrame|rapid/i.test(html);
+    const hasRapidrame = /rapidrame/i.test(html);
     const hasAlternativeLink = /alternative-link|class=["']server|data-link|data-video/i.test(html);
     const hasPlayerIframe = /iframe[^>]+src=[^>]+(rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape)/i.test(html);
 
@@ -394,7 +523,9 @@ async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<S
       })
       .map((result) => ({
         href: result.url ?? "",
-        text: `${result.title ?? ""} ${result.year ?? ""}`.trim().toLowerCase()
+        text: `${result.title ?? ""} ${result.year ?? ""}`.trim().toLowerCase(),
+        title: result.title ?? "",
+        resultYear: result.year ? String(result.year) : ""
       }))
       .filter((result) => result.href.length > 0);
   } catch {
@@ -402,21 +533,22 @@ async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<S
   }
 }
 
-async function searchDizipal(title: string, mediaType: "movie" | "tv"): Promise<string | null> {
-  const queries = generateSearchQueries(title);
+async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: string | null): Promise<string | null> {
+  const queries = generateSearchQueries(title, year);
 
   for (const query of queries) {
     const results = await queryDizipal(query, mediaType);
     if (results.length === 0) continue;
 
     const scored = results
-      .map((result, index) => ({
+      .map((result) => ({
         href: result.href,
-        score: Math.max(scoreMatch(result.text, title), scoreMatch(result.text, query)) - index
+        score: scoreHdFilmResult(result, title, year)
       }))
-      .sort((left, right) => right.score - left.score);
+      .filter((entry) => entry.score > 10)
+      .sort((a, b) => b.score - a.score);
 
-    return scored[0]?.href ?? null;
+    if (scored.length > 0) return scored[0].href;
   }
 
   return null;
@@ -786,7 +918,7 @@ type DizipalResolveResult = {
 };
 
 async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<DizipalResolveResult | null> {
-  const dizipalUrl = await searchDizipal(request.title, request.mediaType);
+  const dizipalUrl = await searchDizipal(request.title, request.mediaType, request.year);
   if (!dizipalUrl) return null;
 
   let targetUrl = dizipalUrl;
@@ -828,10 +960,12 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
     }
   }
 
+  // 1. HDFilm — find the single best match, check if video is available
   const isSeries = request.mediaType !== "movie";
-  if (isSeries) {
-    const candidates = await searchHdFilmCehennemiCandidates(request.title, request.castNames ?? [], request.year);
-    for (const hdfilmUrl of candidates) {
+  const hdfilmUrl = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year);
+
+  if (hdfilmUrl) {
+    if (isSeries) {
       if (request.seasonNumber && request.episodeNumber) {
         const episodeUrl = await resolvePlayableSeriesEpisodeUrl(
           hdfilmUrl,
@@ -839,9 +973,17 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           request.episodeNumber
         );
         if (episodeUrl) return { url: episodeUrl, source: "hdfilm" };
-      } else return { url: hdfilmUrl, source: "hdfilm" };
+      } else {
+        return { url: hdfilmUrl, source: "hdfilm" };
+      }
+    } else {
+      const videoAvailable = await hasActualVideo(hdfilmUrl);
+      if (videoAvailable) return { url: hdfilmUrl, source: "hdfilm" };
     }
+  }
 
+  // 2. Dizipal — fallback
+  {
     const dizipalResult = await resolvePlayableDizipalUrl(request);
     if (dizipalResult) {
       const { pageUrl, stream, embedUrl } = dizipalResult;
@@ -853,38 +995,6 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           streamType: stream.streamType,
           poster: stream.poster,
           referer: stream.referer || "",
-          embedUrl: embedUrl ?? undefined,
-          subtitles: stream.subtitles,
-        };
-      }
-
-      if (embedUrl) {
-        return {
-          url: embedUrl,
-          source: "dizipal_embed",
-          embedUrl,
-        };
-      }
-      return { url: pageUrl, source: "dizipal" };
-    }
-  } else {
-    const candidates = await searchHdFilmCehennemiCandidates(request.title, request.castNames ?? [], request.year);
-    for (const hdfilmUrl of candidates) {
-      const videoAvailable = await hasActualVideo(hdfilmUrl);
-      if (videoAvailable) return { url: hdfilmUrl, source: "hdfilm" };
-    }
-
-    const dizipalResult = await resolvePlayableDizipalUrl(request);
-    if (dizipalResult) {
-      const { pageUrl, stream, embedUrl } = dizipalResult;
-      if (stream) {
-        return {
-          url: pageUrl,
-          source: "dizipal_direct",
-          streamUrl: stream.streamUrl,
-          streamType: stream.streamType,
-          poster: stream.poster,
-          referer: stream.referer,
           embedUrl: embedUrl ?? undefined,
           subtitles: stream.subtitles,
         };
