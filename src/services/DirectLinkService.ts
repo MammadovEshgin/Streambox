@@ -1,5 +1,4 @@
 import axios from "axios";
-import { consumetApi } from "../api/consumet";
 
 import type { MediaType } from "../api/tmdb";
 
@@ -158,11 +157,6 @@ const ADDON_INSTANCES: AddonInstance[] = [
     id: "nuvio",
     baseUrl: "https://nuviostreams.hayd.uk",
     minAcceptableQuality: 720
-  },
-  {
-    id: "stremify",
-    baseUrl: "https://stremify.hayd.uk",
-    minAcceptableQuality: 480
   }
 ];
 
@@ -293,6 +287,30 @@ function extractSubtitlesFromHlsManifest(manifest: string): SubtitleTrack[] {
 }
 
 // ---------------------------------------------------------------------------
+// Known provider headers (injected when behaviorHints is absent)
+// ---------------------------------------------------------------------------
+const UA_HEADER =
+  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+
+const KNOWN_PROVIDER_HEADERS: Array<{ pattern: RegExp; headers: Record<string, string> }> = [
+  {
+    pattern: /vixsrc\.to/i,
+    headers: { Referer: "https://vixsrc.to/", "User-Agent": UA_HEADER }
+  },
+  {
+    pattern: /vidcloud/i,
+    headers: { Referer: "https://vidcloud.to/" }
+  }
+];
+
+function inferProviderHeaders(url: string): Record<string, string> {
+  for (const entry of KNOWN_PROVIDER_HEADERS) {
+    if (entry.pattern.test(url)) return { ...entry.headers };
+  }
+  return {};
+}
+
+// ---------------------------------------------------------------------------
 // Stremio stream entry → StreamCandidate conversion
 // ---------------------------------------------------------------------------
 function getFormatFromUrl(url: string, nameHint?: string): StreamFormat {
@@ -339,8 +357,8 @@ function stremioEntryToCandidate(
   // Detect format
   const format = getFormatFromUrl(url, nameAndTitle);
 
-  // Extract custom headers (Referer etc.) from behaviorHints
-  const headers: Record<string, string> = {};
+  // Extract custom headers (Referer etc.) from behaviorHints, with provider-specific fallback
+  const headers: Record<string, string> = { ...inferProviderHeaders(url) };
   if (entry.behaviorHints?.headers) {
     Object.assign(headers, entry.behaviorHints.headers);
   }
@@ -421,91 +439,6 @@ async function fetchAddonStreams(
     const candidate = stremioEntryToCandidate(entry, addon.id, latencyMs, addon.minAcceptableQuality);
     if (candidate) candidates.push(candidate);
   }
-
-  return candidates;
-}
-
-// ---------------------------------------------------------------------------
-// Fetch streams from Consumet (FlixHQ)
-// ---------------------------------------------------------------------------
-async function fetchConsumetStreams(
-  request: StreamResolveRequest
-): Promise<StreamCandidate[]> {
-  const { title, mediaType, seasonNumber, episodeNumber } = request;
-  if (!title) return [];
-
-  // 1. Search for title
-  const searchResults = await consumetApi.search(title);
-  if (searchResults.length === 0) return [];
-
-  // 2. Find best match by title and type
-  const targetType = mediaType === "movie" ? "Movie" : "TV Series";
-  const match = searchResults.find((s) => {
-    const isSameType = s.type === targetType;
-    const isSameTitle = s.title.toLowerCase() === title.toLowerCase();
-    return isSameType && isSameTitle;
-  }) || searchResults[0];
-
-  if (!match) return [];
-
-  // 3. Get media info to get episode ID
-  const info = await consumetApi.getInfo(match.id);
-  if (!info) return [];
-
-  let episodeId = match.id;
-  if (mediaType === "tv" && seasonNumber && episodeNumber) {
-    const ep = info.episodes.find(
-      (e) => e.season === seasonNumber && e.number === episodeNumber
-    );
-    if (!ep) return [];
-    episodeId = ep.id;
-  }
-
-  // 4. Get stream sources
-  const streams = await consumetApi.getStreams(episodeId, match.id);
-  if (!streams || !streams.sources.length) return [];
-
-  // 5. Build candidates from sources
-  const startedAt = Date.now();
-  const latencyMs = Date.now() - startedAt;
-
-  // Consumet filters: Only HLS/MP4, skip if no URL
-  const candidates: StreamCandidate[] = streams.sources
-    .map((source) => {
-      const format = source.isM3U8 ? "hls" : "mp4";
-      const height = toQualityHeight(source.quality);
-
-      const candidate: StreamCandidate = {
-        providerId: "consumet",
-        url: source.url,
-        format,
-        qualityLabel: source.quality,
-        width: null,
-        height,
-        frameRate: null,
-        latencyMs,
-        score: 0,
-        headers: streams.headers || {},
-        subtitles: (streams.subtitles || [])
-          .filter((sub) => {
-            const lang = sub.lang.toLowerCase();
-            return lang.includes("english") || lang.includes("turkish") || lang === "en" || lang === "tr";
-          })
-          .map((sub, idx) => ({
-            id: `consumet-sub-${idx}`,
-            language: sub.lang.toLowerCase().startsWith("en") ? "en" : "tr",
-            label: sub.lang,
-            url: sub.url
-          })),
-        qualityOptions: streams.sources.map((s) => ({
-          label: s.quality,
-          height: toQualityHeight(s.quality) || 0,
-          url: s.url
-        }))
-      };
-
-      return { ...candidate, score: scoreCandidate(candidate) + 1000 };
-    });
 
   return candidates;
 }
@@ -687,14 +620,12 @@ export async function resolveDirectLink(
   const allCandidates: StreamCandidate[] = [];
 
   // Query all addon instances in parallel
-  const results = await Promise.allSettled([
-    fetchConsumetStreams(request),
-    ...ADDON_INSTANCES.map((addon) => fetchAddonStreams(addon, request))
-  ]);
+  const results = await Promise.allSettled(
+    ADDON_INSTANCES.map((addon) => fetchAddonStreams(addon, request))
+  );
 
   for (const [index, result] of results.entries()) {
-    // Offset for consumet being first in list
-    const addonId = index === 0 ? "consumet" : ADDON_INSTANCES[index - 1]?.id ?? `addon-${index}`;
+    const addonId = ADDON_INSTANCES[index]?.id ?? `addon-${index}`;
     attemptedProviders.push(addonId);
     if (result.status === "fulfilled") {
       allCandidates.push(...result.value);

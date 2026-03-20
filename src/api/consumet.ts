@@ -59,8 +59,13 @@ export const consumetApi = {
     try {
       const { data } = await client.get(`/movies/flixhq/${encodeURIComponent(query)}`);
       return data.results || [];
-    } catch (error) {
-      console.error("Consumet search error:", error);
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status === 451 || status === 403) {
+        console.log(`[Consumet] Search unavailable (HTTP ${status}) for "${query}" — skipping`);
+      } else {
+        console.warn("[Consumet] Search failed:", error?.message || error);
+      }
       return [];
     }
   },
@@ -74,8 +79,8 @@ export const consumetApi = {
         params: { id }
       });
       return data;
-    } catch (error) {
-      console.error("Consumet info error:", error);
+    } catch (error: any) {
+      console.warn("[Consumet] Info failed:", error?.message || error);
       return null;
     }
   },
@@ -92,8 +97,8 @@ export const consumetApi = {
         }
       });
       return data;
-    } catch (error) {
-      console.error("Consumet stream error:", error);
+    } catch (error: any) {
+      console.warn("[Consumet] Stream failed:", error?.message || error);
       return null;
     }
   }
