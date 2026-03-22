@@ -1,6 +1,13 @@
 import axios, { AxiosHeaders } from "axios";
 import { getAlternateTmdbAuthMode, resolveTmdbAuth, TmdbAuthMode } from "./tmdbAuth";
 import { getCachedOmdbRatings } from "./ratingsProxy";
+import {
+  getImdbTop250Movies,
+  getImdbTop250Shows,
+  getImdbRating,
+  seedImdbRatingCache,
+  type ImdbTop250Item,
+} from "./imdb";
 
 export type MediaType = "movie" | "tv";
 export type CastGender = "male" | "female" | null;
@@ -414,20 +421,12 @@ const tmdbApiKey = process.env.EXPO_PUBLIC_TMDB_API_KEY;
 const tmdbAccessToken = process.env.EXPO_PUBLIC_TMDB_ACCESS_TOKEN;
 const tmdbAuth = resolveTmdbAuth(tmdbApiKey, tmdbAccessToken);
 
-type ImdbTop250Record = {
-  imdbId: string;
-  title: string;
-  year: string;
-  rating: number;
-};
 
 const imdbIdCache = new Map<string, string | null>();
 const omdbRatingsCache = new Map<string, Pick<ExternalRatings, "imdb" | "rottenTomatoes" | "metacritic">>();
 const letterboxdCache = new Map<string, string | null>();
 const imdbToTmdbMovieCache = new Map<string, TmdbFindMovieRecord | null>();
 const imdbToTmdbTvCache = new Map<string, TmdbFindTvRecord | null>();
-let imdbTop250MovieCache: ImdbTop250Record[] | null = null;
-let imdbTop250SeriesCache: ImdbTop250Record[] | null = null;
 const tvMazeEpisodeImageCache = new Map<string, Record<string, string>>();
 const tmdbEpisodeImageCache = new Map<string, string | null>();
 
@@ -630,101 +629,6 @@ function normalizeMovieCredit(item: TmdbMovieCreditRecord): MediaItem {
   };
 }
 
-function parseImdbYear(value: unknown): string {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(value);
-  }
-
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-
-  return "----";
-}
-
-function parseImdbNumericId(imdbId: string): number {
-  const numericPart = imdbId.replace(/\D/g, "");
-  const parsed = Number.parseInt(numericPart, 10);
-  if (Number.isFinite(parsed) && parsed > 0) {
-    return parsed;
-  }
-
-  return Math.abs(
-    imdbId.split("").reduce((accumulator, character) => {
-      return accumulator * 31 + character.charCodeAt(0);
-    }, 7)
-  );
-}
-
-function parseImdbTop250FromHtml(html: string): ImdbTop250Record[] {
-  const marker = '<script id="__NEXT_DATA__" type="application/json">';
-  const start = html.indexOf(marker);
-  if (start < 0) {
-    return [];
-  }
-
-  const payloadStart = start + marker.length;
-  const payloadEnd = html.indexOf("</script>", payloadStart);
-  if (payloadEnd < 0) {
-    return [];
-  }
-
-  type ImdbEdgeNode = {
-    id?: string;
-    titleText?: {
-      text?: string;
-    };
-    releaseYear?: {
-      year?: number | string;
-    };
-    ratingsSummary?: {
-      aggregateRating?: number;
-    };
-  };
-
-  type ImdbPagePayload = {
-    props?: {
-      pageProps?: {
-        pageData?: {
-          chartTitles?: {
-            edges?: Array<{
-              node?: ImdbEdgeNode;
-            }>;
-          };
-        };
-      };
-    };
-  };
-
-  let parsedPayload: ImdbPagePayload | null = null;
-  try {
-    parsedPayload = JSON.parse(html.slice(payloadStart, payloadEnd)) as ImdbPagePayload;
-  } catch {
-    return [];
-  }
-
-  const edges = parsedPayload?.props?.pageProps?.pageData?.chartTitles?.edges ?? [];
-
-  return edges
-    .map((edge) => {
-      const node = edge.node;
-      const imdbId = node?.id;
-      if (!imdbId) {
-        return null;
-      }
-
-      return {
-        imdbId,
-        title: node?.titleText?.text ?? "Untitled",
-        year: parseImdbYear(node?.releaseYear?.year),
-        rating: Number.isFinite(node?.ratingsSummary?.aggregateRating ?? NaN)
-          ? Number(node?.ratingsSummary?.aggregateRating)
-          : 0
-      };
-    })
-    .filter((record): record is ImdbTop250Record => record !== null);
-}
-
 function parseReleaseYear(value: string | undefined): number | null {
   if (!value) {
     return null;
@@ -810,32 +714,6 @@ async function getImdbIdForMedia(
   const imdbId = data.imdb_id ?? null;
   imdbIdCache.set(cacheKey, imdbId);
   return imdbId;
-}
-
-async function fetchImdbTop250List(kind: MediaType): Promise<ImdbTop250Record[]> {
-  const currentCache = kind === "movie" ? imdbTop250MovieCache : imdbTop250SeriesCache;
-  if (currentCache && currentCache.length > 0) {
-    return currentCache;
-  }
-
-  const chartPath = kind === "movie" ? "top" : "toptv";
-  const { data } = await axios.get<string>(`https://m.imdb.com/chart/${chartPath}/`, {
-    timeout: 14000,
-    responseType: "text",
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      "Accept-Language": "en-US,en;q=0.9"
-    }
-  });
-
-  const parsed = parseImdbTop250FromHtml(data);
-  if (kind === "movie") {
-    imdbTop250MovieCache = parsed;
-  } else {
-    imdbTop250SeriesCache = parsed;
-  }
-  return parsed;
 }
 
 async function findTmdbMovieByImdbId(imdbId: string): Promise<TmdbFindMovieRecord | null> {
@@ -979,6 +857,29 @@ export async function getSeriesLogos(id: number): Promise<string | null> {
   }
 }
 
+async function enrichItemsWithImdbRatings(items: MediaItem[]): Promise<MediaItem[]> {
+  const enriched = await Promise.all(
+    items.map(async (item) => {
+      try {
+        const mediaType = item.mediaType;
+        const imdbId = await getImdbIdForMedia(mediaType, String(item.id));
+        if (!imdbId) return item;
+
+        const imdbRating = await getImdbRating(imdbId);
+        if (imdbRating !== null && imdbRating > 0) {
+          return { ...item, rating: imdbRating, imdbId };
+        }
+
+        return { ...item, imdbId };
+      } catch {
+        return item;
+      }
+    }),
+  );
+
+  return enriched;
+}
+
 export async function getTrending(type: MediaType): Promise<MediaItem[]> {
   const response = await getTrendingPage(type, 1);
   return response.items;
@@ -991,8 +892,9 @@ export async function getTrendingPage(type: MediaType, page: number): Promise<Pa
       page
     }
   });
+  const items = await enrichItemsWithImdbRatings(mapList(data, type));
   return {
-    items: mapList(data, type),
+    items,
     page: data.page,
     totalPages: data.total_pages
   };
@@ -1019,8 +921,9 @@ export async function discoverMoviesForTaste(
     }
   });
 
+  const items = await enrichItemsWithImdbRatings(mapList(data, "movie"));
   return {
-    items: mapList(data, "movie"),
+    items,
     page: data.page,
     totalPages: data.total_pages
   };
@@ -1135,8 +1038,10 @@ export async function getTopNewMoviesPage(page: number): Promise<PaginatedMediaR
     })
   );
 
+  const filtered = verdicts.filter((item): item is MediaItem => item !== null);
+  const items = await enrichItemsWithImdbRatings(filtered);
   return {
-    items: verdicts.filter((item): item is MediaItem => item !== null),
+    items,
     page: data.page,
     totalPages: data.total_pages
   };
@@ -1167,112 +1072,109 @@ export async function getTopNewSeriesPage(page: number): Promise<PaginatedMediaR
     })
   );
 
+  const filtered = verdicts.filter((item): item is MediaItem => item !== null);
+  const items = await enrichItemsWithImdbRatings(filtered);
   return {
-    items: verdicts.filter((item): item is MediaItem => item !== null),
+    items,
     page: data.page,
     totalPages: data.total_pages
   };
 }
 
-export async function getImdbTop250Page(page: number): Promise<PaginatedMediaResponse> {
-  assertCredentials();
-  const pageSize = 20;
-  const safePage = Math.max(1, page);
-  const records = await fetchImdbTop250List("movie");
-  const totalPages = Math.max(1, Math.ceil(records.length / pageSize));
+async function resolveImdbEntryToMediaItem(
+  entry: ImdbTop250Item,
+  mediaType: "movie" | "tv",
+): Promise<MediaItem | null> {
+  try {
+    seedImdbRatingCache(entry.imdbId, entry.imdbRating);
 
-  const offset = (safePage - 1) * pageSize;
-  const slice = records.slice(offset, offset + pageSize);
+    if (mediaType === "movie") {
+      const found = await findTmdbMovieByImdbId(entry.imdbId);
+      if (!found) return null;
 
-  const enriched = await Promise.all(
-    slice.map(async (record, index) => {
-      const rank = offset + index + 1;
-      const found = await findTmdbMovieByImdbId(record.imdbId);
-      if (!found) {
-        return {
-          id: parseImdbNumericId(record.imdbId),
-          title: record.title,
-          posterPath: null,
-          backdropPath: null,
-          rating: record.rating,
-          overview: "",
-          year: record.year,
-          mediaType: "movie" as const,
-          imdbId: record.imdbId,
-          rank
-        };
-      }
+      imdbIdCache.set(toImdbCacheKey("movie", String(found.id)), entry.imdbId);
 
       return {
         id: found.id,
-        title: found.title ?? record.title,
+        title: found.title ?? entry.title,
         posterPath: found.poster_path,
         backdropPath: found.backdrop_path,
-        rating: record.rating,
+        rating: entry.imdbRating,
         overview: found.overview ?? "",
-        year: found.release_date ? found.release_date.split("-")[0] ?? record.year : record.year,
-        mediaType: "movie" as const,
-        imdbId: record.imdbId,
-        rank
+        year: found.release_date ? found.release_date.split("-")[0] ?? "----" : "----",
+        mediaType: "movie",
+        imdbId: entry.imdbId,
+        rank: entry.rank,
       };
-    })
+    }
+
+    const found = await findTmdbTvByImdbId(entry.imdbId);
+    if (!found) return null;
+
+    imdbIdCache.set(toImdbCacheKey("tv", String(found.id)), entry.imdbId);
+
+    return {
+      id: found.id,
+      title: found.name ?? entry.title,
+      posterPath: found.poster_path,
+      backdropPath: found.backdrop_path,
+      rating: entry.imdbRating,
+      overview: found.overview ?? "",
+      year: found.first_air_date ? found.first_air_date.split("-")[0] ?? "----" : "----",
+      mediaType: "tv",
+      imdbId: entry.imdbId,
+      rank: entry.rank,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function getImdbTop250Page(page: number): Promise<PaginatedMediaResponse> {
+  assertCredentials();
+
+  const allItems = await getImdbTop250Movies();
+  if (allItems.length === 0) {
+    return { items: [], page, totalPages: 1 };
+  }
+
+  const pageSize = 20;
+  const totalPages = Math.ceil(allItems.length / pageSize);
+  const start = (page - 1) * pageSize;
+  const slice = allItems.slice(start, start + pageSize);
+
+  const resolved = await Promise.all(
+    slice.map(async (entry) => resolveImdbEntryToMediaItem(entry, "movie")),
   );
 
   return {
-    items: enriched,
-    page: safePage,
-    totalPages
+    items: resolved.filter((item): item is MediaItem => item !== null),
+    page,
+    totalPages,
   };
 }
 
 export async function getImdbTop250SeriesPage(page: number): Promise<PaginatedMediaResponse> {
   assertCredentials();
+
+  const allItems = await getImdbTop250Shows();
+  if (allItems.length === 0) {
+    return { items: [], page, totalPages: 1 };
+  }
+
   const pageSize = 20;
-  const safePage = Math.max(1, page);
-  const records = await fetchImdbTop250List("tv");
-  const totalPages = Math.max(1, Math.ceil(records.length / pageSize));
+  const totalPages = Math.ceil(allItems.length / pageSize);
+  const start = (page - 1) * pageSize;
+  const slice = allItems.slice(start, start + pageSize);
 
-  const offset = (safePage - 1) * pageSize;
-  const slice = records.slice(offset, offset + pageSize);
-
-  const enriched = await Promise.all(
-    slice.map(async (record, index) => {
-      const rank = offset + index + 1;
-      const found = await findTmdbTvByImdbId(record.imdbId);
-      if (!found) {
-        return {
-          id: parseImdbNumericId(record.imdbId),
-          title: record.title,
-          posterPath: null,
-          backdropPath: null,
-          rating: record.rating,
-          overview: "",
-          year: record.year,
-          mediaType: "tv" as const,
-          imdbId: record.imdbId,
-          rank
-        };
-      }
-
-      return {
-        id: found.id,
-        title: found.name ?? record.title,
-        posterPath: found.poster_path,
-        backdropPath: found.backdrop_path,
-        rating: record.rating,
-        overview: found.overview ?? "",
-        year: found.first_air_date ? found.first_air_date.split("-")[0] ?? record.year : record.year,
-        mediaType: "tv" as const,
-        imdbId: record.imdbId,
-        rank
-      };
-    })
+  const resolved = await Promise.all(
+    slice.map(async (entry) => resolveImdbEntryToMediaItem(entry, "tv")),
   );
 
   return {
-    items: enriched,
-    page: safePage,
-    totalPages
+    items: resolved.filter((item): item is MediaItem => item !== null),
+    page,
+    totalPages,
   };
 }
 
@@ -1312,7 +1214,7 @@ export async function getDiscoverCollectionPage(
 export async function getPopular(): Promise<MediaItem[]> {
   assertCredentials();
   const { data } = await tmdbClient.get<TmdbListResponse>("/movie/popular");
-  return mapList(data, "movie");
+  return enrichItemsWithImdbRatings(mapList(data, "movie"));
 }
 
 export async function getMovieDetails(id: string): Promise<MovieDetails> {
@@ -1329,6 +1231,16 @@ export async function getMovieDetails(id: string): Promise<MovieDetails> {
     .slice(0, 12)
     .map(normalizeCastMember);
 
+  const imdbId = details.imdb_id ?? null;
+  let voteAverage = Number.isFinite(details.vote_average) ? details.vote_average : 0;
+
+  if (imdbId) {
+    const imdbRating = await getImdbRating(imdbId);
+    if (imdbRating !== null && imdbRating > 0) {
+      voteAverage = imdbRating;
+    }
+  }
+
   return {
     id: details.id,
     title: details.title,
@@ -1339,10 +1251,10 @@ export async function getMovieDetails(id: string): Promise<MovieDetails> {
     ageRating: details.adult ? "18+" : "6+",
     posterPath: details.poster_path,
     backdropPath: details.backdrop_path,
-    voteAverage: Number.isFinite(details.vote_average) ? details.vote_average : 0,
+    voteAverage,
     voteCount: details.vote_count ?? 0,
     releaseDate: details.release_date ?? "",
-    imdbId: details.imdb_id ?? null,
+    imdbId,
     collectionId: details.belongs_to_collection?.id ?? null,
     cast,
     directors: pickDirectorMembers(creditsResponse.data.crew ?? []),
@@ -1379,6 +1291,16 @@ export async function getSeriesDetails(id: string): Promise<SeriesDetails> {
   const episodeRuntimeMinutes =
     data.episode_run_time.find((runtime) => Number.isFinite(runtime) && runtime > 0) ?? null;
 
+  const imdbId = data.external_ids?.imdb_id ?? null;
+  let voteAverage = Number.isFinite(data.vote_average) ? data.vote_average : 0;
+
+  if (imdbId) {
+    const imdbRating = await getImdbRating(imdbId);
+    if (imdbRating !== null && imdbRating > 0) {
+      voteAverage = imdbRating;
+    }
+  }
+
   return {
     id: data.id,
     title: data.name,
@@ -1387,10 +1309,10 @@ export async function getSeriesDetails(id: string): Promise<SeriesDetails> {
     genreIds: data.genres.map((entry) => entry.id),
     posterPath: data.poster_path,
     backdropPath: data.backdrop_path,
-    voteAverage: Number.isFinite(data.vote_average) ? data.vote_average : 0,
+    voteAverage,
     voteCount: data.vote_count ?? 0,
     firstAirDate: data.first_air_date ?? "",
-    imdbId: data.external_ids?.imdb_id ?? null,
+    imdbId,
     numberOfSeasons: data.number_of_seasons ?? seasons.length,
     numberOfEpisodes: data.number_of_episodes ?? 0,
     episodeRuntimeMinutes,
@@ -1426,10 +1348,19 @@ export async function getMovieExternalRatings(
       return emptyRatings;
     }
 
-    const [omdbRatings, letterboxd] = await Promise.all([getOmdbRatings(imdbId), getLetterboxdRating(imdbId)]);
+    const [omdbRatings, letterboxd, imdbApiRating] = await Promise.all([
+      getOmdbRatings(imdbId),
+      getLetterboxdRating(imdbId),
+      getImdbRating(imdbId),
+    ]);
+
+    let imdbDisplay = omdbRatings.imdb;
+    if (!imdbDisplay && imdbApiRating !== null && imdbApiRating > 0) {
+      imdbDisplay = `${imdbApiRating}/10`;
+    }
 
     return {
-      imdb: omdbRatings.imdb,
+      imdb: imdbDisplay,
       rottenTomatoes: omdbRatings.rottenTomatoes,
       metacritic: omdbRatings.metacritic,
       letterboxd
@@ -1457,9 +1388,18 @@ export async function getSeriesExternalRatings(
       return emptyRatings;
     }
 
-    const omdbRatings = await getOmdbRatings(imdbId);
+    const [omdbRatings, imdbApiRating] = await Promise.all([
+      getOmdbRatings(imdbId),
+      getImdbRating(imdbId),
+    ]);
+
+    let imdbDisplay = omdbRatings.imdb;
+    if (!imdbDisplay && imdbApiRating !== null && imdbApiRating > 0) {
+      imdbDisplay = `${imdbApiRating}/10`;
+    }
+
     return {
-      imdb: omdbRatings.imdb,
+      imdb: imdbDisplay,
       rottenTomatoes: omdbRatings.rottenTomatoes,
       metacritic: omdbRatings.metacritic
     };
@@ -1471,13 +1411,17 @@ export async function getSeriesExternalRatings(
 export async function getMovieSummary(id: number): Promise<MediaItem> {
   assertCredentials();
   const { data } = await tmdbClient.get<TmdbMediaRecord>(`/movie/${id}`);
-  return normalizeMedia(data, "movie");
+  const item = normalizeMedia(data, "movie");
+  const [enriched] = await enrichItemsWithImdbRatings([item]);
+  return enriched;
 }
 
 export async function getSeriesSummary(id: number): Promise<MediaItem> {
   assertCredentials();
   const { data } = await tmdbClient.get<TmdbMediaRecord>(`/tv/${id}`);
-  return normalizeMedia(data, "tv");
+  const item = normalizeMedia(data, "tv");
+  const [enriched] = await enrichItemsWithImdbRatings([item]);
+  return enriched;
 }
 
 // Blocked languages for similar recommendations (Bollywood/Indian cinema etc.)
@@ -1597,12 +1541,12 @@ function scoreCandidate(
   return score;
 }
 
-function finalizeSmartSimilarResults(
+async function finalizeSmartSimilarResults(
   scored: Array<{ candidate: ScoredCandidate; score: number }>,
   mediaType: MediaType,
   minResults = MIN_SMART_SIMILAR_RESULTS,
   maxResults = MAX_SMART_SIMILAR_RESULTS
-): MediaItem[] {
+): Promise<MediaItem[]> {
   const selected = new Map<number | string, MediaItem>();
 
   const appendMatches = (eligibleTiers: CandidateEligibility[]) => {
@@ -1635,7 +1579,7 @@ function finalizeSmartSimilarResults(
     appendMatches(["strict", "relaxed", "fallback"]);
   }
 
-  return [...selected.values()].slice(0, maxResults);
+  return enrichItemsWithImdbRatings([...selected.values()].slice(0, maxResults));
 }
 
 function buildGenreFallbackParams(genreIds: number[]) {
@@ -2095,6 +2039,35 @@ export async function getMovieTrailerUrl(movieId: string): Promise<string | null
   }
 }
 
+/**
+ * Fetches the official YouTube trailer URL for a TV series from TMDB.
+ * Prioritizes: Official Trailer > any Trailer > Teaser.
+ * Returns null if no YouTube trailer is found.
+ */
+export async function getSeriesTrailerUrl(seriesId: string): Promise<string | null> {
+  assertCredentials();
+  try {
+    const { data } = await tmdbClient.get<TmdbVideosResponse>(`/tv/${seriesId}/videos`);
+    const videos = (data.results ?? []).filter((v) => v.site === "YouTube" && v.key);
+
+    // Priority 1: Official Trailer
+    const officialTrailer = videos.find((v) => v.type === "Trailer" && v.official);
+    if (officialTrailer) return `https://www.youtube.com/watch?v=${officialTrailer.key}`;
+
+    // Priority 2: Any Trailer
+    const anyTrailer = videos.find((v) => v.type === "Trailer");
+    if (anyTrailer) return `https://www.youtube.com/watch?v=${anyTrailer.key}`;
+
+    // Priority 3: Teaser
+    const teaser = videos.find((v) => v.type === "Teaser");
+    if (teaser) return `https://www.youtube.com/watch?v=${teaser.key}`;
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Multi-Search (movies + TV)                                        */
 /* ------------------------------------------------------------------ */
@@ -2111,10 +2084,12 @@ export async function searchMulti(
     params: { query: query.trim(), page, include_adult: false }
   });
 
-  const items = data.results
+  const filtered = data.results
     .filter((r) => r.media_type === "movie" || r.media_type === "tv")
     .map((entry) => normalizeMedia(entry, entry.media_type ?? "movie"))
     .filter((item) => item.title !== "Untitled" && item.rating >= 6);
+
+  const items = await enrichItemsWithImdbRatings(filtered);
 
   return {
     items,
@@ -2193,9 +2168,10 @@ export async function discoverWithFilters(
   }
 
   const { data } = await tmdbClient.get<TmdbListResponse>(endpoint, { params });
+  const items = await enrichItemsWithImdbRatings(mapList(data, filters.mediaType));
 
   return {
-    items: mapList(data, filters.mediaType),
+    items,
     page: data.page,
     totalPages: data.total_pages
   };

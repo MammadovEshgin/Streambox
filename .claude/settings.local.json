@@ -30,7 +30,10 @@
       "WebFetch(domain:www.hdfilmcehennemi.nl)",
       "Bash(npm run:*)",
       "Bash(git:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "WebFetch(domain:www.imdb.com)",
+      "WebFetch(domain:imdbapi.dev)",
+      "WebFetch(domain:mdblist.docs.apiary.io)"
     ]
   }
 }

@@ -1971,43 +1971,47 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const [controlsVisible, setControlsVisible] = useState(true);
   const controlsOpacity = useRef(new Animated.Value(1)).current;
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const controlsVisibleRef = useRef(true);
   const AUTO_HIDE_MS = 5000;
 
+  const clearHideTimer = useCallback(() => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
+
+  const hideControlsNow = useCallback(() => {
+    clearHideTimer();
+    controlsVisibleRef.current = false;
+    Animated.timing(controlsOpacity, {
+      toValue: 0,
+      duration: 300,
+      useNativeDriver: true
+    }).start(() => setControlsVisible(false));
+  }, [controlsOpacity, clearHideTimer]);
+
   const scheduleHideControls = useCallback(() => {
-    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-    hideTimerRef.current = setTimeout(() => {
-      Animated.timing(controlsOpacity, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true
-      }).start(() => setControlsVisible(false));
-    }, AUTO_HIDE_MS);
-  }, [controlsOpacity]);
+    clearHideTimer();
+    hideTimerRef.current = setTimeout(hideControlsNow, AUTO_HIDE_MS);
+  }, [clearHideTimer, hideControlsNow]);
 
   const showControls = useCallback(() => {
-    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    clearHideTimer();
+    controlsVisibleRef.current = true;
     setControlsVisible(true);
     controlsOpacity.setValue(1);
     scheduleHideControls();
-  }, [controlsOpacity, scheduleHideControls]);
-
-  const hideControlsNow = useCallback(() => {
-    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-    Animated.timing(controlsOpacity, {
-      toValue: 0,
-      duration: 200,
-      useNativeDriver: true
-    }).start(() => setControlsVisible(false));
-  }, [controlsOpacity]);
+  }, [controlsOpacity, clearHideTimer, scheduleHideControls]);
 
   const toggleControls = useCallback(() => {
     if (isSubtitleMenuOpen || isQualityMenuOpen) return;
-    if (controlsVisible) {
+    if (controlsVisibleRef.current) {
       hideControlsNow();
     } else {
       showControls();
     }
-  }, [controlsVisible, isSubtitleMenuOpen, isQualityMenuOpen, showControls, hideControlsNow]);
+  }, [isSubtitleMenuOpen, isQualityMenuOpen, showControls, hideControlsNow]);
 
   // Legacy alias so the WebView path keeps working without renaming everything
   const showCloseBtn = controlsVisible;
@@ -2072,8 +2076,17 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     if (!isResolving && isPlaybackReady && playerResult?.source !== "not_found") {
       scheduleHideClose();
     }
-    return () => { if (hideTimerRef.current) clearTimeout(hideTimerRef.current); };
-  }, [isPlaybackReady, isResolving, playerResult, scheduleHideClose]);
+    return clearHideTimer;
+  }, [isPlaybackReady, isResolving, playerResult, scheduleHideClose, clearHideTimer]);
+
+  // Pause auto-hide while a menu is open; resume when closed
+  useEffect(() => {
+    if (isSubtitleMenuOpen || isQualityMenuOpen) {
+      clearHideTimer();
+    } else if (controlsVisibleRef.current) {
+      scheduleHideControls();
+    }
+  }, [isSubtitleMenuOpen, isQualityMenuOpen, clearHideTimer, scheduleHideControls]);
 
   // Step 1: Resolve the movie page URL (or use trailer)
   useEffect(() => {
@@ -2465,7 +2478,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   // Direct stream: completely isolated render tree
   if (isDirectStream && directStreamUrl) {
     return (
-      <Pressable style={styles.root} onPress={toggleCloseBtn}>
+      <View style={styles.root}>
         {isLoading && (
           <PlayerLoadingOverlay
             title={route.params.title}
@@ -2481,6 +2494,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             contentFit={videoFit}
             nativeControls
             surfaceType="textureView"
+            onTouchEnd={toggleCloseBtn}
           />
         )}
         {!isLoading && isSubtitleMenuOpen && (
@@ -2628,7 +2642,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             </View>
           </View>
         )}
-      </Pressable>
+      </View>
     );
   }
 
