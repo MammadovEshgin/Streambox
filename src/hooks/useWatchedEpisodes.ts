@@ -92,9 +92,27 @@ export function useWatchedEpisodes() {
     [getEpisodeKey, saveState, watchedEpisodes]
   );
 
+  const unmarkSeasonWatched = useCallback(
+    async (seriesId: string | number, seasonNumber: number, episodeNumbers: number[]) => {
+      const nextState = { ...watchedEpisodes };
+      for (const episodeNumber of episodeNumbers) {
+        delete nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)];
+      }
+
+      await saveState(nextState);
+      for (const episodeNumber of episodeNumbers) {
+        await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, false, {
+          source: "season_unmark_watched",
+        });
+      }
+    },
+    [getEpisodeKey, saveState, watchedEpisodes]
+  );
+
   return {
     isEpisodeWatched,
     toggleEpisodeWatched,
     markSeasonWatched,
+    unmarkSeasonWatched,
   };
 }
