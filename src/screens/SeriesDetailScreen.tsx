@@ -42,7 +42,7 @@ import { MetaPill } from "../components/detail/MetaPill";
 import { SeriesWatchedModal } from "../components/detail/SeriesWatchedModal";
 import {
   formatWatchedDateLabel,
-  normalizeWatchedDate
+  normalizeWatchedDate,
 } from "../components/detail/WatchedDateModal";
 import { MediaCard } from "../components/home/MediaCard";
 import { useLikedSeries } from "../hooks/useLikedSeries";
@@ -540,7 +540,7 @@ function formatEpisodeMeta(item: SeriesEpisode): string {
 export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const currentTheme = useTheme();
   const { isEpisodeWatched, toggleEpisodeWatched, markSeasonWatched, unmarkSeasonWatched } = useWatchedEpisodes();
-  const { isInWatchlist, removeFromWatchlist, toggleWatchlist } = useSeriesWatchlist();
+  const { isInWatchlist, toggleWatchlist } = useSeriesWatchlist();
   const { isLiked, toggleLikedSeries } = useLikedSeries();
   const { getWatchHistoryEntry, saveSeriesToWatchHistory, removeFromWatchHistory } = useWatchHistory();
   const [details, setDetails] = useState<SeriesDetails | null>(null);
@@ -745,45 +745,23 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
     setIsWatchedDateModalVisible(false);
   }, []);
 
-  const handleMarkAllWatched = useCallback(async (date: Date) => {
-    if (!details) {
-      return;
-    }
-
-    await saveSeriesToWatchHistory(details, normalizeWatchedDate(date), {
-      title: details.title,
-      imdbId: details.imdbId,
-      posterPath: details.posterPath,
-      year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
-    });
-    await removeFromWatchlist(details.id, {
-      title: details.title,
-      imdbId: details.imdbId,
-      posterPath: details.posterPath,
-      year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
-    });
-
-    for (const season of details.seasons) {
-      const episodeNumbers = Array.from({ length: season.episodeCount }, (_, i) => i + 1);
-      await markSeasonWatched(details.id, season.seasonNumber, episodeNumbers);
-    }
-
-    setIsWatchedDateModalVisible(false);
-  }, [details, markSeasonWatched, removeFromWatchlist, saveSeriesToWatchHistory]);
-
-  const handleRemoveWatchedDate = useCallback(async () => {
-    if (!details) {
-      return;
-    }
-
-    await removeFromWatchHistory(details.id, "tv", {
-      title: details.title,
-      imdbId: details.imdbId,
-      posterPath: details.posterPath,
-      year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
-    });
-    setIsWatchedDateModalVisible(false);
-  }, [details, removeFromWatchHistory]);
+  const handleWatchedConfirm = useCallback(
+    async (allSeasonsWatched: boolean) => {
+      if (!details) return;
+      const auditDetails = {
+        title: details.title,
+        imdbId: details.imdbId,
+        posterPath: details.posterPath,
+        year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
+      };
+      if (allSeasonsWatched) {
+        await saveSeriesToWatchHistory(details, normalizeWatchedDate(new Date()), auditDetails);
+      } else if (getWatchHistoryEntry(details.id, "tv")) {
+        await removeFromWatchHistory(details.id, "tv", auditDetails);
+      }
+    },
+    [details, saveSeriesToWatchHistory, removeFromWatchHistory, getWatchHistoryEntry]
+  );
 
   if (isLoading && !details) {
     return (
@@ -1067,13 +1045,10 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
         seriesTitle={details.title}
         seasons={details.seasons}
         seriesId={details.id}
-        isWatched={isCurrentSeriesWatched}
-        watchedAt={currentWatchedEntry?.watchedAt ?? null}
         isEpisodeWatched={isEpisodeWatched}
         markSeasonWatched={markSeasonWatched}
         unmarkSeasonWatched={unmarkSeasonWatched}
-        onMarkAllWatched={handleMarkAllWatched}
-        onRemoveFromHistory={handleRemoveWatchedDate}
+        onConfirm={handleWatchedConfirm}
         onClose={handleCloseWatchedDateModal}
       />
     </Root>
