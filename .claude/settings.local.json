@@ -33,7 +33,8 @@
       "Bash(ls:*)",
       "WebFetch(domain:www.imdb.com)",
       "WebFetch(domain:imdbapi.dev)",
-      "WebFetch(domain:mdblist.docs.apiary.io)"
+      "WebFetch(domain:mdblist.docs.apiary.io)",
+      "WebFetch(domain:stremio-addons.net)"
     ]
   }
 }

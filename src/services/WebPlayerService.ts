@@ -36,6 +36,8 @@ export type WebPlayerResult = {
   embedUrl?: string;
   subtitles?: Array<{ url: string; label: string; lang: string }>;
   qualityOptions?: Array<{ label: string; height: number; url: string }>;
+  /** If set, the stream is low quality (e.g. "CAM", "TS") — UI should warn the user before playback */
+  qualityWarning?: string;
 };
 
 const UA =
@@ -65,6 +67,25 @@ type SearchResult = {
   /** Parsed year from <span class="year"> */
   resultYear: string;
 };
+
+type MatchResult = {
+  url: string;
+  qualityWarning?: string;
+};
+
+const LOW_QUALITY_MARKERS = ["cam", "hdcam", "ts", "telesync", "screener"];
+
+/** Check search result text/href for low-quality markers (CAM, TS, etc.) */
+function detectQualityWarning(result: SearchResult): string | undefined {
+  const haystack = `${result.text} ${result.href}`.toLowerCase();
+  for (const marker of LOW_QUALITY_MARKERS) {
+    // Match as whole word to avoid false positives (e.g. "camera" containing "cam")
+    if (new RegExp(`\\b${marker}\\b`).test(haystack)) {
+      return marker.toUpperCase();
+    }
+  }
+  return undefined;
+}
 
 type DizipalSearchResponse = {
   success?: boolean;
@@ -176,7 +197,11 @@ export function scoreMatch(resultText: string, target: string, year?: string | n
       const overlapRatio = matchedCount / targetWords.length;
       // Also penalize if result has many extra unmatched words
       const precision = resultWords.length > 0 ? matchedCount / resultWords.length : 0;
-      score = Math.round((overlapRatio * 0.7 + precision * 0.3) * 50);
+      let rawScore = Math.round((overlapRatio * 0.7 + precision * 0.3) * 50);
+      // Hard gate: if less than 70% of target words are covered, cap score to prevent
+      // weak partial matches (e.g. "The House on Pine Street" for "The House on the Dune")
+      if (overlapRatio < 0.70) rawScore = Math.min(rawScore, 25);
+      score = rawScore;
     }
   }
 
@@ -348,6 +373,9 @@ function scoreHdFilmResult(result: SearchResult, target: string, targetYear?: st
     } else if (bestScore >= 80) {
       // High title match but WRONG year — penalize heavily so year-matching results always win
       bestScore -= 40;
+    } else if (bestScore >= 50) {
+      // Medium title match with wrong year — moderate penalty
+      bestScore -= 20;
     }
   }
 
@@ -363,7 +391,7 @@ function scoreHdFilmResult(result: SearchResult, target: string, targetYear?: st
  *  - Year match gives +50, year mismatch on close titles gives -40
  *  - Return only the #1 result — no array, no fallback to wrong movies
  */
-async function findBestHdFilmMatch(title: string, castNames: string[], year?: string | null): Promise<string | null> {
+async function findBestHdFilmMatch(title: string, castNames: string[], year?: string | null): Promise<MatchResult | null> {
   const queries = generateSearchQueries(title, year);
   const allResults = new Map<string, SearchResult>();
 
@@ -386,9 +414,10 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
   const scored = [...allResults.entries()]
     .map(([href, result]) => ({
       href,
-      titleScore: scoreHdFilmResult(result, title, year)
+      titleScore: scoreHdFilmResult(result, title, year),
+      qualityWarning: detectQualityWarning(result)
     }))
-    .filter((entry) => entry.titleScore > 10)
+    .filter((entry) => entry.titleScore >= 50)
     .sort((a, b) => b.titleScore - a.titleScore);
 
   if (scored.length === 0) return null;
@@ -398,16 +427,19 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
     const top3 = scored.slice(0, 3);
     const withCast = await Promise.all(top3.map(async c => ({
       href: c.href,
+      qualityWarning: c.qualityWarning,
       totalScore: c.titleScore * 10 + await verifyCast(c.href, castNames)
     })));
     withCast.sort((a, b) => b.totalScore - a.totalScore);
-    return withCast[0].href;
+    return { url: withCast[0].href, qualityWarning: withCast[0].qualityWarning };
   }
 
-  return scored[0].href;
+  return { url: scored[0].href, qualityWarning: scored[0].qualityWarning };
 }
 
-async function hasActualVideo(pageUrl: string): Promise<boolean> {
+type VideoCheck = { available: boolean; qualityWarning?: string };
+
+async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
   try {
     const response = await axios.get<string>(pageUrl, {
       timeout: 6000,
@@ -423,9 +455,27 @@ async function hasActualVideo(pageUrl: string): Promise<boolean> {
     const hasAlternativeLink = /alternative-link|class=["']server|data-link|data-video/i.test(html);
     const hasPlayerIframe = /iframe[^>]+src=[^>]+(rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape)/i.test(html);
 
-    return hasRapidrame || hasAlternativeLink || hasPlayerIframe || html.includes('kePlayerTitle');
+    const available = hasRapidrame || hasAlternativeLink || hasPlayerIframe || html.includes('kePlayerTitle');
+    if (!available) return { available: false };
+
+    // Check server/source buttons for low-quality markers (CAM Sürüm, TS, etc.)
+    const linkButtons = html.match(/<button[^>]*class=["'][^"']*alternative-link[^"']*["'][^>]*>[\s\S]*?<\/button>/gi) || [];
+    if (linkButtons.length > 0) {
+      const allCam = linkButtons.every(btn => {
+        const text = btn.replace(/<[^>]+>/g, " ").toLowerCase();
+        return /\b(cam|hdcam|ts|telesync|screener)\b/.test(text);
+      });
+      if (allCam) {
+        // Extract the specific marker from the first button for the warning message
+        const firstText = (linkButtons[0] ?? "").replace(/<[^>]+>/g, " ").toLowerCase();
+        const markerMatch = firstText.match(/\b(cam|hdcam|ts|telesync|screener)\b/);
+        return { available: true, qualityWarning: markerMatch ? markerMatch[1].toUpperCase() : "CAM" };
+      }
+    }
+
+    return { available: true };
   } catch {
-    return false;
+    return { available: false };
   }
 }
 
@@ -484,15 +534,15 @@ async function resolvePlayableSeriesEpisodeUrl(
   seriesPageUrl: string,
   seasonNumber: number,
   episodeNumber: number
-): Promise<string | null> {
+): Promise<{ url: string; qualityWarning?: string } | null> {
   try {
     const episodeUrl = await findSeriesEpisodeUrl(seriesPageUrl, seasonNumber, episodeNumber);
     if (!episodeUrl) return null;
 
-    const videoAvailable = await hasActualVideo(episodeUrl);
-    if (!videoAvailable) return null;
+    const check = await checkVideoAvailability(episodeUrl);
+    if (!check.available) return null;
 
-    return episodeUrl;
+    return { url: episodeUrl, qualityWarning: check.qualityWarning };
   } catch {
     return null;
   }
@@ -533,25 +583,37 @@ async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<S
   }
 }
 
-async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: string | null): Promise<string | null> {
+async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: string | null): Promise<MatchResult | null> {
   const queries = generateSearchQueries(title, year);
+  const allResults = new Map<string, SearchResult>();
 
-  for (const query of queries) {
-    const results = await queryDizipal(query, mediaType);
-    if (results.length === 0) continue;
+  for (let qi = 0; qi < queries.length; qi++) {
+    const results = await queryDizipal(queries[qi], mediaType);
+    for (const result of results) {
+      if (result.href && !allResults.has(result.href)) {
+        allResults.set(result.href, result);
+      }
+    }
 
-    const scored = results
-      .map((result) => ({
-        href: result.href,
-        score: scoreHdFilmResult(result, title, year)
-      }))
-      .filter((entry) => entry.score > 10)
-      .sort((a, b) => b.score - a.score);
-
-    if (scored.length > 0) return scored[0].href;
+    // Early exit if we already have a strong match
+    const bestSoFar = Math.max(0, ...[...allResults.values()].map(r => scoreHdFilmResult(r, title, year)));
+    if (bestSoFar >= 120) break;
+    if (qi >= 4) break;
   }
 
-  return null;
+  if (allResults.size === 0) return null;
+
+  const scored = [...allResults.entries()]
+    .map(([href, result]) => ({
+      href,
+      score: scoreHdFilmResult(result, title, year),
+      qualityWarning: detectQualityWarning(result)
+    }))
+    .filter((entry) => entry.score >= 50)
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length === 0) return null;
+  return { url: scored[0].href, qualityWarning: scored[0].qualityWarning };
 }
 
 function extractDizipalCfg(html: string): string | null {
@@ -915,17 +977,19 @@ type DizipalResolveResult = {
   pageUrl: string;
   stream: DizipalStreamInfo | null;
   embedUrl: string | null;
+  qualityWarning?: string;
 };
 
 async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<DizipalResolveResult | null> {
-  const dizipalUrl = await searchDizipal(request.title, request.mediaType, request.year);
-  if (!dizipalUrl) return null;
+  const dizipalMatch = await searchDizipal(request.title, request.mediaType, request.year);
+  if (!dizipalMatch) return null;
 
-  let targetUrl = dizipalUrl;
+  let targetUrl = dizipalMatch.url;
+  const qualityWarning = dizipalMatch.qualityWarning;
 
   if (request.mediaType === "tv" && request.seasonNumber && request.episodeNumber) {
     const episodeUrl = await findDizipalEpisodeUrl(
-      dizipalUrl,
+      dizipalMatch.url,
       request.seasonNumber,
       request.episodeNumber
     );
@@ -934,10 +998,10 @@ async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<Diz
   } else if (request.mediaType === "tv") return null;
 
   const result = await fetchDizipalStreamUrl(targetUrl);
-  if (result) return { pageUrl: targetUrl, stream: result.stream, embedUrl: result.embedUrl };
+  if (result) return { pageUrl: targetUrl, stream: result.stream, embedUrl: result.embedUrl, qualityWarning };
 
   const playable = await hasPlayableDizipalVideo(targetUrl);
-  if (playable) return { pageUrl: targetUrl, stream: null, embedUrl: null };
+  if (playable) return { pageUrl: targetUrl, stream: null, embedUrl: null, qualityWarning };
 
   return null;
 }
@@ -962,23 +1026,23 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
 
   // 1. HDFilm — find the single best match, check if video is available
   const isSeries = request.mediaType !== "movie";
-  const hdfilmUrl = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year);
+  const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year);
 
-  if (hdfilmUrl) {
+  if (hdfilmMatch) {
     if (isSeries) {
       if (request.seasonNumber && request.episodeNumber) {
-        const episodeUrl = await resolvePlayableSeriesEpisodeUrl(
-          hdfilmUrl,
+        const episodeResult = await resolvePlayableSeriesEpisodeUrl(
+          hdfilmMatch.url,
           request.seasonNumber,
           request.episodeNumber
         );
-        if (episodeUrl) return { url: episodeUrl, source: "hdfilm" };
+        if (episodeResult) return { url: episodeResult.url, source: "hdfilm", qualityWarning: episodeResult.qualityWarning };
       } else {
-        return { url: hdfilmUrl, source: "hdfilm" };
+        return { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: hdfilmMatch.qualityWarning };
       }
     } else {
-      const videoAvailable = await hasActualVideo(hdfilmUrl);
-      if (videoAvailable) return { url: hdfilmUrl, source: "hdfilm" };
+      const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
+      if (videoCheck.available) return { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: videoCheck.qualityWarning };
     }
   }
 
@@ -986,7 +1050,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   {
     const dizipalResult = await resolvePlayableDizipalUrl(request);
     if (dizipalResult) {
-      const { pageUrl, stream, embedUrl } = dizipalResult;
+      const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
       if (stream) {
         return {
           url: pageUrl,
@@ -997,6 +1061,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           referer: stream.referer || "",
           embedUrl: embedUrl ?? undefined,
           subtitles: stream.subtitles,
+          qualityWarning,
         };
       }
 
@@ -1005,9 +1070,10 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           url: embedUrl,
           source: "dizipal_embed",
           embedUrl,
+          qualityWarning,
         };
       }
-      return { url: pageUrl, source: "dizipal" };
+      return { url: pageUrl, source: "dizipal", qualityWarning };
     }
   }
 

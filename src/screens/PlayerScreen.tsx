@@ -20,6 +20,7 @@ import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
 
 import { MovieLoader } from "../components/common/MovieLoader";
+import { QualityWarningModal } from "../components/common/QualityWarningModal";
 import { useRecentlyWatched } from "../hooks/useRecentlyWatched";
 
 import { HomeStackParamList } from "../navigation/types";
@@ -1939,6 +1940,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const webViewRef = useRef<WebView>(null);
   const [playerResult, setPlayerResult] = useState<WebPlayerResult | null>(null);
   const [isResolving, setIsResolving] = useState(true);
+  const [qualityWarning, setQualityWarning] = useState<{ label: string; result: WebPlayerResult } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isPlaybackReady, setIsPlaybackReady] = useState(false);
   const [canGoBack, setCanGoBack] = useState(false);
@@ -2132,8 +2134,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       isAzClassic: route.params.isAzClassic
     })
       .then((result) => {
-        if (!cancelled) {
-          console.log("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
+        if (cancelled) return;
+        console.log("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
+
+        if (result.qualityWarning && result.source !== "not_found") {
+          setIsResolving(false);
+          setQualityWarning({ label: result.qualityWarning, result });
+        } else {
           setPlayerResult(result);
           setCurrentStreamUrl(result.streamUrl ?? null);
           setIsResolving(false);
@@ -2795,6 +2802,22 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           onShouldStartLoadWithRequest={() => true}
         />
       )}
+      <QualityWarningModal
+        visible={qualityWarning !== null}
+        qualityLabel={qualityWarning?.label ?? ""}
+        onGoBack={() => {
+          setQualityWarning(null);
+          void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+          navigation.goBack();
+        }}
+        onContinue={() => {
+          if (qualityWarning) {
+            setPlayerResult(qualityWarning.result);
+            setCurrentStreamUrl(qualityWarning.result.streamUrl ?? null);
+          }
+          setQualityWarning(null);
+        }}
+      />
     </Pressable>
   );
 }
