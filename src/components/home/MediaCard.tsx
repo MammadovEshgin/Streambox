@@ -12,11 +12,9 @@ const PosterFrame = styled.View`
   position: relative;
   width: 132px;
   height: 198px;
-  border-radius: 8px;
+  border-radius: 12px;
   overflow: hidden;
   background-color: ${({ theme }) => theme.colors.surface};
-  border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.border};
 `;
 
 const PosterImage = styled.Image`
@@ -51,18 +49,18 @@ const Badge = styled.View`
 
 const BadgeValue = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
   font-size: 12px;
-  font-weight: 600;
   letter-spacing: 0.2px;
 `;
 
 const Title = styled.Text`
   margin-top: 10px;
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 15px;
+  font-family: ${({ theme }) => theme.typography.BodySmall.fontFamily};
+  font-size: 14px;
   line-height: 19px;
-  font-weight: 700;
-  letter-spacing: -0.25px;
+  letter-spacing: -0.15px;
 `;
 
 const MetaRow = styled.View`
@@ -71,9 +69,10 @@ const MetaRow = styled.View`
 
 const Meta = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
   font-size: 12px;
   line-height: 16px;
-  letter-spacing: 0.15px;
+  letter-spacing: 0.3px;
 `;
 
 type MediaCardProps = {
@@ -88,7 +87,7 @@ export function MediaCard({ item, onPress, posterUri: customPosterUri, hideRatin
   const ratingText = item.rating.toFixed(1);
 
   return (
-    <CardRoot onPress={onPress}>
+    <CardRoot onPress={onPress} style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}>
       <PosterFrame>
         {posterUri ? (
           <PosterImage source={{ uri: posterUri }} resizeMode="cover" />

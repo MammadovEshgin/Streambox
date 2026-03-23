@@ -96,9 +96,11 @@ const TopBar = styled.View`
 
 const TopTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 1.8px;
+  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 2px;
+  text-transform: uppercase;
 `;
 
 const HeroCard = styled.View`
@@ -119,10 +121,10 @@ const HeroTop = styled.View`
 
 const HeroBrand = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
-  font-size: 28px;
-  line-height: 29px;
-  font-weight: 800;
-  letter-spacing: -0.8px;
+  font-family: ${({ theme }) => theme.typography.TitleLarge.fontFamily};
+  font-size: 32px;
+  line-height: 38px;
+  letter-spacing: -1.2px;
 `;
 
 const AppPreviewFrame = styled.View`
@@ -152,30 +154,31 @@ const CopyBlock = styled(Animated.View)`
 
 const Title = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 24px;
-  line-height: 28px;
-  font-weight: 800;
-  letter-spacing: -0.6px;
+  font-family: ${({ theme }) => theme.typography.Display.fontFamily};
+  font-size: 36px;
+  line-height: 42px;
+  letter-spacing: -1.2px;
   text-align: center;
-  max-width: 300px;
+  max-width: 320px;
 `;
 
 const TitleAccent = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
-  font-size: 24px;
-  line-height: 28px;
-  font-weight: 800;
-  letter-spacing: -0.6px;
+  font-family: ${({ theme }) => theme.typography.Display.fontFamily};
+  font-size: 36px;
+  line-height: 42px;
+  letter-spacing: -1.2px;
   text-align: center;
 `;
 
 const Description = styled(Animated.Text)`
   margin-top: 14px;
-  color: rgba(255, 255, 255, 0.55);
-  font-size: 13px;
-  line-height: 20px;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: ${({ theme }) => theme.typography.BodyMedium.fontFamily};
+  font-size: 15px;
+  line-height: 24px;
   text-align: center;
-  max-width: 270px;
+  max-width: 290px;
 `;
 
 const BottomSpace = styled.View`
@@ -191,19 +194,19 @@ const Footer = styled(Animated.View)`
 const StartButton = styled(Pressable)`
   align-items: center;
   justify-content: center;
-  min-height: 52px;
-  min-width: 180px;
+  min-height: 56px;
+  min-width: 190px;
   flex-direction: row;
-  gap: 8px;
-  border-radius: 3px;
+  gap: 12px;
+  border-radius: 99px;
   background-color: ${({ theme }) => theme.colors.primary};
-  padding: 0 28px;
+  padding: 0 32px;
 `;
 
 const StartText = styled.Text`
   color: #ffffff;
-  font-size: 15px;
-  font-weight: 700;
+  font-family: ${({ theme }) => theme.typography.Button.fontFamily};
+  font-size: 16px;
   letter-spacing: 0.3px;
 `;
 
@@ -286,10 +289,10 @@ export function WelcomeScreen({ onContinue }: WelcomeScreenProps) {
 
   return (
     <Root>
-      <Backdrop colors={["#150E09", "#080706", "#000000"]} locations={[0, 0.5, 1]} />
-      <Glow style={glow1Style} $size={220} $top={110} $left={-92} $opacity={0.09} />
-      <Glow style={glow2Style} $size={160} $top={238} $right={-56} $opacity={0.06} />
-      <Glow style={glow1Style} $size={100} $top={600} $right={-30} $opacity={0.04} />
+      <Backdrop colors={["#121214", "#0A0A0C", "#050505"]} locations={[0, 0.4, 1]} />
+      <Glow style={glow1Style} $size={220} $top={110} $left={-92} $opacity={0.12} />
+      <Glow style={glow2Style} $size={160} $top={238} $right={-56} $opacity={0.08} />
+      <Glow style={glow1Style} $size={100} $top={600} $right={-30} $opacity={0.06} />
 
       <Content $topInset={insets.top} $bottomInset={insets.bottom}>
         <TopSpace />
@@ -334,10 +337,13 @@ export function WelcomeScreen({ onContinue }: WelcomeScreenProps) {
         <BottomSpace />
 
         <Footer entering={FadeInUp.duration(400).delay(800)}>
-          <StartButton onPress={onContinue}>
+          <StartButton 
+            onPress={onContinue}
+            style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.98 : 1 }] }]}
+          >
             <StartText>Get Started</StartText>
             <ArrowWrap style={arrowStyle}>
-              <Feather name="arrow-right" size={16} color="#FFFFFF" />
+              <Feather name="arrow-right" size={18} color="#FFFFFF" />
             </ArrowWrap>
           </StartButton>
         </Footer>

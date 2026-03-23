@@ -1,6 +1,8 @@
 import "react-native-gesture-handler";
 import "react-native-reanimated";
 
+import { useFonts, Outfit_400Regular, Outfit_500Medium, Outfit_600SemiBold, Outfit_700Bold } from "@expo-google-fonts/outfit";
+
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { NavigationContainer, type Theme as NavigationTheme } from "@react-navigation/native";
 import { StatusBar } from "expo-status-bar";
@@ -221,6 +223,17 @@ function AppShell() {
 }
 
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    Outfit_400Regular,
+    Outfit_500Medium,
+    Outfit_600SemiBold,
+    Outfit_700Bold,
+  });
+
+  if (!fontsLoaded) {
+    return null;
+  }
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
