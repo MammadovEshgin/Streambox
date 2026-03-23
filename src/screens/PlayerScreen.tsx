@@ -2761,7 +2761,16 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           onMessage={handleMessage}
           onError={handleError}
           onNavigationStateChange={handleNavChange}
-          onShouldStartLoadWithRequest={() => true}
+          onShouldStartLoadWithRequest={(req) => {
+            if (req.url.includes("about:blank")) return true;
+            if (!req.url.startsWith("http")) return false; // Prevent deep links like market://
+            if (!req.isTopFrame) return true;
+            // Native player / Embed should rarely redirect the top frame.
+            if (req.url !== playerResult.url) {
+              return false;
+            }
+            return true;
+          }}
         />
       )}
 
@@ -2799,7 +2808,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           onMessage={handleMessage}
           onError={handleError}
           onNavigationStateChange={handleNavChange}
-          onShouldStartLoadWithRequest={() => true}
+          onShouldStartLoadWithRequest={(req) => {
+            if (req.url.includes("about:blank")) return true;
+            if (!req.url.startsWith("http")) return false; // Prevent deep links like market://
+            if (!req.isTopFrame) return true;
+            if (req.url !== playerResult.url) {
+              return false;
+            }
+            return true;
+          }}
         />
       )}
       <QualityWarningModal

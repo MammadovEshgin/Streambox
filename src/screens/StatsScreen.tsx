@@ -128,7 +128,7 @@ export function StatsScreen({ navigation }: Props) {
     navigation.navigate("WatchedGrid", { filter, title: label, monthTimestamp });
   };
 
-  const handleRuntimePress = (entry: { id: number; mediaType: string }) => {
+  const handleRuntimePress = (entry: { id: number | string; mediaType: string }) => {
     if (entry.mediaType === "movie") {
       navigation.navigate("MovieDetail", { movieId: String(entry.id) });
     } else {
