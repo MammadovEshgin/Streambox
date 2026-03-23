@@ -114,14 +114,14 @@ export function Navigation() {
         tabBarStyle: {
           ...(STACK_TABS.has(route.name) &&
           DETAIL_ROUTES.has(getFocusedRouteNameFromRoute(route) ?? "")
-            ? { display: "none" }
+              ? { display: "none" }
             : {
                 height: 64,
                 paddingTop: 8,
                 paddingBottom: 8,
-                borderTopWidth: 1,
-                borderTopColor: currentTheme.colors.border,
-                backgroundColor: currentTheme.colors.surface
+                borderTopWidth: 0,
+                elevation: 0,
+                backgroundColor: currentTheme.colors.background
               })
         },
         headerShown: false,
@@ -129,9 +129,10 @@ export function Navigation() {
         tabBarActiveTintColor: currentTheme.colors.primary,
         tabBarInactiveTintColor: currentTheme.colors.textSecondary,
         tabBarLabelStyle: {
+          fontFamily: currentTheme.typography.MetaSmall.fontFamily,
           fontSize: currentTheme.typography.MetaSmall.fontSize,
           lineHeight: currentTheme.typography.MetaSmall.lineHeight,
-          fontWeight: currentTheme.typography.MetaSmall.fontWeight
+          letterSpacing: 0.2
         },
         tabBarIcon: ({ color, focused }) => {
           const ioniconsMap: Partial<Record<keyof RootTabParamList, [keyof typeof Ionicons.glyphMap, keyof typeof Ionicons.glyphMap]>> = {

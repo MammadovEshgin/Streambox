@@ -1,4 +1,4 @@
-﻿import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
+import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView } from "react-native";
@@ -69,15 +69,17 @@ const SectionLinkButton = styled.Pressable`
 
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 19px;
-  line-height: 24px;
+  font-family: ${({ theme }) => theme.typography.TitleMedium.fontFamily};
+  font-size: 20px;
+  line-height: 26px;
   font-weight: 700;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.4px;
 `;
 
 const SectionLink = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 13px;
+  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
+  font-size: 14px;
   letter-spacing: 0.25px;
 `;
 
@@ -91,7 +93,7 @@ const RailCardWrap = styled.View`
 
 const EmptyRail = styled.View`
   height: 220px;
-  border-radius: 12px;
+  border-radius: 16px;
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.border};
   background-color: ${({ theme }) => theme.colors.surface};
@@ -101,8 +103,9 @@ const EmptyRail = styled.View`
 
 const EmptyRailText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 13px;
-  letter-spacing: 0.2px;
+  font-family: ${({ theme }) => theme.typography.BodyMedium.fontFamily};
+  font-size: 14px;
+  letter-spacing: 0.25px;
 `;
 
 const LoadingWrap = styled.View`
@@ -113,9 +116,10 @@ const LoadingWrap = styled.View`
 
 const ErrorText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: ${({ theme }) => theme.typography.BodySmall.fontFamily};
   font-size: 14px;
   text-align: center;
-  margin-top: 8px;
+  margin-top: 12px;
 `;
 
 type RailProps = {
@@ -157,7 +161,10 @@ function DiscoveryRail({ title, data, onPressItem, onPressSeeAll }: RailProps) {
     <>
       <SectionHeader>
         <SectionTitle>{title}</SectionTitle>
-        <SectionLinkButton onPress={onPressSeeAll}>
+        <SectionLinkButton 
+          onPress={onPressSeeAll}
+          style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
+        >
           <SectionLink>See all</SectionLink>
         </SectionLinkButton>
       </SectionHeader>

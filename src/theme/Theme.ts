@@ -84,18 +84,18 @@ export function createTheme(themeId: ThemeId = DEFAULT_THEME_ID) {
     id: option.id,
     displayName: option.name,
     colors: {
-      background: "#000000",
-      surface: "#121212",
-      surfaceRaised: "#171717",
+      background: "#080808", // Off-black base
+      surface: "#101012",    // Subtle tint lifted surface
+      surfaceRaised: "#18181B", // Slightly higher elevation
       primary: option.primary,
       primarySoft: withAlpha(option.primary, 0.14),
       primarySoftStrong: withAlpha(option.primary, 0.2),
       primaryMuted: withAlpha(option.primary, 0.4),
       primaryGlow: withAlpha(option.primary, 0.35),
       primaryTransparent: withAlpha(option.primary, 0),
-      textPrimary: "#FFFFFF",
-      textSecondary: "#808080",
-      border: "#2A2A2A"
+      textPrimary: "#F4F4F5", // Softer white to reduce eye strain
+      textSecondary: "#A1A1AA", // Muted gray for subtle contrast
+      border: "#27272A" // Low-contrast border
     },
     typography: Typography,
     spacing: {
@@ -108,7 +108,9 @@ export function createTheme(themeId: ThemeId = DEFAULT_THEME_ID) {
     radius: {
       sm: 8,
       md: 12,
-      lg: 16
+      lg: 16,
+      xl: 24, // Rounder for cards layout
+      full: 9999
     }
   };
 }
