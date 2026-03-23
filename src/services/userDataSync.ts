@@ -477,7 +477,7 @@ function buildSettingsPayload(s: PersistedSettings) { return { theme_id: s.theme
 function buildDailyRecommendationRows(snapshot: LocalUserSnapshot) {
   const rows: Array<Record<string, any>> = [];
   if (snapshot.movieOfDayCurrent?.movie && snapshot.movieOfDayCurrent.movie.id) {
-    const ids = getSyncIds(snapshot.movieOfDayCurrent.movie.id);
+    const ids = getSyncIds(snapshot.movieOfDayCurrent.movie.id as string | number);
     if (ids.tmdb_id || ids.internal_id) {
       rows.push({ recommendation_kind: MOVIE_OF_DAY_KIND, recommendation_date: snapshot.movieOfDayCurrent.dateKey, media_type: "movie", ...ids, imdb_id: snapshot.movieOfDayCurrent.movie.imdbId || null, strategy: "local_bootstrap", snapshot: { movie: snapshot.movieOfDayCurrent.movie } });
     }
@@ -575,7 +575,7 @@ async function executePendingOperation(op: PendingSyncOperation) {
 }
 
 export async function clearLocalUserDataCache() {
-  const keys = [APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY, ACTIVE_SYNC_USER_KEY, AZ_CLASSICS_CACHE_KEY];
+  const keys = [APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY, ACTIVE_SYNC_USER_KEY, AZ_CLASSICS_CACHE_KEY, SYNC_QUEUE_STORAGE_KEY];
   const all = await AsyncStorage.getAllKeys(); const bKeys = all.filter(k => k.startsWith(BOOTSTRAP_COMPLETE_KEY_PREFIX));
   await Promise.all([AsyncStorage.multiRemove([...keys, ...bKeys]), clearAzClassicImageCache()]);
 }
@@ -650,7 +650,7 @@ export async function enqueueEpisodeProgressSync(t: number, s: number, e: number
 
 export async function enqueueDailyRecommendationSync(m: Record<string, any> | null, d: string) {
   const uid = await getCurrentUserId(); if (!uid || !m || !m.id) return;
-  await enqueuePendingOperation({ kind: "daily_recommendation", userId: uid, recommendationKind: MOVIE_OF_DAY_KIND, recommendationDate: d, media_type: "movie", tmdbId: m.id, imdbId: m.imdbId || null, strategy: "device_generated", snapshot: { movie: m } });
+  await enqueuePendingOperation({ kind: "daily_recommendation", userId: uid, recommendationKind: MOVIE_OF_DAY_KIND, recommendationDate: d, mediaType: "movie", tmdbId: m.id, imdbId: m.imdbId || null, strategy: "device_generated", snapshot: { movie: m } });
   void flushSupabaseUserDataSync(uid);
 }
 

@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ScrollView } from "react-native";
 import Animated, {
   Easing,
@@ -506,6 +506,14 @@ function SwipeableEpisodeCard({ episode, stillUri, isWatched, onToggleWatched, o
   );
 }
 
+const MemoizedSwipeableEpisodeCard = React.memo(SwipeableEpisodeCard, (prev, next) => {
+  return (
+    prev.episode.id === next.episode.id &&
+    prev.isWatched === next.isWatched &&
+    prev.stillUri === next.stillUri
+  );
+});
+
 function formatDate(value: string): string {
   if (!value) {
     return "Unknown release date";
@@ -978,7 +986,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                       const stillUri = tmdbStill ?? fallbackStill ?? seasonPosterFallback ?? seriesBackdropFallback;
 
                       return (
-                        <SwipeableEpisodeCard
+                        <MemoizedSwipeableEpisodeCard
                           key={episode.id}
                           episode={episode}
                           stillUri={stillUri}

@@ -1,4 +1,4 @@
-﻿import AsyncStorage from "@react-native-async-storage/async-storage";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useState } from "react";
 
 import { useAppSettings } from "../settings/AppSettingsContext";
@@ -14,7 +14,11 @@ export function useWatchedEpisodes() {
 
     AsyncStorage.getItem(WATCHED_EPISODES_STORAGE_KEY)
       .then((data) => {
-        if (!data || !isMounted) {
+        if (!isMounted) {
+          return;
+        }
+        if (!data) {
+          setWatchedEpisodes({});
           return;
         }
 
@@ -59,57 +63,81 @@ export function useWatchedEpisodes() {
   const toggleEpisodeWatched = useCallback(
     async (seriesId: string | number, seasonNumber: number, episodeNumber: number) => {
       const key = getEpisodeKey(seriesId, seasonNumber, episodeNumber);
-      const nextWatched = !watchedEpisodes[key];
-      const nextState = { ...watchedEpisodes };
-      if (nextWatched) {
-        nextState[key] = true;
-      } else {
-        delete nextState[key];
-      }
+      
+      let wasWatched = false;
+      setWatchedEpisodes((prev) => {
+        wasWatched = !!prev[key];
+        const nextWatched = !wasWatched;
+        const nextState = { ...prev };
+        if (nextWatched) {
+          nextState[key] = true;
+        } else {
+          delete nextState[key];
+        }
+        
+        // Save to storage asynchronously
+        AsyncStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(nextState))
+          .then(() => notifyStorageChanged())
+          .catch((error) => console.error("Failed to save watched episodes", error));
+          
+        return nextState;
+      });
 
-      await saveState(nextState);
+      const nextWatched = !wasWatched;
+      
       await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, nextWatched, {
         source: "episode_toggle",
       });
     },
-    [getEpisodeKey, saveState, watchedEpisodes]
+    [getEpisodeKey, notifyStorageChanged]
   );
 
   const markSeasonWatched = useCallback(
     async (seriesId: string | number, seasonNumber: number, episodeNumbers: number[]) => {
-      const nextState = { ...watchedEpisodes };
-      for (const episodeNumber of episodeNumbers) {
-        nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)] = true;
-      }
+      setWatchedEpisodes((prev) => {
+        const nextState = { ...prev };
+        for (const episodeNumber of episodeNumbers) {
+          nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)] = true;
+        }
+        AsyncStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(nextState))
+          .then(() => notifyStorageChanged())
+          .catch((error) => console.error("Failed", error));
+        return nextState;
+      });
 
-      await saveState(nextState);
       for (const episodeNumber of episodeNumbers) {
         await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, true, {
           source: "season_mark_watched",
         });
       }
     },
-    [getEpisodeKey, saveState, watchedEpisodes]
+    [getEpisodeKey, notifyStorageChanged]
   );
 
   const unmarkSeasonWatched = useCallback(
     async (seriesId: string | number, seasonNumber: number, episodeNumbers: number[]) => {
-      const nextState = { ...watchedEpisodes };
-      for (const episodeNumber of episodeNumbers) {
-        delete nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)];
-      }
+      setWatchedEpisodes((prev) => {
+        const nextState = { ...prev };
+        for (const episodeNumber of episodeNumbers) {
+          delete nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)];
+        }
+        AsyncStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(nextState))
+          .then(() => notifyStorageChanged())
+          .catch((error) => console.error("Failed", error));
+        return nextState;
+      });
 
-      await saveState(nextState);
       for (const episodeNumber of episodeNumbers) {
         await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, false, {
           source: "season_unmark_watched",
         });
       }
     },
-    [getEpisodeKey, saveState, watchedEpisodes]
+    [getEpisodeKey, notifyStorageChanged]
   );
 
   return {
+    watchedEpisodes,
     isEpisodeWatched,
     toggleEpisodeWatched,
     markSeasonWatched,
