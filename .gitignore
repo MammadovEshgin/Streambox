@@ -38,3 +38,7 @@ nul
 Thumbs.db
 .vscode/
 .idea/
+
+# local media assets
+posters/
+roadmap timeline.webp

@@ -4,6 +4,8 @@ import { AppState, type AppStateStatus } from "react-native";
 import type { Session, User } from "@supabase/supabase-js";
 
 import { clearLocalUserDataCache, flushSupabaseUserDataSync, logSupabaseUserEvent } from "../services/userDataSync";
+import { clearFranchiseCache } from "../api/franchises";
+import { clearFranchiseImageCache } from "../services/franchisePosterCache";
 import { supabase } from "../services/supabase";
 
 const LAST_ACTIVE_KEY = "@streambox/last-active-ts";
@@ -55,8 +57,12 @@ export function AuthProvider({ children }: PropsWithChildren) {
             { entityType: "session", entityKey: initialSession.user.id, flushImmediately: true }
           ).catch(() => undefined);
           await supabase.auth.signOut();
-          await AsyncStorage.removeItem(LAST_ACTIVE_KEY);
-          await clearLocalUserDataCache();
+          await Promise.all([
+            AsyncStorage.removeItem(LAST_ACTIVE_KEY),
+            clearLocalUserDataCache(),
+            clearFranchiseCache(),
+            clearFranchiseImageCache(),
+          ]);
           if (active) {
             setSession(null);
             setIsLoading(false);
@@ -133,6 +139,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
           AsyncStorage.removeItem(LAST_ACTIVE_KEY).catch(() => undefined),
           AsyncStorage.removeItem(FIRST_OPEN_KEY).catch(() => undefined),
           clearLocalUserDataCache().catch(() => undefined),
+          clearFranchiseCache().catch(() => undefined),
+          clearFranchiseImageCache().catch(() => undefined),
           supabase.auth.signOut().catch(() => undefined),
         ];
 
