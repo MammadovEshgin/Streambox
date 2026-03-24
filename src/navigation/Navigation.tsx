@@ -7,6 +7,8 @@ import { useTheme } from "styled-components/native";
 import { ActorDetailScreen } from "../screens/ActorDetailScreen";
 import { AzClassicDetailScreen } from "../screens/AzClassicDetailScreen";
 import { DiscoverGridScreen } from "../screens/DiscoverGridScreen";
+import { FranchiseCatalogScreen } from "../screens/FranchiseCatalogScreen";
+import { FranchiseTimelineScreen } from "../screens/FranchiseTimelineScreen";
 import { HomeScreen } from "../screens/HomeScreen";
 import { MovieDetailScreen } from "../screens/MovieDetailScreen";
 import { MoviesScreen } from "../screens/MoviesScreen";
@@ -34,6 +36,8 @@ function HomeStackScreen() {
     <HomeStack.Navigator screenOptions={{ headerShown: false }}>
       <HomeStack.Screen name="HomeFeed" component={HomeScreen} />
       <HomeStack.Screen name="DiscoverGrid" component={DiscoverGridScreen} />
+      <HomeStack.Screen name="FranchiseCatalog" component={FranchiseCatalogScreen} />
+      <HomeStack.Screen name="FranchiseTimeline" component={FranchiseTimelineScreen} />
       <HomeStack.Screen name="SearchResults" component={SearchResultsScreen} />
       <HomeStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <HomeStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
@@ -49,6 +53,8 @@ function MoviesStackScreen() {
     <MoviesStack.Navigator screenOptions={{ headerShown: false }}>
       <MoviesStack.Screen name="MoviesFeed" component={MoviesScreen} />
       <MoviesStack.Screen name="DiscoverGrid" component={DiscoverGridScreen} />
+      <MoviesStack.Screen name="FranchiseCatalog" component={FranchiseCatalogScreen} />
+      <MoviesStack.Screen name="FranchiseTimeline" component={FranchiseTimelineScreen} />
       <MoviesStack.Screen name="SearchResults" component={SearchResultsScreen} />
       <MoviesStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <MoviesStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
@@ -102,7 +108,7 @@ function StatsStackScreen() {
   );
 }
 
-const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "AzClassicDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll"]);
+const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "AzClassicDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll", "FranchiseCatalog", "FranchiseTimeline"]);
 const STACK_TABS = new Set<keyof RootTabParamList>(["Discover", "Movies", "Series", "Stats", "Profile"]);
 
 export function Navigation() {

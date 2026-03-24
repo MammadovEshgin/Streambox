@@ -21,6 +21,12 @@ export type HomeStackParamList = {
     source: DiscoverCollectionSource;
     title: string;
   };
+  FranchiseCatalog: undefined;
+  FranchiseTimeline: {
+    franchiseId: string;
+    franchiseTitle: string;
+    accentColor?: string;
+  };
   SearchResults: SearchResultsParams;
   MovieDetail: {
     movieId: string;

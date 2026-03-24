@@ -78,16 +78,21 @@ const Meta = styled.Text`
 type MediaCardProps = {
   item: MediaItem;
   onPress?: PressableProps["onPress"];
+  onPressIn?: PressableProps["onPressIn"];
   posterUri?: string;
   hideRating?: boolean;
 };
 
-export function MediaCard({ item, onPress, posterUri: customPosterUri, hideRating }: MediaCardProps) {
+export function MediaCard({ item, onPress, onPressIn, posterUri: customPosterUri, hideRating }: MediaCardProps) {
   const posterUri = customPosterUri ?? getTmdbImageUrl(item.posterPath, "w342");
   const ratingText = item.rating.toFixed(1);
 
   return (
-    <CardRoot onPress={onPress} style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}>
+    <CardRoot
+      onPress={onPress}
+      onPressIn={onPressIn}
+      style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}
+    >
       <PosterFrame>
         {posterUri ? (
           <PosterImage source={{ uri: posterUri }} resizeMode="cover" />
