@@ -194,6 +194,50 @@ function buildWatchHistorySyncArrays(entry: WatchHistoryEntry) {
   };
 }
 
+function buildWatchHistoryRows(userId: string, entries: WatchHistoryEntry[]) {
+  return entries.map((entry) => {
+    const arrays = buildWatchHistorySyncArrays(entry);
+    return {
+      user_id: userId,
+      media_type: entry.mediaType,
+      title: entry.title,
+      poster_path: entry.posterPath,
+      genres: entry.genres,
+      runtime_minutes: entry.runtimeMinutes,
+      episode_count: entry.episodeCount,
+      vote_average: entry.voteAverage,
+      release_year: entry.year ? Number(entry.year) : null,
+      cast_ids: arrays.castIds,
+      cast_names: arrays.castNames,
+      cast_profile_paths: arrays.castProfilePaths,
+      cast_genders: arrays.castGenders,
+      director_ids: arrays.directorIds,
+      director_names: arrays.directorNames,
+      director_profile_paths: arrays.directorProfilePaths,
+      watched_at: new Date(entry.watchedAt).toISOString(),
+      metadata_version: entry.metadataVersion,
+      snapshot: {},
+      ...getSyncIds(entry.id),
+    };
+  });
+}
+
+async function batchUpsertRows(table: string, rows: any[], conflictKeys: string) {
+  if (rows.length === 0) return;
+  const tmdb = rows.filter((row) => row.tmdb_id);
+  const internal = rows.filter((row) => row.internal_id);
+  if (tmdb.length > 0) {
+    await supabase.from(table).upsert(tmdb, { onConflict: `${conflictKeys},tmdb_id` });
+  }
+  if (internal.length > 0) {
+    await supabase.from(table).upsert(internal, { onConflict: `${conflictKeys},internal_id` });
+  }
+}
+
+function getWatchHistoryRemoteKey(mediaType: MediaType, tmdbId: number | null, internalId: string | null) {
+  return `${mediaType}:${internalId ?? tmdbId ?? "missing"}`;
+}
+
 function formatBirthdayForDatabase(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -502,34 +546,72 @@ async function backfillSnapshotToRemote(userId: string, snapshot: LocalUserSnaps
     ...snapshot.likedSeries.map(id => buildMediaRow(id, "liked", "tv")),
     ...snapshot.recentlyViewed.map(e => ({ user_id: userId, list_kind: "recently_viewed", media_type: e.mediaType, collected_at: new Date(e.timestamp).toISOString(), snapshot: {}, ...getSyncIds(e.id) }))
   ];
-  const watchHistoryRows = snapshot.watchHistory.map(entry => {
-    const arrays = buildWatchHistorySyncArrays(entry);
-    return { 
-      user_id: userId, media_type: entry.mediaType, title: entry.title, poster_path: entry.posterPath, genres: entry.genres, 
-      runtime_minutes: entry.runtimeMinutes, episode_count: entry.episodeCount, vote_average: entry.voteAverage, 
-      release_year: entry.year ? Number(entry.year) : null, cast_ids: arrays.castIds, cast_names: arrays.castNames, 
-      cast_profile_paths: arrays.castProfilePaths, cast_genders: arrays.castGenders, director_ids: arrays.directorIds, 
-      director_names: arrays.directorNames, director_profile_paths: arrays.directorProfilePaths, 
-      watched_at: new Date(entry.watchedAt).toISOString(), metadata_version: entry.metadataVersion, snapshot: {}, ...getSyncIds(entry.id) 
-    };
-  });
+  const watchHistoryRows = buildWatchHistoryRows(userId, snapshot.watchHistory);
   const episodeRows = Object.keys(snapshot.watchedEpisodes).filter(k => snapshot.watchedEpisodes[k]).map(k => k.split("_")).filter(p => p.length === 3).map(([t,s,e]) => ({ user_id: userId, series_tmdb_id: Number(t), season_number: Number(s), episode_number: Number(e), snapshot: {} }));
   const recRows = buildDailyRecommendationRows(snapshot).map(r => ({ user_id: userId, ...r }));
 
   await supabase.from("user_profiles").upsert({ id: userId, ...profileRow }, { onConflict: "id" });
   await supabase.from("user_settings").upsert(settingsRow, { onConflict: "user_id" });
 
-  const batchUpsert = async (table: string, rows: any[], conflictKeys: string) => {
-    if (rows.length === 0) return;
-    const tmdb = rows.filter(r => r.tmdb_id); const internal = rows.filter(r => r.internal_id);
-    if (tmdb.length > 0) await supabase.from(table).upsert(tmdb, { onConflict: `${conflictKeys},tmdb_id` });
-    if (internal.length > 0) await supabase.from(table).upsert(internal, { onConflict: `${conflictKeys},internal_id` });
-  };
-
-  await batchUpsert("user_media_library", mediaRows, "user_id,list_kind,media_type");
-  await batchUpsert("user_watch_history", watchHistoryRows, "user_id,media_type");
+  await batchUpsertRows("user_media_library", mediaRows, "user_id,list_kind,media_type");
+  await batchUpsertRows("user_watch_history", watchHistoryRows, "user_id,media_type");
   if (episodeRows.length > 0) await supabase.from("user_episode_progress").upsert(episodeRows, { onConflict: "user_id,series_tmdb_id,season_number,episode_number" });
-  if (recRows.length > 0) await batchUpsert("user_daily_recommendations", recRows, "user_id,recommendation_kind,recommendation_date");
+  if (recRows.length > 0) await batchUpsertRows("user_daily_recommendations", recRows, "user_id,recommendation_kind,recommendation_date");
+}
+
+export async function syncCurrentWatchHistoryToSupabase(entries?: WatchHistoryEntry[]) {
+  const userId = await getCurrentUserId();
+  if (!userId) return;
+
+  const watchHistory = entries ?? (await readLocalUserSnapshot()).watchHistory;
+  const watchHistoryRows = buildWatchHistoryRows(userId, watchHistory);
+  await batchUpsertRows("user_watch_history", watchHistoryRows, "user_id,media_type");
+
+  const { data: remoteRows, error } = await supabase
+    .from("user_watch_history")
+    .select("media_type, tmdb_id, internal_id")
+    .eq("user_id", userId);
+
+  if (error) {
+    throw error;
+  }
+
+  const localKeys = new Set(
+    watchHistoryRows.map((row) => getWatchHistoryRemoteKey(row.media_type, row.tmdb_id, row.internal_id))
+  );
+
+  for (const row of remoteRows || []) {
+    const rowKey = getWatchHistoryRemoteKey(row.media_type, row.tmdb_id, row.internal_id);
+    if (localKeys.has(rowKey)) {
+      continue;
+    }
+
+    let query = supabase
+      .from("user_watch_history")
+      .delete()
+      .eq("user_id", userId)
+      .eq("media_type", row.media_type);
+
+    if (row.tmdb_id) {
+      query = query.eq("tmdb_id", row.tmdb_id);
+    } else if (row.internal_id) {
+      query = query.eq("internal_id", row.internal_id);
+    } else {
+      continue;
+    }
+
+    const { error: deleteError } = await query;
+    if (deleteError) {
+      throw deleteError;
+    }
+  }
+}
+
+export async function syncCurrentLocalUserSnapshotToSupabase(targetId?: string) {
+  const userId = targetId || await getCurrentUserId();
+  if (!userId) return;
+  const snapshot = await readLocalUserSnapshot();
+  await backfillSnapshotToRemote(userId, snapshot);
 }
 
 async function queueInitialAssetUploads(userId: string, settings: PersistedSettings) {

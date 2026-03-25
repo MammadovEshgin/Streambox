@@ -34,7 +34,15 @@
       "WebFetch(domain:www.imdb.com)",
       "WebFetch(domain:imdbapi.dev)",
       "WebFetch(domain:mdblist.docs.apiary.io)",
-      "WebFetch(domain:stremio-addons.net)"
+      "WebFetch(domain:stremio-addons.net)",
+      "Bash(for file in /c/Users/e.a.mammadov/Desktop/app/supabase/migrations/*.sql)",
+      "Bash(do echo \"=== $file ===\")",
+      "Read(//c/Users/e.a.mammadov/Desktop/app/**)",
+      "Bash(done)",
+      "Bash(cat:*)",
+      "WebFetch(domain:developer.themoviedb.org)",
+      "WebFetch(domain:api.imdbapi.dev)",
+      "WebFetch(domain:api.themoviedb.org)"
     ]
   }
 }

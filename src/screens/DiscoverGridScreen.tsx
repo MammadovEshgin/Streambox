@@ -97,7 +97,7 @@ const HeaderTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
   font-size: 18px;
   line-height: 22px;
-  font-weight: 700;
+  font-family: Outfit_700Bold;
   letter-spacing: -0.3px;
 `;
 
@@ -130,7 +130,7 @@ const QuoteText = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
   font-size: 14px;
   line-height: 21px;
-  font-weight: 400;
+  font-family: Outfit_400Regular;
   font-style: italic;
   letter-spacing: 0.1px;
 `;
@@ -139,7 +139,7 @@ const QuoteMovieTitle = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
   font-size: 14px;
   line-height: 21px;
-  font-weight: 400;
+  font-family: Outfit_400Regular;
   font-style: italic;
   letter-spacing: 0.1px;
 `;
@@ -167,7 +167,7 @@ const QuoteMark = styled.Text`
   color: rgba(255, 255, 255, 0.07);
   font-size: 72px;
   line-height: 84px;
-  font-weight: 700;
+  font-family: Outfit_700Bold;
 `;
 
 const CardPressable = styled.Pressable`
@@ -206,7 +206,7 @@ const RatingValue = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
   font-size: 11px;
   line-height: 14px;
-  font-weight: 600;
+  font-family: Outfit_600SemiBold;
   letter-spacing: 0.15px;
 `;
 
@@ -229,7 +229,7 @@ const CardTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
   font-size: 13px;
   line-height: 16px;
-  font-weight: 600;
+  font-family: Outfit_600SemiBold;
   letter-spacing: -0.2px;
 `;
 
@@ -262,7 +262,7 @@ const LoadMoreText = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
   font-size: 13px;
   line-height: 16px;
-  font-weight: 600;
+  font-family: Outfit_600SemiBold;
   letter-spacing: 0.15px;
 `;
 

@@ -10,7 +10,12 @@ import {
   type SeriesDetails,
 } from "../api/tmdb";
 import { useAppSettings } from "../settings/AppSettingsContext";
-import { enqueueWatchHistoryDelete, enqueueWatchHistoryUpsert, type UserMediaSyncDetails } from "../services/userDataSync";
+import {
+  enqueueWatchHistoryDelete,
+  enqueueWatchHistoryUpsert,
+  syncCurrentWatchHistoryToSupabase,
+  type UserMediaSyncDetails,
+} from "../services/userDataSync";
 import { WATCH_HISTORY_STORAGE_KEY } from "../services/userDataStorage";
 
 const METADATA_VERSION = 4;
@@ -255,7 +260,8 @@ export function useWatchHistory() {
     async (details: MovieDetails, watchedAt: number, auditDetails?: UserMediaSyncDetails | null) => {
       const nextEntry = buildMovieWatchEntry(details, watchedAt);
       const filtered = entries.filter((entry) => !(entry.id === details.id && entry.mediaType === "movie"));
-      await persistEntries([nextEntry, ...filtered]);
+      const nextEntries = [nextEntry, ...filtered];
+      await persistEntries(nextEntries);
       await enqueueWatchHistoryUpsert(nextEntry, {
         title: details.title,
         imdbId: details.imdbId,
@@ -263,6 +269,7 @@ export function useWatchHistory() {
         year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
         ...auditDetails,
       });
+      await syncCurrentWatchHistoryToSupabase(nextEntries);
     },
     [entries, persistEntries]
   );
@@ -271,7 +278,8 @@ export function useWatchHistory() {
     async (details: SeriesDetails, watchedAt: number, auditDetails?: UserMediaSyncDetails | null) => {
       const nextEntry = buildSeriesWatchEntry(details, watchedAt);
       const filtered = entries.filter((entry) => !(entry.id === details.id && entry.mediaType === "tv"));
-      await persistEntries([nextEntry, ...filtered]);
+      const nextEntries = [nextEntry, ...filtered];
+      await persistEntries(nextEntries);
       await enqueueWatchHistoryUpsert(nextEntry, {
         title: details.title,
         imdbId: details.imdbId,
@@ -279,6 +287,7 @@ export function useWatchHistory() {
         year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
         ...auditDetails,
       });
+      await syncCurrentWatchHistoryToSupabase(nextEntries);
     },
     [entries, persistEntries]
   );
@@ -287,7 +296,8 @@ export function useWatchHistory() {
     async (details: any, watchedAt: number, auditDetails?: UserMediaSyncDetails | null) => {
       const nextEntry = buildAzClassicWatchEntry(details, watchedAt);
       const filtered = entries.filter((entry) => !(entry.id === details.id && entry.mediaType === "movie"));
-      await persistEntries([nextEntry, ...filtered]);
+      const nextEntries = [nextEntry, ...filtered];
+      await persistEntries(nextEntries);
       await enqueueWatchHistoryUpsert(nextEntry, {
         title: details.title,
         imdbId: details.imdbId || null,
@@ -295,6 +305,7 @@ export function useWatchHistory() {
         year: String(details.year || ""),
         ...auditDetails,
       });
+      await syncCurrentWatchHistoryToSupabase(nextEntries);
     },
     [entries, persistEntries]
   );
@@ -304,6 +315,7 @@ export function useWatchHistory() {
       const filtered = entries.filter((entry) => !(entry.id === id && entry.mediaType === mediaType));
       await persistEntries(filtered);
       await enqueueWatchHistoryDelete(mediaType, id, auditDetails ?? {});
+      await syncCurrentWatchHistoryToSupabase(filtered);
     },
     [entries, persistEntries]
   );

@@ -16,6 +16,8 @@ type TmdbMediaRecord = {
   id: number;
   title?: string;
   name?: string;
+  original_title?: string;
+  original_name?: string;
   poster_path: string | null;
   backdrop_path: string | null;
   vote_average: number;
@@ -43,6 +45,8 @@ type TmdbGenre = {
 type TmdbMovieDetailsResponse = {
   id: number;
   title: string;
+  original_title: string;
+  original_language: string;
   overview: string;
   runtime: number | null;
   genres: TmdbGenre[];
@@ -150,6 +154,8 @@ type TvMazeEpisodeRecord = {
 type TmdbTvDetailsWithCreditsResponse = {
   id: number;
   name: string;
+  original_name: string;
+  original_language: string;
   overview: string;
   poster_path: string | null;
   backdrop_path: string | null;
@@ -266,6 +272,7 @@ type TmdbPersonMovieCreditsResponse = {
 export type MediaItem = {
   id: number | string;
   title: string;
+  originalTitle?: string;
   posterPath: string | null;
   backdropPath: string | null;
   rating: number;
@@ -302,6 +309,7 @@ export type CrewMember = {
 export type MovieDetails = {
   id: number;
   title: string;
+  originalTitle?: string;
   overview: string;
   runtimeMinutes: number | null;
   genres: string[];
@@ -343,6 +351,7 @@ export type SeriesEpisode = {
 export type SeriesDetails = {
   id: number;
   title: string;
+  originalTitle?: string;
   overview: string;
   genres: string[];
   genreIds: number[];
@@ -500,9 +509,12 @@ function pickYear(item: TmdbMediaRecord): string {
 }
 
 function normalizeMedia(item: TmdbMediaRecord, fallbackType: MediaType): MediaItem {
+  const title = item.title ?? item.name ?? "Untitled";
+  const rawOriginal = item.original_title ?? item.original_name;
   return {
     id: item.id,
-    title: item.title ?? item.name ?? "Untitled",
+    title,
+    originalTitle: (rawOriginal && rawOriginal !== title) ? rawOriginal : undefined,
     posterPath: item.poster_path,
     backdropPath: item.backdrop_path,
     rating: Number.isFinite(item.vote_average) ? item.vote_average : 0,
@@ -1244,6 +1256,8 @@ export async function getMovieDetails(id: string): Promise<MovieDetails> {
   return {
     id: details.id,
     title: details.title,
+    originalTitle: (details.original_language !== "en" && details.original_title !== details.title)
+      ? details.original_title : undefined,
     overview: details.overview ?? "",
     runtimeMinutes: details.runtime,
     genres: details.genres.map((entry) => entry.name),
@@ -1304,6 +1318,8 @@ export async function getSeriesDetails(id: string): Promise<SeriesDetails> {
   return {
     id: data.id,
     title: data.name,
+    originalTitle: (data.original_language !== "en" && data.original_name !== data.name)
+      ? data.original_name : undefined,
     overview: data.overview ?? "",
     genres: data.genres.map((entry) => entry.name),
     genreIds: data.genres.map((entry) => entry.id),
@@ -2177,8 +2193,30 @@ export async function discoverWithFilters(
   };
 }
 
+const altTitleCache = new Map<string, string | null>();
 
+export async function getTurkishAlternativeTitle(
+  tmdbId: string,
+  mediaType: MediaType
+): Promise<string | null> {
+  const key = `${mediaType}#${tmdbId}`;
+  if (altTitleCache.has(key)) return altTitleCache.get(key)!;
 
-
+  try {
+    const endpoint =
+      mediaType === "movie"
+        ? `/movie/${tmdbId}/alternative_titles`
+        : `/tv/${tmdbId}/alternative_titles`;
+    const { data } = await tmdbClient.get(endpoint);
+    const titles = data.titles ?? data.results ?? [];
+    const turkish = titles.find((t: any) => t.iso_3166_1 === "TR");
+    const result = turkish?.title ?? null;
+    altTitleCache.set(key, result);
+    return result;
+  } catch {
+    altTitleCache.set(key, null);
+    return null;
+  }
+}
 
 

@@ -60,16 +60,19 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
     let appState = AppState.currentState;
     const subscription = AppState.addEventListener("change", (nextState: AppStateStatus) => {
       const cameToForeground = appState.match(/inactive|background/) && nextState === "active";
+      const movedToBackground = appState === "active" && nextState.match(/inactive|background/);
       appState = nextState;
 
-      if (!cameToForeground) {
-        return;
+      if (movedToBackground) {
+        void flushSupabaseUserDataSync(userId);
       }
 
-      void flushSupabaseUserDataSync(userId).then(async () => {
-        await reloadPersistedSettings();
-        notifyStorageChanged();
-      });
+      if (cameToForeground) {
+        void flushSupabaseUserDataSync(userId).then(async () => {
+          await reloadPersistedSettings();
+          notifyStorageChanged();
+        });
+      }
     });
 
     return () => {

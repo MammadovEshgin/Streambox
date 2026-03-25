@@ -32,8 +32,8 @@ const SearchRow = styled.View`
 
 const SearchField = styled.View<{ $focused: boolean }>`
   flex: 1;
-  height: 46px;
-  border-radius: 12px;
+  height: 48px;
+  border-radius: 16px;
   border-width: 1px;
   border-color: ${({ theme, $focused }) =>
     $focused ? theme.colors.primary : theme.colors.border};
@@ -144,13 +144,14 @@ const ResultInfo = styled.View`
 
 const ResultTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
   font-size: 15px;
-  font-weight: 600;
   line-height: 20px;
 `;
 
 const ResultMeta = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 13px;
   margin-top: 3px;
 `;
@@ -163,8 +164,8 @@ const ResultRating = styled.View`
 
 const RatingText = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_600SemiBold;
   font-size: 12px;
-  font-weight: 600;
   margin-left: 4px;
 `;
 
@@ -178,8 +179,9 @@ const MediaTypeBadge = styled.View`
 
 const MediaTypeBadgeText = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_500Medium;
   font-size: 11px;
-  font-weight: 600;
+  letter-spacing: 0.4px;
   text-transform: uppercase;
 `;
 
@@ -403,6 +405,7 @@ export function HomeHeader({
             style={{
               flex: 1,
               color: currentTheme.colors.textPrimary,
+              fontFamily: "Outfit_400Regular",
               fontSize: 15,
               letterSpacing: 0.1,
               padding: 0

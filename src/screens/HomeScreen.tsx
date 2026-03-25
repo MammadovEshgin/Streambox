@@ -1,11 +1,17 @@
-﻿import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
+import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ScrollView } from "react-native";
+import { FlatList, ScrollView } from "react-native";
 import styled from "styled-components/native";
 
 import { MediaItem, getPopular, getTrending } from "../api/tmdb";
 import { getAzClassicMovies, AzClassicMovie } from "../api/azClassics";
+import {
+  FranchiseCollection,
+  getFranchiseCollections,
+  prefetchFranchiseEntries,
+  refreshFranchiseCollections,
+} from "../api/franchises";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import {
@@ -69,15 +75,17 @@ const SectionLinkButton = styled.Pressable`
 
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 19px;
-  line-height: 24px;
+  font-family: ${({ theme }) => theme.typography.TitleMedium.fontFamily};
+  font-size: 20px;
+  line-height: 26px;
   font-weight: 700;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.4px;
 `;
 
 const SectionLink = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 13px;
+  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
+  font-size: 14px;
   letter-spacing: 0.25px;
 `;
 
@@ -91,7 +99,7 @@ const RailCardWrap = styled.View`
 
 const EmptyRail = styled.View`
   height: 220px;
-  border-radius: 12px;
+  border-radius: 16px;
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.border};
   background-color: ${({ theme }) => theme.colors.surface};
@@ -101,8 +109,9 @@ const EmptyRail = styled.View`
 
 const EmptyRailText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 13px;
-  letter-spacing: 0.2px;
+  font-family: ${({ theme }) => theme.typography.BodyMedium.fontFamily};
+  font-size: 14px;
+  letter-spacing: 0.25px;
 `;
 
 const LoadingWrap = styled.View`
@@ -113,10 +122,13 @@ const LoadingWrap = styled.View`
 
 const ErrorText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: ${({ theme }) => theme.typography.BodySmall.fontFamily};
   font-size: 14px;
   text-align: center;
-  margin-top: 8px;
+  margin-top: 12px;
 `;
+
+
 
 type RailProps = {
   title: string;
@@ -157,7 +169,10 @@ function DiscoveryRail({ title, data, onPressItem, onPressSeeAll }: RailProps) {
     <>
       <SectionHeader>
         <SectionTitle>{title}</SectionTitle>
-        <SectionLinkButton onPress={onPressSeeAll}>
+        <SectionLinkButton 
+          onPress={onPressSeeAll}
+          style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
+        >
           <SectionLink>See all</SectionLink>
         </SectionLinkButton>
       </SectionHeader>
@@ -193,6 +208,7 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
   const [trendingMovies, setTrendingMovies] = useState<MediaItem[]>(cachedDiscovery?.trendingMovies ?? []);
   const [trendingSeries, setTrendingSeries] = useState<MediaItem[]>(cachedDiscovery?.trendingSeries ?? []);
   const [azClassics, setAzClassics] = useState<AzClassicMovie[]>(cachedDiscovery?.azClassics ?? []);
+  const [franchises, setFranchises] = useState<FranchiseCollection[]>([]);
   const [isLoading, setIsLoading] = useState(!cachedDiscovery);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
@@ -206,11 +222,12 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     }
 
     try {
-      const [popular, movies, series, classics] = await Promise.all([
+      const [popular, movies, series, classics, franchiseData] = await Promise.all([
         getPopular(),
         getTrending("movie"),
         getTrending("tv"),
-        getAzClassicMovies()
+        getAzClassicMovies(),
+        getFranchiseCollections().catch(() => [] as FranchiseCollection[])
       ]);
 
       writeRuntimeCache<HomeDiscoveryCache>(HOME_DISCOVERY_CACHE_KEY, {
@@ -225,6 +242,7 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
         setTrendingMovies(movies);
         setTrendingSeries(series);
         setAzClassics(classics);
+        setFranchises(franchiseData);
         setErrorMessage(null);
       });
     } catch (error) {
@@ -248,9 +266,46 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     void loadDiscovery(Boolean(cachedDiscovery));
   }, [cachedDiscovery, loadDiscovery]);
 
+  useEffect(() => {
+    let active = true;
+
+    void refreshFranchiseCollections()
+      .then((freshCollections) => {
+        if (!active) return;
+        setFranchises((currentCollections) => {
+          const currentSignature = JSON.stringify(
+            currentCollections.map((item) => [
+              item.id,
+              item.title,
+              item.sortOrder,
+              item.totalEntries,
+              item.logoUrl,
+              item.cachedLogoUrl,
+            ])
+          );
+          const freshSignature = JSON.stringify(
+            freshCollections.map((item) => [
+              item.id,
+              item.title,
+              item.sortOrder,
+              item.totalEntries,
+              item.logoUrl,
+              item.cachedLogoUrl,
+            ])
+          );
+          return currentSignature === freshSignature ? currentCollections : freshCollections;
+        });
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const spotlightItems = useMemo(() => {
     const pool = popularMovies.length > 0 ? popularMovies : [...trendingMovies, ...trendingSeries];
-    return pool.filter((i) => i.backdropPath).slice(0, 5);
+    return pool.filter((i) => i.backdropPath).slice(0, 10);
   }, [popularMovies, trendingMovies, trendingSeries]);
 
   const handleSearchSubmit = useCallback(
@@ -361,6 +416,55 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
               });
             }}
           />
+
+          {/* Cinematic Journeys - Franchise Roadmaps */}
+          {franchises.length > 0 && (
+            <>
+              <SectionHeader>
+                <SectionTitle>Cinematic Journeys</SectionTitle>
+                <SectionLinkButton
+                  onPress={() => navigation.navigate("FranchiseCatalog")}
+                  style={({ pressed }: { pressed: boolean }) => [{ opacity: pressed ? 0.6 : 1 }]}
+                >
+                  <SectionLink>See all</SectionLink>
+                </SectionLinkButton>
+              </SectionHeader>
+              <RailWrap>
+                <FlatList
+                  data={franchises}
+                  horizontal
+                  keyExtractor={(item) => item.id}
+                  renderItem={({ item }) => (
+                    <RailCardWrap>
+                      <MediaCard
+                        item={{
+                          id: item.id as unknown as number,
+                          title: item.title,
+                          posterPath: "",
+                          backdropPath: null,
+                          mediaType: "movie" as const,
+                          rating: 0,
+                          overview: item.description || "",
+                          year: `${item.totalEntries} titles`,
+                        }}
+                        onPress={() => {
+                          navigation.navigate("FranchiseTimeline", {
+                            franchiseId: item.id,
+                            franchiseTitle: item.title,
+                          });
+                        }}
+                        onPressIn={() => prefetchFranchiseEntries(item.id)}
+                        posterUri={item.cachedLogoUrl ?? item.logoUrl ?? undefined}
+                        hideRating
+                      />
+                    </RailCardWrap>
+                  )}
+                  showsHorizontalScrollIndicator={false}
+                />
+              </RailWrap>
+            </>
+          )}
+
         </Content>
       </Layout>
 
