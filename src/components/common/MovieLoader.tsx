@@ -48,11 +48,11 @@ const IconShell = styled(Animated.View)<{ $size: number }>`
 `;
 
 const Label = styled.Text`
-  margin-top: 10px;
+  margin-top: 14px;
   color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 12px;
-  line-height: 16px;
-  letter-spacing: 0.3px;
+  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
+  font-size: 11px;
+  letter-spacing: 1.2px;
   text-transform: uppercase;
 `;
 

@@ -90,10 +90,10 @@ const HeroContent = styled.View`
 
 const HeroKicker = styled.Text`
   color: #ffd700;
+  font-family: Outfit_600SemiBold;
   font-size: 11px;
   line-height: 14px;
-  font-weight: 700;
-  letter-spacing: 1.2px;
+  letter-spacing: 1.6px;
   text-transform: uppercase;
 `;
 
@@ -101,10 +101,10 @@ const HeroTitle = styled.Text`
   margin-top: 8px;
   margin-right: 62px;
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 30px;
   line-height: 34px;
-  font-weight: 800;
-  letter-spacing: -0.55px;
+  letter-spacing: -0.8px;
 `;
 
 const HeroMeta = styled.View`
@@ -115,9 +115,9 @@ const HeroMeta = styled.View`
 
 const HeroMetaText = styled.Text`
   color: rgba(255, 255, 255, 0.9);
+  font-family: Outfit_400Regular;
   font-size: 13px;
   line-height: 16px;
-  letter-spacing: 0.1px;
 `;
 
 const HeroDescription = styled.Text`
@@ -142,9 +142,9 @@ const HeroGenreChip = styled.View`
 
 const HeroChipText = styled.Text`
   color: rgba(255, 255, 255, 0.85);
+  font-family: Outfit_500Medium;
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.3px;
 `;
 
 const HeroGlow = styled(LinearGradient)`
@@ -193,10 +193,10 @@ const SectionHeader = styled.View`
 
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 18px;
-  line-height: 23px;
-  font-weight: 700;
-  letter-spacing: -0.24px;
+  font-family: Outfit_600SemiBold;
+  font-size: 20px;
+  line-height: 26px;
+  letter-spacing: -0.4px;
 `;
 
 const SectionLink = styled.Pressable`
@@ -220,7 +220,7 @@ const RailCardWrap = styled.View`
 
 const EmptyRail = styled.View`
   height: 220px;
-  border-radius: 12px;
+  border-radius: 16px;
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.border};
   background-color: ${({ theme }) => theme.colors.surface};

@@ -43,7 +43,7 @@ const CarouselRoot = styled.View`
 const SlideContainer = styled.View`
   width: ${SLIDE_WIDTH}px;
   height: ${SLIDE_HEIGHT}px;
-  border-radius: ${({ theme }: { theme: AppTheme }) => theme.radius.lg}px;
+  border-radius: 20px;
   overflow: hidden;
   background-color: ${({ theme }: { theme: AppTheme }) => theme.colors.surface};
 `;
@@ -64,9 +64,9 @@ const LogoImage = styled.Image`
 
 const TitleText = styled.Text`
   color: ${({ theme }: { theme: AppTheme }) => theme.colors.textPrimary};
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.5px;
+  font-family: Outfit_700Bold;
+  font-size: 26px;
+  letter-spacing: -0.8px;
   margin-bottom: 8px;
 `;
 
@@ -78,13 +78,15 @@ const MetaRow = styled.View`
 
 const MetaText = styled.Text`
   color: ${({ theme }: { theme: AppTheme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 14px;
 `;
 
 const DescriptionText = styled.Text`
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 12px;
-  line-height: 17px;
+  color: ${({ theme }: { theme: AppTheme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
+  font-size: 13px;
+  line-height: 18px;
   margin-bottom: 8px;
 `;
 
@@ -103,7 +105,9 @@ const GenreChip = styled.View`
 
 const ChipText = styled.Text`
   color: ${({ theme }: { theme: AppTheme }) => theme.colors.textPrimary};
-  font-size: 10px;
+  font-family: Outfit_500Medium;
+  font-size: 11px;
+  letter-spacing: 0.2px;
 `;
 
 const DotRow = styled.View`

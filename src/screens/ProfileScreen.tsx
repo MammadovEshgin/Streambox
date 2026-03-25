@@ -135,8 +135,8 @@ const ProfileInfo = styled.View`
 
 const ProfileTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 22px;
-  font-weight: 800;
   letter-spacing: -0.5px;
   margin-top: 4px;
 `;
@@ -144,10 +144,9 @@ const ProfileTitle = styled.Text`
 const ProfileBio = styled.Text`
   margin-top: 8px;
   color: #ffffff;
+  font-family: Outfit_400Regular;
   font-size: 15px;
   line-height: 22px;
-  font-weight: 400;
-  letter-spacing: 0.1px;
 `;
 
 const MetaStack = styled.View`
@@ -165,9 +164,8 @@ const MetaItem = styled.View`
 
 const MetaText = styled.Text`
   color: rgba(255, 255, 255, 0.7);
+  font-family: Outfit_500Medium;
   font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 0.1px;
 `;
 
 const StatsRow = styled.View`
@@ -188,14 +186,14 @@ const StatItem = styled.View`
 
 const StatNumber = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 15px;
-  font-weight: 700;
 `;
 
 const StatLabel = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 14px;
-  font-weight: 400;
 `;
 
 const SectionWrap = styled.View`
@@ -211,8 +209,8 @@ const SectionHeader = styled.View`
 
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 19px;
-  font-weight: 800;
   letter-spacing: -0.4px;
 `;
 
@@ -227,8 +225,8 @@ const SectionDot = styled.View`
 
 const SectionMeta = styled.Text`
   color: rgba(255, 255, 255, 0.3);
+  font-family: Outfit_500Medium;
   font-size: 13px;
-  font-weight: 500;
 `;
 
 const SeeAllButton = styled.Pressable`
@@ -238,8 +236,8 @@ const SeeAllButton = styled.Pressable`
 
 const SeeAllText = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_600SemiBold;
   font-size: 13px;
-  font-weight: 600;
 `;
 
 const ToggleRow = styled.View`
@@ -261,8 +259,8 @@ const ToggleChip = styled.Pressable<{ $active: boolean }>`
 const ToggleLabel = styled.Text<{ $active: boolean }>`
   color: ${({ $active, theme }) =>
     $active ? theme.colors.primary : "rgba(255,255,255,0.35)"};
+  font-family: Outfit_600SemiBold;
   font-size: 12px;
-  font-weight: 600;
   letter-spacing: 0.2px;
 `;
 
@@ -345,8 +343,8 @@ const FullViewEditButton = styled.Pressable`
 
 const FullViewEditLabel = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_700Bold;
   font-size: 15px;
-  font-weight: 700;
 `;
 
 // â”€â”€ Edit profile modal styles â”€â”€
@@ -367,8 +365,8 @@ const EditModalHeader = styled.View`
 
 const EditModalTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 18px;
-  font-weight: 700;
 `;
 
 const EditModalSaveButton = styled.Pressable`
@@ -381,8 +379,8 @@ const EditModalSaveButton = styled.Pressable`
 
 const EditModalSaveLabel = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_700Bold;
   font-size: 14px;
-  font-weight: 700;
 `;
 
 const EditModalContent = styled.ScrollView.attrs({
@@ -398,8 +396,8 @@ const EditField = styled.View`
 
 const EditFieldLabel = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_600SemiBold;
   font-size: 12px;
-  font-weight: 600;
   margin-bottom: 6px;
 `;
 

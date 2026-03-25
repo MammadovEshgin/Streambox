@@ -13,10 +13,13 @@
 import axios from "axios";
 import { resolveDirectLink } from "./DirectLinkService";
 import { getProviderConfig } from "./providerConfigService";
+import { getTurkishAlternativeTitle } from "../api/tmdb";
 
 export type WebPlayerRequest = {
   mediaType: "movie" | "tv";
   title: string;
+  originalTitle?: string;
+  tmdbId?: string;
   imdbId?: string | null;
   year?: string | null;
   seasonNumber?: number;
@@ -223,7 +226,7 @@ function normalizeName(name: string): string {
     .trim();
 }
 
-function generateSearchQueries(title: string, year?: string | null): string[] {
+function generateSearchQueries(title: string, year?: string | null, originalTitle?: string): string[] {
   const queries: string[] = [];
   const seen = new Set<string>();
 
@@ -236,7 +239,13 @@ function generateSearchQueries(title: string, year?: string | null): string[] {
     }
   }
 
-  // 1. Original title first — highest-fidelity match
+  // 0. Original-language title — highest priority for non-English sources
+  if (originalTitle) {
+    add(originalTitle);
+    if (year) add(`${originalTitle} ${year}`);
+  }
+
+  // 1. English title — highest-fidelity match
   add(title);
 
   // 2. Title + year for disambiguation
@@ -391,8 +400,8 @@ function scoreHdFilmResult(result: SearchResult, target: string, targetYear?: st
  *  - Year match gives +50, year mismatch on close titles gives -40
  *  - Return only the #1 result — no array, no fallback to wrong movies
  */
-async function findBestHdFilmMatch(title: string, castNames: string[], year?: string | null): Promise<MatchResult | null> {
-  const queries = generateSearchQueries(title, year);
+async function findBestHdFilmMatch(title: string, castNames: string[], year?: string | null, originalTitle?: string): Promise<MatchResult | null> {
+  const queries = generateSearchQueries(title, year, originalTitle);
   const allResults = new Map<string, SearchResult>();
 
   for (let qi = 0; qi < queries.length; qi++) {
@@ -404,7 +413,11 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
       }
     }
 
-    const bestSoFar = Math.max(0, ...[...allResults.values()].map(r => scoreHdFilmResult(r, title, year)));
+    const bestSoFar = Math.max(0, ...[...allResults.values()].map(r => {
+      const s1 = scoreHdFilmResult(r, title, year);
+      const s2 = originalTitle ? scoreHdFilmResult(r, originalTitle, year) : 0;
+      return Math.max(s1, s2);
+    }));
     if (bestSoFar >= 120) break;
     if (qi >= 4) break;
   }
@@ -414,7 +427,10 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
   const scored = [...allResults.entries()]
     .map(([href, result]) => ({
       href,
-      titleScore: scoreHdFilmResult(result, title, year),
+      titleScore: Math.max(
+        scoreHdFilmResult(result, title, year),
+        originalTitle ? scoreHdFilmResult(result, originalTitle, year) : 0
+      ),
       qualityWarning: detectQualityWarning(result)
     }))
     .filter((entry) => entry.titleScore >= 50)
@@ -583,8 +599,8 @@ async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<S
   }
 }
 
-async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: string | null): Promise<MatchResult | null> {
-  const queries = generateSearchQueries(title, year);
+async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: string | null, originalTitle?: string): Promise<MatchResult | null> {
+  const queries = generateSearchQueries(title, year, originalTitle);
   const allResults = new Map<string, SearchResult>();
 
   for (let qi = 0; qi < queries.length; qi++) {
@@ -596,7 +612,11 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
     }
 
     // Early exit if we already have a strong match
-    const bestSoFar = Math.max(0, ...[...allResults.values()].map(r => scoreHdFilmResult(r, title, year)));
+    const bestSoFar = Math.max(0, ...[...allResults.values()].map(r => {
+      const s1 = scoreHdFilmResult(r, title, year);
+      const s2 = originalTitle ? scoreHdFilmResult(r, originalTitle, year) : 0;
+      return Math.max(s1, s2);
+    }));
     if (bestSoFar >= 120) break;
     if (qi >= 4) break;
   }
@@ -606,7 +626,10 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
   const scored = [...allResults.entries()]
     .map(([href, result]) => ({
       href,
-      score: scoreHdFilmResult(result, title, year),
+      score: Math.max(
+        scoreHdFilmResult(result, title, year),
+        originalTitle ? scoreHdFilmResult(result, originalTitle, year) : 0
+      ),
       qualityWarning: detectQualityWarning(result)
     }))
     .filter((entry) => entry.score >= 50)
@@ -981,7 +1004,7 @@ type DizipalResolveResult = {
 };
 
 async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<DizipalResolveResult | null> {
-  const dizipalMatch = await searchDizipal(request.title, request.mediaType, request.year);
+  const dizipalMatch = await searchDizipal(request.title, request.mediaType, request.year, request.originalTitle);
   if (!dizipalMatch) return null;
 
   let targetUrl = dizipalMatch.url;
@@ -1026,7 +1049,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
 
   // 1. HDFilm — find the single best match, check if video is available
   const isSeries = request.mediaType !== "movie";
-  const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year);
+  const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year, request.originalTitle);
 
   if (hdfilmMatch) {
     if (isSeries) {
@@ -1075,6 +1098,48 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
       }
       return { url: pageUrl, source: "dizipal", qualityWarning };
     }
+  }
+
+  // 2b. Retry Turkish sources with alternative title from TMDB
+  if (request.tmdbId) {
+    try {
+      const altTitle = await getTurkishAlternativeTitle(request.tmdbId, request.mediaType);
+      if (altTitle && altTitle !== request.title && altTitle !== request.originalTitle) {
+        const hdRetry = await findBestHdFilmMatch(altTitle, request.castNames ?? [], request.year);
+        if (hdRetry) {
+          if (isSeries) {
+            if (request.seasonNumber && request.episodeNumber) {
+              const episodeResult = await resolvePlayableSeriesEpisodeUrl(
+                hdRetry.url, request.seasonNumber, request.episodeNumber
+              );
+              if (episodeResult) return { url: episodeResult.url, source: "hdfilm", qualityWarning: episodeResult.qualityWarning };
+            }
+          } else {
+            const videoCheck = await checkVideoAvailability(hdRetry.url);
+            if (videoCheck.available) return { url: hdRetry.url, source: "hdfilm", qualityWarning: videoCheck.qualityWarning };
+          }
+        }
+
+        const dizipalRetry = await searchDizipal(altTitle, request.mediaType, request.year);
+        if (dizipalRetry) {
+          const retryRequest: WebPlayerRequest = { ...request, title: altTitle, originalTitle: undefined };
+          const dizipalResult = await resolvePlayableDizipalUrl(retryRequest);
+          if (dizipalResult) {
+            const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
+            if (stream) {
+              return {
+                url: pageUrl, source: "dizipal_direct",
+                streamUrl: stream.streamUrl, streamType: stream.streamType,
+                poster: stream.poster, referer: stream.referer || "",
+                embedUrl: embedUrl ?? undefined, subtitles: stream.subtitles, qualityWarning,
+              };
+            }
+            if (embedUrl) return { url: embedUrl, source: "dizipal_embed", embedUrl, qualityWarning };
+            return { url: pageUrl, source: "dizipal", qualityWarning };
+          }
+        }
+      }
+    } catch { /* silent */ }
   }
 
   // 3. Try Direct Scrapers (Consumet & Stremio Addons) final fallback for best quality

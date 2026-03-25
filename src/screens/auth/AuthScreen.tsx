@@ -63,9 +63,10 @@ const BrandSection = styled(Animated.View)`
 
 const BrandTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -0.8px;
+  font-family: ${({ theme }) => theme.typography.Display.fontFamily};
+  font-size: 36px;
+  line-height: 42px;
+  letter-spacing: -1.2px;
 `;
 
 const BrandAccent = styled.Text`
@@ -75,8 +76,9 @@ const BrandAccent = styled.Text`
 const BrandSubtitle = styled.Text`
   margin-top: 8px;
   color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 14px;
-  line-height: 20px;
+  font-family: ${({ theme }) => theme.typography.BodyMedium.fontFamily};
+  font-size: 15px;
+  line-height: 22px;
 `;
 
 const TabRow = styled.View`
@@ -101,8 +103,8 @@ const Tab = styled.Pressable<{ $active: boolean }>`
 const TabLabel = styled.Text<{ $active: boolean }>`
   color: ${({ $active, theme }) =>
     $active ? theme.colors.primary : theme.colors.textSecondary};
-  font-size: 14px;
-  font-weight: 700;
+  font-family: ${({ theme }) => theme.typography.Button.fontFamily};
+  font-size: 15px;
   letter-spacing: 0.2px;
 `;
 
@@ -116,11 +118,11 @@ const FormCard = styled(Animated.View)`
 
 const FieldLabel = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.8px;
+  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
+  font-size: 12px;
+  letter-spacing: 1.2px;
   text-transform: uppercase;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 `;
 
 const InputWrap = styled.View<{ $error?: boolean }>`
@@ -168,20 +170,20 @@ const PasswordRuleText = styled.Text<{ $met: boolean }>`
 `;
 
 const SubmitButton = styled.Pressable<{ $disabled: boolean }>`
-  margin-top: 4px;
-  min-height: 52px;
+  margin-top: 8px;
+  min-height: 56px;
   align-items: center;
   justify-content: center;
-  border-radius: 14px;
+  border-radius: 99px;
   background-color: ${({ theme }) => theme.colors.primary};
-  opacity: ${({ $disabled }) => ($disabled ? 0.35 : 1)};
+  opacity: ${({ $disabled }) => ($disabled ? 0.4 : 1)};
 `;
 
 const SubmitLabel = styled.Text`
   color: #ffffff;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.2px;
+  font-family: ${({ theme }) => theme.typography.Button.fontFamily};
+  font-size: 16px;
+  letter-spacing: 0.4px;
 `;
 
 const ForgotButton = styled.Pressable`
@@ -193,8 +195,8 @@ const ForgotButton = styled.Pressable`
 
 const ForgotText = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
+  font-family: ${({ theme }) => theme.typography.Button.fontFamily};
   font-size: 13px;
-  font-weight: 600;
 `;
 
 const GeneralError = styled.Text`
@@ -305,9 +307,9 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
 
   return (
     <Root>
-      <Backdrop colors={["#0A0806", "#060504", "#000000"]} locations={[0, 0.5, 1]} />
-      <Glow $size={200} $top={60} $right={-80} $opacity={0.07} />
-      <Glow $size={140} $top={300} $right={280} $opacity={0.05} />
+      <Backdrop colors={["#121214", "#0A0A0C", "#050505"]} locations={[0, 0.4, 1]} />
+      <Glow $size={200} $top={60} $right={-80} $opacity={0.09} />
+      <Glow $size={140} $top={300} $right={280} $opacity={0.07} />
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
@@ -483,6 +485,7 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
                   $disabled={isDisabled}
                   disabled={isDisabled}
                   onPress={() => void handleSubmit()}
+                  style={({ pressed }) => [{ transform: [{ scale: pressed && !isDisabled ? 0.98 : 1 }] }]}
                 >
                   {isSubmitting ? (
                     <ActivityIndicator color="#ffffff" size="small" />

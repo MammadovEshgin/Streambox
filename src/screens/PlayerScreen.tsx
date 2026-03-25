@@ -2125,6 +2125,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     resolveWebPlayerUrl({
       mediaType: route.params.mediaType,
       title: route.params.title,
+      originalTitle: route.params.originalTitle,
+      tmdbId: route.params.tmdbId,
       imdbId: route.params.imdbId,
       year: route.params.year,
       seasonNumber: route.params.seasonNumber,
