@@ -578,6 +578,7 @@ if (!details) {
                               tmdbId: String(details.id),
                               imdbId: details.imdbId,
                               title: details.title,
+                              originalTitle: details.originalTitle,
                               castNames: details.cast.slice(0, 4).map((c) => c.name),
                               year: details.releaseDate ? details.releaseDate.slice(0, 4) : null
                             });
