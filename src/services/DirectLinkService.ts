@@ -34,7 +34,7 @@ export type SubtitleTrack = {
 
 export type StreamResolveRequest = {
   mediaType: MediaType;
-  tmdbId: string;
+  tmdbId?: string | null;
   imdbId?: string | null;
   seasonNumber?: number;
   episodeNumber?: number;
@@ -157,11 +157,6 @@ const ADDON_INSTANCES: AddonInstance[] = [
     id: "nuvio",
     baseUrl: "https://nuviostreams.hayd.uk",
     minAcceptableQuality: 720
-  },
-  {
-    id: "stremify",
-    baseUrl: "https://stremify.hayd.uk",
-    minAcceptableQuality: 480
   }
 ];
 
@@ -292,6 +287,30 @@ function extractSubtitlesFromHlsManifest(manifest: string): SubtitleTrack[] {
 }
 
 // ---------------------------------------------------------------------------
+// Known provider headers (injected when behaviorHints is absent)
+// ---------------------------------------------------------------------------
+const UA_HEADER =
+  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+
+const KNOWN_PROVIDER_HEADERS: Array<{ pattern: RegExp; headers: Record<string, string> }> = [
+  {
+    pattern: /vixsrc\.to/i,
+    headers: { Referer: "https://vixsrc.to/", "User-Agent": UA_HEADER }
+  },
+  {
+    pattern: /vidcloud/i,
+    headers: { Referer: "https://vidcloud.to/" }
+  }
+];
+
+function inferProviderHeaders(url: string): Record<string, string> {
+  for (const entry of KNOWN_PROVIDER_HEADERS) {
+    if (entry.pattern.test(url)) return { ...entry.headers };
+  }
+  return {};
+}
+
+// ---------------------------------------------------------------------------
 // Stremio stream entry → StreamCandidate conversion
 // ---------------------------------------------------------------------------
 function getFormatFromUrl(url: string, nameHint?: string): StreamFormat {
@@ -338,8 +357,8 @@ function stremioEntryToCandidate(
   // Detect format
   const format = getFormatFromUrl(url, nameAndTitle);
 
-  // Extract custom headers (Referer etc.) from behaviorHints
-  const headers: Record<string, string> = {};
+  // Extract custom headers (Referer etc.) from behaviorHints, with provider-specific fallback
+  const headers: Record<string, string> = { ...inferProviderHeaders(url) };
   if (entry.behaviorHints?.headers) {
     Object.assign(headers, entry.behaviorHints.headers);
   }
@@ -539,14 +558,21 @@ async function enrichHlsCandidate(candidate: StreamCandidate): Promise<StreamCan
   // Merge with any quality options already known from stream title
   const qualityOptions = hlsQualityOptions.length > 0 ? hlsQualityOptions : (candidate.qualityOptions ?? []);
 
-  // Pick the best rendition URL to play directly (NO auto quality)
-  // Prefer 1080p, fallback to 720p, fallback to master URL
-  const best1080 = qualityOptions.find((q) => q.height === 1080);
-  const best720 = qualityOptions.find((q) => q.height === 720);
-  const bestRendition = best1080 ?? best720;
-  const playUrl = bestRendition?.url ?? masterUrl;
-  const playHeight = bestRendition?.height ?? metadata.height;
+  // Keep the master URL for direct play to ensure audio and subtitle tracks are correctly negotiated
+  const playUrl = masterUrl;
+  const playHeight = metadata.height;
   const playLabel = playHeight ? `${playHeight}p` : metadata.qualityLabel;
+
+  // Build quality options list starting with an 'Auto' entry
+  const finalQualityOptions: QualityOption[] = [];
+  if (qualityOptions.length > 0) {
+    finalQualityOptions.push({
+      label: "Auto (Best)",
+      height: 0,
+      url: masterUrl
+    });
+    finalQualityOptions.push(...qualityOptions);
+  }
 
   const enriched: StreamCandidate = {
     ...candidate,
@@ -556,7 +582,7 @@ async function enrichHlsCandidate(candidate: StreamCandidate): Promise<StreamCan
     frameRate: metadata.frameRate ?? candidate.frameRate,
     qualityLabel: playLabel ?? candidate.qualityLabel,
     subtitles: filteredSubtitles.length > 0 ? filteredSubtitles : candidate.subtitles,
-    qualityOptions: qualityOptions.length > 0 ? qualityOptions : undefined
+    qualityOptions: finalQualityOptions.length > 0 ? finalQualityOptions : undefined
   };
 
   return { ...enriched, score: scoreCandidate(enriched) };

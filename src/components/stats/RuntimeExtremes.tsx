@@ -57,7 +57,7 @@ const RuntimeText = styled.Text`
 
 type Props = {
   history: WatchHistoryEntry[];
-  onItemPress?: (entry: { id: number; mediaType: string }) => void;
+  onItemPress?: (entry: { id: number | string; mediaType: string }) => void;
 };
 
 function formatRuntime(minutes: number): string {

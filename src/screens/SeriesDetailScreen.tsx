@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ScrollView } from "react-native";
 import Animated, {
   Easing,
@@ -29,6 +29,7 @@ import {
   getSeriesEpisodeFallbackImagesWithImdb,
   getSeriesExternalRatings,
   getSeriesSeasonEpisodes,
+  getSeriesTrailerUrl,
   getSmartSimilarSeries,
   getTmdbSeasonEpisodeFallbackImages,
   getTmdbImageUrl
@@ -38,10 +39,10 @@ import { RatingServiceIcon } from "../components/common/RatingServiceIcon";
 import { CastCrewSection } from "../components/detail/CastCrewSection";
 import { DetailHeader } from "../components/detail/DetailHeader";
 import { MetaPill } from "../components/detail/MetaPill";
+import { SeriesWatchedModal } from "../components/detail/SeriesWatchedModal";
 import {
-  WatchedDateModal,
   formatWatchedDateLabel,
-  normalizeWatchedDate
+  normalizeWatchedDate,
 } from "../components/detail/WatchedDateModal";
 import { MediaCard } from "../components/home/MediaCard";
 import { useLikedSeries } from "../hooks/useLikedSeries";
@@ -505,6 +506,14 @@ function SwipeableEpisodeCard({ episode, stillUri, isWatched, onToggleWatched, o
   );
 }
 
+const MemoizedSwipeableEpisodeCard = React.memo(SwipeableEpisodeCard, (prev, next) => {
+  return (
+    prev.episode.id === next.episode.id &&
+    prev.isWatched === next.isWatched &&
+    prev.stillUri === next.stillUri
+  );
+});
+
 function formatDate(value: string): string {
   if (!value) {
     return "Unknown release date";
@@ -538,8 +547,8 @@ function formatEpisodeMeta(item: SeriesEpisode): string {
 
 export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const currentTheme = useTheme();
-  const { isEpisodeWatched, toggleEpisodeWatched, markSeasonWatched } = useWatchedEpisodes();
-  const { isInWatchlist, removeFromWatchlist, toggleWatchlist } = useSeriesWatchlist();
+  const { isEpisodeWatched, toggleEpisodeWatched, markSeasonWatched, unmarkSeasonWatched } = useWatchedEpisodes();
+  const { isInWatchlist, toggleWatchlist } = useSeriesWatchlist();
   const { isLiked, toggleLikedSeries } = useLikedSeries();
   const { getWatchHistoryEntry, saveSeriesToWatchHistory, removeFromWatchHistory } = useWatchHistory();
   const [details, setDetails] = useState<SeriesDetails | null>(null);
@@ -553,7 +562,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSynopsisExpanded, setIsSynopsisExpanded] = useState(false);
   const [isWatchedDateModalVisible, setIsWatchedDateModalVisible] = useState(false);
-  const [selectedWatchedDate, setSelectedWatchedDate] = useState(() => new Date());
+  const [trailerUrl, setTrailerUrl] = useState<string | null>(null);
   const loveProgress = useSharedValue(0);
 
   const loadSeries = useCallback(async () => {
@@ -595,6 +604,8 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
       } else {
         setEpisodeFallbackImages({});
       }
+
+      getSeriesTrailerUrl(route.params.seriesId).then((url) => setTrailerUrl(url));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to load series details.";
       setErrorMessage(message);
@@ -718,12 +729,6 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
     };
   });
 
-  useEffect(() => {
-    if (!isWatchedDateModalVisible) {
-      setSelectedWatchedDate(currentWatchedEntry ? new Date(currentWatchedEntry.watchedAt) : new Date());
-    }
-  }, [currentWatchedEntry, isWatchedDateModalVisible]);
-
   const renderSimilarItem = useCallback(
     ({ item }: ListRenderItemInfo<MediaItem>) => {
       return (
@@ -741,53 +746,30 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   );
 
   const handleOpenWatchedDateModal = useCallback(() => {
-    setSelectedWatchedDate(currentWatchedEntry ? new Date(currentWatchedEntry.watchedAt) : new Date());
     setIsWatchedDateModalVisible(true);
-  }, [currentWatchedEntry]);
+  }, []);
 
   const handleCloseWatchedDateModal = useCallback(() => {
     setIsWatchedDateModalVisible(false);
   }, []);
 
-  const handleSaveWatchedDate = useCallback(async () => {
-    if (!details) {
-      return;
-    }
-
-    await saveSeriesToWatchHistory(details, normalizeWatchedDate(selectedWatchedDate), {
-      title: details.title,
-      imdbId: details.imdbId,
-      posterPath: details.posterPath,
-      year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
-    });
-    await removeFromWatchlist(details.id, {
-      title: details.title,
-      imdbId: details.imdbId,
-      posterPath: details.posterPath,
-      year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
-    });
-
-    for (const season of details.seasons) {
-      const episodeNumbers = Array.from({ length: season.episodeCount }, (_, i) => i + 1);
-      await markSeasonWatched(details.id, season.seasonNumber, episodeNumbers);
-    }
-
-    setIsWatchedDateModalVisible(false);
-  }, [details, markSeasonWatched, removeFromWatchlist, saveSeriesToWatchHistory, selectedWatchedDate]);
-
-  const handleRemoveWatchedDate = useCallback(async () => {
-    if (!details) {
-      return;
-    }
-
-    await removeFromWatchHistory(details.id, "tv", {
-      title: details.title,
-      imdbId: details.imdbId,
-      posterPath: details.posterPath,
-      year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
-    });
-    setIsWatchedDateModalVisible(false);
-  }, [details, removeFromWatchHistory]);
+  const handleWatchedConfirm = useCallback(
+    async (allSeasonsWatched: boolean) => {
+      if (!details) return;
+      const auditDetails = {
+        title: details.title,
+        imdbId: details.imdbId,
+        posterPath: details.posterPath,
+        year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
+      };
+      if (allSeasonsWatched) {
+        await saveSeriesToWatchHistory(details, normalizeWatchedDate(new Date()), auditDetails);
+      } else if (getWatchHistoryEntry(details.id, "tv")) {
+        await removeFromWatchHistory(details.id, "tv", auditDetails);
+      }
+    },
+    [details, saveSeriesToWatchHistory, removeFromWatchHistory, getWatchHistoryEntry]
+  );
 
   if (isLoading && !details) {
     return (
@@ -835,6 +817,16 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
             }
           }}
           showLikeAction={false}
+          showTrailerAction={!!trailerUrl}
+          onTrailer={() => {
+            navigation.navigate("Player", {
+              mediaType: "tv",
+              tmdbId: String(details.id),
+              title: `${details.title} - Trailer`,
+              trailerUrl: trailerUrl!,
+              year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
+            });
+          }}
         />
 
         <Body>
@@ -994,7 +986,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                       const stillUri = tmdbStill ?? fallbackStill ?? seasonPosterFallback ?? seriesBackdropFallback;
 
                       return (
-                        <SwipeableEpisodeCard
+                        <MemoizedSwipeableEpisodeCard
                           key={episode.id}
                           episode={episode}
                           stillUri={stillUri}
@@ -1056,16 +1048,16 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
           </Animated.View>
         </Body>
       </ScrollView>
-      <WatchedDateModal
+      <SeriesWatchedModal
         visible={isWatchedDateModalVisible}
-        title={details.title}
-        mediaLabel="series"
-        selectedDate={selectedWatchedDate}
-        isWatched={isCurrentSeriesWatched}
-        onChangeDate={setSelectedWatchedDate}
+        seriesTitle={details.title}
+        seasons={details.seasons}
+        seriesId={details.id}
+        isEpisodeWatched={isEpisodeWatched}
+        markSeasonWatched={markSeasonWatched}
+        unmarkSeasonWatched={unmarkSeasonWatched}
+        onConfirm={handleWatchedConfirm}
         onClose={handleCloseWatchedDateModal}
-        onSave={handleSaveWatchedDate}
-        onRemove={isCurrentSeriesWatched ? handleRemoveWatchedDate : undefined}
       />
     </Root>
   );

@@ -1,4 +1,4 @@
-﻿import AsyncStorage from "@react-native-async-storage/async-storage";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
   MediaItem,
@@ -220,10 +220,10 @@ async function pickFromPersonalizedCandidates(
 
   const likedSet = new Set(likedMovieIds);
   const filteredCandidates = candidates.filter((candidate) => {
-    if (likedSet.has(candidate.id)) {
+    if (likedSet.has(candidate.id as number)) {
       return false;
     }
-    if (historyTmdbIds.has(candidate.id)) {
+    if (historyTmdbIds.has(candidate.id as number)) {
       return false;
     }
     if (candidate.imdbId && historyImdbIds.has(candidate.imdbId)) {
@@ -237,7 +237,7 @@ async function pickFromPersonalizedCandidates(
   }
 
   const candidateProfiles = (
-    await Promise.all(filteredCandidates.slice(0, CANDIDATE_PROFILE_LIMIT).map((candidate) => getMovieTasteProfile(candidate.id)))
+    await Promise.all(filteredCandidates.slice(0, CANDIDATE_PROFILE_LIMIT).map((candidate) => getMovieTasteProfile(candidate.id as number)))
   ).filter((profile): profile is MovieTasteProfile => profile !== null);
 
   if (candidateProfiles.length === 0) {
@@ -249,7 +249,7 @@ async function pickFromPersonalizedCandidates(
   const scored = filteredCandidates
     .slice(0, CANDIDATE_PROFILE_LIMIT)
     .map((candidate) => {
-      const profile = candidateProfileById.get(candidate.id);
+      const profile = candidateProfileById.get(candidate.id as number);
       if (!profile) {
         return {
           candidate,
@@ -279,7 +279,7 @@ async function pickFallbackMovie(historyTmdbIds: Set<number>, historyImdbIds: Se
   }
 
   const unseen = pool.filter((movie) => {
-    if (historyTmdbIds.has(movie.id)) {
+    if (historyTmdbIds.has(movie.id as number)) {
       return false;
     }
 
@@ -334,7 +334,7 @@ async function persistDailyPick(dateKey: string, movie: MediaItem | null) {
 }
 
 async function persistHistory(movie: MediaItem, history: StoredHistory) {
-  const nextTmdbIds = history.tmdbIds.includes(movie.id) ? history.tmdbIds : [...history.tmdbIds, movie.id];
+  const nextTmdbIds = history.tmdbIds.includes(movie.id as number) ? history.tmdbIds : [...history.tmdbIds, movie.id as number];
   const nextImdbIds =
     movie.imdbId && !history.imdbIds.includes(movie.imdbId) ? [...history.imdbIds, movie.imdbId] : history.imdbIds;
 

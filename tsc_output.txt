@@ -1,0 +1,31 @@
+﻿src/screens/DiscoverGridScreen.tsx(122,3): error TS2353: Object literal may only specify known properties, and 'horizontal' does not exist in type 'Attrs<FastOmit<RefAttributes<FlatList<{ readonly quote: "Bu kino ki var, bu ├ºox q╔Öliz m╔Ös╔Öl╔Ödi. H╔Öm q╔Ölizdi h╔Ömd╔Öki vacib."; readonly movieTitle: "╞Åhm╔Öd haradad─▒r"; } | { readonly quote: "Abbasqulu b╔Öyin naz─▒ il╔Ö ├ºox oynay─▒r─▒q ha K╔Örb╔Ölayi!"; readonly movieTitle: "Ax─▒r─▒nc─▒ a┼ƒ─▒r─▒m"; } | ... 7 more ... | { ...; }>>, n...'.
+src/screens/DiscoverGridScreen.tsx(557,17): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(props: FastOmit<Substitute<FastOmit<FastOmit<Substitute<RefAttributes<FlatList<{ readonly quote: "Bu kino ki var, bu ├ºox q╔Öliz m╔Ös╔Öl╔Ödi. H╔Öm q╔Ölizdi h╔Ömd╔Öki vacib."; readonly movieTitle: "╞Åhm╔Öd haradad─▒r"; } | { readonly quote: "Abbasqulu b╔Öyin naz─▒ il╔Ö ├ºox oynay─▒r─▒q ha K╔Örb╔Ölayi!"; readonly movieTitle: "Ax─▒r─▒nc─▒ a┼ƒ─▒r─▒m"; } | ... 7 more ... | { ...; }>>, RefAttributes<...>>, never>, never>, FastOmit<...>>, keyof ExecutionProps> & FastOmit<...> & { ...; }): Element', gave the following error.
+    Type '{ data: readonly [{ readonly quote: "Bu kino ki var, bu ├ºox q╔Öliz m╔Ös╔Öl╔Ödi. H╔Öm q╔Ölizdi h╔Ömd╔Öki vacib."; readonly movieTitle: "╞Åhm╔Öd haradad─▒r"; }, { readonly quote: "Abbasqulu b╔Öyin naz─▒ il╔Ö ├ºox oynay─▒r─▒q ha K╔Örb╔Ölayi!"; readonly movieTitle: "Ax─▒r─▒nc─▒ a┼ƒ─▒r─▒m"; }, ... 7 more ..., { ...; }]; ... 6 more ...; renderIte...' is not assignable to type 'IntrinsicAttributes & FastOmit<Substitute<FastOmit<FastOmit<Substitute<RefAttributes<FlatList<{ readonly quote: "Bu kino ki var, bu ├ºox q╔Öliz m╔Ös╔Öl╔Ödi. H╔Öm q╔Ölizdi h╔Ömd╔Öki vacib."; readonly movieTitle: "╞Åhm╔Öd haradad─▒r"; } | ... 8 more ... | { ...; }>>, RefAttributes<...>>, never>, never>, FastOmit<...>>, keyof Exec...'.
+      Property 'data' does not exist on type 'IntrinsicAttributes & FastOmit<Substitute<FastOmit<FastOmit<Substitute<RefAttributes<FlatList<{ readonly quote: "Bu kino ki var, bu ├ºox q╔Öliz m╔Ös╔Öl╔Ödi. H╔Öm q╔Ölizdi h╔Ömd╔Öki vacib."; readonly movieTitle: "╞Åhm╔Öd haradad─▒r"; } | ... 8 more ... | { ...; }>>, RefAttributes<...>>, never>, never>, FastOmit<...>>, keyof Exec...'.
+  Overload 2 of 2, '(props: FastOmit<FastOmit<Substitute<RefAttributes<FlatList<{ readonly quote: "Bu kino ki var, bu ├ºox q╔Öliz m╔Ös╔Öl╔Ödi. H╔Öm q╔Ölizdi h╔Ömd╔Öki vacib."; readonly movieTitle: "╞Åhm╔Öd haradad─▒r"; } | { readonly quote: "Abbasqulu b╔Öyin naz─▒ il╔Ö ├ºox oynay─▒r─▒q ha K╔Örb╔Ölayi!"; readonly movieTitle: "Ax─▒r─▒nc─▒ a┼ƒ─▒r─▒m"; } | ... 7 more ... | { ...; }>>, RefAttributes<...>>, never>, never>): ReactNode', gave the following error.
+    Type '{ data: readonly [{ readonly quote: "Bu kino ki var, bu ├ºox q╔Öliz m╔Ös╔Öl╔Ödi. H╔Öm q╔Ölizdi h╔Ömd╔Öki vacib."; readonly movieTitle: "╞Åhm╔Öd haradad─▒r"; }, { readonly quote: "Abbasqulu b╔Öyin naz─▒ il╔Ö ├ºox oynay─▒r─▒q ha K╔Örb╔Ölayi!"; readonly movieTitle: "Ax─▒r─▒nc─▒ a┼ƒ─▒r─▒m"; }, ... 7 more ..., { ...; }]; ... 6 more ...; renderIte...' is not assignable to type 'IntrinsicAttributes & FastOmit<FastOmit<Substitute<RefAttributes<FlatList<{ readonly quote: "Bu kino ki var, bu ├ºox q╔Öliz m╔Ös╔Öl╔Ödi. H╔Öm q╔Ölizdi h╔Ömd╔Öki vacib."; readonly movieTitle: "╞Åhm╔Öd haradad─▒r"; } | ... 8 more ... | { ...; }>>, RefAttributes<...>>, never>, never>'.
+      Property 'data' does not exist on type 'IntrinsicAttributes & FastOmit<FastOmit<Substitute<RefAttributes<FlatList<{ readonly quote: "Bu kino ki var, bu ├ºox q╔Öliz m╔Ös╔Öl╔Ödi. H╔Öm q╔Ölizdi h╔Ömd╔Öki vacib."; readonly movieTitle: "╞Åhm╔Öd haradad─▒r"; } | ... 8 more ... | { ...; }>>, RefAttributes<...>>, never>, never>'.
+src/screens/DiscoverGridScreen.tsx(558,32): error TS7006: Parameter 'item' implicitly has an 'any' type.
+src/screens/DiscoverGridScreen.tsx(558,38): error TS7006: Parameter 'index' implicitly has an 'any' type.
+src/screens/DiscoverGridScreen.tsx(568,32): error TS7031: Binding element 'item' implicitly has an 'any' type.
+src/screens/DiscoverGridScreen.tsx(568,38): error TS7031: Binding element 'index' implicitly has an 'any' type.
+src/screens/StatsScreen.tsx(197,49): error TS2322: Type '(entry: { id: number; mediaType: string; }) => void' is not assignable to type '(entry: { id: string | number; mediaType: string; }) => void'.
+  Types of parameters 'entry' and 'entry' are incompatible.
+    Type '{ id: string | number; mediaType: string; }' is not assignable to type '{ id: number; mediaType: string; }'.
+      Types of property 'id' are incompatible.
+        Type 'string | number' is not assignable to type 'number'.
+          Type 'string' is not assignable to type 'number'.
+src/services/movieOfDayService.ts(223,22): error TS2345: Argument of type 'string | number' is not assignable to parameter of type 'number'.
+  Type 'string' is not assignable to type 'number'.
+src/services/movieOfDayService.ts(226,28): error TS2345: Argument of type 'string | number' is not assignable to parameter of type 'number'.
+  Type 'string' is not assignable to type 'number'.
+src/services/movieOfDayService.ts(252,48): error TS2345: Argument of type 'string | number' is not assignable to parameter of type 'number'.
+  Type 'string' is not assignable to type 'number'.
+src/services/movieOfDayService.ts(282,28): error TS2345: Argument of type 'string | number' is not assignable to parameter of type 'number'.
+  Type 'string' is not assignable to type 'number'.
+src/services/movieOfDayService.ts(337,48): error TS2345: Argument of type 'string | number' is not assignable to parameter of type 'number'.
+  Type 'string' is not assignable to type 'number'.
+src/services/movieOfDayService.ts(344,7): error TS2322: Type '(string | number)[]' is not assignable to type 'number[]'.
+  Type 'string | number' is not assignable to type 'number'.
+    Type 'string' is not assignable to type 'number'.

@@ -42,41 +42,21 @@ type SyncAssetKind = "avatar" | "banner";
 type SyncMetadata = Record<string, unknown>;
 
 function getSyncIds(id: string | number | null | undefined) {
-  if (id === null || id === undefined) {
-    return { tmdb_id: null, internal_id: null };
-  }
-  const sId = String(id);
-  if (sId === "null" || sId === "undefined" || sId.trim() === "") {
-    return { tmdb_id: null, internal_id: null };
-  }
-  // UUID regex
+  if (id === undefined || id === null) return { tmdb_id: null, internal_id: null };
+  const sId = String(id).trim();
+  if (sId.length === 0) return { tmdb_id: null, internal_id: null };
   const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sId);
-  if (isUUID) {
-    return { tmdb_id: null, internal_id: sId };
+  if (isUUID) return { tmdb_id: null, internal_id: sId };
+  if (/^\d+$/.test(sId)) {
+    const numId = parseInt(sId, 10);
+    if (!isNaN(numId) && numId > 0) return { tmdb_id: numId, internal_id: null };
   }
-  const numId = parseInt(sId, 10);
-  if (!isNaN(numId) && String(numId) === sId) {
-    return { tmdb_id: numId, internal_id: null };
-  }
-  // Fallback: If it's a string but doesn't match UUID format, treat as null to avoid DB errors
   return { tmdb_id: null, internal_id: null };
 }
 
-type RecentlyWatchedEntry = {
-  id: number | string;
-  mediaType: MediaType;
-  timestamp: number;
-};
-
-type MovieOfDayCurrent = {
-  dateKey: string;
-  movie: Record<string, unknown> | null;
-};
-
-type MovieOfDayHistory = {
-  tmdbIds: (number | string)[];
-  imdbIds: string[];
-};
+type RecentlyWatchedEntry = { id: number | string; mediaType: MediaType; timestamp: number };
+type MovieOfDayCurrent = { dateKey: string; movie: Record<string, unknown> | null };
+type MovieOfDayHistory = { tmdbIds: (number | string)[]; imdbIds: string[] };
 
 type LocalUserSnapshot = {
   settings: PersistedSettings;
@@ -146,21 +126,10 @@ type RemoteDailyRecommendationEntry = {
 
 type RemoteBootstrap = {
   profile?: {
-    displayName?: string;
-    bio?: string;
-    location?: string;
-    birthday?: string | null;
-    joinedAt?: string;
-    avatarPath?: string | null;
-    bannerPath?: string | null;
-    avatarVersion?: number;
-    bannerVersion?: number;
+    displayName?: string; bio?: string; location?: string; birthday?: string | null; joinedAt?: string;
+    avatarPath?: string | null; bannerPath?: string | null; avatarVersion?: number; bannerVersion?: number;
   };
-  settings?: {
-    themeId?: string;
-    onboardingCompletedAt?: string | null;
-    preferences?: SyncMetadata;
-  };
+  settings?: { themeId?: string; onboardingCompletedAt?: string | null; preferences?: SyncMetadata; };
   watchlist?: RemoteMediaLibraryEntry[];
   liked?: RemoteMediaLibraryEntry[];
   recentlyViewed?: RemoteMediaLibraryEntry[];
@@ -169,143 +138,34 @@ type RemoteBootstrap = {
   dailyRecommendations?: RemoteDailyRecommendationEntry[];
 };
 
-type QueuedProfileSettingsOperation = {
-  kind: "profile_settings";
-  userId: string;
-  settings: PersistedSettings;
-  auditMetadata: SyncMetadata;
-};
-
-type QueuedAssetUploadOperation = {
-  kind: "asset_upload";
-  userId: string;
-  assetKind: SyncAssetKind;
-  localUri: string;
-  previousPath: string | null;
-  nextVersion: number;
-};
-
-type QueuedMediaLibraryOperation = {
-  kind: "media_library";
-  userId: string;
-  operation: "upsert" | "delete";
-  listKind: SyncListKind;
-  mediaType: MediaType;
-  tmdbId: number | string;
-  imdbId: string | null;
-  collectedAt: string;
-  snapshot: SyncMetadata;
-  auditMetadata: SyncMetadata;
-};
-
-type QueuedWatchHistoryUpsertOperation = {
-  kind: "watch_history_upsert";
-  userId: string;
-  entry: WatchHistoryEntry;
-  auditMetadata: SyncMetadata;
-};
-
-type QueuedWatchHistoryDeleteOperation = {
-  kind: "watch_history_delete";
-  userId: string;
-  mediaType: MediaType;
-  tmdbId: number | string;
-  auditMetadata: SyncMetadata;
-};
-
-type QueuedEpisodeProgressOperation = {
-  kind: "episode_progress";
-  userId: string;
-  seriesTmdbId: number;
-  seasonNumber: number;
-  episodeNumber: number;
-  isWatched: boolean;
-  watchedAt: string;
-  auditMetadata: SyncMetadata;
-};
-
-type QueuedDailyRecommendationOperation = {
-  kind: "daily_recommendation";
-  userId: string;
-  recommendationKind: string;
-  recommendationDate: string;
-  mediaType: MediaType;
-  tmdbId: number | null;
-  imdbId: string | null;
-  strategy: string | null;
-  snapshot: SyncMetadata;
-};
-
-type QueuedAuthEventOperation = {
-  kind: "auth_event";
-  userId: string;
-  actionCategory: string;
-  actionType: string;
-  entityType: string | null;
-  entityKey: string | null;
-  metadata: SyncMetadata;
-  createdAt: string;
-};
+type QueuedProfileSettingsOperation = { kind: "profile_settings"; userId: string; settings: PersistedSettings; auditMetadata: SyncMetadata; };
+type QueuedAssetUploadOperation = { kind: "asset_upload"; userId: string; assetKind: SyncAssetKind; localUri: string; previousPath: string | null; nextVersion: number; };
+type QueuedMediaLibraryOperation = { kind: "media_library"; userId: string; operation: "upsert" | "delete"; listKind: SyncListKind; mediaType: MediaType; tmdbId: number | string; imdbId: string | null; collectedAt: string; snapshot: SyncMetadata; auditMetadata: SyncMetadata; };
+type QueuedWatchHistoryUpsertOperation = { kind: "watch_history_upsert"; userId: string; entry: WatchHistoryEntry; auditMetadata: SyncMetadata; };
+type QueuedWatchHistoryDeleteOperation = { kind: "watch_history_delete"; userId: string; mediaType: MediaType; tmdbId: number | string; auditMetadata: SyncMetadata; };
+type QueuedEpisodeProgressOperation = { kind: "episode_progress"; userId: string; seriesTmdbId: number; seasonNumber: number; episodeNumber: number; isWatched: boolean; watchedAt: string; auditMetadata: SyncMetadata; };
+type QueuedDailyRecommendationOperation = { kind: "daily_recommendation"; userId: string; recommendationKind: string; recommendationDate: string; mediaType: MediaType; tmdbId: number | null; imdbId: string | null; strategy: string | null; snapshot: SyncMetadata; };
+type QueuedAuthEventOperation = { kind: "auth_event"; userId: string; actionCategory: string; actionType: string; entityType: string | null; entityKey: string | null; metadata: SyncMetadata; createdAt: string; };
 
 type PendingSyncOperation =
-  | QueuedProfileSettingsOperation
-  | QueuedAssetUploadOperation
-  | QueuedMediaLibraryOperation
-  | QueuedWatchHistoryUpsertOperation
-  | QueuedWatchHistoryDeleteOperation
-  | QueuedEpisodeProgressOperation
-  | QueuedDailyRecommendationOperation
-  | QueuedAuthEventOperation;
+  | QueuedProfileSettingsOperation | QueuedAssetUploadOperation | QueuedMediaLibraryOperation
+  | QueuedWatchHistoryUpsertOperation | QueuedWatchHistoryDeleteOperation | QueuedEpisodeProgressOperation
+  | QueuedDailyRecommendationOperation | QueuedAuthEventOperation;
 
-export type UserMediaSyncDetails = {
-  title?: string;
-  imdbId?: string | null;
-  posterPath?: string | null;
-  year?: string | null;
-  overview?: string | null;
-};
+export type UserMediaSyncDetails = { title?: string; imdbId?: string | null; posterPath?: string | null; year?: string | null; overview?: string | null; };
 
 let flushPromise: Promise<void> | null = null;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function resolveThemeId(value: unknown): ThemeId {
-  return typeof value === "string" && VALID_THEME_IDS.has(value as ThemeId)
-    ? (value as ThemeId)
-    : DEFAULT_THEME_ID;
-}
-
-function coerceMediaType(value: unknown): MediaType {
-  return value === "tv" ? "tv" : "movie";
-}
-
-function coerceStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
-    : [];
-}
-
-function coerceNumberArray(value: unknown): number[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))
-    : [];
-}
-
-function isLocalFileUri(uri: string | null | undefined): uri is string {
-  return typeof uri === "string" && uri.startsWith("file://");
-}
-
-function normalizeSyncMetadata(value: SyncMetadata | null | undefined): SyncMetadata {
-  return isRecord(value) ? value : {};
-}
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function resolveThemeId(value: unknown): ThemeId { return typeof value === "string" && VALID_THEME_IDS.has(value as ThemeId) ? (value as ThemeId) : DEFAULT_THEME_ID; }
+function coerceMediaType(value: unknown): MediaType { return value === "tv" ? "tv" : "movie"; }
+function coerceStringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : []; }
+function coerceNumberArray(value: unknown): number[] { return Array.isArray(value) ? value.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry)) : []; }
+function isLocalFileUri(uri: string | null | undefined): uri is string { return typeof uri === "string" && uri.startsWith("file://"); }
+function normalizeSyncMetadata(value: SyncMetadata | null | undefined): SyncMetadata { return isRecord(value) ? value : {}; }
 
 function normalizeMediaSnapshot(details?: UserMediaSyncDetails | null): SyncMetadata {
-  if (!details) {
-    return {};
-  }
-
+  if (!details) return {};
   const snapshot: SyncMetadata = {};
   if (details.title) snapshot.title = details.title;
   if (details.imdbId) snapshot.imdbId = details.imdbId;
@@ -316,17 +176,13 @@ function normalizeMediaSnapshot(details?: UserMediaSyncDetails | null): SyncMeta
 }
 
 function sanitizeParallelArray<T>(values: T[] | null | undefined, targetLength: number): T[] {
-  if (!Array.isArray(values) || targetLength <= 0) {
-    return [];
-  }
-
+  if (!Array.isArray(values) || targetLength <= 0) return [];
   return values.slice(0, targetLength);
 }
 
 function buildWatchHistorySyncArrays(entry: WatchHistoryEntry) {
   const castIds = Array.isArray(entry.castIds) ? entry.castIds : [];
   const directorIds = Array.isArray(entry.directorIds) ? entry.directorIds : [];
-
   return {
     castIds,
     castNames: sanitizeParallelArray(entry.castNames, castIds.length),
@@ -340,256 +196,108 @@ function buildWatchHistorySyncArrays(entry: WatchHistoryEntry) {
 
 function formatBirthdayForDatabase(value: string): string | null {
   const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
+  if (!trimmed) return null;
   const parts = trimmed.split("/");
-  if (parts.length !== 3) {
-    return null;
-  }
-
-  const day = Number(parts[0]);
-  const month = Number(parts[1]);
-  const year = Number(parts[2]);
-  if (!Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year)) {
-    return null;
-  }
-
+  if (parts.length !== 3) return null;
+  const day = Number(parts[0]); const month = Number(parts[1]); const year = Number(parts[2]);
+  if (!Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year)) return null;
   const date = new Date(Date.UTC(year, month - 1, day));
-  if (
-    Number.isNaN(date.getTime())
-    || date.getUTCFullYear() !== year
-    || date.getUTCMonth() !== month - 1
-    || date.getUTCDate() !== day
-  ) {
-    return null;
-  }
-
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
   return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function formatBirthdayForLocal(value: string | null | undefined): string {
-  if (!value) {
-    return "";
-  }
-
+  if (!value) return "";
   const [year, month, day] = value.split("-");
-  if (!year || !month || !day) {
-    return "";
-  }
-
+  if (!year || !month || !day) return "";
   return `${day.padStart(2, "0")}/${month.padStart(2, "0")}/${year}`;
 }
 
-function getEpisodeKey(seriesTmdbId: number, seasonNumber: number, episodeNumber: number) {
-  return `${seriesTmdbId}_${seasonNumber}_${episodeNumber}`;
-}
-
-function getBootstrapCompleteKey(userId: string) {
-  return `${BOOTSTRAP_COMPLETE_KEY_PREFIX}${userId}`;
-}
-
+function getEpisodeKey(seriesTmdbId: number, seasonNumber: number, episodeNumber: number) { return `${seriesTmdbId}_${seasonNumber}_${episodeNumber}`; }
+function getBootstrapCompleteKey(userId: string) { return `${BOOTSTRAP_COMPLETE_KEY_PREFIX}${userId}`; }
 function getTodayDateKey(now: Date = new Date()) {
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
+  const year = now.getFullYear(); const month = String(now.getMonth() + 1).padStart(2, "0"); const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
 function normalizePersistedSettings(raw: string | null): PersistedSettings {
-  if (!raw) {
-    return createDefaultSettings(DEFAULT_THEME_ID);
-  }
-
-  try {
-    return normalizeSettings(JSON.parse(raw) as Partial<PersistedSettings>, DEFAULT_THEME_ID);
-  } catch {
-    return createDefaultSettings(DEFAULT_THEME_ID);
-  }
+  if (!raw) return createDefaultSettings(DEFAULT_THEME_ID);
+  try { return normalizeSettings(JSON.parse(raw) as Partial<PersistedSettings>, DEFAULT_THEME_ID); } catch { return createDefaultSettings(DEFAULT_THEME_ID); }
 }
 
 function normalizeIdList(raw: string | null): (number | string)[] {
-  if (!raw) {
-    return [];
-  }
-
+  if (!raw) return [];
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed.filter((entry): entry is number | string => {
-      if (typeof entry === "number") {
-        return Number.isFinite(entry);
-      }
-      if (typeof entry === "string") {
-        return entry.trim().length > 0 && entry !== "null" && entry !== "undefined";
-      }
-      return false;
-    });
-  } catch {
-    return [];
-  }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is number | string => (typeof entry === "number" && Number.isFinite(entry)) || (typeof entry === "string" && entry.trim().length > 0 && entry !== "null" && entry !== "undefined"));
+  } catch { return []; }
 }
 
 function normalizeWatchHistory(raw: string | null): WatchHistoryEntry[] {
-  if (!raw) {
-    return [];
-  }
-
+  if (!raw) return [];
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return parsed
-      .filter((entry): entry is Record<string, unknown> => isRecord(entry))
-      .map((entry) => ({
-        id: (typeof entry.id === "number" || typeof entry.id === "string") ? entry.id : 0,
-        mediaType: coerceMediaType(entry.mediaType),
-        title: typeof entry.title === "string" ? entry.title : "",
-        posterPath: typeof entry.posterPath === "string" ? entry.posterPath : null,
-        genres: coerceStringArray(entry.genres),
-        runtimeMinutes: typeof entry.runtimeMinutes === "number" ? entry.runtimeMinutes : null,
-        episodeCount: typeof entry.episodeCount === "number" ? entry.episodeCount : null,
-        voteAverage: typeof entry.voteAverage === "number" ? entry.voteAverage : 0,
-        year: typeof entry.year === "string" ? entry.year : "",
-        castIds: coerceNumberArray(entry.castIds),
-        castNames: coerceStringArray(entry.castNames),
-        castProfilePaths: Array.isArray(entry.castProfilePaths)
-          ? entry.castProfilePaths.map((value) => (typeof value === "string" ? value : null))
-          : [],
-        castGenders: Array.isArray(entry.castGenders)
-          ? entry.castGenders.filter((value): value is "male" | "female" => value === "male" || value === "female")
-          : [],
-        directorIds: coerceNumberArray(entry.directorIds),
-        directorNames: coerceStringArray(entry.directorNames),
-        directorProfilePaths: Array.isArray(entry.directorProfilePaths)
-          ? entry.directorProfilePaths.map((value) => (typeof value === "string" ? value : null))
-          : [],
-        watchedAt: typeof entry.watchedAt === "number" ? entry.watchedAt : Date.now(),
-        metadataVersion: typeof entry.metadataVersion === "number" ? entry.metadataVersion : 1,
-      }))
-      .filter((entry) => {
-        const hasId = typeof entry.id === "number" ? entry.id > 0 : (typeof entry.id === "string" && entry.id.trim().length > 0 && entry.id !== "null");
-        return hasId && entry.title.trim().length > 0;
-      });
-  } catch {
-    return [];
-  }
+    const parsed = JSON.parse(raw); if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isRecord).map((entry) => ({
+      id: (typeof entry.id === "number" || typeof entry.id === "string") ? entry.id : 0,
+      mediaType: coerceMediaType(entry.mediaType),
+      title: typeof entry.title === "string" ? entry.title : "",
+      posterPath: typeof entry.posterPath === "string" ? entry.posterPath : null,
+      genres: coerceStringArray(entry.genres),
+      runtimeMinutes: typeof entry.runtimeMinutes === "number" ? entry.runtimeMinutes : null,
+      episodeCount: typeof entry.episodeCount === "number" ? entry.episodeCount : null,
+      voteAverage: typeof entry.voteAverage === "number" ? entry.voteAverage : 0,
+      year: typeof entry.year === "string" ? entry.year : "",
+      castIds: coerceNumberArray(entry.castIds),
+      castNames: coerceStringArray(entry.castNames),
+      castProfilePaths: Array.isArray(entry.castProfilePaths) ? entry.castProfilePaths.map(v => typeof v === "string" ? v : null) : [],
+      castGenders: Array.isArray(entry.castGenders) ? entry.castGenders.filter(v => v === "male" || v === "female") : [],
+      directorIds: coerceNumberArray(entry.directorIds),
+      directorNames: coerceStringArray(entry.directorNames),
+      directorProfilePaths: Array.isArray(entry.directorProfilePaths) ? entry.directorProfilePaths.map(v => typeof v === "string" ? v : null) : [],
+      watchedAt: typeof entry.watchedAt === "number" ? entry.watchedAt : Date.now(),
+      metadataVersion: typeof entry.metadataVersion === "number" ? entry.metadataVersion : 1,
+    })).filter(entry => (typeof entry.id === "string" ? entry.id.length > 0 : entry.id > 0) && entry.title.trim().length > 0);
+  } catch { return []; }
 }
 
 function normalizeRecentlyViewed(raw: string | null): RecentlyWatchedEntry[] {
-  if (!raw) {
-    return [];
-  }
-
+  if (!raw) return [];
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return parsed
-      .filter((entry): entry is Record<string, unknown> => isRecord(entry))
-      .map((entry) => ({
-        id: (typeof entry.id === "number" || typeof entry.id === "string") ? entry.id : 0,
-        mediaType: coerceMediaType(entry.mediaType),
-        timestamp: typeof entry.timestamp === "number" ? entry.timestamp : Date.now(),
-      }))
-      .filter((entry) => {
-        if (typeof entry.id === "number") return entry.id > 0;
-        if (typeof entry.id === "string") return entry.id.trim().length > 0 && entry.id !== "null" && entry.id !== "undefined";
-        return false;
-      })
-      .sort((left, right) => right.timestamp - left.timestamp)
-      .slice(0, MAX_RECENTLY_VIEWED);
-  } catch {
-    return [];
-  }
+    const parsed = JSON.parse(raw); if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isRecord).map(entry => ({
+      id: (typeof entry.id === "number" || typeof entry.id === "string") ? entry.id : 0,
+      mediaType: coerceMediaType(entry.mediaType),
+      timestamp: typeof entry.timestamp === "number" ? entry.timestamp : Date.now(),
+    })).filter(entry => typeof entry.id === "number" ? entry.id > 0 : (typeof entry.id === "string" && entry.id.trim().length > 0 && entry.id !== "null"))
+    .sort((a,b) => b.timestamp - a.timestamp).slice(0, MAX_RECENTLY_VIEWED);
+  } catch { return []; }
 }
 
 function normalizeWatchedEpisodes(raw: string | null): Record<string, boolean> {
-  if (!raw) {
-    return {};
-  }
-
+  if (!raw) return {};
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) {
-      return {};
-    }
-
-    return Object.entries(parsed).reduce<Record<string, boolean>>((accumulator, [key, value]) => {
-      if (value === true) {
-        accumulator[key] = true;
-      }
-      return accumulator;
-    }, {});
-  } catch {
-    return {};
-  }
+    const parsed = JSON.parse(raw); if (!isRecord(parsed)) return {};
+    return Object.entries(parsed).reduce((acc, [k,v]) => { if (v === true) acc[k] = true; return acc; }, {} as Record<string, boolean>);
+  } catch { return {}; }
 }
 
 function normalizeMovieOfDayCurrent(raw: string | null): MovieOfDayCurrent | null {
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed) || typeof parsed.dateKey !== "string") {
-      return null;
-    }
-
-    return {
-      dateKey: parsed.dateKey,
-      movie: isRecord(parsed.movie) ? parsed.movie : null,
-    };
-  } catch {
-    return null;
-  }
+  if (!raw) return null;
+  try { const parsed = JSON.parse(raw); if (!isRecord(parsed) || typeof parsed.dateKey !== "string") return null; return { dateKey: parsed.dateKey, movie: isRecord(parsed.movie) ? parsed.movie : null }; } catch { return null; }
 }
 
 function normalizeMovieOfDayHistory(raw: string | null): MovieOfDayHistory {
-  if (!raw) {
-    return { tmdbIds: [], imdbIds: [] };
-  }
-
+  if (!raw) return { tmdbIds: [], imdbIds: [] };
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) {
-      return { tmdbIds: [], imdbIds: [] };
-    }
-
-    return {
-      tmdbIds: coerceNumberArray(parsed.tmdbIds),
-      imdbIds: Array.isArray(parsed.imdbIds)
-        ? parsed.imdbIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-        : [],
-    };
-  } catch {
-    return { tmdbIds: [], imdbIds: [] };
-  }
+    const parsed = JSON.parse(raw); if (!isRecord(parsed)) return { tmdbIds: [], imdbIds: [] };
+    return { tmdbIds: Array.isArray(parsed.tmdbIds) ? parsed.tmdbIds : [], imdbIds: Array.isArray(parsed.imdbIds) ? parsed.imdbIds.filter(v => typeof v === "string") : [] };
+  } catch { return { tmdbIds: [], imdbIds: [] }; }
 }
 
 async function readLocalUserSnapshot(): Promise<LocalUserSnapshot> {
-  const entries = await AsyncStorage.multiGet([
-    APP_SETTINGS_STORAGE_KEY,
-    WATCHLIST_STORAGE_KEY,
-    SERIES_WATCHLIST_STORAGE_KEY,
-    LIKED_MOVIES_STORAGE_KEY,
-    LIKED_SERIES_STORAGE_KEY,
-    WATCH_HISTORY_STORAGE_KEY,
-    RECENTLY_WATCHED_STORAGE_KEY,
-    WATCHED_EPISODES_STORAGE_KEY,
-    MOVIE_OF_DAY_CURRENT_STORAGE_KEY,
-    MOVIE_OF_DAY_HISTORY_STORAGE_KEY,
-  ]);
+  const entries = await AsyncStorage.multiGet([APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY]);
   const map = new Map(entries);
-
   return {
     settings: normalizePersistedSettings(map.get(APP_SETTINGS_STORAGE_KEY) ?? null),
     movieWatchlist: normalizeIdList(map.get(WATCHLIST_STORAGE_KEY) ?? null),
@@ -605,7 +313,7 @@ async function readLocalUserSnapshot(): Promise<LocalUserSnapshot> {
 }
 
 async function writeLocalUserSnapshot(snapshot: LocalUserSnapshot) {
-  const setPairs: Array<[string, string]> = [
+  const pairs: Array<[string, string]> = [
     [APP_SETTINGS_STORAGE_KEY, JSON.stringify(snapshot.settings)],
     [WATCHLIST_STORAGE_KEY, JSON.stringify(snapshot.movieWatchlist)],
     [SERIES_WATCHLIST_STORAGE_KEY, JSON.stringify(snapshot.seriesWatchlist)],
@@ -616,1351 +324,338 @@ async function writeLocalUserSnapshot(snapshot: LocalUserSnapshot) {
     [WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(snapshot.watchedEpisodes)],
     [MOVIE_OF_DAY_HISTORY_STORAGE_KEY, JSON.stringify(snapshot.movieOfDayHistory)],
   ];
-
-  if (snapshot.movieOfDayCurrent) {
-    setPairs.push([MOVIE_OF_DAY_CURRENT_STORAGE_KEY, JSON.stringify(snapshot.movieOfDayCurrent)]);
-  }
-
-  await AsyncStorage.multiSet(setPairs);
-  if (!snapshot.movieOfDayCurrent) {
-    await AsyncStorage.removeItem(MOVIE_OF_DAY_CURRENT_STORAGE_KEY);
-  }
+  if (snapshot.movieOfDayCurrent) pairs.push([MOVIE_OF_DAY_CURRENT_STORAGE_KEY, JSON.stringify(snapshot.movieOfDayCurrent)]);
+  await AsyncStorage.multiSet(pairs);
+  if (!snapshot.movieOfDayCurrent) await AsyncStorage.removeItem(MOVIE_OF_DAY_CURRENT_STORAGE_KEY);
 }
 
-async function updateLocalAssetMetadata(
-  assetKind: SyncAssetKind,
-  nextUri: string | null,
-  nextPath: string | null,
-  nextVersion: number
-) {
+async function updateLocalAssetMetadata(assetKind: SyncAssetKind, nextUri: string | null, nextPath: string | null, nextVersion: number) {
   const raw = await AsyncStorage.getItem(APP_SETTINGS_STORAGE_KEY);
   const current = normalizePersistedSettings(raw);
-  const nextSettings: PersistedSettings = {
-    ...current,
-    ...(assetKind === "avatar"
-      ? {
-          profileImageUri: nextUri,
-          profileImageStoragePath: nextPath,
-          profileImageVersion: nextVersion,
-        }
-      : {
-          bannerImageUri: nextUri,
-          bannerImageStoragePath: nextPath,
-          bannerImageVersion: nextVersion,
-        }),
+  const nextSettings: PersistedSettings = { 
+    ...current, 
+    ...(assetKind === "avatar" 
+      ? { profileImageUri: nextUri, profileImageStoragePath: nextPath, profileImageVersion: nextVersion } 
+      : { bannerImageUri: nextUri, bannerImageStoragePath: nextPath, bannerImageVersion: nextVersion })
   };
-
   await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(nextSettings));
 }
 
-async function getCurrentUserId() {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  return session?.user.id ?? null;
-}
+async function getCurrentUserId() { const { data: { session } } = await supabase.auth.getSession(); return session?.user.id ?? null; }
+async function readPendingQueue(): Promise<PendingSyncOperation[]> { try { const raw = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; } }
+async function writePendingQueue(queue: PendingSyncOperation[]) { if (queue.length === 0) await AsyncStorage.removeItem(SYNC_QUEUE_STORAGE_KEY); else await AsyncStorage.setItem(SYNC_QUEUE_STORAGE_KEY, JSON.stringify(queue)); }
 
-async function readPendingQueue(): Promise<PendingSyncOperation[]> {
-  const raw = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as PendingSyncOperation[]) : [];
-  } catch {
-    return [];
+function getQueueOperationKey(op: PendingSyncOperation): string | null {
+  switch (op.kind) {
+    case "profile_settings": return `${op.userId}:profile_settings`;
+    case "asset_upload": return `${op.userId}:asset:${op.assetKind}`;
+    case "media_library": return `${op.userId}:media:${op.listKind}:${op.mediaType}:${op.tmdbId}`;
+    case "watch_history_upsert": return `${op.userId}:watch_history:${op.entry.mediaType}:${op.entry.id}`;
+    case "watch_history_delete": return `${op.userId}:watch_history:${op.mediaType}:${op.tmdbId}`;
+    case "episode_progress": return `${op.userId}:episode:${op.seriesTmdbId}:${op.seasonNumber}:${op.episodeNumber}`;
+    case "daily_recommendation": return `${op.userId}:daily:${op.recommendationKind}:${op.recommendationDate}`;
+    default: return null;
   }
 }
 
-async function writePendingQueue(queue: PendingSyncOperation[]) {
-  if (queue.length === 0) {
-    await AsyncStorage.removeItem(SYNC_QUEUE_STORAGE_KEY);
-    return;
-  }
-
-  await AsyncStorage.setItem(SYNC_QUEUE_STORAGE_KEY, JSON.stringify(queue));
-}
-
-function getQueueOperationKey(operation: PendingSyncOperation): string | null {
-  switch (operation.kind) {
-    case "profile_settings":
-      return `${operation.userId}:profile_settings`;
-    case "asset_upload":
-      return `${operation.userId}:asset:${operation.assetKind}`;
-    case "media_library":
-      return `${operation.userId}:media:${operation.listKind}:${operation.mediaType}:${operation.tmdbId}`;
-    case "watch_history_upsert":
-      return `${operation.userId}:watch_history:${operation.entry.mediaType}:${operation.entry.id}`;
-    case "watch_history_delete":
-      return `${operation.userId}:watch_history:${operation.mediaType}:${operation.tmdbId}`;
-    case "episode_progress":
-      return `${operation.userId}:episode:${operation.seriesTmdbId}:${operation.seasonNumber}:${operation.episodeNumber}`;
-    case "daily_recommendation":
-      return `${operation.userId}:daily:${operation.recommendationKind}:${operation.recommendationDate}`;
-    default:
-      return null;
-  }
-}
-
-function mergePendingOperation(current: PendingSyncOperation, next: PendingSyncOperation): PendingSyncOperation {
-  if (current.kind === "profile_settings" && next.kind === "profile_settings") {
-    return {
-      ...next,
-      auditMetadata: {
-        ...current.auditMetadata,
-        ...next.auditMetadata,
-      },
-    };
-  }
-
-  return next;
-}
-
-async function enqueuePendingOperation(operation: PendingSyncOperation) {
+async function enqueuePendingOperation(op: PendingSyncOperation) {
   const queue = await readPendingQueue();
-  const operationKey = getQueueOperationKey(operation);
-
-  if (!operationKey) {
-    queue.push(operation);
-    await writePendingQueue(queue);
-    return;
-  }
-
-  const existingIndex = queue.findIndex((queuedOperation) => getQueueOperationKey(queuedOperation) === operationKey);
-  if (existingIndex >= 0) {
-    queue[existingIndex] = mergePendingOperation(queue[existingIndex], operation);
-  } else {
-    queue.push(operation);
-  }
-
+  const key = getQueueOperationKey(op);
+  if (!key) { queue.push(op); await writePendingQueue(queue); return; }
+  const idx = queue.findIndex(q => getQueueOperationKey(q) === key);
+  if (idx >= 0) queue[idx] = op; else queue.push(op);
   await writePendingQueue(queue);
 }
 
-function unionIds(primary: (number | string)[], secondary: (number | string)[]) {
-  return Array.from(new Set([...primary, ...secondary]));
-}
+function unionIds(p: (number | string)[], s: (number | string)[]) { return Array.from(new Set([...p, ...s])); }
 
-function mergeWatchHistoryEntries(primary: WatchHistoryEntry[], secondary: WatchHistoryEntry[]) {
-  const merged = new Map<string, WatchHistoryEntry>();
-
-  [...primary, ...secondary].forEach((entry) => {
-    const key = `${entry.mediaType}:${entry.id}`;
-    const existing = merged.get(key);
-    if (!existing) {
-      merged.set(key, entry);
-      return;
-    }
-
-    if (entry.watchedAt > existing.watchedAt || entry.metadataVersion > existing.metadataVersion) {
-      merged.set(key, entry);
-    }
+function mergeWatchHistoryEntries(p: WatchHistoryEntry[], s: WatchHistoryEntry[]) {
+  const m = new Map<string, WatchHistoryEntry>();
+  [...p, ...s].forEach(e => {
+    const k = `${e.mediaType}:${e.id}`; const ex = m.get(k);
+    if (!ex || e.watchedAt > ex.watchedAt || e.metadataVersion > ex.metadataVersion) m.set(k, e);
   });
-
-  return [...merged.values()].sort((left, right) => right.watchedAt - left.watchedAt);
+  return [...m.values()].sort((a,b) => b.watchedAt - a.watchedAt);
 }
 
-function mergeRecentlyViewedEntries(primary: RecentlyWatchedEntry[], secondary: RecentlyWatchedEntry[]) {
-  const merged = new Map<string, RecentlyWatchedEntry>();
-
-  [...primary, ...secondary].forEach((entry) => {
-    const key = `${entry.mediaType}:${entry.id}`;
-    const existing = merged.get(key);
-    if (!existing || entry.timestamp > existing.timestamp) {
-      merged.set(key, entry);
-    }
-  });
-
-  return [...merged.values()].sort((left, right) => right.timestamp - left.timestamp).slice(0, MAX_RECENTLY_VIEWED);
-}
-
-function mergeWatchedEpisodeMaps(primary: Record<string, boolean>, secondary: Record<string, boolean>) {
-  return {
-    ...secondary,
-    ...primary,
-  };
+function mergeRecentlyViewedEntries(p: RecentlyWatchedEntry[], s: RecentlyWatchedEntry[]) {
+  const m = new Map<string, RecentlyWatchedEntry>();
+  [...p, ...s].forEach(e => { const k = `${e.mediaType}:${e.id}`; const ex = m.get(k); if (!ex || e.timestamp > ex.timestamp) m.set(k, e); });
+  return [...m.values()].sort((a,b) => b.timestamp - a.timestamp).slice(0, MAX_RECENTLY_VIEWED);
 }
 
 function convertRemoteWatchHistory(entries: RemoteWatchHistoryEntry[]): WatchHistoryEntry[] {
-  return entries
-    .filter((entry) => entry.tmdbId > 0 && entry.title.trim().length > 0)
-    .map((entry) => ({
-      id: entry.tmdbId,
-      mediaType: coerceMediaType(entry.mediaType),
-      title: entry.title,
-      posterPath: entry.posterPath ?? null,
-      genres: coerceStringArray(entry.genres),
-      runtimeMinutes: typeof entry.runtimeMinutes === "number" ? entry.runtimeMinutes : null,
-      episodeCount: typeof entry.episodeCount === "number" ? entry.episodeCount : null,
-      voteAverage: typeof entry.voteAverage === "number" ? entry.voteAverage : 0,
-      year: typeof entry.releaseYear === "number" ? String(entry.releaseYear) : "",
-      castIds: coerceNumberArray(entry.castIds),
-      castNames: coerceStringArray(entry.castNames),
-      castProfilePaths: Array.isArray(entry.castProfilePaths)
-        ? entry.castProfilePaths.map((value) => (typeof value === "string" ? value : null))
-        : [],
-      castGenders: Array.isArray(entry.castGenders)
-        ? entry.castGenders.filter((value): value is "male" | "female" => value === "male" || value === "female")
-        : [],
-      directorIds: coerceNumberArray(entry.directorIds),
-      directorNames: coerceStringArray(entry.directorNames),
-      directorProfilePaths: Array.isArray(entry.directorProfilePaths)
-        ? entry.directorProfilePaths.map((value) => (typeof value === "string" ? value : null))
-        : [],
-      watchedAt: Date.parse(entry.watchedAt) || Date.now(),
-      metadataVersion: typeof entry.metadataVersion === "number" ? entry.metadataVersion : 1,
-    }));
+  return entries.filter(e => e.tmdbId > 0 && e.title.trim().length > 0).map(e => ({
+    id: e.tmdbId, mediaType: coerceMediaType(e.mediaType), title: e.title, posterPath: e.posterPath ?? null, genres: coerceStringArray(e.genres),
+    runtimeMinutes: e.runtimeMinutes, episodeCount: e.episodeCount, voteAverage: e.voteAverage, year: e.releaseYear ? String(e.releaseYear) : "",
+    castIds: coerceNumberArray(e.castIds), castNames: coerceStringArray(e.castNames), castProfilePaths: e.castProfilePaths, castGenders: e.castGenders as any,
+    directorIds: coerceNumberArray(e.directorIds), directorNames: coerceStringArray(e.directorNames), directorProfilePaths: e.directorProfilePaths,
+    watchedAt: Date.parse(e.watchedAt) || Date.now(), metadataVersion: e.metadataVersion || 1,
+  }));
 }
 
 function convertRemoteEpisodeProgress(entries: RemoteEpisodeProgressEntry[]) {
-  return entries.reduce<Record<string, boolean>>((accumulator, entry) => {
-    if (entry.seriesTmdbId > 0 && entry.seasonNumber > 0 && entry.episodeNumber > 0) {
-      accumulator[getEpisodeKey(entry.seriesTmdbId, entry.seasonNumber, entry.episodeNumber)] = true;
-    }
-    return accumulator;
-  }, {});
+  return entries.reduce((acc, e) => { if (e.seriesTmdbId > 0) acc[getEpisodeKey(e.seriesTmdbId, e.seasonNumber, e.episodeNumber)] = true; return acc; }, {} as Record<string, boolean>);
 }
 
 function convertRemoteDailyRecommendations(entries: RemoteDailyRecommendationEntry[]) {
-  const history = {
-    tmdbIds: [] as number[],
-    imdbIds: [] as string[],
-  };
+  const history = { tmdbIds: [] as (number | string)[], imdbIds: [] as string[] };
   let current: MovieOfDayCurrent | null = null;
-
-  entries.forEach((entry) => {
-    if (typeof entry.tmdbId === "number" && entry.tmdbId > 0 && !history.tmdbIds.includes(entry.tmdbId)) {
-      history.tmdbIds.push(entry.tmdbId);
-      history.imdbIds.push(entry.imdbId ?? "");
-    }
-
-    if (entry.recommendationKind === MOVIE_OF_DAY_KIND) {
-      const nextMovie = isRecord(entry.snapshot.movie)
-        ? (entry.snapshot.movie as Record<string, unknown>)
-        : typeof entry.tmdbId === "number" && entry.tmdbId > 0
-          ? {
-              id: entry.tmdbId,
-              title: typeof entry.snapshot.title === "string" ? entry.snapshot.title : "",
-            }
-          : null;
-
-      if (!current || entry.recommendationDate >= current.dateKey) {
-        current = {
-          dateKey: entry.recommendationDate,
-          movie: nextMovie,
-        };
+  entries.forEach(e => {
+    if (e.tmdbId) { history.tmdbIds.push(e.tmdbId); history.imdbIds.push(e.imdbId ?? ""); }
+    if (e.recommendationKind === MOVIE_OF_DAY_KIND) {
+      if (!current || e.recommendationDate >= current.dateKey) {
+        current = { dateKey: e.recommendationDate, movie: isRecord(e.snapshot.movie) ? (e.snapshot.movie as any) : null };
       }
     }
   });
-
-  return {
-    current,
-    history,
-  };
+  return { current, history };
 }
 
-// ---------------------------------------------------------------------------
-//  Profile-asset URL resolution (bulletproof, multi-strategy)
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve a displayable URL for a storage object.  Tries in order:
- *   1. Signed URL  (works for private buckets)
- *   2. Public URL  (works for public buckets)
- *   3. Direct download URL construction (last resort)
- * Returns `null` only when every strategy fails.
- */
-async function resolveStorageUrl(storagePath: string): Promise<string | null> {
-  // Strategy 1 — signed URL (handles private buckets)
-  try {
-    const { data, error } = await supabase.storage
-      .from(PROFILE_ASSETS_BUCKET)
-      .createSignedUrl(storagePath, SIGNED_ASSET_TTL_SECONDS);
-    if (!error && data?.signedUrl) {
-      return data.signedUrl;
-    }
-    console.warn("[asset-resolve] signed-url failed:", error?.message);
-  } catch (e) {
-    console.warn("[asset-resolve] signed-url threw:", e);
-  }
-
-  // Strategy 2 — public URL (handles public buckets, no auth needed)
-  try {
-    const { data } = supabase.storage
-      .from(PROFILE_ASSETS_BUCKET)
-      .getPublicUrl(storagePath);
-    if (data?.publicUrl) {
-      // Verify the URL is actually reachable (public buckets only)
-      const probe = await fetch(data.publicUrl, { method: "HEAD" });
-      if (probe.ok) {
-        return data.publicUrl;
-      }
-      console.warn("[asset-resolve] public-url not reachable:", probe.status);
-    }
-  } catch (e) {
-    console.warn("[asset-resolve] public-url threw:", e);
-  }
-
-  // Strategy 3 — download binary and save to local cache file
-  try {
-    const { data: dlData, error: dlError } = await supabase.storage
-      .from(PROFILE_ASSETS_BUCKET)
-      .download(storagePath);
-    if (!dlError && dlData) {
-      const cacheDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
-      if (cacheDir) {
-        const safeFileName = storagePath.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const localPath = `${cacheDir}streambox-assets/${safeFileName}`;
-        await FileSystem.makeDirectoryAsync(`${cacheDir}streambox-assets/`, { intermediates: true });
-        // Convert blob → base64 → write to file
-        const base64 = await new Promise<string | null>((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const result = typeof reader.result === "string" ? reader.result : null;
-            // Strip the data:…;base64, prefix
-            resolve(result ? result.split(",")[1] ?? null : null);
-          };
-          reader.onerror = () => resolve(null);
-          reader.readAsDataURL(dlData);
-        });
-        if (base64) {
-          await FileSystem.writeAsStringAsync(localPath, base64, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          return localPath;
-        }
-      }
-    }
-    console.warn("[asset-resolve] download failed:", dlError?.message);
-  } catch (e) {
-    console.warn("[asset-resolve] download threw:", e);
-  }
-
+async function resolveStorageUrl(path: string): Promise<string | null> {
+  try { const { data, error } = await supabase.storage.from(PROFILE_ASSETS_BUCKET).createSignedUrl(path, SIGNED_ASSET_TTL_SECONDS); if (!error && data?.signedUrl) return data.signedUrl; } catch {}
+  try { const { data } = supabase.storage.from(PROFILE_ASSETS_BUCKET).getPublicUrl(path); if (data?.publicUrl) return data.publicUrl; } catch {}
   return null;
 }
 
-/**
- * Query the user_profiles table directly — the single source of truth for
- * avatar / banner storage paths and their version counters.
- * This is independent of the bootstrap RPC and immune to its field-naming.
- */
-async function fetchProfileAssetsFromDB(): Promise<{
-  avatarPath: string | null;
-  bannerPath: string | null;
-  avatarVersion: number;
-  bannerVersion: number;
-}> {
-  const empty = { avatarPath: null, bannerPath: null, avatarVersion: 0, bannerVersion: 0 };
-  try {
-    const userId = await getCurrentUserId();
-    if (!userId) return empty;
-
-    const { data, error } = await supabase
-      .from("user_profiles")
-      .select("avatar_path, banner_path, avatar_version, banner_version")
-      .eq("id", userId)
-      .single();
-
-    if (error || !data) {
-      console.warn("[asset-resolve] user_profiles query failed:", error?.message);
-      return empty;
-    }
-
-    return {
-      avatarPath: typeof data.avatar_path === "string" && data.avatar_path.length > 0 ? data.avatar_path : null,
-      bannerPath: typeof data.banner_path === "string" && data.banner_path.length > 0 ? data.banner_path : null,
-      avatarVersion: typeof data.avatar_version === "number" ? data.avatar_version : 0,
-      bannerVersion: typeof data.banner_version === "number" ? data.banner_version : 0,
-    };
-  } catch (e) {
-    console.warn("[asset-resolve] user_profiles query threw:", e);
-    return empty;
-  }
+async function fetchProfileAssetsFromDB() {
+  const userId = await getCurrentUserId(); if (!userId) return null;
+  const { data, error } = await supabase.from("user_profiles").select("avatar_path, banner_path, avatar_version, banner_version").eq("id", userId).single();
+  if (error || !data) return null;
+  return { avatarPath: data.avatar_path, bannerPath: data.banner_path, avatarVersion: data.avatar_version || 0, bannerVersion: data.banner_version || 0 };
 }
 
-/**
- * Resolve displayable URIs for both avatar and banner in parallel.
- * Uses the database as the single source of truth for storage paths,
- * then resolves each path to a displayable URL via the multi-strategy
- * resolver.  Falls back gracefully at every step.
- */
-async function resolveProfileAssetUris(overrides?: {
-  avatarPath?: string | null;
-  bannerPath?: string | null;
-  avatarVersion?: number;
-  bannerVersion?: number;
-}): Promise<{
-  profileImageUri: string | null;
-  bannerImageUri: string | null;
-  profileImageStoragePath: string | null;
-  bannerImageStoragePath: string | null;
-  profileImageVersion: number;
-  bannerImageVersion: number;
-}> {
-  // 1. Get storage paths — prefer overrides from bootstrap, fall back to direct DB query
-  let avatarPath = overrides?.avatarPath ?? null;
-  let bannerPath = overrides?.bannerPath ?? null;
-  let avatarVersion = overrides?.avatarVersion ?? 0;
-  let bannerVersion = overrides?.bannerVersion ?? 0;
-
-  if (!avatarPath && !bannerPath) {
-    const db = await fetchProfileAssetsFromDB();
-    avatarPath = db.avatarPath;
-    bannerPath = db.bannerPath;
-    avatarVersion = db.avatarVersion;
-    bannerVersion = db.bannerVersion;
-  }
-
-  // 2. Resolve storage paths → displayable URLs in parallel
-  const [profileImageUri, bannerImageUri] = await Promise.all([
-    avatarPath ? resolveStorageUrl(avatarPath) : Promise.resolve(null),
-    bannerPath ? resolveStorageUrl(bannerPath) : Promise.resolve(null),
-  ]);
-
-  return {
-    profileImageUri,
-    bannerImageUri,
-    profileImageStoragePath: avatarPath,
-    bannerImageStoragePath: bannerPath,
-    profileImageVersion: avatarVersion,
-    bannerImageVersion: bannerVersion,
-  };
+async function resolveProfileAssetUris(overrides?: any) {
+  let { avatarPath, bannerPath, avatarVersion, bannerVersion } = overrides || {};
+  if (!avatarPath && !bannerPath) { const db = await fetchProfileAssetsFromDB(); if (db) { avatarPath = db.avatarPath; bannerPath = db.bannerPath; avatarVersion = db.avatarVersion; bannerVersion = db.bannerVersion; } }
+  const [profileImageUri, bannerImageUri] = await Promise.all([avatarPath ? resolveStorageUrl(avatarPath) : null, bannerPath ? resolveStorageUrl(bannerPath) : null]);
+  return { profileImageUri, bannerImageUri, profileImageStoragePath: avatarPath, bannerImageStoragePath: bannerPath, profileImageVersion: avatarVersion || 0, bannerImageVersion: bannerVersion || 0 };
 }
 
-// ---------------------------------------------------------------------------
-
-async function fetchRemoteBootstrap(): Promise<RemoteBootstrap> {
-  const { data, error } = await supabase.rpc("get_my_streambox_bootstrap");
-  if (error) {
-    throw error;
-  }
-
-  return isRecord(data) ? (data as RemoteBootstrap) : {};
-}
+async function fetchRemoteBootstrap(): Promise<RemoteBootstrap> { const { data, error } = await supabase.rpc("get_my_streambox_bootstrap"); if (error) throw error; return isRecord(data) ? (data as any) : {}; }
 
 async function createLocalSnapshotFromRemote(remote: RemoteBootstrap, baseSettings: PersistedSettings): Promise<LocalUserSnapshot> {
-  // Extract any asset hints the bootstrap RPC might return (camelCase or snake_case)
-  const rp = remote.profile as Record<string, unknown> | undefined;
-  const rpcAvatarPath = (rp?.avatarPath ?? rp?.avatar_path ?? null) as string | null;
-  const rpcBannerPath = (rp?.bannerPath ?? rp?.banner_path ?? null) as string | null;
-  const rpcAvatarVersion = (typeof rp?.avatarVersion === "number" ? rp.avatarVersion
-    : typeof rp?.avatar_version === "number" ? rp.avatar_version : null) as number | null;
-  const rpcBannerVersion = (typeof rp?.bannerVersion === "number" ? rp.bannerVersion
-    : typeof rp?.banner_version === "number" ? rp.banner_version : null) as number | null;
-
-  // Resolve asset URIs (uses DB as source of truth, multi-strategy URL resolution)
-  const needsAvatarResolve = !isLocalFileUri(baseSettings.profileImageUri);
-  const needsBannerResolve = !isLocalFileUri(baseSettings.bannerImageUri);
-  const assets = needsAvatarResolve || needsBannerResolve
-    ? await resolveProfileAssetUris({
-        avatarPath: rpcAvatarPath,
-        bannerPath: rpcBannerPath,
-        avatarVersion: rpcAvatarVersion ?? undefined,
-        bannerVersion: rpcBannerVersion ?? undefined,
-      })
-    : null;
-
-  const nextSettings: PersistedSettings = normalizeSettings(
-    {
-      ...baseSettings,
-      themeId: resolveThemeId(remote.settings?.themeId),
-      profileName: typeof remote.profile?.displayName === "string" && remote.profile.displayName.trim().length > 0
-        ? remote.profile.displayName.trim()
-        : baseSettings.profileName,
-      profileBio: typeof remote.profile?.bio === "string" ? remote.profile.bio : baseSettings.profileBio,
-      profileLocation: typeof remote.profile?.location === "string" ? remote.profile.location : baseSettings.profileLocation,
-      profileBirthday:
-        typeof remote.profile?.birthday === "string" ? formatBirthdayForLocal(remote.profile.birthday) : baseSettings.profileBirthday,
-      joinedDate: typeof remote.profile?.joinedAt === "string" ? remote.profile.joinedAt : baseSettings.joinedDate,
-      profileImageStoragePath: assets?.profileImageStoragePath ?? baseSettings.profileImageStoragePath,
-      bannerImageStoragePath: assets?.bannerImageStoragePath ?? baseSettings.bannerImageStoragePath,
-      profileImageVersion: assets?.profileImageVersion ?? baseSettings.profileImageVersion,
-      bannerImageVersion: assets?.bannerImageVersion ?? baseSettings.bannerImageVersion,
-      profileImageUri: baseSettings.profileImageUri,
-      bannerImageUri: baseSettings.bannerImageUri,
-    },
-    DEFAULT_THEME_ID
-  );
-
-  // Apply resolved remote URIs — local file:// URIs always win over remote
-  if (assets) {
-    if (assets.profileImageUri && !isLocalFileUri(baseSettings.profileImageUri)) {
-      nextSettings.profileImageUri = assets.profileImageUri;
-    }
-    if (assets.bannerImageUri && !isLocalFileUri(baseSettings.bannerImageUri)) {
-      nextSettings.bannerImageUri = assets.bannerImageUri;
-    }
-  }
-
-  const watchlistEntries = Array.isArray(remote.watchlist) ? remote.watchlist : [];
-  const likedEntries = Array.isArray(remote.liked) ? remote.liked : [];
-  const recentlyViewedEntries = Array.isArray(remote.recentlyViewed) ? remote.recentlyViewed : [];
-  const watchHistoryEntries = Array.isArray(remote.watchHistory) ? remote.watchHistory : [];
-  const episodeProgressEntries = Array.isArray(remote.episodeProgress) ? remote.episodeProgress : [];
-  const dailyRecommendations = Array.isArray(remote.dailyRecommendations) ? remote.dailyRecommendations : [];
-  const movieOfDayState = convertRemoteDailyRecommendations(dailyRecommendations);
-
-  return {
-    settings: nextSettings,
-    movieWatchlist: watchlistEntries.filter((entry) => coerceMediaType(entry.mediaType) === "movie").map((entry) => entry.tmdbId),
-    seriesWatchlist: watchlistEntries.filter((entry) => coerceMediaType(entry.mediaType) === "tv").map((entry) => entry.tmdbId),
-    likedMovies: likedEntries.filter((entry) => coerceMediaType(entry.mediaType) === "movie").map((entry) => entry.tmdbId),
-    likedSeries: likedEntries.filter((entry) => coerceMediaType(entry.mediaType) === "tv").map((entry) => entry.tmdbId),
-    watchHistory: convertRemoteWatchHistory(watchHistoryEntries),
-    recentlyViewed: recentlyViewedEntries
-      .map((entry) => ({
-        id: entry.tmdbId,
-        mediaType: coerceMediaType(entry.mediaType),
-        timestamp: Date.parse(entry.collectedAt) || Date.now(),
-      }))
-      .filter((entry) => entry.id > 0),
-    watchedEpisodes: convertRemoteEpisodeProgress(episodeProgressEntries),
-    movieOfDayCurrent: movieOfDayState.current,
-    movieOfDayHistory: movieOfDayState.history,
+  const rp = remote.profile as any;
+  const assets = await resolveProfileAssetUris({ avatarPath: rp?.avatar_path, bannerPath: rp?.banner_path, avatarVersion: rp?.avatar_version, bannerVersion: rp?.banner_version });
+  const settings: PersistedSettings = { 
+    ...baseSettings, themeId: resolveThemeId(remote.settings?.themeId), profileName: rp?.display_name || baseSettings.profileName,
+    profileBio: rp?.bio || baseSettings.profileBio, profileLocation: rp?.location || baseSettings.profileLocation, 
+    profileBirthday: rp?.birthday ? formatBirthdayForLocal(rp.birthday) : baseSettings.profileBirthday, 
+    joinedDate: rp?.joined_at || baseSettings.joinedDate, profileImageUri: assets.profileImageUri || baseSettings.profileImageUri, 
+    bannerImageUri: assets.bannerImageUri || baseSettings.bannerImageUri, profileImageStoragePath: assets.profileImageStoragePath, 
+    bannerImageStoragePath: assets.bannerImageStoragePath, profileImageVersion: assets.profileImageVersion, bannerImageVersion: assets.bannerImageVersion
   };
+  const movieWatchlist = (remote.watchlist || []).filter(e => coerceMediaType(e.mediaType) === "movie").map(e => e.tmdbId);
+  const seriesWatchlist = (remote.watchlist || []).filter(e => coerceMediaType(e.mediaType) === "tv").map(e => e.tmdbId);
+  const likedMovies = (remote.liked || []).filter(e => coerceMediaType(e.mediaType) === "movie").map(e => e.tmdbId);
+  const likedSeries = (remote.liked || []).filter(e => coerceMediaType(e.mediaType) === "tv").map(e => e.tmdbId);
+  const watchHistory = convertRemoteWatchHistory(remote.watchHistory || []);
+  const recentlyViewed = (remote.recentlyViewed || []).map(e => ({ id: e.tmdbId, mediaType: coerceMediaType(e.mediaType), timestamp: Date.parse(e.collectedAt) || Date.now() }));
+  const movieOfDayState = convertRemoteDailyRecommendations(remote.dailyRecommendations || []);
+  return { settings, movieWatchlist, seriesWatchlist, likedMovies, likedSeries, watchHistory, recentlyViewed, watchedEpisodes: convertRemoteEpisodeProgress(remote.episodeProgress || []), movieOfDayCurrent: movieOfDayState.current, movieOfDayHistory: movieOfDayState.history };
 }
 
-async function mergeInitialSnapshot(localSnapshot: LocalUserSnapshot, remoteBootstrap: RemoteBootstrap) {
-  const remoteSnapshot = await createLocalSnapshotFromRemote(remoteBootstrap, localSnapshot.settings);
-
+async function mergeInitialSnapshot(local: LocalUserSnapshot, remoteB: RemoteBootstrap) {
+  const remote = await createLocalSnapshotFromRemote(remoteB, local.settings);
   return {
-    settings: normalizeSettings(
-      {
-        ...remoteSnapshot.settings,
-        themeId: typeof remoteBootstrap.settings?.themeId === "string"
-          ? resolveThemeId(remoteBootstrap.settings.themeId)
-          : localSnapshot.settings.themeId,
-        profileName:
-          typeof remoteBootstrap.profile?.displayName === "string" && remoteBootstrap.profile.displayName.trim().length > 0
-            ? remoteSnapshot.settings.profileName
-            : localSnapshot.settings.profileName,
-        profileBio: typeof remoteBootstrap.profile?.bio === "string" ? remoteSnapshot.settings.profileBio : localSnapshot.settings.profileBio,
-        profileLocation:
-          typeof remoteBootstrap.profile?.location === "string"
-            ? remoteSnapshot.settings.profileLocation
-            : localSnapshot.settings.profileLocation,
-        profileBirthday:
-          typeof remoteBootstrap.profile?.birthday === "string"
-            ? remoteSnapshot.settings.profileBirthday
-            : localSnapshot.settings.profileBirthday,
-        joinedDate:
-          typeof remoteBootstrap.profile?.joinedAt === "string"
-            ? remoteSnapshot.settings.joinedDate
-            : localSnapshot.settings.joinedDate,
-        profileImageUri:
-          typeof remoteBootstrap.profile?.avatarPath === "string"
-            ? remoteSnapshot.settings.profileImageUri
-            : localSnapshot.settings.profileImageUri,
-        bannerImageUri:
-          typeof remoteBootstrap.profile?.bannerPath === "string"
-            ? remoteSnapshot.settings.bannerImageUri
-            : localSnapshot.settings.bannerImageUri,
-        profileImageStoragePath:
-          typeof remoteBootstrap.profile?.avatarPath === "string"
-            ? remoteSnapshot.settings.profileImageStoragePath
-            : localSnapshot.settings.profileImageStoragePath,
-        bannerImageStoragePath:
-          typeof remoteBootstrap.profile?.bannerPath === "string"
-            ? remoteSnapshot.settings.bannerImageStoragePath
-            : localSnapshot.settings.bannerImageStoragePath,
-        profileImageVersion:
-          typeof remoteBootstrap.profile?.avatarVersion === "number"
-            ? remoteSnapshot.settings.profileImageVersion
-            : localSnapshot.settings.profileImageVersion,
-        bannerImageVersion:
-          typeof remoteBootstrap.profile?.bannerVersion === "number"
-            ? remoteSnapshot.settings.bannerImageVersion
-            : localSnapshot.settings.bannerImageVersion,
-      },
-      DEFAULT_THEME_ID
-    ),
-    movieWatchlist: unionIds(remoteSnapshot.movieWatchlist, localSnapshot.movieWatchlist),
-    seriesWatchlist: unionIds(remoteSnapshot.seriesWatchlist, localSnapshot.seriesWatchlist),
-    likedMovies: unionIds(remoteSnapshot.likedMovies, localSnapshot.likedMovies),
-    likedSeries: unionIds(remoteSnapshot.likedSeries, localSnapshot.likedSeries),
-    watchHistory: mergeWatchHistoryEntries(remoteSnapshot.watchHistory, localSnapshot.watchHistory),
-    recentlyViewed: mergeRecentlyViewedEntries(remoteSnapshot.recentlyViewed, localSnapshot.recentlyViewed),
-    watchedEpisodes: mergeWatchedEpisodeMaps(remoteSnapshot.watchedEpisodes, localSnapshot.watchedEpisodes),
-    movieOfDayCurrent: localSnapshot.movieOfDayCurrent?.dateKey === getTodayDateKey()
-      ? localSnapshot.movieOfDayCurrent
-      : remoteSnapshot.movieOfDayCurrent,
-    movieOfDayHistory: {
-      tmdbIds: unionIds(remoteSnapshot.movieOfDayHistory.tmdbIds, localSnapshot.movieOfDayHistory.tmdbIds),
-      imdbIds: Array.from(
-        new Set([
-          ...remoteSnapshot.movieOfDayHistory.imdbIds.filter((value) => value.trim().length > 0),
-          ...localSnapshot.movieOfDayHistory.imdbIds.filter((value) => value.trim().length > 0),
-        ])
-      ),
-    },
+    settings: remote.settings,
+    movieWatchlist: unionIds(remote.movieWatchlist, local.movieWatchlist),
+    seriesWatchlist: unionIds(remote.seriesWatchlist, local.seriesWatchlist),
+    likedMovies: unionIds(remote.likedMovies, local.likedMovies),
+    likedSeries: unionIds(remote.likedSeries, local.likedSeries),
+    watchHistory: mergeWatchHistoryEntries(remote.watchHistory, local.watchHistory),
+    recentlyViewed: mergeRecentlyViewedEntries(remote.recentlyViewed, local.recentlyViewed),
+    watchedEpisodes: { ...remote.watchedEpisodes, ...local.watchedEpisodes },
+    movieOfDayCurrent: local.movieOfDayCurrent?.dateKey === getTodayDateKey() ? local.movieOfDayCurrent : remote.movieOfDayCurrent,
+    movieOfDayHistory: { tmdbIds: unionIds(remote.movieOfDayHistory.tmdbIds, local.movieOfDayHistory.tmdbIds), imdbIds: Array.from(new Set([...remote.movieOfDayHistory.imdbIds, ...local.movieOfDayHistory.imdbIds])) }
   } satisfies LocalUserSnapshot;
 }
 
-function buildProfilePayload(settings: PersistedSettings) {
-  return {
-    displayName: settings.profileName,
-    bio: settings.profileBio,
-    location: settings.profileLocation,
-    birthday: formatBirthdayForDatabase(settings.profileBirthday),
-    joinedAt: settings.joinedDate || new Date().toISOString(),
-    avatarPath: settings.profileImageStoragePath,
-    bannerPath: settings.bannerImageStoragePath,
-    avatarVersion: settings.profileImageVersion,
-    bannerVersion: settings.bannerImageVersion,
-  };
-}
-
-function buildSettingsPayload(settings: PersistedSettings) {
-  return {
-    themeId: settings.themeId,
-    preferences: {},
-  };
-}
+function buildProfilePayload(s: PersistedSettings) { return { display_name: s.profileName, bio: s.profileBio, location_text: s.profileLocation, birthday: formatBirthdayForDatabase(s.profileBirthday), joined_at: s.joinedDate || new Date().toISOString(), avatar_path: s.profileImageStoragePath, banner_path: s.bannerImageStoragePath, avatar_version: s.profileImageVersion, banner_version: s.bannerImageVersion }; }
+function buildSettingsPayload(s: PersistedSettings) { return { theme_id: s.themeId, preferences: {} }; }
 
 function buildDailyRecommendationRows(snapshot: LocalUserSnapshot) {
-  const rows: Array<Record<string, unknown>> = [];
-  if (snapshot.movieOfDayCurrent?.movie && typeof snapshot.movieOfDayCurrent.movie.id === "number") {
-    rows.push({
-      recommendation_kind: MOVIE_OF_DAY_KIND,
-      recommendation_date: snapshot.movieOfDayCurrent.dateKey,
-      media_type: "movie",
-      tmdb_id: snapshot.movieOfDayCurrent.movie.id,
-      imdb_id: typeof snapshot.movieOfDayCurrent.movie.imdbId === "string" ? snapshot.movieOfDayCurrent.movie.imdbId : null,
-      strategy: "local_bootstrap",
-      snapshot: {
-        movie: snapshot.movieOfDayCurrent.movie,
-      },
-    });
-  }
-
-  snapshot.movieOfDayHistory.tmdbIds.forEach((tmdbId, index) => {
-    if (typeof tmdbId === "number" && tmdbId <= 0) {
-      return;
+  const rows: Array<Record<string, any>> = [];
+  if (snapshot.movieOfDayCurrent?.movie && snapshot.movieOfDayCurrent.movie.id) {
+    const ids = getSyncIds(snapshot.movieOfDayCurrent.movie.id as string | number);
+    if (ids.tmdb_id || ids.internal_id) {
+      rows.push({ recommendation_kind: MOVIE_OF_DAY_KIND, recommendation_date: snapshot.movieOfDayCurrent.dateKey, media_type: "movie", ...ids, imdb_id: snapshot.movieOfDayCurrent.movie.imdbId || null, strategy: "local_bootstrap", snapshot: { movie: snapshot.movieOfDayCurrent.movie } });
     }
-
-    const baseDate = new Date();
-    baseDate.setDate(baseDate.getDate() - (index + 1));
-    rows.push({
-      recommendation_kind: MOVIE_OF_DAY_HISTORY_KIND,
-      recommendation_date: getTodayDateKey(baseDate),
-      media_type: "movie",
-      tmdb_id: tmdbId,
-      imdb_id: snapshot.movieOfDayHistory.imdbIds[index] ?? null,
-      strategy: "legacy_history_import",
-      snapshot: {},
-    });
+  }
+  snapshot.movieOfDayHistory.tmdbIds.forEach((id, idx) => {
+    const ids = getSyncIds(id); if (!ids.tmdb_id && !ids.internal_id) return;
+    const date = new Date(); date.setDate(date.getDate() - (idx + 1));
+    rows.push({ recommendation_kind: MOVIE_OF_DAY_HISTORY_KIND, recommendation_date: getTodayDateKey(date), media_type: "movie", ...ids, imdb_id: snapshot.movieOfDayHistory.imdbIds[idx] || null, strategy: "legacy_history_import", snapshot: {} });
   });
-
   return rows;
 }
 
 async function backfillSnapshotToRemote(userId: string, snapshot: LocalUserSnapshot) {
-  const profileRow = {
-    id: userId,
-    display_name: snapshot.settings.profileName,
-    bio: snapshot.settings.profileBio,
-    location_text: snapshot.settings.profileLocation,
-    birthday: formatBirthdayForDatabase(snapshot.settings.profileBirthday),
-    joined_at: snapshot.settings.joinedDate || new Date().toISOString(),
-    avatar_path: snapshot.settings.profileImageStoragePath,
-    banner_path: snapshot.settings.bannerImageStoragePath,
-    avatar_version: snapshot.settings.profileImageVersion,
-    banner_version: snapshot.settings.bannerImageVersion,
-  };
-  const settingsRow = {
-    user_id: userId,
-    theme_id: snapshot.settings.themeId,
-    preferences: {},
-  };
-
+  const profileRow = buildProfilePayload(snapshot.settings);
+  const settingsRow = { user_id: userId, theme_id: snapshot.settings.themeId, preferences: {} };
   const now = new Date().toISOString();
-  const buildMediaRow = (id: string | number, listKind: string, mediaType: string) => ({
-    user_id: userId,
-    list_kind: listKind,
-    media_type: mediaType,
-    collected_at: now,
-    snapshot: {},
-    ...getSyncIds(id)
-  });
-
+  const buildMediaRow = (id: any, kind: string, type: string) => ({ user_id: userId, list_kind: kind, media_type: type, collected_at: now, snapshot: {}, ...getSyncIds(id) });
   const mediaRows = [
-    ...snapshot.movieWatchlist.map((id) => buildMediaRow(id, "watchlist", "movie")),
-    ...snapshot.seriesWatchlist.map((id) => buildMediaRow(id, "watchlist", "tv")),
-    ...snapshot.likedMovies.map((id) => buildMediaRow(id, "liked", "movie")),
-    ...snapshot.likedSeries.map((id) => buildMediaRow(id, "liked", "tv")),
-    ...snapshot.recentlyViewed.map((entry) => ({
-      user_id: userId,
-      list_kind: "recently_viewed",
-      media_type: entry.mediaType,
-      collected_at: entry.timestamp ? new Date(entry.timestamp).toISOString() : now,
-      snapshot: {},
-      ...getSyncIds(entry.id)
-    })),
+    ...snapshot.movieWatchlist.map(id => buildMediaRow(id, "watchlist", "movie")),
+    ...snapshot.seriesWatchlist.map(id => buildMediaRow(id, "watchlist", "tv")),
+    ...snapshot.likedMovies.map(id => buildMediaRow(id, "liked", "movie")),
+    ...snapshot.likedSeries.map(id => buildMediaRow(id, "liked", "tv")),
+    ...snapshot.recentlyViewed.map(e => ({ user_id: userId, list_kind: "recently_viewed", media_type: e.mediaType, collected_at: new Date(e.timestamp).toISOString(), snapshot: {}, ...getSyncIds(e.id) }))
   ];
-
-  const watchHistoryRows = snapshot.watchHistory.map((entry) => {
+  const watchHistoryRows = snapshot.watchHistory.map(entry => {
     const arrays = buildWatchHistorySyncArrays(entry);
-    return {
-      user_id: userId,
-      media_type: entry.mediaType,
-      title: entry.title,
-      poster_path: entry.posterPath,
-      genres: entry.genres,
-      runtime_minutes: entry.runtimeMinutes,
-      episode_count: entry.episodeCount,
-      vote_average: entry.voteAverage,
-      release_year: entry.year ? Number(entry.year) : null,
-      cast_ids: arrays.castIds,
-      cast_names: arrays.castNames,
-      cast_profile_paths: arrays.castProfilePaths,
-      cast_genders: arrays.castGenders,
-      director_ids: arrays.directorIds,
-      director_names: arrays.directorNames,
-      director_profile_paths: arrays.directorProfilePaths,
-      watched_at: new Date(entry.watchedAt).toISOString(),
-      metadata_version: entry.metadataVersion,
-      snapshot: {},
-      ...getSyncIds(entry.id)
+    return { 
+      user_id: userId, media_type: entry.mediaType, title: entry.title, poster_path: entry.posterPath, genres: entry.genres, 
+      runtime_minutes: entry.runtimeMinutes, episode_count: entry.episodeCount, vote_average: entry.voteAverage, 
+      release_year: entry.year ? Number(entry.year) : null, cast_ids: arrays.castIds, cast_names: arrays.castNames, 
+      cast_profile_paths: arrays.castProfilePaths, cast_genders: arrays.castGenders, director_ids: arrays.directorIds, 
+      director_names: arrays.directorNames, director_profile_paths: arrays.directorProfilePaths, 
+      watched_at: new Date(entry.watchedAt).toISOString(), metadata_version: entry.metadataVersion, snapshot: {}, ...getSyncIds(entry.id) 
     };
   });
+  const episodeRows = Object.keys(snapshot.watchedEpisodes).filter(k => snapshot.watchedEpisodes[k]).map(k => k.split("_")).filter(p => p.length === 3).map(([t,s,e]) => ({ user_id: userId, series_tmdb_id: Number(t), season_number: Number(s), episode_number: Number(e), snapshot: {} }));
+  const recRows = buildDailyRecommendationRows(snapshot).map(r => ({ user_id: userId, ...r }));
 
-  const episodeRows = Object.keys(snapshot.watchedEpisodes)
-    .filter((key) => snapshot.watchedEpisodes[key] === true)
-    .map((key) => key.split("_"))
-    .filter((parts) => parts.length === 3)
-    .map(([seriesTmdbId, seasonNumber, episodeNumber]) => ({
-      user_id: userId,
-      series_tmdb_id: Number(seriesTmdbId),
-      season_number: Number(seasonNumber),
-      episode_number: Number(episodeNumber),
-      snapshot: {},
-    }))
-    .filter((entry) => entry.series_tmdb_id > 0 && entry.season_number > 0 && entry.episode_number > 0);
+  await supabase.from("user_profiles").upsert({ id: userId, ...profileRow }, { onConflict: "id" });
+  await supabase.from("user_settings").upsert(settingsRow, { onConflict: "user_id" });
 
-  const recommendationRows = buildDailyRecommendationRows(snapshot).map((row) => ({
-    user_id: userId,
-    ...row,
-  }));
+  const batchUpsert = async (table: string, rows: any[], conflictKeys: string) => {
+    if (rows.length === 0) return;
+    const tmdb = rows.filter(r => r.tmdb_id); const internal = rows.filter(r => r.internal_id);
+    if (tmdb.length > 0) await supabase.from(table).upsert(tmdb, { onConflict: `${conflictKeys},tmdb_id` });
+    if (internal.length > 0) await supabase.from(table).upsert(internal, { onConflict: `${conflictKeys},internal_id` });
+  };
 
-  const { error: profileError } = await supabase.from("user_profiles").upsert(profileRow, { onConflict: "id" });
-  if (profileError) throw profileError;
-
-  const { error: settingsError } = await supabase.from("user_settings").upsert(settingsRow, { onConflict: "user_id" });
-  if (settingsError) throw settingsError;
-
-  if (mediaRows.length > 0) {
-    const tmdbMedia = mediaRows.filter(r => r.tmdb_id !== null);
-    const internalMedia = mediaRows.filter(r => r.internal_id !== null);
-
-    if (tmdbMedia.length > 0) {
-      const { error } = await supabase.from("user_media_library").upsert(tmdbMedia, { onConflict: "user_id,list_kind,media_type,tmdb_id" });
-      if (error) throw error;
-    }
-    if (internalMedia.length > 0) {
-      const { error } = await supabase.from("user_media_library").upsert(internalMedia, { onConflict: "user_id,list_kind,media_type,internal_id" });
-      if (error) throw error;
-    }
-  }
-
-  if (watchHistoryRows.length > 0) {
-    const tmdbHistory = watchHistoryRows.filter(r => r.tmdb_id !== null);
-    const internalHistory = watchHistoryRows.filter(r => r.internal_id !== null);
-
-    if (tmdbHistory.length > 0) {
-      const { error } = await supabase.from("user_watch_history").upsert(tmdbHistory, { onConflict: "user_id,media_type,tmdb_id" });
-      if (error) throw error;
-    }
-    if (internalHistory.length > 0) {
-      const { error } = await supabase.from("user_watch_history").upsert(internalHistory, { onConflict: "user_id,media_type,internal_id" });
-      if (error) throw error;
-    }
-  }
-
-  if (episodeRows.length > 0) {
-    const { error } = await supabase.from("user_episode_progress").upsert(episodeRows, { onConflict: "user_id,series_tmdb_id,season_number,episode_number" });
-    if (error) throw error;
-  }
-
-  if (recommendationRows.length > 0) {
-    const { error } = await supabase.from("user_daily_recommendations").upsert(recommendationRows, { onConflict: "user_id,recommendation_kind,recommendation_date" });
-    if (error) throw error;
-  }
+  await batchUpsert("user_media_library", mediaRows, "user_id,list_kind,media_type");
+  await batchUpsert("user_watch_history", watchHistoryRows, "user_id,media_type");
+  if (episodeRows.length > 0) await supabase.from("user_episode_progress").upsert(episodeRows, { onConflict: "user_id,series_tmdb_id,season_number,episode_number" });
+  if (recRows.length > 0) await batchUpsert("user_daily_recommendations", recRows, "user_id,recommendation_kind,recommendation_date");
 }
 
 async function queueInitialAssetUploads(userId: string, settings: PersistedSettings) {
-  const profileImageUri = settings.profileImageUri;
-  if (isLocalFileUri(profileImageUri) && !settings.profileImageStoragePath) {
-    await enqueuePendingOperation({
-      kind: "asset_upload",
-      userId,
-      assetKind: "avatar",
-      localUri: profileImageUri,
-      previousPath: null,
-      nextVersion: Math.max(settings.profileImageVersion, 0) + 1,
-    });
-  }
-
-  const bannerImageUri = settings.bannerImageUri;
-  if (isLocalFileUri(bannerImageUri) && !settings.bannerImageStoragePath) {
-    await enqueuePendingOperation({
-      kind: "asset_upload",
-      userId,
-      assetKind: "banner",
-      localUri: bannerImageUri,
-      previousPath: null,
-      nextVersion: Math.max(settings.bannerImageVersion, 0) + 1,
-    });
-  }
+  const images = [{ u: settings.profileImageUri, k: "avatar" as const, p: settings.profileImageStoragePath, v: settings.profileImageVersion }, { u: settings.bannerImageUri, k: "banner" as const, p: settings.bannerImageStoragePath, v: settings.bannerImageVersion }];
+  for (const img of images) { if (isLocalFileUri(img.u) && !img.p) await enqueuePendingOperation({ kind: "asset_upload", userId, assetKind: img.k, localUri: img.u, previousPath: null, nextVersion: Math.max(img.v, 0) + 1 }); }
 }
 
-function inferAssetExtension(uri: string) {
-  const match = uri.toLowerCase().match(/\.([a-z0-9]+)(?:\?|$)/);
-  const ext = match?.[1] ?? "jpg";
-  if (["jpg", "jpeg", "png", "webp", "heic"].includes(ext)) {
-    return ext;
-  }
-  return "jpg";
-}
+function inferAssetExtension(uri: string) { const m = uri.toLowerCase().match(/\.([a-z0-9]+)(?:\?|$)/); return m?.[1] || "jpg"; }
+function inferAssetContentType(uri: string) { const e = inferAssetExtension(uri); if (e === "png") return "image/png"; if (e === "webp") return "image/webp"; if (e === "heic") return "image/heic"; return "image/jpeg"; }
 
-function inferAssetContentType(uri: string) {
-  const extension = inferAssetExtension(uri);
-  switch (extension) {
-    case "png":
-      return "image/png";
-    case "webp":
-      return "image/webp";
-    case "heic":
-      return "image/heic";
-    default:
-      return "image/jpeg";
-  }
-}
-
-async function executePendingOperation(operation: PendingSyncOperation) {
-  switch (operation.kind) {
-    case "profile_settings": {
-      const { error } = await supabase.rpc("sync_streambox_profile_and_settings", {
-        profile_payload: buildProfilePayload(operation.settings),
-        settings_payload: buildSettingsPayload(operation.settings),
-        audit_metadata: operation.auditMetadata,
-      });
-      if (error) throw error;
-      return;
-    }
+async function executePendingOperation(op: PendingSyncOperation) {
+  switch (op.kind) {
+    case "profile_settings": await supabase.rpc("sync_streambox_profile_and_settings", { profile_payload: buildProfilePayload(op.settings), settings_payload: buildSettingsPayload(op.settings), audit_metadata: op.auditMetadata }); break;
     case "asset_upload": {
-      const extension = inferAssetExtension(operation.localUri);
-      const folder = operation.assetKind === "avatar" ? "avatars" : "banners";
-      const objectPath = `${operation.userId}/${folder}/${operation.assetKind}-${Date.now()}.${extension}`;
-      const response = await fetch(operation.localUri);
-      const fileBuffer = await response.arrayBuffer();
-      const { error: uploadError } = await supabase.storage.from(PROFILE_ASSETS_BUCKET).upload(objectPath, fileBuffer, {
-        contentType: inferAssetContentType(operation.localUri),
-        upsert: false,
-      });
-      if (uploadError) throw uploadError;
-
-      const profilePayload = operation.assetKind === "avatar"
-        ? { avatarPath: objectPath, avatarVersion: operation.nextVersion }
-        : { bannerPath: objectPath, bannerVersion: operation.nextVersion };
-      const { error: syncError } = await supabase.rpc("sync_streambox_profile_and_settings", {
-        profile_payload: profilePayload,
-        settings_payload: {},
-        audit_metadata: {
-          source: "asset_upload",
-          assetKind: operation.assetKind,
-        },
-      });
-      if (syncError) throw syncError;
-
-      if (operation.previousPath && operation.previousPath !== objectPath) {
-        await supabase.storage.from(PROFILE_ASSETS_BUCKET).remove([operation.previousPath]);
-      }
-
-      await updateLocalAssetMetadata(operation.assetKind, operation.localUri, objectPath, operation.nextVersion);
-      return;
+      const ext = inferAssetExtension(op.localUri); const folder = op.assetKind === "avatar" ? "avatars" : "banners"; const path = `${op.userId}/${folder}/${op.assetKind}-${Date.now()}.${ext}`;
+      const res = await fetch(op.localUri); const buf = await res.arrayBuffer();
+      const { error } = await supabase.storage.from(PROFILE_ASSETS_BUCKET).upload(path, buf, { contentType: inferAssetContentType(op.localUri) });
+      if (error) throw error;
+      await supabase.rpc("sync_streambox_profile_and_settings", { profile_payload: op.assetKind === "avatar" ? { avatar_path: path, avatar_version: op.nextVersion } : { banner_path: path, banner_version: op.nextVersion }, settings_payload: {}, audit_metadata: { source: "asset_upload", assetKind: op.assetKind } });
+      if (op.previousPath) await supabase.storage.from(PROFILE_ASSETS_BUCKET).remove([op.previousPath]);
+      await updateLocalAssetMetadata(op.assetKind, op.localUri, path, op.nextVersion);
+      break;
     }
     case "media_library": {
-      const ids = getSyncIds(operation.tmdbId);
-      if (!ids.tmdb_id && !ids.internal_id) {
-        console.warn("[sync] Skipping media_library sync due to invalid ID:", operation.tmdbId);
-        return;
-      }
-      const { error } = await supabase.rpc("sync_streambox_media_library_item", {
-        p_operation: operation.operation,
-        p_list_kind: operation.listKind,
-        p_media_type: operation.mediaType,
-        p_tmdb_id: ids.tmdb_id,
-        p_internal_id: ids.internal_id,
-        p_imdb_id: operation.imdbId,
-        p_collected_at: operation.collectedAt,
-        p_snapshot: operation.snapshot,
-        p_audit_metadata: operation.auditMetadata,
-      });
-      if (error) throw error;
-      return;
+      const ids = getSyncIds(op.tmdbId);
+      await supabase.rpc("sync_streambox_media_library_item", { p_operation: op.operation, p_list_kind: op.listKind, p_media_type: op.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_imdb_id: op.imdbId, p_collected_at: op.collectedAt, p_snapshot: op.snapshot, p_audit_metadata: op.auditMetadata });
+      break;
     }
     case "watch_history_upsert": {
-      const { entry } = operation;
-      const ids = getSyncIds(entry.id);
-      const arrays = buildWatchHistorySyncArrays(entry);
-      if (!ids.tmdb_id && !ids.internal_id) {
-        console.warn("[sync] Skipping watch_history_upsert due to invalid ID:", entry.id);
-        return;
-      }
-      const { error } = await supabase.rpc("sync_streambox_watch_history_entry", {
-        p_media_type: entry.mediaType,
-        p_tmdb_id: ids.tmdb_id,
-        p_internal_id: ids.internal_id,
-        p_imdb_id: operation.auditMetadata.imdbId ?? null,
-        p_title: entry.title,
-        p_poster_path: entry.posterPath,
-        p_genres: entry.genres,
-        p_runtime_minutes: entry.runtimeMinutes,
-        p_episode_count: entry.episodeCount,
-        p_vote_average: entry.voteAverage,
-        p_release_year: entry.year ? Number(entry.year) : null,
-        p_cast_ids: arrays.castIds,
-        p_cast_names: arrays.castNames,
-        p_cast_profile_paths: arrays.castProfilePaths,
-        p_cast_genders: arrays.castGenders,
-        p_director_ids: arrays.directorIds,
-        p_director_names: arrays.directorNames,
-        p_director_profile_paths: arrays.directorProfilePaths,
-        p_watched_at: new Date(entry.watchedAt).toISOString(),
-        p_metadata_version: entry.metadataVersion,
-        p_snapshot: {},
-        p_audit_metadata: operation.auditMetadata,
-      });
-      if (error) throw error;
-      return;
+      const ids = getSyncIds(op.entry.id); const arrays = buildWatchHistorySyncArrays(op.entry);
+      await supabase.rpc("sync_streambox_watch_history_entry", { p_media_type: op.entry.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_imdb_id: (op.entry as any).imdbId, p_title: op.entry.title, p_poster_path: op.entry.posterPath, p_genres: op.entry.genres, p_runtime_minutes: op.entry.runtimeMinutes, p_episode_count: op.entry.episodeCount, p_vote_average: op.entry.voteAverage, p_release_year: op.entry.year ? Number(op.entry.year) : null, p_cast_ids: arrays.castIds, p_cast_names: arrays.castNames, p_cast_profile_paths: arrays.castProfilePaths, p_cast_genders: arrays.castGenders, p_director_ids: arrays.directorIds, p_director_names: arrays.directorNames, p_director_profile_paths: arrays.directorProfilePaths, p_watched_at: new Date(op.entry.watchedAt).toISOString(), p_metadata_version: op.entry.metadataVersion, p_snapshot: {}, p_audit_metadata: op.auditMetadata });
+      break;
     }
-    case "watch_history_delete": {
-      const ids = getSyncIds(operation.tmdbId);
-      if (!ids.tmdb_id && !ids.internal_id) {
-        console.warn("[sync] Skipping watch_history_delete due to invalid ID:", operation.tmdbId);
-        return;
-      }
-      const { error } = await supabase.rpc("delete_streambox_watch_history_entry", {
-        p_media_type: operation.mediaType,
-        p_tmdb_id: ids.tmdb_id,
-        p_internal_id: ids.internal_id,
-        p_audit_metadata: operation.auditMetadata,
-      });
-      if (error) throw error;
-      return;
-    }
-    case "episode_progress": {
-      const { error } = await supabase.rpc("sync_streambox_episode_progress", {
-        p_series_tmdb_id: operation.seriesTmdbId,
-        p_season_number: operation.seasonNumber,
-        p_episode_number: operation.episodeNumber,
-        p_is_watched: operation.isWatched,
-        p_watched_at: operation.watchedAt,
-        p_snapshot: {},
-        p_audit_metadata: operation.auditMetadata,
-      });
-      if (error) throw error;
-      return;
-    }
+    case "watch_history_delete": { const ids = getSyncIds(op.tmdbId); await supabase.rpc("delete_streambox_watch_history_entry", { p_media_type: op.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_audit_metadata: op.auditMetadata }); break; }
+    case "episode_progress": await supabase.rpc("sync_streambox_episode_progress", { p_series_tmdb_id: op.seriesTmdbId, p_season_number: op.seasonNumber, p_episode_number: op.episodeNumber, p_is_watched: op.isWatched, p_watched_at: op.watchedAt, p_snapshot: {}, p_audit_metadata: op.auditMetadata }); break;
     case "daily_recommendation": {
-      const { error } = await supabase.from("user_daily_recommendations").upsert(
-        {
-          user_id: operation.userId,
-          recommendation_kind: operation.recommendationKind,
-          recommendation_date: operation.recommendationDate,
-          media_type: operation.mediaType,
-          tmdb_id: operation.tmdbId,
-          imdb_id: operation.imdbId,
-          strategy: operation.strategy,
-          snapshot: operation.snapshot,
-        },
-        { onConflict: "user_id,recommendation_kind,recommendation_date" }
-      );
-      if (error) throw error;
-      return;
+      const ids = getSyncIds(op.tmdbId);
+      await supabase.from("user_daily_recommendations").upsert({ user_id: op.userId, recommendation_kind: op.recommendationKind, recommendation_date: op.recommendationDate, media_type: op.mediaType, ...ids, imdb_id: op.imdbId, strategy: op.strategy, snapshot: op.snapshot }, { onConflict: `user_id,recommendation_kind,recommendation_date,${ids.tmdb_id ? 'tmdb_id' : 'internal_id'}` });
+      break;
     }
-    case "auth_event": {
-      const { error } = await supabase.rpc("log_streambox_user_event", {
-        action_category: operation.actionCategory,
-        action_type: operation.actionType,
-        entity_type: operation.entityType,
-        entity_key: operation.entityKey,
-        metadata: operation.metadata,
-      });
-      if (error) throw error;
-    }
+    case "auth_event": await supabase.rpc("log_streambox_user_event", { action_category: op.actionCategory, action_type: op.actionType, entity_type: op.entityType, entity_key: op.entityKey, metadata: op.metadata }); break;
   }
 }
-
 
 export async function clearLocalUserDataCache() {
-  const keysToRemove = [
-    APP_SETTINGS_STORAGE_KEY,
-    WATCHLIST_STORAGE_KEY,
-    SERIES_WATCHLIST_STORAGE_KEY,
-    LIKED_MOVIES_STORAGE_KEY,
-    LIKED_SERIES_STORAGE_KEY,
-    WATCH_HISTORY_STORAGE_KEY,
-    RECENTLY_WATCHED_STORAGE_KEY,
-    WATCHED_EPISODES_STORAGE_KEY,
-    MOVIE_OF_DAY_CURRENT_STORAGE_KEY,
-    MOVIE_OF_DAY_HISTORY_STORAGE_KEY,
-    ACTIVE_SYNC_USER_KEY,
-    AZ_CLASSICS_CACHE_KEY,
-  ];
-  const allKeys = await AsyncStorage.getAllKeys();
-  const bootstrapKeys = allKeys.filter((key) => key.startsWith(BOOTSTRAP_COMPLETE_KEY_PREFIX));
-  await Promise.all([
-    AsyncStorage.multiRemove([...keysToRemove, ...bootstrapKeys]),
-    clearAzClassicImageCache(),
-  ]);
+  const keys = [APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY, ACTIVE_SYNC_USER_KEY, AZ_CLASSICS_CACHE_KEY, SYNC_QUEUE_STORAGE_KEY];
+  const all = await AsyncStorage.getAllKeys(); const bKeys = all.filter(k => k.startsWith(BOOTSTRAP_COMPLETE_KEY_PREFIX));
+  await Promise.all([AsyncStorage.multiRemove([...keys, ...bKeys]), clearAzClassicImageCache()]);
 }
-export async function flushSupabaseUserDataSync(targetUserId?: string) {
-  if (flushPromise) {
-    await flushPromise;
-    return;
-  }
 
+export async function flushSupabaseUserDataSync(targetId?: string) {
+  if (flushPromise) { await flushPromise; return; }
   flushPromise = (async () => {
-    const activeUserId = targetUserId ?? (await getCurrentUserId());
-    if (!activeUserId) {
-      return;
-    }
-
-    const queue = await readPendingQueue();
-    if (queue.length === 0) {
-      return;
-    }
-
-    const retainedQueue = queue.filter((entry) => entry.userId !== activeUserId);
-    const activeQueue = queue.filter((entry) => entry.userId === activeUserId);
-    const failedQueue: PendingSyncOperation[] = [];
-
-    for (const operation of activeQueue) {
-      try {
-        await executePendingOperation(operation);
-      } catch (error) {
-        console.warn("Supabase sync operation failed", error);
-        failedQueue.push(operation);
-      }
-    }
-
-    await writePendingQueue([...retainedQueue, ...failedQueue]);
-  })().finally(() => {
-    flushPromise = null;
-  });
-
+    const uid = targetId || (await getCurrentUserId()); if (!uid) return;
+    const q = await readPendingQueue(); if (q.length === 0) return;
+    const r = q.filter(e => e.userId !== uid); const a = q.filter(e => e.userId === uid); const f: any[] = [];
+    for (const op of a) { try { await executePendingOperation(op); } catch (e) { console.warn("Sync failed", e); f.push(op); } }
+    await writePendingQueue([...r, ...f]);
+  })().finally(() => { flushPromise = null; });
   await flushPromise;
 }
 
 export async function bootstrapSupabaseUserData() {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    console.warn("[bootstrap] no userId — skipping");
-    return;
-  }
-
-  const previousUserId = await AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY);
-  const localSnapshot = await readLocalUserSnapshot();
-  const bootstrapComplete = (await AsyncStorage.getItem(getBootstrapCompleteKey(userId))) === "1";
-
-  console.log("[bootstrap] userId:", userId, "previousUserId:", previousUserId, "bootstrapComplete:", bootstrapComplete);
-
-  if (bootstrapComplete && previousUserId === userId) {
-    console.log("[bootstrap] fast path — flush only");
-    await flushSupabaseUserDataSync(userId);
-    await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, userId);
-    // Fast path still needs to ensure profile assets are resolved
-    const settings = localSnapshot.settings;
-    if (!isLocalFileUri(settings.profileImageUri) || !isLocalFileUri(settings.bannerImageUri)) {
-        console.log("[bootstrap] fast path — resolving remote assets");
-        const assets = await resolveProfileAssetUris({
-          avatarPath: settings.profileImageStoragePath,
-          bannerPath: settings.bannerImageStoragePath,
-          avatarVersion: settings.profileImageVersion,
-          bannerVersion: settings.bannerImageVersion,
-        });
-        let changed = false;
-        if (assets.profileImageUri && !isLocalFileUri(settings.profileImageUri)) {
-          settings.profileImageUri = assets.profileImageUri;
-          settings.profileImageStoragePath = assets.profileImageStoragePath;
-          changed = true;
-        }
-        if (assets.bannerImageUri && !isLocalFileUri(settings.bannerImageUri)) {
-          settings.bannerImageUri = assets.bannerImageUri;
-          settings.bannerImageStoragePath = assets.bannerImageStoragePath;
-          changed = true;
-        }
-        if (changed) {
-          await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-        }
-      }
-      return;
+  const uid = await getCurrentUserId(); if (!uid) return;
+  const pId = await AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY); const local = await readLocalUserSnapshot(); const bDone = (await AsyncStorage.getItem(getBootstrapCompleteKey(uid))) === "1";
+  if (bDone && pId === uid) {
+    await flushSupabaseUserDataSync(uid); await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, uid);
+    if (!isLocalFileUri(local.settings.profileImageUri) || !isLocalFileUri(local.settings.bannerImageUri)) {
+      const a = await resolveProfileAssetUris({ avatarPath: local.settings.profileImageStoragePath, bannerPath: local.settings.bannerImageStoragePath, avatarVersion: local.settings.profileImageVersion, bannerVersion: local.settings.bannerImageVersion });
+      if (a.profileImageUri && !isLocalFileUri(local.settings.profileImageUri)) local.settings.profileImageUri = a.profileImageUri;
+      if (a.bannerImageUri && !isLocalFileUri(local.settings.bannerImageUri)) local.settings.bannerImageUri = a.bannerImageUri;
+      await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(local.settings));
     }
-  let remoteBootstrap: RemoteBootstrap;
-  try {
-    remoteBootstrap = await fetchRemoteBootstrap();
-    console.log("[bootstrap] RPC returned profile keys:", remote_profile_keys(remoteBootstrap));
-  } catch (error) {
-    console.warn("[bootstrap] RPC failed:", error);
-    // RPC failed — still try to resolve assets directly from DB
-    console.log("[bootstrap] attempting direct asset resolution despite RPC failure");
-    const assets = await resolveProfileAssetUris();
-    if (assets.profileImageUri || assets.bannerImageUri) {
-      const settings = localSnapshot.settings;
-      if (assets.profileImageUri) settings.profileImageUri = assets.profileImageUri;
-      if (assets.bannerImageUri) settings.bannerImageUri = assets.bannerImageUri;
-      if (assets.profileImageStoragePath) settings.profileImageStoragePath = assets.profileImageStoragePath;
-      if (assets.bannerImageStoragePath) settings.bannerImageStoragePath = assets.bannerImageStoragePath;
-      settings.profileImageVersion = assets.profileImageVersion;
-      settings.bannerImageVersion = assets.bannerImageVersion;
-      await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-    }
-
-    if (previousUserId && previousUserId !== userId) {
-      await clearLocalUserDataCache();
-      await writeLocalUserSnapshot({
-        settings: createDefaultSettings(DEFAULT_THEME_ID),
-        movieWatchlist: [],
-        seriesWatchlist: [],
-        likedMovies: [],
-        likedSeries: [],
-        watchHistory: [],
-        recentlyViewed: [],
-        watchedEpisodes: {},
-        movieOfDayCurrent: null,
-        movieOfDayHistory: { tmdbIds: [], imdbIds: [] },
-      });
-    }
-    await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, userId);
     return;
   }
-
-  const canMergeLocal = !bootstrapComplete && (!previousUserId || previousUserId === userId);
-  console.log("[bootstrap] canMergeLocal:", canMergeLocal);
-
-  if (canMergeLocal) {
-    const mergedSnapshot = await mergeInitialSnapshot(localSnapshot, remoteBootstrap);
-    await writeLocalUserSnapshot(mergedSnapshot);
-    await backfillSnapshotToRemote(userId, mergedSnapshot);
-    await queueInitialAssetUploads(userId, mergedSnapshot.settings);
-    await flushSupabaseUserDataSync(userId);
-
-    const queueAfterBootstrap = await readPendingQueue();
-    if (!queueAfterBootstrap.some((entry) => entry.userId === userId)) {
-      const refreshedBootstrap = await fetchRemoteBootstrap().catch(() => remoteBootstrap);
-      const canonicalSnapshot = await createLocalSnapshotFromRemote(refreshedBootstrap, mergedSnapshot.settings);
-      await writeLocalUserSnapshot(canonicalSnapshot);
-    }
-  } else {
-    console.log("[bootstrap] else branch — full remote restore");
-    const baseSettings = previousUserId === userId ? localSnapshot.settings : createDefaultSettings(DEFAULT_THEME_ID);
-    const remoteSnapshot = await createLocalSnapshotFromRemote(remoteBootstrap, baseSettings);
-    console.log("[bootstrap] resolved profileImageUri:", remoteSnapshot.settings.profileImageUri ? "SET" : "NULL");
-    console.log("[bootstrap] resolved bannerImageUri:", remoteSnapshot.settings.bannerImageUri ? "SET" : "NULL");
-    await writeLocalUserSnapshot(remoteSnapshot);
-  }
-
-  await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, userId);
-  await AsyncStorage.setItem(getBootstrapCompleteKey(userId), "1");
+  let rb: RemoteBootstrap; try { rb = await fetchRemoteBootstrap(); } catch { const a = await resolveProfileAssetUris(); if (a.profileImageUri) local.settings.profileImageUri = a.profileImageUri; if (a.bannerImageUri) local.settings.bannerImageUri = a.bannerImageUri; await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(local.settings)); return; }
+  const merged = await mergeInitialSnapshot(local, rb); await writeLocalUserSnapshot(merged);
+  await backfillSnapshotToRemote(uid, merged); await queueInitialAssetUploads(uid, merged.settings); await flushSupabaseUserDataSync(uid);
+  const q = await readPendingQueue(); if (!q.some(e => e.userId === uid)) { const rb2 = await fetchRemoteBootstrap().catch(() => rb); await writeLocalUserSnapshot(await createLocalSnapshotFromRemote(rb2, merged.settings)); }
+  await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, uid); await AsyncStorage.setItem(getBootstrapCompleteKey(uid), "1");
 }
 
-/** Helper to log which keys the RPC returned for the profile object */
-function remote_profile_keys(bootstrap: RemoteBootstrap): string {
-  if (!bootstrap.profile) return "(no profile)";
-  return Object.keys(bootstrap.profile).join(", ");
+export async function enqueueProfileSettingsSync(settings: PersistedSettings, audit: SyncMetadata = {}) {
+  const uid = await getCurrentUserId(); if (!uid) return;
+  await enqueuePendingOperation({ kind: "profile_settings", userId: uid, settings, auditMetadata: normalizeSyncMetadata(audit) });
+  void flushSupabaseUserDataSync(uid);
 }
 
-export async function enqueueProfileSettingsSync(settings: PersistedSettings, auditMetadata: SyncMetadata = {}) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return;
-  }
-
-  await enqueuePendingOperation({
-    kind: "profile_settings",
-    userId,
-    settings,
-    auditMetadata: normalizeSyncMetadata(auditMetadata),
-  });
-  void flushSupabaseUserDataSync(userId);
+export async function enqueueProfileAssetSync(kind: SyncAssetKind, uri: string | null, prev: string | null, ver: number) {
+  const uid = await getCurrentUserId(); if (!uid || !uri || !isLocalFileUri(uri)) return;
+  await enqueuePendingOperation({ kind: "asset_upload", userId: uid, assetKind: kind, localUri: uri, previousPath: prev, nextVersion: Math.max(ver, 0) + 1 });
+  void flushSupabaseUserDataSync(uid);
 }
 
-export async function enqueueProfileAssetSync(
-  assetKind: SyncAssetKind,
-  localUri: string | null,
-  previousPath: string | null,
-  currentVersion: number
-) {
-  const userId = await getCurrentUserId();
-  if (!userId || !localUri || !isLocalFileUri(localUri)) {
-    return;
-  }
-
-  await enqueuePendingOperation({
-    kind: "asset_upload",
-    userId,
-    assetKind,
-    localUri,
-    previousPath,
-    nextVersion: Math.max(currentVersion, 0) + 1,
-  });
-  void flushSupabaseUserDataSync(userId);
+export async function enqueueMediaLibrarySync(i: { operation: "upsert" | "delete"; listKind: SyncListKind; mediaType: MediaType; tmdbId: number | string; details?: UserMediaSyncDetails | null; occurredAt?: string; }) {
+  const uid = await getCurrentUserId(); if (!uid) return;
+  await enqueuePendingOperation({ kind: "media_library", userId: uid, operation: i.operation, listKind: i.listKind, mediaType: i.mediaType, tmdbId: i.tmdbId, imdbId: i.details?.imdbId ?? null, collectedAt: i.occurredAt ?? new Date().toISOString(), snapshot: normalizeMediaSnapshot(i.details), auditMetadata: normalizeSyncMetadata({ title: i.details?.title }) });
+  void flushSupabaseUserDataSync(uid);
 }
 
-export async function enqueueMediaLibrarySync(
-  input: {
-    operation: "upsert" | "delete";
-    listKind: SyncListKind;
-    mediaType: MediaType;
-    tmdbId: number | string;
-    details?: UserMediaSyncDetails | null;
-    occurredAt?: string;
-  }
-) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return;
-  }
-
-  const metadata = normalizeSyncMetadata({
-    title: input.details?.title,
-    imdbId: input.details?.imdbId,
-    posterPath: input.details?.posterPath,
-    year: input.details?.year,
-  });
-
-  await enqueuePendingOperation({
-    kind: "media_library",
-    userId,
-    operation: input.operation,
-    listKind: input.listKind,
-    mediaType: input.mediaType,
-    tmdbId: input.tmdbId,
-    imdbId: input.details?.imdbId ?? null,
-    collectedAt: input.occurredAt ?? new Date().toISOString(),
-    snapshot: normalizeMediaSnapshot(input.details),
-    auditMetadata: metadata,
-  });
-  void flushSupabaseUserDataSync(userId);
+export async function enqueueWatchHistoryUpsert(e: WatchHistoryEntry, a: SyncMetadata = {}) {
+  const uid = await getCurrentUserId(); if (!uid) return;
+  await enqueuePendingOperation({ kind: "watch_history_upsert", userId: uid, entry: e, auditMetadata: normalizeSyncMetadata(a) });
+  void flushSupabaseUserDataSync(uid);
 }
 
-export async function enqueueWatchHistoryUpsert(entry: WatchHistoryEntry, auditMetadata: SyncMetadata = {}) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return;
-  }
-
-  await enqueuePendingOperation({
-    kind: "watch_history_upsert",
-    userId,
-    entry,
-    auditMetadata: normalizeSyncMetadata(auditMetadata),
-  });
-  void flushSupabaseUserDataSync(userId);
+export async function enqueueWatchHistoryDelete(t: MediaType, id: number | string, a: SyncMetadata = {}) {
+  const uid = await getCurrentUserId(); if (!uid) return;
+  await enqueuePendingOperation({ kind: "watch_history_delete", userId: uid, mediaType: t, tmdbId: id, auditMetadata: normalizeSyncMetadata(a) });
+  void flushSupabaseUserDataSync(uid);
 }
 
-export async function enqueueWatchHistoryDelete(
-  mediaType: MediaType,
-  tmdbId: number | string,
-  auditMetadata: SyncMetadata = {}
-) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return;
-  }
-
-  await enqueuePendingOperation({
-    kind: "watch_history_delete",
-    userId,
-    mediaType,
-    tmdbId,
-    auditMetadata: normalizeSyncMetadata(auditMetadata),
-  });
-  void flushSupabaseUserDataSync(userId);
+export async function enqueueEpisodeProgressSync(t: number, s: number, e: number, w: boolean, a: SyncMetadata = {}) {
+  const uid = await getCurrentUserId(); if (!uid) return;
+  await enqueuePendingOperation({ kind: "episode_progress", userId: uid, seriesTmdbId: t, seasonNumber: s, episodeNumber: e, isWatched: w, watchedAt: new Date().toISOString(), auditMetadata: normalizeSyncMetadata(a) });
+  void flushSupabaseUserDataSync(uid);
 }
 
-export async function enqueueEpisodeProgressSync(
-  seriesTmdbId: number,
-  seasonNumber: number,
-  episodeNumber: number,
-  isWatched: boolean,
-  auditMetadata: SyncMetadata = {}
-) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return;
-  }
-
-  await enqueuePendingOperation({
-    kind: "episode_progress",
-    userId,
-    seriesTmdbId,
-    seasonNumber,
-    episodeNumber,
-    isWatched,
-    watchedAt: new Date().toISOString(),
-    auditMetadata: normalizeSyncMetadata(auditMetadata),
-  });
-  void flushSupabaseUserDataSync(userId);
+export async function enqueueDailyRecommendationSync(m: Record<string, any> | null, d: string) {
+  const uid = await getCurrentUserId(); if (!uid || !m || !m.id) return;
+  await enqueuePendingOperation({ kind: "daily_recommendation", userId: uid, recommendationKind: MOVIE_OF_DAY_KIND, recommendationDate: d, mediaType: "movie", tmdbId: m.id, imdbId: m.imdbId || null, strategy: "device_generated", snapshot: { movie: m } });
+  void flushSupabaseUserDataSync(uid);
 }
 
-export async function enqueueDailyRecommendationSync(movie: Record<string, unknown> | null, dateKey: string) {
-  const userId = await getCurrentUserId();
-  if (!userId || !movie || typeof movie.id !== "number") {
-    return;
-  }
-
-  await enqueuePendingOperation({
-    kind: "daily_recommendation",
-    userId,
-    recommendationKind: MOVIE_OF_DAY_KIND,
-    recommendationDate: dateKey,
-    mediaType: "movie",
-    tmdbId: movie.id,
-    imdbId: typeof movie.imdbId === "string" ? movie.imdbId : null,
-    strategy: "device_generated",
-    snapshot: { movie },
-  });
-  void flushSupabaseUserDataSync(userId);
+export async function logSupabaseUserEvent(cat: string, type: string, meta: SyncMetadata = {}, opts?: any) {
+  const uid = await getCurrentUserId(); if (!uid) return;
+  await enqueuePendingOperation({ kind: "auth_event", userId: uid, actionCategory: cat, actionType: type, entityType: opts?.entityType ?? null, entityKey: opts?.entityKey ?? null, metadata: normalizeSyncMetadata(meta), createdAt: new Date().toISOString() });
+  if (opts?.flushImmediately) await flushSupabaseUserDataSync(uid); else void flushSupabaseUserDataSync(uid);
 }
-
-export async function logSupabaseUserEvent(
-  actionCategory: string,
-  actionType: string,
-  metadata: SyncMetadata = {},
-  options?: {
-    entityType?: string | null;
-    entityKey?: string | null;
-    flushImmediately?: boolean;
-  }
-) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return;
-  }
-
-  await enqueuePendingOperation({
-    kind: "auth_event",
-    userId,
-    actionCategory,
-    actionType,
-    entityType: options?.entityType ?? null,
-    entityKey: options?.entityKey ?? null,
-    metadata: normalizeSyncMetadata(metadata),
-    createdAt: new Date().toISOString(),
-  });
-
-  if (options?.flushImmediately) {
-    await flushSupabaseUserDataSync(userId);
-    return;
-  }
-
-  void flushSupabaseUserDataSync(userId);
-}
-
-
-
-
-
