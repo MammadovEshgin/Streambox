@@ -118,13 +118,7 @@ const QuotePanel = styled.View`
   overflow: hidden;
 `;
 
-const QuoteCarousel = styled(FlatList as new () => FlatList<(typeof AZ_CLASSIC_QUOTES)[number]>).attrs({
-  horizontal: true,
-  pagingEnabled: false,
-  decelerationRate: "fast",
-  snapToAlignment: "start",
-  showsHorizontalScrollIndicator: false,
-})``;
+const QuoteCarousel = styled.FlatList``;
 
 const QuoteBodyRow = styled.View`
   margin-top: 2px;
@@ -553,8 +547,13 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
         {isAzClassicsScreen ? (
           <>
             <QuoteCarouselWrap>
-              <QuoteCarousel
+              <FlatList
                 data={AZ_CLASSIC_QUOTES}
+                horizontal
+                pagingEnabled={false}
+                decelerationRate="fast"
+                snapToAlignment="start"
+                showsHorizontalScrollIndicator={false}
                 keyExtractor={(item, index) => `${item.movieTitle}-${index}`}
                 snapToInterval={quoteCardWidth + QUOTE_CAROUSEL_GAP}
                 contentContainerStyle={{
@@ -576,8 +575,8 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
                       <QuoteMark>"</QuoteMark>
                       <QuoteBodyRow>
                         <QuoteText>
-                          {`"${item.quote}" - `}
-                          <QuoteMovieTitle>{item.movieTitle}</QuoteMovieTitle>
+                           {`"${item.quote}" - `}
+                           <QuoteMovieTitle>{item.movieTitle}</QuoteMovieTitle>
                         </QuoteText>
                       </QuoteBodyRow>
                     </QuotePanel>
