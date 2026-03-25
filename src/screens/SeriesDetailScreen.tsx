@@ -894,6 +894,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                             tmdbId: String(details.id),
                             imdbId: details.imdbId,
                             title: details.title,
+                            originalTitle: details.originalTitle,
                             seasonNumber: nextEpisode?.season,
                             episodeNumber: nextEpisode?.episode,
                             year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null
@@ -1000,6 +1001,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                               tmdbId: String(details.id),
                               imdbId: details.imdbId,
                               title: details.title,
+                              originalTitle: details.originalTitle,
                               seasonNumber: episode.seasonNumber,
                               episodeNumber: episode.episodeNumber,
                               year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null

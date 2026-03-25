@@ -44,6 +44,7 @@ export type HomeStackParamList = {
     mediaType: MediaType,
     tmdbId: string,
     title: string,
+    originalTitle?: string,
     imdbId?: string | null,
     seasonNumber?: number,
     episodeNumber?: number,
@@ -80,6 +81,7 @@ export type ProfileStackParamList = {
     mediaType: MediaType;
     tmdbId: string;
     title: string;
+    originalTitle?: string;
     imdbId?: string | null;
     seasonNumber?: number;
     episodeNumber?: number;
@@ -126,6 +128,7 @@ export type StatsStackParamList = {
     mediaType: MediaType;
     tmdbId: string;
     title: string;
+    originalTitle?: string;
     imdbId?: string | null;
     seasonNumber?: number;
     episodeNumber?: number;
