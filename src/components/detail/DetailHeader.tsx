@@ -13,17 +13,18 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
 import { getTmdbImageUrl } from "../../api/tmdb";
+import { CachedRemoteImage } from "../common/CachedRemoteImage";
 
 const HeaderRoot = styled.View`
   position: relative;
-  height: 356px;
-  border-bottom-left-radius: 20px;
-  border-bottom-right-radius: 20px;
+  height: 380px;
+  border-bottom-left-radius: 28px;
+  border-bottom-right-radius: 28px;
   overflow: hidden;
   background-color: ${({ theme }) => theme.colors.surface};
 `;
 
-const Backdrop = styled.Image`
+const Backdrop = styled(CachedRemoteImage)`
   position: absolute;
   top: 0;
   right: 0;
@@ -37,7 +38,7 @@ const Darken = styled.View`
   right: 0;
   bottom: 0;
   left: 0;
-  background-color: rgba(0, 0, 0, 0.22);
+  background-color: rgba(11, 11, 14, 0.18);
 `;
 
 const FadeGradient = styled(LinearGradient)`
@@ -52,10 +53,12 @@ const BackButton = styled(Pressable)<{ $topOffset: number }>`
   position: absolute;
   top: ${({ $topOffset }) => $topOffset}px;
   left: 16px;
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  background-color: rgba(0, 0, 0, 0.42);
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background-color: ${({ theme }) => theme.colors.glassFill};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
   align-items: center;
   justify-content: center;
 `;
@@ -64,9 +67,12 @@ const ActionButton = styled(Pressable)<{ $topOffset: number }>`
   position: absolute;
   top: ${({ $topOffset }) => $topOffset}px;
   right: 16px;
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background-color: ${({ theme }) => theme.colors.glassFill};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
   align-items: center;
   justify-content: center;
 `;
@@ -74,7 +80,7 @@ const ActionButton = styled(Pressable)<{ $topOffset: number }>`
 const ActionButtonBody = styled(Animated.View)`
   width: 100%;
   height: 100%;
-  border-radius: 12px;
+  border-radius: 999px;
   align-items: center;
   justify-content: center;
 `;
@@ -83,9 +89,12 @@ const TrailerButton = styled(Pressable)<{ $topOffset: number }>`
   position: absolute;
   top: ${({ $topOffset }) => $topOffset}px;
   right: 16px;
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background-color: ${({ theme }) => theme.colors.glassFill};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
   align-items: center;
   justify-content: center;
 `;
@@ -182,19 +191,19 @@ export function DetailHeader({
 
   return (
     <HeaderRoot>
-      {lowResUri ? <Backdrop source={{ uri: lowResUri }} resizeMode="cover" blurRadius={2} /> : null}
+      {lowResUri ? <Backdrop uri={lowResUri} contentFit="cover" blurRadius={2} /> : null}
       {highResUri ? (
         <Backdrop
-          source={{ uri: highResUri }}
-          resizeMode="cover"
-          onLoadEnd={() => setIsHighResLoaded(true)}
+          uri={highResUri}
+          contentFit="cover"
+          onLoad={() => setIsHighResLoaded(true)}
           style={{ opacity: isHighResLoaded ? 1 : 0 }}
         />
       ) : null}
       <Darken />
       <FadeGradient
-        colors={["rgba(0,0,0,0.00)", "rgba(0,0,0,0.55)", "#000000"]}
-        locations={[0, 0.58, 1]}
+        colors={["rgba(11,11,14,0.00)", "rgba(11,11,14,0.40)", "rgba(11,11,14,0.92)", theme.colors.background]}
+        locations={[0, 0.45, 0.82, 1]}
       />
       <BackButton onPress={onBack} $topOffset={insets.top + 8}>
         <Feather name="arrow-left" size={18} color={theme.colors.textPrimary} />

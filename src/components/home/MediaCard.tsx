@@ -1,8 +1,12 @@
 import { Feather } from "@expo/vector-icons";
+import { memo } from "react";
 import { PressableProps } from "react-native";
+import { useTranslation } from "react-i18next";
 import styled from "styled-components/native";
 
 import { MediaItem, getTmdbImageUrl } from "../../api/tmdb";
+import { formatRating } from "../../api/mediaFormatting";
+import { CachedRemoteImage } from "../common/CachedRemoteImage";
 
 const CardRoot = styled.Pressable`
   width: 132px;
@@ -12,12 +16,12 @@ const PosterFrame = styled.View`
   position: relative;
   width: 132px;
   height: 198px;
-  border-radius: 12px;
+  border-radius: 14px;
   overflow: hidden;
   background-color: ${({ theme }) => theme.colors.surface};
 `;
 
-const PosterImage = styled.Image`
+const PosterImage = styled(CachedRemoteImage)`
   width: 100%;
   height: 100%;
 `;
@@ -31,48 +35,51 @@ const NoImage = styled.View`
 
 const NoImageText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 12px;
-  letter-spacing: 0.3px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
   text-transform: uppercase;
 `;
 
 const Badge = styled.View`
   position: absolute;
-  left: 8px;
-  bottom: 8px;
+  top: 8px;
+  right: 8px;
   flex-direction: row;
   align-items: center;
-  padding: 3px 8px;
+  padding: 4px 8px;
   border-radius: 999px;
-  background-color: rgba(0, 0, 0, 0.68);
+  background-color: ${({ theme }) => theme.colors.glassFill};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
 `;
 
 const BadgeValue = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
   font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
-  font-size: 12px;
-  letter-spacing: 0.2px;
+  font-size: 11px;
+  letter-spacing: 0.4px;
 `;
 
 const Title = styled.Text`
   margin-top: 10px;
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: ${({ theme }) => theme.typography.BodySmall.fontFamily};
+  font-family: Outfit_600SemiBold;
   font-size: 14px;
-  line-height: 19px;
+  line-height: 18px;
   letter-spacing: -0.15px;
 `;
 
 const MetaRow = styled.View`
-  margin-top: 3px;
+  margin-top: 4px;
 `;
 
 const Meta = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
+  color: ${({ theme }) => theme.colors.textTertiary};
   font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
-  font-size: 12px;
-  line-height: 16px;
-  letter-spacing: 0.3px;
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
 `;
 
 type MediaCardProps = {
@@ -83,35 +90,48 @@ type MediaCardProps = {
   hideRating?: boolean;
 };
 
-export function MediaCard({ item, onPress, onPressIn, posterUri: customPosterUri, hideRating }: MediaCardProps) {
+function MediaCardComponent({ item, onPress, onPressIn, posterUri: customPosterUri, hideRating }: MediaCardProps) {
+  const { t } = useTranslation();
   const posterUri = customPosterUri ?? getTmdbImageUrl(item.posterPath, "w342");
-  const ratingText = item.rating.toFixed(1);
+  const ratingText = formatRating(item.rating);
 
   return (
     <CardRoot
       onPress={onPress}
       onPressIn={onPressIn}
-      style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}
+      style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }], opacity: pressed ? 0.96 : 1 }]}
     >
       <PosterFrame>
         {posterUri ? (
-          <PosterImage source={{ uri: posterUri }} resizeMode="cover" />
+          <PosterImage uri={posterUri} contentFit="cover" />
         ) : (
           <NoImage>
-            <NoImageText>No Image</NoImageText>
+            <NoImageText>{t("common.noImage")}</NoImageText>
           </NoImage>
         )}
         {!hideRating && typeof item.id !== "string" && !item.imdbId?.startsWith("az-") && (
           <Badge>
-            <Feather name="star" size={11} color="#FFD700" style={{ marginRight: 4 }} />
-            <BadgeValue>{ratingText}</BadgeValue>
+            <Feather name="star" size={10} color="#FFD27A" style={{ marginRight: 4 }} />
+            <BadgeValue style={{ fontVariant: ["tabular-nums"] }}>{ratingText}</BadgeValue>
           </Badge>
         )}
       </PosterFrame>
       <Title numberOfLines={1}>{item.title}</Title>
       <MetaRow>
-        <Meta>{typeof item.rank === "number" ? `${item.year} | #${item.rank}` : item.year}</Meta>
+        <Meta style={{ fontVariant: ["tabular-nums"] }}>
+          {typeof item.rank === "number" ? `${item.year}  ·  #${item.rank}` : item.year}
+        </Meta>
       </MetaRow>
     </CardRoot>
   );
 }
+
+export const MediaCard = memo(MediaCardComponent, (prev, next) => {
+  return (
+    prev.item === next.item &&
+    prev.onPress === next.onPress &&
+    prev.onPressIn === next.onPressIn &&
+    prev.posterUri === next.posterUri &&
+    prev.hideRating === next.hideRating
+  );
+});
