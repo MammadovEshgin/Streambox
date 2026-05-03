@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useCallback, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Keyboard,
@@ -14,7 +15,7 @@ import Animated, { FadeInDown, FadeInUp } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
-import { isValidEmail, signIn, signUp, validatePassword } from "../../services/auth";
+import { isValidEmail, signIn, signInWithGoogle, signUp, validatePassword } from "../../services/auth";
 
 type AuthScreenProps = {
   onSignUpSuccess: (email: string, displayName: string) => void;
@@ -186,6 +187,62 @@ const SubmitLabel = styled.Text`
   letter-spacing: 0.4px;
 `;
 
+const DividerRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  margin-top: 16px;
+  margin-bottom: 14px;
+`;
+
+const DividerLine = styled.View`
+  flex: 1;
+  height: 1px;
+  background-color: ${({ theme }) => theme.colors.border};
+`;
+
+const DividerText = styled.Text`
+  margin-horizontal: 10px;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+`;
+
+const GoogleButton = styled.Pressable<{ $disabled: boolean }>`
+  min-height: 54px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 99px;
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.border};
+  background-color: ${({ theme }) => theme.colors.surfaceRaised ?? theme.colors.surface};
+  opacity: ${({ $disabled }) => ($disabled ? 0.45 : 1)};
+`;
+
+const GoogleIconCircle = styled.View`
+  width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  background-color: #ffffff;
+  align-items: center;
+  justify-content: center;
+`;
+
+const GoogleIconText = styled.Text`
+  color: #4285F4;
+  font-size: 14px;
+  font-weight: 800;
+`;
+
+const GoogleButtonLabel = styled.Text`
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: ${({ theme }) => theme.typography.Button.fontFamily};
+  font-size: 15px;
+  letter-spacing: 0.2px;
+`;
+
 const ForgotButton = styled.Pressable`
   align-self: flex-end;
   padding: 4px 0;
@@ -209,6 +266,7 @@ const GeneralError = styled.Text`
 
 export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword }: AuthScreenProps) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [displayName, setDisplayName] = useState("");
@@ -221,12 +279,14 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
   const [passwordError, setPasswordError] = useState("");
   const [generalError, setGeneralError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isGoogleSubmitting, setIsGoogleSubmitting] = useState(false);
 
   const emailRef = useRef<TextInput>(null);
   const passwordRef = useRef<TextInput>(null);
   const confirmRef = useRef<TextInput>(null);
 
   const passwordValidation = validatePassword(password);
+  const emailRateLimitMessage = "too many email requests were sent recently";
 
   const clearErrors = () => {
     setNameError("");
@@ -247,29 +307,29 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
     clearErrors();
 
     if (mode === "signup" && !displayName.trim()) {
-      setNameError("Name is required");
+      setNameError(t("auth.nameRequired"));
       return;
     }
     if (!email.trim()) {
-      setEmailError("Email is required");
+      setEmailError(t("auth.emailRequired"));
       return;
     }
     if (!isValidEmail(email)) {
-      setEmailError("Enter a valid email address");
+      setEmailError(t("auth.invalidEmail"));
       return;
     }
     if (!password) {
-      setPasswordError("Password is required");
+      setPasswordError(t("auth.passwordRequired"));
       return;
     }
 
     if (mode === "signup") {
       if (!passwordValidation.isValid) {
-        setPasswordError("Password doesn't meet requirements");
+        setPasswordError(t("auth.passwordRequirements"));
         return;
       }
       if (password !== confirmPassword) {
-        setPasswordError("Passwords don't match");
+        setPasswordError(t("auth.passwordsDoNotMatch"));
         return;
       }
     }
@@ -287,10 +347,12 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
       }
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : typeof err === "object" && err !== null && "message" in err ? String((err as { message: unknown }).message) : "";
-      const message = raw || "Something went wrong";
+      const message = raw || t("auth.somethingWentWrong");
       const lower = message.toLowerCase();
       if (lower.includes("invalid login credentials") || lower.includes("password") || lower.includes("credentials")) {
-        setGeneralError("Invalid email or password");
+        setGeneralError(t("auth.invalidCredentials"));
+      } else if (lower.includes(emailRateLimitMessage)) {
+        setEmailError(t("auth.emailRateLimited"));
       } else if (lower.includes("email")) {
         setEmailError(message);
       } else {
@@ -299,10 +361,33 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
     } finally {
       setIsSubmitting(false);
     }
-  }, [email, password, confirmPassword, displayName, mode, passwordValidation.isValid, onSignUpSuccess, onSignInSuccess]);
+  }, [confirmPassword, displayName, email, emailRateLimitMessage, mode, onSignInSuccess, onSignUpSuccess, password, passwordValidation.isValid, t]);
 
-  const isLoginDisabled = isSubmitting || !email.trim() || !password;
-  const isSignupDisabled = isSubmitting || !displayName.trim() || !email.trim() || !password || !confirmPassword || !passwordValidation.isValid || password !== confirmPassword;
+  const handleGoogleSubmit = useCallback(async () => {
+    clearErrors();
+    Keyboard.dismiss();
+    setIsGoogleSubmitting(true);
+
+    try {
+      const result = await signInWithGoogle();
+      if (result.cancelled) {
+        return;
+      }
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : typeof err === "object" && err !== null && "message" in err
+            ? String((err as { message: unknown }).message)
+            : t("auth.somethingWentWrong");
+      setGeneralError(message);
+    } finally {
+      setIsGoogleSubmitting(false);
+    }
+  }, [t]);
+
+  const isLoginDisabled = isSubmitting || isGoogleSubmitting || !email.trim() || !password;
+  const isSignupDisabled = isSubmitting || isGoogleSubmitting || !displayName.trim() || !email.trim() || !password || !confirmPassword || !passwordValidation.isValid || password !== confirmPassword;
   const isDisabled = mode === "login" ? isLoginDisabled : isSignupDisabled;
 
   return (
@@ -323,23 +408,23 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
                   Stream<BrandAccent>Box</BrandAccent>
                 </BrandTitle>
                 <BrandSubtitle>
-                  {mode === "login" ? "Welcome back" : "Create your account"}
+                  {mode === "login" ? t("auth.welcomeBack") : t("auth.createAccount")}
                 </BrandSubtitle>
               </BrandSection>
 
               <TabRow>
                 <Tab $active={mode === "login"} onPress={() => switchMode("login")}>
-                  <TabLabel $active={mode === "login"}>Sign In</TabLabel>
+                  <TabLabel $active={mode === "login"}>{t("auth.signIn")}</TabLabel>
                 </Tab>
                 <Tab $active={mode === "signup"} onPress={() => switchMode("signup")}>
-                  <TabLabel $active={mode === "signup"}>Sign Up</TabLabel>
+                  <TabLabel $active={mode === "signup"}>{t("auth.signUp")}</TabLabel>
                 </Tab>
               </TabRow>
 
               <FormCard entering={FadeInUp.duration(350).delay(100)}>
                 {mode === "signup" ? (
                   <>
-                    <FieldLabel>Name</FieldLabel>
+                    <FieldLabel>{t("auth.name")}</FieldLabel>
                     <InputWrap $error={!!nameError}>
                       <Feather
                         name="user"
@@ -353,7 +438,7 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
                           setDisplayName(v);
                           if (nameError) setNameError("");
                         }}
-                        placeholder="Your name"
+                        placeholder={t("auth.yourName")}
                         placeholderTextColor={theme.colors.textSecondary}
                         autoCapitalize="words"
                         autoComplete="name"
@@ -365,7 +450,7 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
                   </>
                 ) : null}
 
-                <FieldLabel>Email</FieldLabel>
+                <FieldLabel>{t("auth.email")}</FieldLabel>
                 <InputWrap $error={!!emailError}>
                   <Feather
                     name="mail"
@@ -380,7 +465,7 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
                       setEmail(v);
                       if (emailError) setEmailError("");
                     }}
-                    placeholder="you@example.com"
+                    placeholder={t("auth.emailPlaceholder")}
                     placeholderTextColor={theme.colors.textSecondary}
                     keyboardType="email-address"
                     autoCapitalize="none"
@@ -392,7 +477,7 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
                 </InputWrap>
                 {emailError ? <ErrorText>{emailError}</ErrorText> : null}
 
-                <FieldLabel>Password</FieldLabel>
+                <FieldLabel>{t("auth.password")}</FieldLabel>
                 <InputWrap $error={!!passwordError}>
                   <Feather
                     name="lock"
@@ -407,7 +492,7 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
                       setPassword(v);
                       if (passwordError) setPasswordError("");
                     }}
-                    placeholder="Enter password"
+                    placeholder={t("auth.enterPassword")}
                     placeholderTextColor={theme.colors.textSecondary}
                     secureTextEntry={!showPassword}
                     autoCapitalize="none"
@@ -431,11 +516,11 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
                 {mode === "signup" && password.length > 0 ? (
                   <PasswordRulesList>
                     {[
-                      { label: "8+ characters", met: password.length >= 8 },
-                      { label: "Lowercase letter", met: /[a-z]/.test(password) },
-                      { label: "Uppercase letter", met: /[A-Z]/.test(password) },
-                      { label: "Digit", met: /\d/.test(password) },
-                      { label: "Special character", met: /[^a-zA-Z0-9]/.test(password) },
+                      { label: t("auth.ruleMinLength"), met: password.length >= 8 },
+                      { label: t("auth.ruleLowercase"), met: /[a-z]/.test(password) },
+                      { label: t("auth.ruleUppercase"), met: /[A-Z]/.test(password) },
+                      { label: t("auth.ruleDigit"), met: /\d/.test(password) },
+                      { label: t("auth.ruleSpecial"), met: /[^a-zA-Z0-9]/.test(password) },
                     ].map((rule) => (
                       <PasswordRule key={rule.label}>
                         <Feather
@@ -451,13 +536,13 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
 
                 {mode === "login" ? (
                   <ForgotButton onPress={onForgotPassword}>
-                    <ForgotText>Forgot password?</ForgotText>
+                    <ForgotText>{t("auth.forgotPassword")}</ForgotText>
                   </ForgotButton>
                 ) : null}
 
                 {mode === "signup" ? (
                   <>
-                    <FieldLabel>Confirm Password</FieldLabel>
+                    <FieldLabel>{t("auth.confirmPassword")}</FieldLabel>
                     <InputWrap $error={!!passwordError && password !== confirmPassword}>
                       <Feather
                         name="lock"
@@ -469,7 +554,7 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
                         ref={confirmRef}
                         value={confirmPassword}
                         onChangeText={setConfirmPassword}
-                        placeholder="Re-enter password"
+                        placeholder={t("auth.reenterPassword")}
                         placeholderTextColor={theme.colors.textSecondary}
                         secureTextEntry={!showPassword}
                         autoCapitalize="none"
@@ -491,10 +576,34 @@ export function AuthScreen({ onSignUpSuccess, onSignInSuccess, onForgotPassword 
                     <ActivityIndicator color="#ffffff" size="small" />
                   ) : (
                     <SubmitLabel>
-                      {mode === "login" ? "Sign In" : "Create Account"}
+                      {mode === "login" ? t("auth.signIn") : t("auth.createAccountButton")}
                     </SubmitLabel>
                   )}
                 </SubmitButton>
+
+                <DividerRow>
+                  <DividerLine />
+                  <DividerText>{t("auth.orContinueWithGoogle")}</DividerText>
+                  <DividerLine />
+                </DividerRow>
+
+                <GoogleButton
+                  $disabled={isSubmitting || isGoogleSubmitting}
+                  disabled={isSubmitting || isGoogleSubmitting}
+                  onPress={() => void handleGoogleSubmit()}
+                  style={({ pressed }) => [{ transform: [{ scale: pressed && !isSubmitting && !isGoogleSubmitting ? 0.98 : 1 }] }]}
+                >
+                  {isGoogleSubmitting ? (
+                    <ActivityIndicator color={theme.colors.textPrimary} size="small" />
+                  ) : (
+                    <>
+                      <GoogleIconCircle>
+                        <GoogleIconText>G</GoogleIconText>
+                      </GoogleIconCircle>
+                      <GoogleButtonLabel>{t("auth.continueWithGoogle")}</GoogleButtonLabel>
+                    </>
+                  )}
+                </GoogleButton>
 
                 {generalError ? <GeneralError>{generalError}</GeneralError> : null}
               </FormCard>

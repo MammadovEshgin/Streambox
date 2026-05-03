@@ -26,7 +26,6 @@ export type WebPlayerRequest = {
   episodeNumber?: number;
   castNames?: string[];
   videoId?: string | null;
-  isAzClassic?: boolean;
 };
 
 export type WebPlayerResult = {
@@ -970,32 +969,6 @@ async function findDizipalEpisodeUrl(
   return episodeUrls.find((href) => matchesDizipalEpisodeUrl(href, seasonNumber, episodeNumber)) ?? null;
 }
 
-async function findAzClassicYoutubeVideoId(title: string, year?: string | null): Promise<string | null> {
-  try {
-    const query = encodeURIComponent(`${title} ${year || ""}`);
-    const searchUrl = `https://www.youtube.com/@AzerbaijanfilmStudio/search?query=${query}`;
-    
-    const response = await axios.get(searchUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "az,en;q=0.9"
-      },
-      timeout: 8000
-    });
-
-    const html = response.data;
-    const videoIdMatch = html.match(/"videoId":"([^"]+)"/);
-    if (videoIdMatch) return videoIdMatch[1];
-
-    const watchMatch = html.match(/\/watch\?v=([a-zA-Z0-9_-]{11})/);
-    if (watchMatch) return watchMatch[1];
-
-    return null;
-  } catch (e) {
-    return null;
-  }
-}
-
 type DizipalResolveResult = {
   pageUrl: string;
   stream: DizipalStreamInfo | null;
@@ -1035,16 +1008,6 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
       url: request.videoId,
       source: "youtube_embed"
     };
-  }
-
-  if (request.isAzClassic) {
-    const youtubeId = await findAzClassicYoutubeVideoId(request.title, request.year);
-    if (youtubeId) {
-      return {
-        url: youtubeId,
-        source: "youtube_embed"
-      };
-    }
   }
 
   // 1. HDFilm — find the single best match, check if video is available

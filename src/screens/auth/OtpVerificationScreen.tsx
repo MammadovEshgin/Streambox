@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useCallback, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Keyboard,
@@ -13,6 +14,7 @@ import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
+import { AUTH_EMAIL_OTP_LENGTH, sanitizeAuthEmailOtp } from "../../services/authConfig";
 import { verifyOtp } from "../../services/auth";
 
 type OtpVerificationScreenProps = {
@@ -21,7 +23,7 @@ type OtpVerificationScreenProps = {
   onBack: () => void;
 };
 
-const OTP_LENGTH = 8;
+const OTP_LENGTH = AUTH_EMAIL_OTP_LENGTH;
 
 const Root = styled.View`
   flex: 1;
@@ -176,6 +178,7 @@ const ResendLink = styled.Text`
 
 export function OtpVerificationScreen({ email, onVerified, onBack }: OtpVerificationScreenProps) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const [otp, setOtp] = useState("");
   const [focusIndex, setFocusIndex] = useState(0);
@@ -184,7 +187,7 @@ export function OtpVerificationScreen({ email, onVerified, onBack }: OtpVerifica
   const inputRef = useRef<TextInput>(null);
 
   const handleChange = (text: string) => {
-    const cleaned = text.replace(/[^0-9a-zA-Z]/g, "").slice(0, OTP_LENGTH);
+    const cleaned = sanitizeAuthEmailOtp(text);
     setOtp(cleaned);
     setFocusIndex(cleaned.length);
     setError("");
@@ -192,7 +195,7 @@ export function OtpVerificationScreen({ email, onVerified, onBack }: OtpVerifica
 
   const handleVerify = useCallback(async () => {
     if (otp.length !== OTP_LENGTH) {
-      setError("Enter the full 8-character code");
+      setError(t("auth.enterFullOtp"));
       return;
     }
 
@@ -204,16 +207,16 @@ export function OtpVerificationScreen({ email, onVerified, onBack }: OtpVerifica
       await verifyOtp(email, otp);
       onVerified();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Verification failed";
+      const msg = err instanceof Error ? err.message : t("auth.verificationFailed");
       setError(msg.toLowerCase().includes("invalid") || msg.toLowerCase().includes("expired") || msg.toLowerCase().includes("token")
-        ? "Wrong verification code. Please check and try again."
+        ? t("auth.wrongVerificationCode")
         : msg);
       setOtp("");
       setFocusIndex(0);
     } finally {
       setIsVerifying(false);
     }
-  }, [otp, email, onVerified]);
+  }, [email, onVerified, otp, t]);
 
   return (
     <Root>
@@ -235,9 +238,9 @@ export function OtpVerificationScreen({ email, onVerified, onBack }: OtpVerifica
                 <Feather name="mail" size={28} color={theme.colors.primary} />
               </IconCircle>
 
-              <Title>Verify Your Email</Title>
+              <Title>{t("auth.verifyEmailTitle")}</Title>
               <Subtitle>
-                We sent an 8-character code to{"\n"}
+                {t("auth.verifyEmailDescription")}{"\n"}
                 <EmailHighlight>{email}</EmailHighlight>
               </Subtitle>
 
@@ -260,7 +263,7 @@ export function OtpVerificationScreen({ email, onVerified, onBack }: OtpVerifica
                 value={otp}
                 onChangeText={handleChange}
                 maxLength={OTP_LENGTH}
-                keyboardType="default"
+                keyboardType="number-pad"
                 autoFocus
                 autoComplete="one-time-code"
               />
@@ -275,13 +278,13 @@ export function OtpVerificationScreen({ email, onVerified, onBack }: OtpVerifica
                 {isVerifying ? (
                   <ActivityIndicator color="#ffffff" size="small" />
                 ) : (
-                  <VerifyLabel>Verify & Continue</VerifyLabel>
+                  <VerifyLabel>{t("auth.verifyContinue")}</VerifyLabel>
                 )}
               </VerifyButton>
 
               <ResendRow>
-                <ResendText>Didn't receive the code?</ResendText>
-                <ResendLink>Check spam folder</ResendLink>
+                <ResendText>{t("auth.didNotReceiveCode")}</ResendText>
+                <ResendLink>{t("auth.checkSpamFolder")}</ResendLink>
               </ResendRow>
             </Animated.View>
           </Inner>

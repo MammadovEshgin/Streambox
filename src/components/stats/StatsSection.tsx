@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { View } from "react-native";
 import styled from "styled-components/native";
 
 import { withAlpha } from "../../theme/Theme";
@@ -61,14 +60,15 @@ const ActionRow = styled.View`
 `;
 
 export const SectionTitle = styled.Text`
+  font-family: Outfit_700Bold;
   font-size: 17px;
-  font-weight: 700;
   color: ${({ theme }) => theme.colors.textPrimary};
   letter-spacing: -0.2px;
   text-align: left;
 `;
 
 const SectionSubtitle = styled.Text`
+  font-family: Outfit_400Regular;
   font-size: 12px;
   line-height: 17px;
   color: ${({ theme }) => withAlpha(theme.colors.textPrimary, 0.44)};
@@ -118,8 +118,8 @@ export const FilterChip = styled.Pressable<{ $active: boolean }>`
 `;
 
 export const FilterLabel = styled.Text<{ $active: boolean }>`
+  font-family: Outfit_700Bold;
   font-size: 11px;
-  font-weight: 700;
   letter-spacing: 0.4px;
   text-transform: uppercase;
   color: ${({ $active, theme }) => ($active ? theme.colors.textPrimary : withAlpha(theme.colors.textPrimary, 0.45))};
@@ -139,24 +139,26 @@ export const RankPill = styled.View`
 `;
 
 export const RankText = styled.Text`
+  font-family: Outfit_700Bold;
   font-size: 11px;
-  font-weight: 700;
   color: ${({ theme }) => theme.colors.primary};
 `;
 
 export const DataLabel = styled.Text`
+  font-family: Outfit_600SemiBold;
   font-size: 13px;
-  font-weight: 600;
   color: ${({ theme }) => theme.colors.textPrimary};
 `;
 
 export const DataMeta = styled.Text`
+  font-family: Outfit_400Regular;
   font-size: 11px;
   color: ${({ theme }) => withAlpha(theme.colors.textPrimary, 0.44)};
   margin-top: 2px;
 `;
 
 export const EmptyText = styled.Text`
+  font-family: Outfit_400Regular;
   font-size: 13px;
   line-height: 19px;
   color: ${({ theme }) => withAlpha(theme.colors.textPrimary, 0.44)};

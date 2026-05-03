@@ -213,9 +213,8 @@ const SectionLink = styled.Pressable`
 const SectionLinkText = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
   font-family: Outfit_600SemiBold;
-  font-size: 12px;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
+  font-size: 13px;
+  letter-spacing: 0;
 `;
 
 const RailWrap = styled.View`

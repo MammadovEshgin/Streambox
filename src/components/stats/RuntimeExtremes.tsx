@@ -1,4 +1,5 @@
 import { Image, Pressable } from "react-native";
+import { useTranslation } from "react-i18next";
 import styled from "styled-components/native";
 
 import type { WatchHistoryEntry } from "../../hooks/useWatchHistory";
@@ -67,6 +68,7 @@ function formatRuntime(minutes: number): string {
 }
 
 export function RuntimeExtremes({ history, onItemPress }: Props) {
+  const { t } = useTranslation();
   const withRuntime = history.filter((entry) => entry.runtimeMinutes && entry.runtimeMinutes > 0);
 
   if (withRuntime.length === 0) {
@@ -77,10 +79,10 @@ export function RuntimeExtremes({ history, onItemPress }: Props) {
   const shortest = withRuntime.reduce((left, right) => ((left.runtimeMinutes ?? Infinity) < (right.runtimeMinutes ?? Infinity) ? left : right));
 
   return (
-    <StatsSection title="Runtime Extremes" subtitle="Your shortest and longest watches side by side.">
+    <StatsSection title={t("stats.runtimeExtremesTitle")} subtitle={t("stats.runtimeExtremesSubtitle")}>
       <SectionGrid>
         <ItemCard onPress={() => onItemPress?.(longest)}>
-          <TagLabel>Longest</TagLabel>
+          <TagLabel>{t("stats.longest")}</TagLabel>
           {longest.posterPath ? (
             <Poster source={{ uri: `https://image.tmdb.org/t/p/w185${longest.posterPath}` }} />
           ) : (
@@ -90,7 +92,7 @@ export function RuntimeExtremes({ history, onItemPress }: Props) {
           <RuntimeText>{formatRuntime(longest.runtimeMinutes!)}</RuntimeText>
         </ItemCard>
         <ItemCard onPress={() => onItemPress?.(shortest)}>
-          <TagLabel>Shortest</TagLabel>
+          <TagLabel>{t("stats.shortest")}</TagLabel>
           {shortest.posterPath ? (
             <Poster source={{ uri: `https://image.tmdb.org/t/p/w185${shortest.posterPath}` }} />
           ) : (

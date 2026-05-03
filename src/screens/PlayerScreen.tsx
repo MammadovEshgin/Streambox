@@ -3,6 +3,7 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { Feather, MaterialIcons } from "@expo/vector-icons";
 import axios from "axios";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Animated,
   BackHandler,
@@ -21,16 +22,17 @@ import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webvie
 
 import { MovieLoader } from "../components/common/MovieLoader";
 import { QualityWarningModal } from "../components/common/QualityWarningModal";
+import { getRandomCinemaInsight } from "../constants/cinemaInsights";
 import { useRecentlyWatched } from "../hooks/useRecentlyWatched";
 
 import { HomeStackParamList } from "../navigation/types";
 import { useTheme } from "styled-components/native";
 import Reanimated, {
-  FadeIn,
-  FadeOut
+  FadeIn
 } from "react-native-reanimated";
 import { resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
 import { getProviderConfig } from "../services/providerConfigService";
+import { useAppSettings } from "../settings/AppSettingsContext";
 
 // ---------------------------------------------------------------------------
 // Cinema facts shown during loading
@@ -647,21 +649,18 @@ const styles = StyleSheet.create({
 
 function PlayerLoadingOverlay({
   title,
-  mediaType,
   seasonNumber,
   episodeNumber
 }: {
   title: string;
-  mediaType: "movie" | "tv";
   seasonNumber?: number;
   episodeNumber?: number
 }) {
+  const { t } = useTranslation();
   const theme = useTheme();
+  const { language } = useAppSettings();
   const [showFact, setShowFact] = useState(false);
-  const [fact] = useState(() => {
-    const list = mediaType === "tv" ? SERIES_FACTS : MOVIE_FACTS;
-    return list[Math.floor(Math.random() * list.length)];
-  });
+  const [fact] = useState(() => getRandomCinemaInsight(language));
 
   useEffect(() => {
     const timer = setTimeout(() => setShowFact(true), 2500);
@@ -683,7 +682,7 @@ function PlayerLoadingOverlay({
         <Reanimated.View entering={FadeIn.duration(800).delay(100)} style={styles.factContainer}>
           <View style={[styles.factAccent, { backgroundColor: theme.colors.primary }]} />
           <View style={styles.factBody}>
-            <Text style={[styles.factLabel, { color: theme.colors.primary }]}>Fun fact</Text>
+            <Text style={[styles.factLabel, { color: theme.colors.primary }]}>{t("player.didYouKnow")}</Text>
             <Text style={styles.factText}>{fact}</Text>
           </View>
         </Reanimated.View>
@@ -697,38 +696,6 @@ type WebViewProviderSource = "hdfilm" | "dizipal";
 // ---------------------------------------------------------------------------
 // Injected player automation
 // ---------------------------------------------------------------------------
-const HDF_INJECT_BEFORE = `
-(function() {
-  'use strict';
-
-  window.open = function() { return null; };
-
-  var adDomains = ['doubleclick','googlesyndication','adnxs','popads','exoclick','trafficjunky','juicyads','propellerads','popcash','adserver','aj2204'];
-  var _xhrOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function(m, url) {
-    if (adDomains.some(function(domain) { return String(url).toLowerCase().includes(domain); })) return;
-    return _xhrOpen.apply(this, arguments);
-  };
-  var _fetch = window.fetch;
-  window.fetch = function(url) {
-    if (adDomains.some(function(domain) { return String(url).toLowerCase().includes(domain); })) {
-      return Promise.reject(new Error('blocked'));
-    }
-    return _fetch.apply(this, arguments);
-  };
-
-  var hideStyle = document.createElement('style');
-  hideStyle.id = 'app-player-hide';
-  hideStyle.textContent = [
-    'html, body { background: #000 !important; overflow: hidden !important; margin: 0 !important; padding: 0 !important; }',
-    'body > *:not(script):not(style) { visibility: hidden !important; }'
-  ].join('\\n');
-  (document.head || document.documentElement).appendChild(hideStyle);
-
-  true;
-})();
-`;
-
 const DIZIPAL_INJECT_BEFORE = `
 (function() {
   'use strict';
@@ -1534,7 +1501,8 @@ function getDizipalInjectAfter() {
     var hasEmbed = !!document.querySelector('#playerContent iframe, #playerContent video, #playerContent embed, #playerContent object, #mainPlayer iframe, #mainPlayer video');
     var mainVisible = !!(mainPlayer && getComputedStyle(mainPlayer).display !== 'none' && getComputedStyle(mainPlayer).visibility !== 'hidden');
     var childCount = playerContent ? playerContent.children.length : 0;
-    var isVisible = hasEmbed || (mainVisible && childCount > 0);
+    var promptVisible = documentHasStartPrompt(document);
+    var isVisible = hasEmbed || (mainVisible && childCount > 0 && !promptVisible);
 
     if (isVisible && !playerShellVisibleAt) {
       playerShellVisibleAt = Date.now();
@@ -1549,7 +1517,7 @@ function getDizipalInjectAfter() {
 
     readyFallbackTimer = setTimeout(function() {
       readyFallbackTimer = null;
-      if (!hasVisiblePlayerContent()) {
+      if (!hasVisiblePlayerContent() || documentHasStartPrompt(document)) {
         return;
       }
 
@@ -1595,10 +1563,38 @@ function getDizipalInjectAfter() {
     } catch (e) {}
   }
 
+  function resolveClickableTarget(node) {
+    if (!node || typeof node.closest !== 'function') {
+      return node || null;
+    }
+
+    return node.closest('button, a, [role="button"], input, label, .play-btn, .skip-btn, .jw-display-icon-container, .jw-icon-display, .vjs-big-play-button') || node;
+  }
+
+  function dispatchSyntheticTap(node) {
+    if (!node || typeof node.dispatchEvent !== 'function') {
+      return;
+    }
+
+    ['pointerdown', 'mousedown', 'touchstart', 'pointerup', 'mouseup', 'touchend', 'click'].forEach(function(eventName) {
+      try {
+        node.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true, view: window }));
+      } catch (error) {}
+    });
+  }
+
   function clickNode(node) {
-    if (!node) return false;
+    var target = resolveClickableTarget(node);
+    if (!target) return false;
+
     try {
-      node.click();
+      dispatchSyntheticTap(target);
+      if (typeof target.focus === 'function') {
+        try { target.focus(); } catch (e) {}
+      }
+      if (typeof target.click === 'function') {
+        target.click();
+      }
       return true;
     } catch (e) {
       return false;
@@ -1850,7 +1846,7 @@ function getDizipalInjectAfter() {
       clickPlaybackPrompts(document);
       nudgeVideos(document);
 
-      if (hasVisiblePlayerContent()) {
+      if (hasVisiblePlayerContent() && !documentHasStartPrompt(document)) {
         if (playerShellVisibleAt && (Date.now() - playerShellVisibleAt > 5000)) {
           markPlaybackReady('dizipal-mainplayer-visible-5s');
         }
@@ -1919,8 +1915,8 @@ function getDizipalInjectAfter() {
   // Hard fallback: if anything is on screen after 12s, dismiss spinner
   setTimeout(function() {
     if (!readySent && !notFoundSent) {
-      var anyContent = document.querySelector('iframe, video, embed, object, #mainPlayer, #playerContent');
-      if (anyContent) {
+      var anyContent = document.querySelector('iframe, video, embed, object, #mainPlayer iframe, #playerContent iframe, #mainPlayer video, #playerContent video');
+      if (anyContent && !documentHasStartPrompt(document)) {
         markPlaybackReady('dizipal-hard-fallback-12s');
       }
     }
@@ -1958,6 +1954,20 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   // â”€â”€ Track recent playback entry only â”€â”€
   const { addToRecentlyWatched } = useRecentlyWatched();
   const hasTrackedRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      const currentWebView = webViewRef.current as unknown as {
+        stopLoading?: () => void;
+        clearCache?: (includeDiskFiles: boolean) => void;
+        clearHistory?: () => void;
+      } | null;
+
+      currentWebView?.stopLoading?.();
+      currentWebView?.clearHistory?.();
+      currentWebView?.clearCache?.(true);
+    };
+  }, []);
 
   useEffect(() => {
     if (!hasTrackedRef.current && !route.params.trailerUrl) {
@@ -2132,8 +2142,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       seasonNumber: route.params.seasonNumber,
       episodeNumber: route.params.episodeNumber,
       castNames: route.params.castNames,
-      videoId: route.params.videoId,
-      isAzClassic: route.params.isAzClassic
+      videoId: route.params.videoId
     })
       .then((result) => {
         if (cancelled) return;
@@ -2229,7 +2238,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const directStreamUrl = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") 
     ? (currentStreamUrl || playerResult.streamUrl || null) 
     : null;
-  const videoPlayer = useVideoPlayer(null as string | null, (player) => {
+  const videoPlayer = useVideoPlayer(null as string | null, (player: any) => {
     player.loop = false;
   });
 
@@ -2275,7 +2284,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
     let hasStarted = false;
 
-    const statusSub = videoPlayer.addListener("statusChange", (ev) => {
+    const statusSub = videoPlayer.addListener("statusChange", (ev: any) => {
       if (ev.status === "readyToPlay" && !hasStarted) {
         hasStarted = true;
         console.log("[Player] Ready â€” starting playback");
@@ -2296,19 +2305,19 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       }
     });
 
-    const playingSub = videoPlayer.addListener("playingChange", (ev) => {
+    const playingSub = videoPlayer.addListener("playingChange", (ev: any) => {
       if (ev.isPlaying && !hasStarted) {
         hasStarted = true;
         setIsPlaybackReady(true);
       }
     });
 
-    const subtitleSub = videoPlayer.addListener("availableSubtitleTracksChange", (ev) => {
+    const subtitleSub = videoPlayer.addListener("availableSubtitleTracksChange", (ev: any) => {
       console.log("[Player] Subtitle tracks available:", JSON.stringify(ev.availableSubtitleTracks));
       setAvailableSubtitleTracks(ev.availableSubtitleTracks);
     });
 
-    const subtitleTrackSub = videoPlayer.addListener("subtitleTrackChange", (ev) => {
+    const subtitleTrackSub = videoPlayer.addListener("subtitleTrackChange", (ev: any) => {
       setSelectedSubtitleTrack(ev.subtitleTrack ?? null);
     });
 
@@ -2491,7 +2500,6 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         {isLoading && (
           <PlayerLoadingOverlay
             title={route.params.title}
-            mediaType={route.params.mediaType}
             seasonNumber={route.params.seasonNumber}
             episodeNumber={route.params.episodeNumber}
           />
@@ -2680,7 +2688,6 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       {isLoading && (
         <PlayerLoadingOverlay
           title={route.params.title}
-          mediaType={route.params.mediaType}
           seasonNumber={route.params.seasonNumber}
           episodeNumber={route.params.episodeNumber}
         />
@@ -2754,9 +2761,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           mediaPlaybackRequiresUserAction={false}
           allowsFullscreenVideo
           scalesPageToFit={false}
-          sharedCookiesEnabled
+          incognito
+          sharedCookiesEnabled={false}
           thirdPartyCookiesEnabled
-          cacheEnabled
+          cacheEnabled={false}
           mixedContentMode="always"
           originWhitelist={["*"]}
           userAgent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
@@ -2801,9 +2809,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           mediaPlaybackRequiresUserAction={false}
           allowsFullscreenVideo
           scalesPageToFit={false}
-          sharedCookiesEnabled
+          incognito
+          sharedCookiesEnabled={false}
           thirdPartyCookiesEnabled
-          cacheEnabled
+          cacheEnabled={false}
           mixedContentMode="always"
           originWhitelist={["*"]}
           userAgent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"

@@ -38,16 +38,6 @@ export function useWatchedEpisodes() {
     };
   }, [storageRevision]);
 
-  const saveState = useCallback(async (newState: Record<string, boolean>) => {
-    setWatchedEpisodes(newState);
-    try {
-      await AsyncStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(newState));
-      notifyStorageChanged();
-    } catch (error) {
-      console.error("Failed to save watched episodes", error);
-    }
-  }, [notifyStorageChanged]);
-
   const getEpisodeKey = useCallback((seriesId: string | number, seasonNumber: number, episodeNumber: number) => {
     return `${seriesId}_${seasonNumber}_${episodeNumber}`;
   }, []);

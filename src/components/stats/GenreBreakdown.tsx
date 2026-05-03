@@ -1,6 +1,7 @@
 import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useEffect } from "react";
 import { Pressable } from "react-native";
+import { useTranslation } from "react-i18next";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -54,7 +55,7 @@ const CountInline = styled.View`
 
 type Props = {
   history: WatchHistoryEntry[];
-  itemLabelPlural: string;
+  isMovieMode: boolean;
   onGenrePress?: (genre: string) => void;
 };
 
@@ -72,8 +73,9 @@ function AnimatedBar({ ratio, delay, isTop }: { ratio: number; delay: number; is
   return <BarFill style={style} $isTop={isTop} />;
 }
 
-export function GenreBreakdown({ history, itemLabelPlural, onGenrePress }: Props) {
+export function GenreBreakdown({ history, isMovieMode, onGenrePress }: Props) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const genreCounts: Record<string, number> = {};
   for (const entry of history) {
     for (const genre of entry.genres) {
@@ -86,10 +88,8 @@ export function GenreBreakdown({ history, itemLabelPlural, onGenrePress }: Props
     .slice(0, 6);
 
   const maxCount = sorted[0]?.[1] ?? 1;
-  const isMovieMode = itemLabelPlural === "movies";
-
   return (
-    <StatsSection title="Genre Breakdown" subtitle="Your most watched genres ranked by count." accentGlow>
+    <StatsSection title={t("stats.genreBreakdownTitle")} subtitle={t("stats.genreBreakdownSubtitle")} accentGlow>
       {sorted.length > 0 ? (
         <Rows>
           {sorted.map(([genre, count], index) => {
@@ -123,7 +123,7 @@ export function GenreBreakdown({ history, itemLabelPlural, onGenrePress }: Props
           })}
         </Rows>
       ) : (
-        <EmptyText>No genre patterns yet.</EmptyText>
+        <EmptyText>{t("stats.noGenrePatterns")}</EmptyText>
       )}
     </StatsSection>
   );

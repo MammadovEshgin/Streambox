@@ -2,7 +2,11 @@
 import { AppState, type AppStateStatus } from "react-native";
 
 import { useAuth } from "../context/AuthContext";
-import { bootstrapSupabaseUserData, flushSupabaseUserDataSync } from "../services/userDataSync";
+import {
+  bootstrapSupabaseUserData,
+  flushSupabaseUserDataSync,
+  hasWarmBootstrappedUserData,
+} from "../services/userDataSync";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
 type UserDataSyncContextValue = {
@@ -12,24 +16,34 @@ type UserDataSyncContextValue = {
 const UserDataSyncContext = createContext<UserDataSyncContextValue | null>(null);
 
 export function UserDataSyncProvider({ children }: PropsWithChildren) {
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
   const { notifyStorageChanged, reloadPersistedSettings } = useAppSettings();
   const userId = user?.id ?? null;
-  const [isReady, setIsReady] = useState(!userId);
+  const [readyState, setReadyState] = useState<{ userId: string | null; ready: boolean }>({
+    userId: null,
+    ready: true,
+  });
+  const isReady = !userId || (readyState.userId === userId && readyState.ready);
 
   useEffect(() => {
     let active = true;
 
     async function runBootstrap() {
+      if (isAuthLoading) {
+        return;
+      }
+
       if (!userId) {
         if (active) {
-          setIsReady(true);
+          setReadyState({ userId: null, ready: true });
         }
         return;
       }
 
+      setReadyState({ userId, ready: false });
+      const hasWarmLocalSnapshot = await hasWarmBootstrappedUserData(userId).catch(() => false);
       if (active) {
-        setIsReady(false);
+        setReadyState({ userId, ready: hasWarmLocalSnapshot });
       }
 
       try {
@@ -40,7 +54,7 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
         console.error("[UserDataSync] bootstrap failed:", e);
       } finally {
         if (active) {
-          setIsReady(true);
+          setReadyState({ userId, ready: true });
         }
       }
     }
@@ -50,10 +64,10 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
     return () => {
       active = false;
     };
-  }, [notifyStorageChanged, reloadPersistedSettings, userId]);
+  }, [isAuthLoading, notifyStorageChanged, reloadPersistedSettings, userId]);
 
   useEffect(() => {
-    if (!userId) {
+    if (isAuthLoading || !userId) {
       return;
     }
 
@@ -78,7 +92,7 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
     return () => {
       subscription.remove();
     };
-  }, [notifyStorageChanged, reloadPersistedSettings, userId]);
+  }, [isAuthLoading, notifyStorageChanged, reloadPersistedSettings, userId]);
 
   const value = useMemo<UserDataSyncContextValue>(() => ({ isReady }), [isReady]);
 

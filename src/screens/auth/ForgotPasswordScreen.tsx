@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Keyboard,
@@ -143,19 +144,21 @@ const BackToLoginLink = styled.Text`
 
 export function ForgotPasswordScreen({ onCodeSent, onBack }: ForgotPasswordScreenProps) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const emailRateLimitMessage = "too many email requests were sent recently";
 
   const handleSend = useCallback(async () => {
     setError("");
     if (!email.trim()) {
-      setError("Email is required");
+      setError(t("auth.emailRequired"));
       return;
     }
     if (!isValidEmail(email)) {
-      setError("Enter a valid email address");
+      setError(t("auth.invalidEmail"));
       return;
     }
 
@@ -166,11 +169,16 @@ export function ForgotPasswordScreen({ onCodeSent, onBack }: ForgotPasswordScree
       await requestPasswordReset(email);
       onCodeSent(email.trim().toLowerCase());
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to send reset code");
+      const message = err instanceof Error ? err.message : t("auth.sendResetFailed");
+      setError(
+        message.toLowerCase().includes(emailRateLimitMessage)
+          ? t("auth.emailRateLimited")
+          : message
+      );
     } finally {
       setIsSending(false);
     }
-  }, [email, onCodeSent]);
+  }, [email, emailRateLimitMessage, onCodeSent, t]);
 
   return (
     <Root>
@@ -192,9 +200,9 @@ export function ForgotPasswordScreen({ onCodeSent, onBack }: ForgotPasswordScree
                 <Feather name="key" size={28} color={theme.colors.primary} />
               </IconCircle>
 
-              <Title>Reset Password</Title>
+              <Title>{t("auth.resetPasswordTitle")}</Title>
               <Subtitle>
-                Enter your email address and we'll send you an 8-character code to reset your password.
+                {t("auth.resetPasswordDescription")}
               </Subtitle>
 
               <InputWrap $error={!!error}>
@@ -210,7 +218,7 @@ export function ForgotPasswordScreen({ onCodeSent, onBack }: ForgotPasswordScree
                     setEmail(v);
                     if (error) setError("");
                   }}
-                  placeholder="you@example.com"
+                  placeholder={t("auth.emailPlaceholder")}
                   placeholderTextColor={theme.colors.textSecondary}
                   keyboardType="email-address"
                   autoCapitalize="none"
@@ -230,13 +238,13 @@ export function ForgotPasswordScreen({ onCodeSent, onBack }: ForgotPasswordScree
                 {isSending ? (
                   <ActivityIndicator color="#ffffff" size="small" />
                 ) : (
-                  <SendLabel>Send Reset Code</SendLabel>
+                  <SendLabel>{t("auth.sendResetCode")}</SendLabel>
                 )}
               </SendButton>
 
               <BackToLogin onPress={onBack}>
                 <BackToLoginText>
-                  Remember your password? <BackToLoginLink>Sign in</BackToLoginLink>
+                  {t("auth.rememberPassword")} <BackToLoginLink>{t("auth.signIn")}</BackToLoginLink>
                 </BackToLoginText>
               </BackToLogin>
             </Animated.View>
