@@ -2,10 +2,12 @@ import { Feather } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Alert,
   Dimensions,
   FlatList,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -18,7 +20,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
-import { type MediaItem, type MediaType } from "../api/tmdb";
+import { GENRE_ID_MAP, type MediaItem, type MediaType } from "../api/tmdb";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
@@ -28,14 +30,23 @@ import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
 import { useWatchHistory } from "../hooks/useWatchHistory";
 import { useWatchlist } from "../hooks/useWatchlist";
 import type { ProfileSeeAllSection, ProfileStackParamList } from "../navigation/types";
+import { normalizeAppLanguage } from "../localization/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
 import { getSharedHydratedMediaCache, hydrateMediaIds, type HydratedMediaCache } from "../services/mediaHydration";
 import { searchLocationSuggestions } from "../services/locationSearch";
 import { storeBannerImageFromUri, storeProfileImageFromUri } from "../services/profileImageService";
+import { formatLocalizedDate } from "../localization/format";
+import i18n from "../localization/i18n";
 
 type ProfileScreenProps = NativeStackScreenProps<ProfileStackParamList, "ProfileFeed">;
 
 type HydratedCache = HydratedMediaCache;
+type ProfileShelfRecord = {
+  item: MediaItem;
+  order: number;
+  watchedAt?: number;
+  genres: string[];
+};
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -210,8 +221,9 @@ const SectionHeader = styled.View`
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
   font-family: Outfit_700Bold;
-  font-size: 19px;
-  letter-spacing: -0.4px;
+  font-size: 22px;
+  line-height: 28px;
+  letter-spacing: -0.6px;
 `;
 
 const SectionDot = styled.View`
@@ -243,6 +255,8 @@ const SeeAllText = styled.Text`
 const ToggleRow = styled.View`
   flex-direction: row;
   gap: 6px;
+  flex: 1;
+  flex-wrap: wrap;
   margin-bottom: 14px;
 `;
 
@@ -446,7 +460,9 @@ function formatJoinedDate(iso: string): string {
   if (!iso) return "";
   try {
     const d = new Date(iso);
-    return `Joined ${d.toLocaleDateString("en-US", { day: "numeric", month: "long", year: "numeric" })}`;
+    return i18n.t("profile.joinedOn", {
+      date: formatLocalizedDate(d, { day: "numeric", month: "long", year: "numeric" }),
+    });
   } catch {
     return "";
   }
@@ -463,8 +479,8 @@ function formatBirthday(dateStr: string): string {
     const year = parseInt(parts[2], 10);
     const d = new Date(year, month, day);
     if (isNaN(d.getTime())) return "";
-    const monthName = d.toLocaleDateString("en-US", { month: "long" });
-    return `Born ${day} ${monthName} ${year}`;
+    const localizedDate = formatLocalizedDate(d, { day: "numeric", month: "long", year: "numeric" });
+    return i18n.t("profile.bornOn", { date: localizedDate });
   } catch {
     return "";
   }
@@ -478,19 +494,36 @@ function formatBirthdayInput(raw: string): string {
   return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
 }
 
+function deriveGenresFromMediaItem(item: MediaItem): string[] {
+  return (item.genreIds ?? [])
+    .map((genreId) => GENRE_ID_MAP[genreId])
+    .filter((genreName): genreName is string => typeof genreName === "string" && genreName.length > 0);
+}
+
+function buildHydratedShelfRecords(items: MediaItem[]): ProfileShelfRecord[] {
+  return items.map((item, index) => ({
+    item,
+    order: index,
+    genres: deriveGenresFromMediaItem(item),
+  }));
+}
+
 // â”€â”€ Component â”€â”€
 
 export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const currentTheme = useTheme();
+  const { t, i18n: translationI18n } = useTranslation();
   const insets = useSafeAreaInsets();
   const {
     profileImageUri,
+    profileImageVersion,
     profileName,
     profileBio,
     profileLocation,
     profileBirthday,
     joinedDate,
     bannerImageUri,
+    bannerImageVersion,
     setProfileImageUri,
     setBannerImageUri,
     updateProfile,
@@ -502,12 +535,12 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const { likedSeries, isLoading: lsLoading } = useLikedSeries();
   const { history: watchHistory, isLoading: whLoading } = useWatchHistory();
 
-  const [avatarKey, setAvatarKey] = useState(Date.now());
-  const [bannerKey, setBannerKey] = useState(Date.now());
   const [watchlistMovieItems, setWatchlistMovieItems] = useState<MediaItem[]>([]);
   const [watchlistSeriesItems, setWatchlistSeriesItems] = useState<MediaItem[]>([]);
   const [likedMovieItems, setLikedMovieItems] = useState<MediaItem[]>([]);
   const [likedSeriesItems, setLikedSeriesItems] = useState<MediaItem[]>([]);
+  const [watchedMovieItems, setWatchedMovieItems] = useState<MediaItem[]>([]);
+  const [watchedSeriesItems, setWatchedSeriesItems] = useState<MediaItem[]>([]);
   const [isHydrating, setIsHydrating] = useState(true);
 
   const [watchedFilter, setWatchedFilter] = useState<"movie" | "tv">("movie");
@@ -600,39 +633,106 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   }, [clearLocationSearch]);
 
   const cacheRef = useRef<HydratedCache>(getSharedHydratedMediaCache());
+  const lastHydrationKeyRef = useRef<string>("");
+  const resolvedContentLanguage = useMemo(
+    () => normalizeAppLanguage(translationI18n.resolvedLanguage ?? translationI18n.language),
+    [translationI18n.language, translationI18n.resolvedLanguage]
+  );
 
   const hooksLoading = wlLoading || swlLoading || lmLoading || lsLoading || whLoading;
+
+  const watchedMovieHydrationIds = useMemo(
+    () =>
+      watchHistory
+        .filter((entry) => entry.mediaType === "movie")
+        .map((entry) =>
+          typeof entry.id === "string" && entry.id.includes("-")
+            ? entry.id
+            : entry.sourceTmdbId ?? entry.id
+        ),
+    [watchHistory]
+  );
+
+  const watchedSeriesHydrationIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          watchHistory
+            .filter((entry) => entry.mediaType === "tv")
+            .map((entry) => entry.sourceTmdbId ?? entry.id)
+            .filter((value): value is number | string => value !== null && value !== undefined)
+        )
+      ),
+    [watchHistory]
+  );
 
   useEffect(() => {
     if (hooksLoading) return;
 
-    let cancelled = false;
-    const hasHydratedContent =
-      watchlistMovieItems.length > 0
-      || watchlistSeriesItems.length > 0
-      || likedMovieItems.length > 0
-      || likedSeriesItems.length > 0;
+    const hydrationKey = JSON.stringify({
+      language: resolvedContentLanguage,
+      movieWatchlist,
+      seriesWatchlist,
+      likedMovies,
+      likedSeries,
+      watchedMovieHydrationIds,
+      watchedSeriesHydrationIds,
+    });
 
-    if (!hasHydratedContent) {
+    if (hydrationKey === lastHydrationKeyRef.current) {
+      setIsHydrating(false);
+      return;
+    }
+
+    let cancelled = false;
+    const hasHydratedContent = lastHydrationKeyRef.current.length > 0;
+    const hasListsToHydrate =
+      movieWatchlist.length > 0
+      || seriesWatchlist.length > 0
+      || likedMovies.length > 0
+      || likedSeries.length > 0
+      || watchedMovieHydrationIds.length > 0
+      || watchedSeriesHydrationIds.length > 0;
+
+    if (!hasHydratedContent && hasListsToHydrate) {
       setIsHydrating(true);
+    }
+
+    if (!hasListsToHydrate) {
+      lastHydrationKeyRef.current = hydrationKey;
+      startTransition(() => {
+        setWatchlistMovieItems([]);
+        setWatchlistSeriesItems([]);
+        setLikedMovieItems([]);
+        setLikedSeriesItems([]);
+        setWatchedMovieItems([]);
+        setWatchedSeriesItems([]);
+        setIsHydrating(false);
+      });
+      return;
     }
 
     async function hydrate() {
       const cache = cacheRef.current;
 
-      const [wlMovies, wlSeries, lkMovies, lkSeries] = await Promise.all([
+      const [wlMovies, wlSeries, lkMovies, lkSeries, whMovies, whSeries] = await Promise.all([
         hydrateMediaIds(movieWatchlist, [], cache),
         hydrateMediaIds([], seriesWatchlist, cache),
         hydrateMediaIds(likedMovies, [], cache),
         hydrateMediaIds([], likedSeries, cache),
+        hydrateMediaIds(watchedMovieHydrationIds, [], cache),
+        hydrateMediaIds([], watchedSeriesHydrationIds, cache),
       ]);
 
       if (!cancelled) {
+        lastHydrationKeyRef.current = hydrationKey;
         startTransition(() => {
           setWatchlistMovieItems(wlMovies);
           setWatchlistSeriesItems(wlSeries);
           setLikedMovieItems(lkMovies);
           setLikedSeriesItems(lkSeries);
+          setWatchedMovieItems(whMovies);
+          setWatchedSeriesItems(whSeries);
           setIsHydrating(false);
         });
       }
@@ -642,14 +742,13 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     return () => { cancelled = true; };
   }, [
     hooksLoading,
-    likedMovieItems.length,
     likedMovies,
     likedSeries,
-    likedSeriesItems.length,
     movieWatchlist,
     seriesWatchlist,
-    watchlistMovieItems.length,
-    watchlistSeriesItems.length,
+    resolvedContentLanguage,
+    watchedMovieHydrationIds,
+    watchedSeriesHydrationIds,
   ]);
 
   // â”€â”€ Image pickers â”€â”€
@@ -657,7 +756,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const handlePickProfileImage = useCallback(async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert("Permission needed", "Allow photo library access to set a profile picture.");
+      Alert.alert(t("profile.permissionNeeded"), t("profile.allowPhotoAccessProfile"));
       return;
     }
 
@@ -673,16 +772,15 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     try {
       const storedUri = await storeProfileImageFromUri(result.assets[0].uri);
       await setProfileImageUri(storedUri);
-      setAvatarKey(Date.now());
     } catch {
-      Alert.alert("Image error", "StreamBox could not save that profile image.");
+      Alert.alert(t("profile.imageError"), t("profile.couldNotSaveProfileImage"));
     }
-  }, [setProfileImageUri]);
+  }, [setProfileImageUri, t]);
 
   const handlePickBannerImage = useCallback(async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert("Permission needed", "Allow photo library access to set a banner image.");
+      Alert.alert(t("profile.permissionNeeded"), t("profile.allowPhotoAccessBanner"));
       return;
     }
 
@@ -698,17 +796,26 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     try {
       const storedUri = await storeBannerImageFromUri(result.assets[0].uri);
       await setBannerImageUri(storedUri);
-      setBannerKey(Date.now());
     } catch {
-      Alert.alert("Image error", "StreamBox could not save that banner image.");
+      Alert.alert(t("profile.imageError"), t("profile.couldNotSaveBannerImage"));
     }
-  }, [setBannerImageUri]);
+  }, [setBannerImageUri, t]);
 
   useEffect(() => {
     return () => {
       clearLocationSearch();
     };
   }, [clearLocationSearch]);
+
+  useEffect(() => {
+    const remoteUris = [profileImageUri, bannerImageUri].filter(
+      (uri): uri is string => typeof uri === "string" && uri.startsWith("http")
+    );
+
+    remoteUris.forEach((uri) => {
+      void Image.prefetch(uri).catch(() => undefined);
+    });
+  }, [bannerImageUri, profileImageUri]);
 
   // â”€â”€ Edit profile â”€â”€
 
@@ -757,17 +864,27 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
   // â”€â”€ List helpers â”€â”€
 
-  const watchlistItems = watchlistFilter === "movie" ? watchlistMovieItems : watchlistSeriesItems;
-  const likedItems = likedFilter === "movie" ? likedMovieItems : likedSeriesItems;
+  const avatarImageSourceUri = useMemo(() => {
+    if (!profileImageUri) {
+      return null;
+    }
+    return `${profileImageUri}${profileImageUri.includes("?") ? "&" : "?"}v=${profileImageVersion}`;
+  }, [profileImageUri, profileImageVersion]);
+
+  const bannerImageSourceUri = useMemo(() => {
+    if (!bannerImageUri) {
+      return null;
+    }
+    return `${bannerImageUri}${bannerImageUri.includes("?") ? "&" : "?"}v=${bannerImageVersion}`;
+  }, [bannerImageUri, bannerImageVersion]);
 
   const handlePressItem = useCallback(
     (item: MediaItem) => {
       if (item.mediaType === "movie") {
-        if (typeof item.id === "string" && item.id.includes("-")) {
-          navigation.navigate("AzClassicDetail", { movieId: item.id });
-        } else {
-          navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        if (!Number.isFinite(Number(item.id))) {
+          return;
         }
+        navigation.navigate("MovieDetail", { movieId: String(item.id) });
       } else {
         navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
       }
@@ -793,45 +910,94 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
   const keyExtractor = useCallback((item: MediaItem) => `${item.mediaType}-${item.id}`, []);
 
-  const watchedMovieItems: MediaItem[] = useMemo(
-    () =>
-      watchHistory
+  const watchedMovieRecords = useMemo<ProfileShelfRecord[]>(
+    () => {
+      const localizedItems = new Map(
+        watchedMovieItems.map((item) => [`movie-${item.id}`, item] as const)
+      );
+
+      return watchHistory
         .filter((entry) => entry.mediaType === "movie")
-        .map((entry) => ({
-          id: entry.id,
-          title: entry.title,
-          posterPath: entry.posterPath,
-          backdropPath: null,
-          rating: entry.voteAverage,
-          overview: "",
-          year: entry.year,
-          mediaType: "movie" as MediaType,
-        })),
-    [watchHistory]
+        .map((entry, index) => {
+          const hydrationId =
+            typeof entry.id === "string" && entry.id.includes("-")
+              ? entry.id
+              : entry.sourceTmdbId ?? entry.id;
+          const localizedItem = localizedItems.get(`movie-${hydrationId}`);
+
+          return {
+            item: {
+              id: entry.id,
+              title: entry.historyKind === "title" ? (localizedItem?.title ?? entry.title) : entry.title,
+              posterPath: localizedItem?.posterPath ?? entry.posterPath,
+              backdropPath: localizedItem?.backdropPath ?? null,
+              rating: localizedItem?.rating ?? entry.voteAverage,
+              overview: localizedItem?.overview ?? "",
+              year: localizedItem?.year ?? entry.year,
+              mediaType: "movie" as MediaType,
+              genreIds: localizedItem?.genreIds,
+            },
+            order: index,
+            watchedAt: entry.watchedAt,
+            genres: entry.genres ?? [],
+          };
+        });
+    },
+    [watchHistory, watchedMovieItems]
   );
 
-  const watchedSeriesItems: MediaItem[] = useMemo(
-    () =>
-      watchHistory
+  const watchedSeriesRecords = useMemo<ProfileShelfRecord[]>(
+    () => {
+      const localizedItems = new Map(
+        watchedSeriesItems.map((item) => [`tv-${item.id}`, item] as const)
+      );
+
+      return watchHistory
         .filter((entry) => entry.mediaType === "tv")
-        .map((entry) => ({
-          id: entry.id,
-          title: entry.title,
-          posterPath: entry.posterPath,
-          backdropPath: null,
-          rating: entry.voteAverage,
-          overview: "",
-          year: entry.year,
-          mediaType: "tv" as MediaType,
-        })),
-    [watchHistory]
+        .map((entry, index) => {
+          const hydrationId = entry.sourceTmdbId ?? entry.id;
+          const localizedItem = localizedItems.get(`tv-${hydrationId}`);
+
+          return {
+            item: {
+              id: entry.id,
+              title: entry.historyKind === "title" ? (localizedItem?.title ?? entry.title) : entry.title,
+              posterPath: localizedItem?.posterPath ?? entry.posterPath,
+              backdropPath: localizedItem?.backdropPath ?? null,
+              rating: localizedItem?.rating ?? entry.voteAverage,
+              overview: localizedItem?.overview ?? "",
+              year: localizedItem?.year ?? entry.year,
+              mediaType: "tv" as MediaType,
+              genreIds: localizedItem?.genreIds,
+            },
+            order: index,
+            watchedAt: entry.watchedAt,
+            genres: entry.genres ?? [],
+          };
+        });
+    },
+    [watchHistory, watchedSeriesItems]
   );
+
+  const watchlistMovieRecords = useMemo(() => buildHydratedShelfRecords(watchlistMovieItems), [watchlistMovieItems]);
+  const watchlistSeriesRecords = useMemo(() => buildHydratedShelfRecords(watchlistSeriesItems), [watchlistSeriesItems]);
+  const likedMovieRecords = useMemo(() => buildHydratedShelfRecords(likedMovieItems), [likedMovieItems]);
+  const likedSeriesRecords = useMemo(() => buildHydratedShelfRecords(likedSeriesItems), [likedSeriesItems]);
+
+  const watchedSectionRecords = watchedFilter === "movie" ? watchedMovieRecords : watchedSeriesRecords;
+  const watchlistSectionRecords = watchlistFilter === "movie" ? watchlistMovieRecords : watchlistSeriesRecords;
+  const likedSectionRecords = likedFilter === "movie" ? likedMovieRecords : likedSeriesRecords;
+
+  const watchedItems = useMemo(() => watchedSectionRecords.map((record) => record.item), [watchedSectionRecords]);
+  const watchlistItems = useMemo(() => watchlistSectionRecords.map((record) => record.item), [watchlistSectionRecords]);
+  const likedItems = useMemo(() => likedSectionRecords.map((record) => record.item), [likedSectionRecords]);
+
 
   if ((hooksLoading || isHydrating) && watchlistMovieItems.length === 0 && watchlistSeriesItems.length === 0 && likedMovieItems.length === 0 && likedSeriesItems.length === 0) {
     return (
       <SafeContainer>
         <LoadingWrap>
-          <MovieLoader size={48} label="Loading profile..." />
+          <MovieLoader size={48} label={t("loaders.loadingProfile")} />
         </LoadingWrap>
       </SafeContainer>
     );
@@ -840,7 +1006,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const watchlistCount = movieWatchlist.length + seriesWatchlist.length;
   const likedCount = likedMovies.length + likedSeries.length;
   const watchedCount = watchHistory.length;
-  const watchedItems = watchedFilter === "movie" ? watchedMovieItems : watchedSeriesItems;
   const joinedText = formatJoinedDate(joinedDate);
   const birthdayText = formatBirthday(profileBirthday);
 
@@ -850,8 +1015,8 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
         <Header>
           {/* Banner */}
           <BannerWrap onPress={() => setFullViewType("banner")}>
-            {bannerImageUri ? (
-              <BannerImage source={{ uri: `${bannerImageUri}${bannerImageUri.includes("?") ? "&" : "?"}t=${bannerKey}` }} resizeMode="cover" />
+            {bannerImageSourceUri ? (
+              <BannerImage source={{ uri: bannerImageSourceUri }} resizeMode="cover" />
             ) : (
               <BannerPlaceholder>
                 <Feather name="image" size={28} color={currentTheme.colors.textSecondary} />
@@ -873,8 +1038,8 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             <AvatarButton onPress={() => setFullViewType("avatar")}>
               <AvatarCircle>
                 <AvatarInner>
-                  {profileImageUri ? (
-                    <AvatarImage source={{ uri: `${profileImageUri}${profileImageUri.includes("?") ? "&" : "?"}t=${avatarKey}` }} resizeMode="cover" />
+                  {avatarImageSourceUri ? (
+                    <AvatarImage source={{ uri: avatarImageSourceUri }} resizeMode="cover" />
                   ) : (
                     <Feather name="user" size={32} color={currentTheme.colors.primary} />
                   )}
@@ -915,15 +1080,15 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             <StatsRow>
               <StatItem>
                 <StatNumber>{watchedCount}</StatNumber>
-                <StatLabel>Watched</StatLabel>
+                <StatLabel>{t("profile.watched")}</StatLabel>
               </StatItem>
               <StatItem>
                 <StatNumber>{watchlistCount}</StatNumber>
-                <StatLabel>Watchlist</StatLabel>
+                <StatLabel>{t("profile.watchlist")}</StatLabel>
               </StatItem>
               <StatItem>
                 <StatNumber>{likedCount}</StatNumber>
-                <StatLabel>Liked</StatLabel>
+                <StatLabel>{t("profile.liked")}</StatLabel>
               </StatItem>
             </StatsRow>
           </ProfileInfo>
@@ -931,19 +1096,19 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
         <SectionWrap>
           <SectionHeader>
-            <SectionTitle>Watched</SectionTitle>
+            <SectionTitle>{t("profile.watched")}</SectionTitle>
             <SectionDot />
-            <SectionMeta>{watchedItems.length} {watchedFilter === "movie" ? "movies" : "series"}</SectionMeta>
+            <SectionMeta>{t("profile.sectionCount", { count: watchedSectionRecords.length, label: watchedFilter === "movie" ? t("common.movies").toLowerCase() : t("common.series").toLowerCase() })}</SectionMeta>
             <SeeAllButton onPress={() => handleSeeAll("watched", watchedFilter)}>
-              <SeeAllText>See all</SeeAllText>
+              <SeeAllText>{t("common.seeAll")}</SeeAllText>
             </SeeAllButton>
           </SectionHeader>
           <ToggleRow>
             <ToggleChip $active={watchedFilter === "movie"} onPress={() => setWatchedFilter("movie")}>
-              <ToggleLabel $active={watchedFilter === "movie"}>Movies</ToggleLabel>
+              <ToggleLabel $active={watchedFilter === "movie"}>{t("common.movies")}</ToggleLabel>
             </ToggleChip>
             <ToggleChip $active={watchedFilter === "tv"} onPress={() => setWatchedFilter("tv")}>
-              <ToggleLabel $active={watchedFilter === "tv"}>Series</ToggleLabel>
+              <ToggleLabel $active={watchedFilter === "tv"}>{t("common.series")}</ToggleLabel>
             </ToggleChip>
           </ToggleRow>
           {watchedItems.length === 0 ? (
@@ -951,13 +1116,17 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
               <EmptyIcon>
                 <Feather name="play-circle" size={24} color={currentTheme.colors.textSecondary} />
               </EmptyIcon>
-              <EmptyText>No {watchedFilter === "movie" ? "movies" : "series"} watched yet</EmptyText>
+              <EmptyText>{watchedFilter === "movie" ? t("profile.noMoviesWatchedYet") : t("profile.noSeriesWatchedYet")}</EmptyText>
             </EmptySection>
           ) : (
             <RailWrap>
               <FlatList
                 data={watchedItems}
                 horizontal
+                initialNumToRender={4}
+                maxToRenderPerBatch={4}
+                windowSize={3}
+                removeClippedSubviews
                 keyExtractor={keyExtractor}
                 renderItem={renderCard}
                 showsHorizontalScrollIndicator={false}
@@ -968,19 +1137,19 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
         <SectionWrap>
           <SectionHeader>
-            <SectionTitle>Watchlist</SectionTitle>
+            <SectionTitle>{t("profile.watchlist")}</SectionTitle>
             <SectionDot />
-            <SectionMeta>{watchlistItems.length} {watchlistFilter === "movie" ? "movies" : "series"}</SectionMeta>
+            <SectionMeta>{t("profile.sectionCount", { count: watchlistSectionRecords.length, label: watchlistFilter === "movie" ? t("common.movies").toLowerCase() : t("common.series").toLowerCase() })}</SectionMeta>
             <SeeAllButton onPress={() => handleSeeAll("watchlist", watchlistFilter)}>
-              <SeeAllText>See all</SeeAllText>
+              <SeeAllText>{t("common.seeAll")}</SeeAllText>
             </SeeAllButton>
           </SectionHeader>
           <ToggleRow>
             <ToggleChip $active={watchlistFilter === "movie"} onPress={() => setWatchlistFilter("movie")}>
-              <ToggleLabel $active={watchlistFilter === "movie"}>Movies</ToggleLabel>
+              <ToggleLabel $active={watchlistFilter === "movie"}>{t("common.movies")}</ToggleLabel>
             </ToggleChip>
             <ToggleChip $active={watchlistFilter === "tv"} onPress={() => setWatchlistFilter("tv")}>
-              <ToggleLabel $active={watchlistFilter === "tv"}>Series</ToggleLabel>
+              <ToggleLabel $active={watchlistFilter === "tv"}>{t("common.series")}</ToggleLabel>
             </ToggleChip>
           </ToggleRow>
           {watchlistItems.length === 0 ? (
@@ -988,13 +1157,17 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
               <EmptyIcon>
                 <Feather name="bookmark" size={24} color={currentTheme.colors.textSecondary} />
               </EmptyIcon>
-              <EmptyText>No {watchlistFilter === "movie" ? "movies" : "series"} in watchlist</EmptyText>
+              <EmptyText>{watchlistFilter === "movie" ? t("profile.noMoviesInWatchlist") : t("profile.noSeriesInWatchlist")}</EmptyText>
             </EmptySection>
           ) : (
             <RailWrap>
               <FlatList
                 data={watchlistItems}
                 horizontal
+                initialNumToRender={4}
+                maxToRenderPerBatch={4}
+                windowSize={3}
+                removeClippedSubviews
                 keyExtractor={keyExtractor}
                 renderItem={renderCard}
                 showsHorizontalScrollIndicator={false}
@@ -1005,19 +1178,19 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
         <SectionWrap>
           <SectionHeader>
-            <SectionTitle>Liked</SectionTitle>
+            <SectionTitle>{t("profile.liked")}</SectionTitle>
             <SectionDot />
-            <SectionMeta>{likedItems.length} {likedFilter === "movie" ? "movies" : "series"}</SectionMeta>
+            <SectionMeta>{t("profile.sectionCount", { count: likedSectionRecords.length, label: likedFilter === "movie" ? t("common.movies").toLowerCase() : t("common.series").toLowerCase() })}</SectionMeta>
             <SeeAllButton onPress={() => handleSeeAll("liked", likedFilter)}>
-              <SeeAllText>See all</SeeAllText>
+              <SeeAllText>{t("common.seeAll")}</SeeAllText>
             </SeeAllButton>
           </SectionHeader>
           <ToggleRow>
             <ToggleChip $active={likedFilter === "movie"} onPress={() => setLikedFilter("movie")}>
-              <ToggleLabel $active={likedFilter === "movie"}>Movies</ToggleLabel>
+              <ToggleLabel $active={likedFilter === "movie"}>{t("common.movies")}</ToggleLabel>
             </ToggleChip>
             <ToggleChip $active={likedFilter === "tv"} onPress={() => setLikedFilter("tv")}>
-              <ToggleLabel $active={likedFilter === "tv"}>Series</ToggleLabel>
+              <ToggleLabel $active={likedFilter === "tv"}>{t("common.series")}</ToggleLabel>
             </ToggleChip>
           </ToggleRow>
           {likedItems.length === 0 ? (
@@ -1025,13 +1198,17 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
               <EmptyIcon>
                 <Feather name="heart" size={24} color={currentTheme.colors.textSecondary} />
               </EmptyIcon>
-              <EmptyText>No {likedFilter === "movie" ? "movies" : "series"} liked yet</EmptyText>
+              <EmptyText>{likedFilter === "movie" ? t("profile.noMoviesLikedYet") : t("profile.noSeriesLikedYet")}</EmptyText>
             </EmptySection>
           ) : (
             <RailWrap>
               <FlatList
                 data={likedItems}
                 horizontal
+                initialNumToRender={4}
+                maxToRenderPerBatch={4}
+                windowSize={3}
+                removeClippedSubviews
                 keyExtractor={keyExtractor}
                 renderItem={renderCard}
                 showsHorizontalScrollIndicator={false}
@@ -1043,6 +1220,81 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
         <BottomSpacer />
       </Content>
 
+      {/*
+      <Modal visible={filterSheetTarget !== null} transparent animationType="fade" statusBarTranslucent>
+        <TouchableWithoutFeedback onPress={handleCloseFilterSheet}>
+          <FilterSheetOverlay>
+            <TouchableWithoutFeedback onPress={() => undefined}>
+              <FilterSheet style={{ paddingBottom: Math.max(insets.bottom, 16) }}>
+                <FilterSheetHandle />
+                <FilterSheetTitle>{t("profile.filterSheetTitle")}</FilterSheetTitle>
+                <FilterSheetSubtitle>
+                  {filterSheetTarget === "watched"
+                    ? t("profile.filterWatchedDescription")
+                    : filterSheetTarget === "watchlist"
+                      ? t("profile.filterWatchlistDescription")
+                      : t("profile.filterLikedDescription")}
+                </FilterSheetSubtitle>
+
+                <FilterSection>
+                  <FilterSectionLabel>{t("profile.sortBy")}</FilterSectionLabel>
+                  <FilterChipWrap>
+                    {PROFILE_SHELF_SORT_OPTIONS.map((sortOption) => (
+                      <FilterChip
+                        key={sortOption}
+                        $active={filterDraft.sortBy === sortOption}
+                        onPress={() => setFilterDraft((current) => ({ ...current, sortBy: sortOption }))}
+                      >
+                        <FilterChipText $active={filterDraft.sortBy === sortOption}>
+                          {getSortLabel(sortOption)}
+                        </FilterChipText>
+                      </FilterChip>
+                    ))}
+                  </FilterChipWrap>
+                </FilterSection>
+
+                <FilterSection>
+                  <FilterSectionLabel>{t("profile.genreFilterTitle")}</FilterSectionLabel>
+                  {currentSheetGenreOptions.length > 0 ? (
+                    <FilterChipWrap>
+                      <FilterChip
+                        $active={filterDraft.genre === null}
+                        onPress={() => setFilterDraft((current) => ({ ...current, genre: null }))}
+                      >
+                        <FilterChipText $active={filterDraft.genre === null}>
+                          {t("profile.allGenres")}
+                        </FilterChipText>
+                      </FilterChip>
+                      {currentSheetGenreOptions.map((genre) => (
+                        <FilterChip
+                          key={genre}
+                          $active={filterDraft.genre === genre}
+                          onPress={() => setFilterDraft((current) => ({ ...current, genre }))}
+                        >
+                          <FilterChipText $active={filterDraft.genre === genre}>{genre}</FilterChipText>
+                        </FilterChip>
+                      ))}
+                    </FilterChipWrap>
+                  ) : (
+                    <FilterSheetEmpty>{t("profile.noGenreFiltersAvailable")}</FilterSheetEmpty>
+                  )}
+                </FilterSection>
+
+                <FilterSheetFooter>
+                  <FilterFooterButton onPress={handleResetFilterSheet}>
+                    <FilterFooterLabel>{t("profile.resetFilters")}</FilterFooterLabel>
+                  </FilterFooterButton>
+                  <FilterFooterButton $primary={true} onPress={handleApplyFilterSheet}>
+                    <FilterFooterLabel $primary={true}>{t("profile.applyFilters")}</FilterFooterLabel>
+                  </FilterFooterButton>
+                </FilterSheetFooter>
+              </FilterSheet>
+            </TouchableWithoutFeedback>
+          </FilterSheetOverlay>
+        </TouchableWithoutFeedback>
+      </Modal>
+      */}
+
       {/* â”€â”€ Full-view image modal â”€â”€ */}
       <Modal visible={fullViewType !== null} transparent animationType="fade" statusBarTranslucent>
         <FullViewOverlay>
@@ -1050,9 +1302,9 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             <Feather name="x" size={22} color="#ffffff" />
           </FullViewClose>
 
-          {fullViewType === "avatar" && profileImageUri ? (
+          {fullViewType === "avatar" && avatarImageSourceUri ? (
             <FullViewImage
-              source={{ uri: `${profileImageUri}${profileImageUri.includes("?") ? "&" : "?"}t=${avatarKey}` }}
+              source={{ uri: avatarImageSourceUri }}
               style={{ height: SCREEN_WIDTH }}
               resizeMode="contain"
             />
@@ -1060,13 +1312,13 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             <Feather name="user" size={120} color={currentTheme.colors.textSecondary} />
           ) : null}
 
-          {fullViewType === "banner" && bannerImageUri ? (
+          {fullViewType === "banner" && bannerImageSourceUri ? (
             <FullViewImage
-              source={{ uri: `${bannerImageUri}${bannerImageUri.includes("?") ? "&" : "?"}t=${bannerKey}` }}
+              source={{ uri: bannerImageSourceUri }}
               style={{ height: SCREEN_WIDTH * (9 / 16) }}
               resizeMode="contain"
             />
-          ) : fullViewType === "banner" && !bannerImageUri ? (
+          ) : fullViewType === "banner" && !bannerImageSourceUri ? (
             <Feather name="image" size={80} color={currentTheme.colors.textSecondary} />
           ) : null}
 
@@ -1081,7 +1333,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 }
               }}
             >
-              <FullViewEditLabel>Edit</FullViewEditLabel>
+              <FullViewEditLabel>{t("common.edit")}</FullViewEditLabel>
             </FullViewEditButton>
           </FullViewActions>
         </FullViewOverlay>
@@ -1098,9 +1350,9 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             }} hitSlop={8}>
               <Feather name="x" size={22} color={currentTheme.colors.textPrimary} />
             </Pressable>
-            <EditModalTitle>Edit profile</EditModalTitle>
+            <EditModalTitle>{t("profile.editProfile")}</EditModalTitle>
             <EditModalSaveButton onPress={() => void handleSaveProfile()}>
-              <EditModalSaveLabel>Save</EditModalSaveLabel>
+              <EditModalSaveLabel>{t("common.save")}</EditModalSaveLabel>
             </EditModalSaveButton>
           </EditModalHeader>
 
@@ -1109,8 +1361,8 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
               <EditModalContent>
                 {/* Banner preview + change */}
                 <Pressable onPress={() => void handlePickBannerImage()} style={{ height: 120, backgroundColor: currentTheme.colors.surfaceRaised }}>
-                  {bannerImageUri ? (
-                    <BannerImage source={{ uri: `${bannerImageUri}${bannerImageUri.includes("?") ? "&" : "?"}t=${bannerKey}` }} resizeMode="cover" style={{ height: 120 }} />
+                  {bannerImageSourceUri ? (
+                    <BannerImage source={{ uri: bannerImageSourceUri }} resizeMode="cover" style={{ height: 120 }} />
                   ) : null}
                   <Pressable
                     onPress={() => void handlePickBannerImage()}
@@ -1147,8 +1399,8 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                     justifyContent: "center",
                   }}
                 >
-                  {profileImageUri ? (
-                    <AvatarImage source={{ uri: `${profileImageUri}${profileImageUri.includes("?") ? "&" : "?"}t=${avatarKey}` }} resizeMode="cover" />
+                  {avatarImageSourceUri ? (
+                    <AvatarImage source={{ uri: avatarImageSourceUri }} resizeMode="cover" />
                   ) : (
                     <Feather name="user" size={24} color={currentTheme.colors.primary} />
                   )}
@@ -1169,11 +1421,11 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 </Pressable>
 
                 <EditField>
-                  <EditFieldLabel>Name</EditFieldLabel>
+                  <EditFieldLabel>{t("auth.name")}</EditFieldLabel>
                   <EditFieldInput
                     value={draftName}
                     onChangeText={setDraftName}
-                    placeholder="Your name"
+                    placeholder={t("profile.yourName")}
                     placeholderTextColor={currentTheme.colors.textSecondary}
                     autoCapitalize="words"
                     maxLength={50}
@@ -1181,11 +1433,11 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 </EditField>
 
                 <EditField>
-                  <EditFieldLabel>Bio</EditFieldLabel>
+                  <EditFieldLabel>{t("profile.bioLabel")}</EditFieldLabel>
                   <EditFieldInput
                     value={draftBio}
                     onChangeText={setDraftBio}
-                    placeholder="Add a bio"
+                    placeholder={t("profile.addBio")}
                     placeholderTextColor={currentTheme.colors.textSecondary}
                     multiline
                     maxLength={160}
@@ -1194,11 +1446,11 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 </EditField>
 
                 <EditField>
-                  <EditFieldLabel>Location</EditFieldLabel>
+                  <EditFieldLabel>{t("profile.locationLabel")}</EditFieldLabel>
                   <EditFieldInput
                     value={draftLocation}
                     onChangeText={handleLocationChange}
-                    placeholder="Add your location"
+                    placeholder={t("profile.addLocation")}
                     placeholderTextColor={currentTheme.colors.textSecondary}
                     maxLength={60}
                   />
@@ -1214,15 +1466,15 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                       ))}
                     </SuggestionList>
                   )}
-                  {isSearchingLocation && <SuggestionStatus>Searching locations...</SuggestionStatus>}
+                  {isSearchingLocation && <SuggestionStatus>{t("profile.searchingLocations")}</SuggestionStatus>}
                 </EditField>
 
                 <EditField>
-                  <EditFieldLabel>Birthday</EditFieldLabel>
+                  <EditFieldLabel>{t("profile.birthdayLabel")}</EditFieldLabel>
                   <EditFieldInput
                     value={draftBirthday}
                     onChangeText={(text) => setDraftBirthday(formatBirthdayInput(text))}
-                    placeholder="DD/MM/YYYY"
+                    placeholder={t("profile.birthdayPlaceholder")}
                     placeholderTextColor={currentTheme.colors.textSecondary}
                     keyboardType="number-pad"
                     maxLength={10}

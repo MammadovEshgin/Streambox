@@ -2,17 +2,12 @@ import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ScrollView } from "react-native";
 import Animated, {
-  Easing,
   FadeInDown,
   FadeInUp,
-  interpolate,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withTiming
 } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
 
@@ -20,16 +15,28 @@ import {
   GENRE_ID_MAP,
   MediaItem,
   getImdbTop250SeriesPage,
-  getSeriesOfTheDay,
   getTmdbImageUrl,
   getTopNewSeriesPage,
   resolveTmdbTvIdFromImdbId
 } from "../api/tmdb";
+import { formatRating, isValidMediaItem, isValidMediaItemArray } from "../api/mediaFormatting";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
+import { useRuntimeCacheAutoRefresh } from "../hooks/useRuntimeCacheAutoRefresh";
+import { useLikedSeries } from "../hooks/useLikedSeries";
+import { useWatchHistory } from "../hooks/useWatchHistory";
 import { HomeStackParamList } from "../navigation/types";
-import { isRuntimeCacheFresh, readRuntimeCache, writeRuntimeCache } from "../services/runtimeCache";
+import { getLocalDateFreshnessKey } from "../services/contentFreshness";
+import { getPersonalizedSeriesOfTheDay } from "../services/movieOfDayService";
+import { useAuth } from "../context/AuthContext";
+import {
+  readPersistedRuntimeCache,
+  readRuntimeCache,
+  writePersistedRuntimeCache,
+  writeRuntimeCache,
+} from "../services/runtimeCache";
+import { useAppSettings } from "../settings/AppSettingsContext";
 
 const SERIES_HUB_CACHE_KEY = "series-hub-v1";
 const SERIES_HUB_CACHE_TTL_MS = 1000 * 60 * 20;
@@ -39,6 +46,19 @@ type SeriesHubCache = {
   topNewSeries: MediaItem[];
   imdbTopSeries: MediaItem[];
 };
+
+function isValidSeriesHubCache(value: unknown): value is SeriesHubCache {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const cache = value as Partial<SeriesHubCache>;
+  return (
+    (cache.seriesOfDay === null || isValidMediaItem(cache.seriesOfDay))
+    && isValidMediaItemArray(cache.topNewSeries)
+    && isValidMediaItemArray(cache.imdbTopSeries)
+  );
+}
 
 type SeedPageResponse = {
   items: MediaItem[];
@@ -155,18 +175,6 @@ const HeroGlow = styled(LinearGradient)`
   border-radius: 60px;
 `;
 
-const SweepLight = styled(Animated.View)`
-  position: absolute;
-  top: -70px;
-  bottom: -70px;
-  width: 220px;
-  opacity: 0.72;
-`;
-
-const SweepGradient = styled(LinearGradient)`
-  flex: 1;
-`;
-
 const HeroEmpty = styled.View`
   height: 280px;
   border-radius: 18px;
@@ -183,19 +191,19 @@ const HeroEmptyText = styled.Text`
 `;
 
 const SectionHeader = styled.View`
-  margin-top: 22px;
-  margin-bottom: 12px;
+  margin-top: 28px;
+  margin-bottom: 14px;
   flex-direction: row;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
 `;
 
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: Outfit_600SemiBold;
-  font-size: 20px;
-  line-height: 26px;
-  letter-spacing: -0.4px;
+  font-family: Outfit_700Bold;
+  font-size: 22px;
+  line-height: 28px;
+  letter-spacing: -0.6px;
 `;
 
 const SectionLink = styled.Pressable`
@@ -203,10 +211,11 @@ const SectionLink = styled.Pressable`
 `;
 
 const SectionLinkText = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
+  color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_600SemiBold;
   font-size: 12px;
-  line-height: 15px;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
 `;
 
 const RailWrap = styled.View`
@@ -292,7 +301,8 @@ async function seedTopNewSeries(minimumCount: number, initialPage?: SeedPageResp
   return pool;
 }
 
-function RailSection({ title, items, onPressItem, onPressSeeAll }: RailSectionProps) {
+const RailSection = memo(function RailSection({ title, items, onPressItem, onPressSeeAll }: RailSectionProps) {
+  const { t } = useTranslation();
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<MediaItem>) => {
       return (
@@ -309,12 +319,12 @@ function RailSection({ title, items, onPressItem, onPressSeeAll }: RailSectionPr
       <SectionHeader>
         <SectionTitle>{title}</SectionTitle>
         <SectionLink onPress={onPressSeeAll}>
-          <SectionLinkText>See all</SectionLinkText>
+          <SectionLinkText>{t("common.seeAll")}</SectionLinkText>
         </SectionLink>
       </SectionHeader>
       {items.length === 0 ? (
         <EmptyRail>
-          <EmptyRailText>No results in this rail</EmptyRailText>
+          <EmptyRailText>{t("discover.noTitlesFound")}</EmptyRailText>
         </EmptyRail>
       ) : (
         <RailWrap>
@@ -324,44 +334,124 @@ function RailSection({ title, items, onPressItem, onPressSeeAll }: RailSectionPr
             keyExtractor={(item) => `${item.mediaType}-${item.id}`}
             renderItem={renderItem}
             showsHorizontalScrollIndicator={false}
+            removeClippedSubviews
           />
         </RailWrap>
       )}
     </>
   );
-}
+});
 
 export function SeriesScreen({ navigation }: SeriesScreenProps) {
-  const cacheRef = useRef(readRuntimeCache<SeriesHubCache>(SERIES_HUB_CACHE_KEY));
-  const cachedHub = cacheRef.current?.value;
+  const { language } = useAppSettings();
+  const localizedCacheKey = `${SERIES_HUB_CACHE_KEY}:${language}`;
+  const hubCacheEntry = readRuntimeCache<SeriesHubCache>(localizedCacheKey);
+  const cachedHub = hubCacheEntry?.value;
   const currentTheme = useTheme();
+  const { t } = useTranslation();
+  const { user } = useAuth();
+  const { likedSeries, isLoading: isLikedSeriesLoading } = useLikedSeries();
+  const { history, isLoading: isWatchHistoryLoading } = useWatchHistory();
   const [seriesOfDay, setSeriesOfDay] = useState<MediaItem | null>(cachedHub?.seriesOfDay ?? null);
   const [topNewSeries, setTopNewSeries] = useState<MediaItem[]>(cachedHub?.topNewSeries ?? []);
   const [imdbTopSeries, setImdbTopSeries] = useState<MediaItem[]>(cachedHub?.imdbTopSeries ?? []);
   const [isLoading, setIsLoading] = useState(!cachedHub);
+  const [hasHydratedPersistentCache, setHasHydratedPersistentCache] = useState(Boolean(cachedHub));
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const sweep = useSharedValue(0);
+  const watchedSeriesIds = useMemo(
+    () =>
+      history
+        .filter((entry) => entry.mediaType === "tv")
+        .map((entry) => entry.id)
+        .filter((id): id is number => typeof id === "number"),
+    [history]
+  );
+  const dailyPersonalizationVersion = useMemo(
+    () =>
+      [
+        getLocalDateFreshnessKey(),
+        user?.id ?? "anonymous",
+        likedSeries.filter((id): id is number => typeof id === "number").join(","),
+        watchedSeriesIds.join(","),
+      ].join("|"),
+    [likedSeries, user?.id, watchedSeriesIds]
+  );
+  const getSeriesHubFreshnessVersion = useCallback(() => dailyPersonalizationVersion, [dailyPersonalizationVersion]);
 
   const hasHubData = topNewSeries.length > 0 || imdbTopSeries.length > 0 || seriesOfDay !== null;
 
+  useEffect(() => {
+    setSeriesOfDay(cachedHub?.seriesOfDay ?? null);
+    setTopNewSeries(cachedHub?.topNewSeries ?? []);
+    setImdbTopSeries(cachedHub?.imdbTopSeries ?? []);
+    setErrorMessage(null);
+    setIsLoading(!cachedHub);
+  }, [cachedHub, language]);
+
+  useEffect(() => {
+    let active = true;
+
+    if (cachedHub) {
+      setHasHydratedPersistentCache(true);
+      return () => {
+        active = false;
+      };
+    }
+
+    void readPersistedRuntimeCache<SeriesHubCache>(localizedCacheKey, { validate: isValidSeriesHubCache })
+      .then((entry) => {
+        if (!active) {
+          return;
+        }
+
+        if (entry?.value) {
+          setSeriesOfDay(entry.value.seriesOfDay ?? null);
+          setTopNewSeries(entry.value.topNewSeries ?? []);
+          setImdbTopSeries(entry.value.imdbTopSeries ?? []);
+          setIsLoading(false);
+        }
+
+        setHasHydratedPersistentCache(true);
+      })
+      .catch(() => {
+        if (active) {
+          setHasHydratedPersistentCache(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [cachedHub, localizedCacheKey]);
+
   const applyHubState = useCallback((nextState: SeriesHubCache) => {
-    writeRuntimeCache<SeriesHubCache>(SERIES_HUB_CACHE_KEY, nextState);
+    const freshnessVersion = getSeriesHubFreshnessVersion();
+    writeRuntimeCache<SeriesHubCache>(localizedCacheKey, nextState, { version: freshnessVersion });
+    void writePersistedRuntimeCache<SeriesHubCache>(localizedCacheKey, nextState, { version: freshnessVersion });
     startTransition(() => {
       setSeriesOfDay(nextState.seriesOfDay);
       setTopNewSeries(nextState.topNewSeries);
       setImdbTopSeries(nextState.imdbTopSeries);
       setErrorMessage(null);
     });
-  }, []);
+  }, [getSeriesHubFreshnessVersion, localizedCacheKey]);
 
   const loadSeriesData = useCallback(async (background = false) => {
+    if (isLikedSeriesLoading || isWatchHistoryLoading) {
+      return;
+    }
+
     if (!background && !hasHubData) {
       setIsLoading(true);
     }
 
     try {
       const [featured, topNewFirstPage, imdbTop] = await Promise.all([
-        getSeriesOfTheDay(),
+        getPersonalizedSeriesOfTheDay({
+          userId: user?.id,
+          likedIds: likedSeries,
+          watchedIds: watchedSeriesIds,
+        }),
         getTopNewSeriesPage(1),
         getImdbTop250SeriesPage(1)
       ]);
@@ -390,39 +480,14 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [applyHubState, hasHubData]);
+  }, [applyHubState, hasHubData, isLikedSeriesLoading, isWatchHistoryLoading, likedSeries, user?.id, watchedSeriesIds]);
 
-  useEffect(() => {
-    const isFresh = isRuntimeCacheFresh(cacheRef.current, SERIES_HUB_CACHE_TTL_MS);
-    if (isFresh) {
-      return;
-    }
-
-    void loadSeriesData(Boolean(cachedHub));
-  }, [cachedHub, loadSeriesData]);
-
-  useEffect(() => {
-    sweep.value = withRepeat(
-      withTiming(1, {
-        duration: 4200,
-        easing: Easing.inOut(Easing.quad)
-      }),
-      -1,
-      true
-    );
-  }, [sweep]);
-
-  const sweepAnimatedStyle = useAnimatedStyle(() => {
-    return {
-      transform: [
-        {
-          translateX: interpolate(sweep.value, [0, 1], [-210, 210])
-        },
-        {
-          rotate: "-16deg"
-        }
-      ]
-    };
+  useRuntimeCacheAutoRefresh({
+    entry: hubCacheEntry,
+    maxAgeMs: SERIES_HUB_CACHE_TTL_MS,
+    getExpectedVersion: getSeriesHubFreshnessVersion,
+    enabled: hasHydratedPersistentCache && !isLikedSeriesLoading && !isWatchHistoryLoading,
+    onRefresh: (hasCachedValue) => loadSeriesData(hasCachedValue),
   });
 
   const heroBackdropUri = useMemo(() => {
@@ -457,11 +522,11 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
     [navigation]
   );
 
-  if (isLoading && !hasHubData) {
+  if ((isLoading || isLikedSeriesLoading || isWatchHistoryLoading) && !hasHubData) {
     return (
       <SafeContainer>
         <LoadingWrap>
-          <MovieLoader label="loading series" />
+          <MovieLoader label={t("loaders.loadingSeries")} />
         </LoadingWrap>
       </SafeContainer>
     );
@@ -471,7 +536,7 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
     <SafeContainer>
       <RootScroll>
         <Content>
-          <Animated.View entering={FadeInUp.duration(460).delay(60)}>
+          <Animated.View entering={FadeInUp.duration(220)}>
             {seriesOfDay ? (
               <HeroPress
                 onPress={() => {
@@ -480,21 +545,15 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
               >
                 {heroBackdropUri ? <HeroBackdrop source={{ uri: heroBackdropUri }} resizeMode="cover" /> : null}
                 <HeroShade colors={["rgba(0,0,0,0.08)", "rgba(0,0,0,0.88)"]} />
-                <SweepLight style={sweepAnimatedStyle}>
-                  <SweepGradient
-                    colors={["rgba(255,255,255,0.00)", "rgba(255,255,255,0.22)", "rgba(255,255,255,0.00)"]}
-                    locations={[0, 0.5, 1]}
-                  />
-                </SweepLight>
                 <HeroGlow colors={[currentTheme.colors.primaryGlow, currentTheme.colors.primaryTransparent]} />
 
                 <HeroContent>
-                  <HeroKicker>Series of the Day</HeroKicker>
+                  <HeroKicker>{t("series.seriesOfDay")}</HeroKicker>
                   <HeroTitle numberOfLines={2}>{seriesOfDay.title}</HeroTitle>
                   <HeroMeta>
                     <HeroMetaText>{seriesOfDay.year} | </HeroMetaText>
                     <Feather name="star" size={12} color="#FFD700" />
-                    <HeroMetaText> {seriesOfDay.rating.toFixed(1)}</HeroMetaText>
+                    <HeroMetaText> {formatRating(seriesOfDay.rating)}</HeroMetaText>
                   </HeroMeta>
                   {seriesOfDay.overview ? (
                     <HeroDescription numberOfLines={2}>{seriesOfDay.overview}</HeroDescription>
@@ -512,16 +571,16 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
               </HeroPress>
             ) : (
               <HeroEmpty>
-                <HeroEmptyText>No series of the day</HeroEmptyText>
+                <HeroEmptyText>{t("series.noSeriesOfDay")}</HeroEmptyText>
               </HeroEmpty>
             )}
           </Animated.View>
 
           {errorMessage ? <ErrorText>{errorMessage}</ErrorText> : null}
 
-          <Animated.View entering={FadeInDown.duration(420).delay(120)}>
+          <Animated.View entering={FadeInDown.duration(200)}>
             <RailSection
-              title="Top New Series"
+              title={t("series.topNewSeries")}
               items={topNewSeries}
               onPressItem={(item) => {
                 void openSeriesDetail(item);
@@ -529,15 +588,15 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
               onPressSeeAll={() => {
                 navigation.navigate("DiscoverGrid", {
                   source: "top_new_series",
-                  title: "Top New Series"
+                  title: t("series.topNewSeries")
                 });
               }}
             />
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.duration(420).delay(170)}>
+          <Animated.View entering={FadeInDown.duration(200)}>
             <RailSection
-              title="IMDb Top 250 Series"
+              title={t("series.imdbTop250Series")}
               items={imdbTopSeries}
               onPressItem={(item) => {
                 void openSeriesDetail(item);
@@ -545,7 +604,7 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
               onPressSeeAll={() => {
                 navigation.navigate("DiscoverGrid", {
                   source: "imdb_top_250_series",
-                  title: "IMDb Top 250 Series"
+                  title: t("series.imdbTop250Series")
                 });
               }}
             />
