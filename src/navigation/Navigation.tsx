@@ -113,7 +113,7 @@ export function Navigation() {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const bottomInset = Math.max(insets.bottom, 12);
-  const pillHeight = 60;
+  const pillHeight = 64;
   const pillMarginBottom = bottomInset + 6;
   const tabBarHeight = pillHeight + pillMarginBottom + 8;
 
@@ -130,13 +130,13 @@ export function Navigation() {
                 right: 16,
                 bottom: pillMarginBottom,
                 height: pillHeight,
-                paddingTop: 0,
-                paddingBottom: 0,
+                paddingTop: 10,
+                paddingBottom: 10,
                 paddingHorizontal: 6,
                 borderTopWidth: 1,
                 borderWidth: 1,
                 borderColor: currentTheme.colors.border,
-                borderRadius: 999,
+                borderRadius: 22,
                 elevation: 12,
                 shadowColor: "#000",
                 shadowOpacity: 0.45,
@@ -147,7 +147,7 @@ export function Navigation() {
         },
         tabBarItemStyle: {
           paddingVertical: 0,
-          height: pillHeight
+          height: pillHeight - 20
         },
         headerShown: false,
         freezeOnBlur: true,
