@@ -42,22 +42,22 @@ const NoImageText = styled.Text`
 
 const Badge = styled.View`
   position: absolute;
-  top: 8px;
-  right: 8px;
+  left: 8px;
+  bottom: 8px;
   flex-direction: row;
   align-items: center;
-  padding: 4px 8px;
+  padding: 4px 9px;
   border-radius: 999px;
-  background-color: ${({ theme }) => theme.colors.glassFill};
+  background-color: rgba(0, 0, 0, 0.72);
   border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.glassBorder};
+  border-color: rgba(255, 255, 255, 0.10);
 `;
 
 const BadgeValue = styled.Text`
-  color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
-  font-size: 11px;
-  letter-spacing: 0.4px;
+  color: #FFFFFF;
+  font-family: Outfit_600SemiBold;
+  font-size: 12px;
+  letter-spacing: 0.2px;
 `;
 
 const Title = styled.Text`
@@ -111,7 +111,7 @@ function MediaCardComponent({ item, onPress, onPressIn, posterUri: customPosterU
         )}
         {!hideRating && typeof item.id !== "string" && !item.imdbId?.startsWith("az-") && (
           <Badge>
-            <Feather name="star" size={10} color="#FFD27A" style={{ marginRight: 4 }} />
+            <Feather name="star" size={11} color="#FFD700" style={{ marginRight: 4 }} />
             <BadgeValue style={{ fontVariant: ["tabular-nums"] }}>{ratingText}</BadgeValue>
           </Badge>
         )}
