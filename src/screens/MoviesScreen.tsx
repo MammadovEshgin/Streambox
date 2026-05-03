@@ -2,17 +2,12 @@ import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ScrollView } from "react-native";
 import Animated, {
-  Easing,
   FadeInDown,
   FadeInUp,
-  interpolate,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withTiming
 } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
 
@@ -24,13 +19,24 @@ import {
   getTopNewMoviesPage,
   resolveTmdbMovieIdFromImdbId
 } from "../api/tmdb";
+import { formatRating, isValidMediaItem, isValidMediaItemArray } from "../api/mediaFormatting";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
+import { useRuntimeCacheAutoRefresh } from "../hooks/useRuntimeCacheAutoRefresh";
+import { useWatchHistory } from "../hooks/useWatchHistory";
 import { useLikedMovies } from "../hooks/useLikedMovies";
 import { HomeStackParamList } from "../navigation/types";
+import { useAuth } from "../context/AuthContext";
+import { getLocalDateFreshnessKey } from "../services/contentFreshness";
 import { getPersonalizedMovieOfTheDay } from "../services/movieOfDayService";
-import { isRuntimeCacheFresh, readRuntimeCache, writeRuntimeCache } from "../services/runtimeCache";
+import {
+  readPersistedRuntimeCache,
+  readRuntimeCache,
+  writePersistedRuntimeCache,
+  writeRuntimeCache,
+} from "../services/runtimeCache";
+import { useAppSettings } from "../settings/AppSettingsContext";
 
 const MOVIES_HUB_CACHE_KEY = "movies-hub-v1";
 const MOVIES_HUB_CACHE_TTL_MS = 1000 * 60 * 20;
@@ -40,6 +46,19 @@ type MoviesHubCache = {
   topNewMovies: MediaItem[];
   imdbTopMovies: MediaItem[];
 };
+
+function isValidMoviesHubCache(value: unknown): value is MoviesHubCache {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const cache = value as Partial<MoviesHubCache>;
+  return (
+    (cache.movieOfDay === null || isValidMediaItem(cache.movieOfDay))
+    && isValidMediaItemArray(cache.topNewMovies)
+    && isValidMediaItemArray(cache.imdbTopMovies)
+  );
+}
 
 type SeedPageResponse = {
   items: MediaItem[];
@@ -156,18 +175,6 @@ const HeroGlow = styled(LinearGradient)`
   border-radius: 60px;
 `;
 
-const SweepLight = styled(Animated.View)`
-  position: absolute;
-  top: -70px;
-  bottom: -70px;
-  width: 220px;
-  opacity: 0.72;
-`;
-
-const SweepGradient = styled(LinearGradient)`
-  flex: 1;
-`;
-
 const HeroEmpty = styled.View`
   height: 280px;
   border-radius: 18px;
@@ -184,19 +191,19 @@ const HeroEmptyText = styled.Text`
 `;
 
 const SectionHeader = styled.View`
-  margin-top: 22px;
-  margin-bottom: 12px;
+  margin-top: 28px;
+  margin-bottom: 14px;
   flex-direction: row;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
 `;
 
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: Outfit_600SemiBold;
-  font-size: 20px;
-  line-height: 26px;
-  letter-spacing: -0.4px;
+  font-family: Outfit_700Bold;
+  font-size: 22px;
+  line-height: 28px;
+  letter-spacing: -0.6px;
 `;
 
 const SectionLink = styled.Pressable`
@@ -204,10 +211,11 @@ const SectionLink = styled.Pressable`
 `;
 
 const SectionLinkText = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
+  color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_600SemiBold;
   font-size: 12px;
-  line-height: 15px;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
 `;
 
 const RailWrap = styled.View`
@@ -293,7 +301,8 @@ async function seedTopNewMovies(minimumCount: number, initialPage?: SeedPageResp
   return pool;
 }
 
-function RailSection({ title, items, onPressItem, onPressSeeAll }: RailSectionProps) {
+const RailSection = memo(function RailSection({ title, items, onPressItem, onPressSeeAll }: RailSectionProps) {
+  const { t } = useTranslation();
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<MediaItem>) => {
       return (
@@ -310,12 +319,12 @@ function RailSection({ title, items, onPressItem, onPressSeeAll }: RailSectionPr
       <SectionHeader>
         <SectionTitle>{title}</SectionTitle>
         <SectionLink onPress={onPressSeeAll}>
-          <SectionLinkText>See all</SectionLinkText>
+          <SectionLinkText>{t("common.seeAll")}</SectionLinkText>
         </SectionLink>
       </SectionHeader>
       {items.length === 0 ? (
         <EmptyRail>
-          <EmptyRailText>No results in this rail</EmptyRailText>
+          <EmptyRailText>{t("discover.noTitlesFound")}</EmptyRailText>
         </EmptyRail>
       ) : (
         <RailWrap>
@@ -325,39 +334,110 @@ function RailSection({ title, items, onPressItem, onPressSeeAll }: RailSectionPr
             keyExtractor={(item) => `${item.mediaType}-${item.id}`}
             renderItem={renderItem}
             showsHorizontalScrollIndicator={false}
+            removeClippedSubviews
           />
         </RailWrap>
       )}
     </>
   );
-}
+});
 
 export function MoviesScreen({ navigation }: MoviesScreenProps) {
-  const cacheRef = useRef(readRuntimeCache<MoviesHubCache>(MOVIES_HUB_CACHE_KEY));
-  const cachedHub = cacheRef.current?.value;
+  const { language } = useAppSettings();
+  const localizedCacheKey = `${MOVIES_HUB_CACHE_KEY}:${language}`;
+  const hubCacheEntry = readRuntimeCache<MoviesHubCache>(localizedCacheKey);
+  const cachedHub = hubCacheEntry?.value;
   const currentTheme = useTheme();
+  const { t } = useTranslation();
+  const { user } = useAuth();
   const { likedMovies, isLoading: isLikedMoviesLoading } = useLikedMovies();
+  const { history, isLoading: isWatchHistoryLoading } = useWatchHistory();
   const [movieOfDay, setMovieOfDay] = useState<MediaItem | null>(cachedHub?.movieOfDay ?? null);
   const [topNewMovies, setTopNewMovies] = useState<MediaItem[]>(cachedHub?.topNewMovies ?? []);
   const [imdbTopMovies, setImdbTopMovies] = useState<MediaItem[]>(cachedHub?.imdbTopMovies ?? []);
   const [isLoading, setIsLoading] = useState(!cachedHub);
+  const [hasHydratedPersistentCache, setHasHydratedPersistentCache] = useState(Boolean(cachedHub));
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const sweep = useSharedValue(0);
+  const watchedMovieIds = useMemo(
+    () =>
+      history
+        .filter((entry) => entry.mediaType === "movie")
+        .map((entry) => entry.id)
+        .filter((id): id is number => typeof id === "number"),
+    [history]
+  );
+  const dailyPersonalizationVersion = useMemo(
+    () =>
+      [
+        getLocalDateFreshnessKey(),
+        user?.id ?? "anonymous",
+        likedMovies.filter((id): id is number => typeof id === "number").join(","),
+        watchedMovieIds.join(","),
+      ].join("|"),
+    [likedMovies, user?.id, watchedMovieIds]
+  );
+  const getMoviesHubFreshnessVersion = useCallback(() => dailyPersonalizationVersion, [dailyPersonalizationVersion]);
 
   const hasHubData = topNewMovies.length > 0 || imdbTopMovies.length > 0 || movieOfDay !== null;
 
+  useEffect(() => {
+    setMovieOfDay(cachedHub?.movieOfDay ?? null);
+    setTopNewMovies(cachedHub?.topNewMovies ?? []);
+    setImdbTopMovies(cachedHub?.imdbTopMovies ?? []);
+    setErrorMessage(null);
+    setIsLoading(!cachedHub);
+  }, [cachedHub, language]);
+
+  useEffect(() => {
+    let active = true;
+
+    if (cachedHub) {
+      setHasHydratedPersistentCache(true);
+      return () => {
+        active = false;
+      };
+    }
+
+    void readPersistedRuntimeCache<MoviesHubCache>(localizedCacheKey, { validate: isValidMoviesHubCache })
+      .then((entry) => {
+        if (!active) {
+          return;
+        }
+
+        if (entry?.value) {
+          setMovieOfDay(entry.value.movieOfDay ?? null);
+          setTopNewMovies(entry.value.topNewMovies ?? []);
+          setImdbTopMovies(entry.value.imdbTopMovies ?? []);
+          setIsLoading(false);
+        }
+
+        setHasHydratedPersistentCache(true);
+      })
+      .catch(() => {
+        if (active) {
+          setHasHydratedPersistentCache(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [cachedHub, localizedCacheKey]);
+
   const applyHubState = useCallback((nextState: MoviesHubCache) => {
-    writeRuntimeCache<MoviesHubCache>(MOVIES_HUB_CACHE_KEY, nextState);
+    const freshnessVersion = getMoviesHubFreshnessVersion();
+    writeRuntimeCache<MoviesHubCache>(localizedCacheKey, nextState, { version: freshnessVersion });
+    void writePersistedRuntimeCache<MoviesHubCache>(localizedCacheKey, nextState, { version: freshnessVersion });
     startTransition(() => {
       setMovieOfDay(nextState.movieOfDay);
       setTopNewMovies(nextState.topNewMovies);
       setImdbTopMovies(nextState.imdbTopMovies);
       setErrorMessage(null);
     });
-  }, []);
+  }, [getMoviesHubFreshnessVersion, localizedCacheKey]);
 
   const loadMoviesData = useCallback(async (background = false) => {
-    if (isLikedMoviesLoading) {
+    if (isLikedMoviesLoading || isWatchHistoryLoading) {
       return;
     }
 
@@ -367,7 +447,11 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
 
     try {
       const [featured, topNewFirstPage, imdbTop] = await Promise.all([
-        getPersonalizedMovieOfTheDay(likedMovies.filter((id): id is number => typeof id === "number")),
+        getPersonalizedMovieOfTheDay({
+          userId: user?.id,
+          likedIds: likedMovies,
+          watchedIds: watchedMovieIds,
+        }),
         getTopNewMoviesPage(1),
         getImdbTop250Page(1)
       ]);
@@ -396,43 +480,14 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [applyHubState, hasHubData, isLikedMoviesLoading, likedMovies]);
+  }, [applyHubState, hasHubData, isLikedMoviesLoading, isWatchHistoryLoading, likedMovies, user?.id, watchedMovieIds]);
 
-  useEffect(() => {
-    if (isLikedMoviesLoading) {
-      return;
-    }
-
-    const isFresh = isRuntimeCacheFresh(cacheRef.current, MOVIES_HUB_CACHE_TTL_MS);
-    if (isFresh) {
-      return;
-    }
-
-    void loadMoviesData(Boolean(cachedHub));
-  }, [cachedHub, isLikedMoviesLoading, loadMoviesData]);
-
-  useEffect(() => {
-    sweep.value = withRepeat(
-      withTiming(1, {
-        duration: 4200,
-        easing: Easing.inOut(Easing.quad)
-      }),
-      -1,
-      true
-    );
-  }, [sweep]);
-
-  const sweepAnimatedStyle = useAnimatedStyle(() => {
-    return {
-      transform: [
-        {
-          translateX: interpolate(sweep.value, [0, 1], [-210, 210])
-        },
-        {
-          rotate: "-16deg"
-        }
-      ]
-    };
+  useRuntimeCacheAutoRefresh({
+    entry: hubCacheEntry,
+    maxAgeMs: MOVIES_HUB_CACHE_TTL_MS,
+    getExpectedVersion: getMoviesHubFreshnessVersion,
+    enabled: hasHydratedPersistentCache && !isLikedMoviesLoading && !isWatchHistoryLoading,
+    onRefresh: (hasCachedValue) => loadMoviesData(hasCachedValue),
   });
 
   const heroBackdropUri = useMemo(() => {
@@ -467,11 +522,11 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
     [navigation]
   );
 
-  if ((isLoading || isLikedMoviesLoading) && !hasHubData) {
+  if ((isLoading || isLikedMoviesLoading || isWatchHistoryLoading) && !hasHubData) {
     return (
       <SafeContainer>
         <LoadingWrap>
-          <MovieLoader label="loading movies" />
+          <MovieLoader label={t("loaders.loadingMovies")} />
         </LoadingWrap>
       </SafeContainer>
     );
@@ -481,7 +536,7 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
     <SafeContainer>
       <RootScroll>
         <Content>
-          <Animated.View entering={FadeInUp.duration(460).delay(60)}>
+          <Animated.View entering={FadeInUp.duration(220)}>
             {movieOfDay ? (
               <HeroPress
                 onPress={() => {
@@ -490,21 +545,15 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
               >
                 {heroBackdropUri ? <HeroBackdrop source={{ uri: heroBackdropUri }} resizeMode="cover" /> : null}
                 <HeroShade colors={["rgba(0,0,0,0.08)", "rgba(0,0,0,0.88)"]} />
-                <SweepLight style={sweepAnimatedStyle}>
-                  <SweepGradient
-                    colors={["rgba(255,255,255,0.00)", "rgba(255,255,255,0.22)", "rgba(255,255,255,0.00)"]}
-                    locations={[0, 0.5, 1]}
-                  />
-                </SweepLight>
                 <HeroGlow colors={[currentTheme.colors.primaryGlow, currentTheme.colors.primaryTransparent]} />
 
                 <HeroContent>
-                  <HeroKicker>Movie of the Day</HeroKicker>
+                  <HeroKicker>{t("movies.movieOfDay")}</HeroKicker>
                   <HeroTitle numberOfLines={2}>{movieOfDay.title}</HeroTitle>
                   <HeroMeta>
                     <HeroMetaText>{movieOfDay.year} | </HeroMetaText>
                     <Feather name="star" size={12} color="#FFD700" />
-                    <HeroMetaText> {movieOfDay.rating.toFixed(1)}</HeroMetaText>
+                    <HeroMetaText> {formatRating(movieOfDay.rating)}</HeroMetaText>
                   </HeroMeta>
                   {movieOfDay.overview ? (
                     <HeroDescription numberOfLines={2}>{movieOfDay.overview}</HeroDescription>
@@ -522,16 +571,16 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
               </HeroPress>
             ) : (
               <HeroEmpty>
-                <HeroEmptyText>No movie of the day</HeroEmptyText>
+                <HeroEmptyText>{t("movies.noMovieOfDay")}</HeroEmptyText>
               </HeroEmpty>
             )}
           </Animated.View>
 
           {errorMessage ? <ErrorText>{errorMessage}</ErrorText> : null}
 
-          <Animated.View entering={FadeInDown.duration(420).delay(120)}>
+          <Animated.View entering={FadeInDown.duration(200)}>
             <RailSection
-              title="Top New Movies"
+              title={t("movies.topNewMovies")}
               items={topNewMovies}
               onPressItem={(item) => {
                 void openMovieDetail(item);
@@ -539,15 +588,15 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
               onPressSeeAll={() => {
                 navigation.navigate("DiscoverGrid", {
                   source: "top_new_movies",
-                  title: "Top New Movies"
+                  title: t("movies.topNewMovies")
                 });
               }}
             />
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.duration(420).delay(170)}>
+          <Animated.View entering={FadeInDown.duration(200)}>
             <RailSection
-              title="IMDb Top 250"
+              title={t("movies.imdbTop250")}
               items={imdbTopMovies}
               onPressItem={(item) => {
                 void openMovieDetail(item);
@@ -555,7 +604,7 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
               onPressSeeAll={() => {
                 navigation.navigate("DiscoverGrid", {
                   source: "imdb_top_250",
-                  title: "IMDb Top 250"
+                  title: t("movies.imdbTop250")
                 });
               }}
             />
