@@ -23,6 +23,7 @@ import {
   getSeriesLogos,
   getTmdbImageUrl,
 } from "../../api/tmdb";
+import { formatRating } from "../../api/mediaFormatting";
 import { AppTheme } from "../../theme/Theme";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
@@ -30,6 +31,7 @@ const SLIDE_WIDTH = SCREEN_WIDTH - 32;
 const SLIDE_HEIGHT = 300;
 const AUTO_ADVANCE_MS = 5000;
 const IDLE_RESUME_MS = 8000;
+const CAROUSEL_RENDER_WINDOW = 3;
 
 type SpotlightCarouselProps = {
   items: MediaItem[];
@@ -43,7 +45,7 @@ const CarouselRoot = styled.View`
 const SlideContainer = styled.View`
   width: ${SLIDE_WIDTH}px;
   height: ${SLIDE_HEIGHT}px;
-  border-radius: 20px;
+  border-radius: 24px;
   overflow: hidden;
   background-color: ${({ theme }: { theme: AppTheme }) => theme.colors.surface};
 `;
@@ -53,41 +55,44 @@ const ContentOverlay = styled.View`
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 16px;
+  padding: 20px 18px 18px;
 `;
 
 const LogoImage = styled.Image`
   width: 180px;
   height: 48px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 `;
 
 const TitleText = styled.Text`
   color: ${({ theme }: { theme: AppTheme }) => theme.colors.textPrimary};
   font-family: Outfit_700Bold;
-  font-size: 26px;
-  letter-spacing: -0.8px;
-  margin-bottom: 8px;
+  font-size: 28px;
+  line-height: 32px;
+  letter-spacing: -1.2px;
+  margin-bottom: 10px;
 `;
 
 const MetaRow = styled.View`
   flex-direction: row;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 `;
 
 const MetaText = styled.Text`
   color: ${({ theme }: { theme: AppTheme }) => theme.colors.textSecondary};
-  font-family: Outfit_400Regular;
-  font-size: 14px;
+  font-family: Outfit_500Medium;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
 `;
 
 const DescriptionText = styled.Text`
   color: ${({ theme }: { theme: AppTheme }) => theme.colors.textSecondary};
   font-family: Outfit_400Regular;
   font-size: 13px;
-  line-height: 18px;
-  margin-bottom: 8px;
+  line-height: 19px;
+  margin-bottom: 12px;
 `;
 
 const ChipRow = styled.View`
@@ -96,18 +101,19 @@ const ChipRow = styled.View`
 `;
 
 const GenreChip = styled.View`
-  background-color: ${({ theme }: { theme: AppTheme }) => theme.colors.surface};
+  background-color: ${({ theme }: { theme: AppTheme }) => theme.colors.glassFill};
   border-width: 1px;
-  border-color: ${({ theme }: { theme: AppTheme }) => theme.colors.border};
-  border-radius: ${({ theme }: { theme: AppTheme }) => theme.radius.sm}px;
-  padding: 3px 8px;
+  border-color: ${({ theme }: { theme: AppTheme }) => theme.colors.glassBorder};
+  border-radius: 999px;
+  padding: 4px 10px;
 `;
 
 const ChipText = styled.Text`
   color: ${({ theme }: { theme: AppTheme }) => theme.colors.textPrimary};
   font-family: Outfit_500Medium;
-  font-size: 11px;
-  letter-spacing: 0.2px;
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
 `;
 
 const DotRow = styled.View`
@@ -159,8 +165,8 @@ function Slide({
           />
         ) : null}
         <LinearGradient
-          colors={["transparent", "rgba(0,0,0,0.4)", theme.colors.background]}
-          locations={[0.2, 0.5, 1]}
+          colors={["transparent", "rgba(11,11,14,0.35)", "rgba(11,11,14,0.92)", theme.colors.background]}
+          locations={[0, 0.4, 0.78, 1]}
           style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
         />
         <ContentOverlay>
@@ -173,11 +179,11 @@ function Slide({
           <MetaRow>
             {typeof item.id !== "string" && !item.imdbId?.startsWith("az-") && (
               <>
-                <Feather name="star" size={14} color="#FFD700" />
-                <MetaText> {item.rating.toFixed(1)}  •  </MetaText>
+                <Feather name="star" size={11} color="#FFD27A" />
+                <MetaText style={{ fontVariant: ["tabular-nums"] }}> {formatRating(item.rating)}   ·   </MetaText>
               </>
             )}
-            <MetaText>{item.year}</MetaText>
+            <MetaText style={{ fontVariant: ["tabular-nums"] }}>{item.year}</MetaText>
           </MetaRow>
 
           <DescriptionText numberOfLines={2}>{item.overview}</DescriptionText>
@@ -214,6 +220,7 @@ export function SpotlightCarousel({
   const [logos, setLogos] = useState<Record<number | string, string | null>>({});
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const userInteractedRef = useRef(false);
+  const pendingLogoIdsRef = useRef(new Set<number>());
   const count = items.length;
 
   // Triple the data for infinite illusion
@@ -223,22 +230,53 @@ export function SpotlightCarousel({
   );
   const middleStart = count; // index where the middle copy begins
 
-  // Fetch logos on mount
+  // Fetch only the visible/near-visible logos so Discover does not fire
+  // a burst of extra requests for the whole carousel on first paint.
   useEffect(() => {
-    Promise.all(
-      items
-        .filter((item) => typeof item.id === "number")
-        .map(async (item) => {
-          const fn = item.mediaType === "movie" ? getMovieLogos : getSeriesLogos;
-          const path = await fn(Number(item.id));
-          return [item.id, path] as const;
-        })
-    ).then((results) => {
-      const map: Record<number | string, string | null> = {};
-      for (const [id, path] of results) map[id] = path;
-      setLogos(map);
-    });
-  }, [items]);
+    let active = true;
+    const windowOffsets = [0, 1, -1, 2];
+    const candidates = windowOffsets
+      .map((offset) => items[(activeIndex + offset + count) % count])
+      .filter((item): item is MediaItem => Boolean(item && typeof item.id === "number"))
+      .filter((item, index, list) => list.findIndex((entry) => entry.id === item.id) === index)
+      .filter((item) => !(item.id in logos) && !pendingLogoIdsRef.current.has(item.id as number));
+
+    if (candidates.length === 0) {
+      return () => {
+        active = false;
+      };
+    }
+
+    candidates.forEach((item) => pendingLogoIdsRef.current.add(item.id as number));
+
+    void Promise.all(
+      candidates.map(async (item) => {
+        const fn = item.mediaType === "movie" ? getMovieLogos : getSeriesLogos;
+        const path = await fn(Number(item.id));
+        return [item.id, path] as const;
+      })
+    )
+      .then((results) => {
+        if (!active) {
+          return;
+        }
+
+        setLogos((current) => {
+          const next = { ...current };
+          results.forEach(([id, path]) => {
+            next[id] = path;
+          });
+          return next;
+        });
+      })
+      .finally(() => {
+        candidates.forEach((item) => pendingLogoIdsRef.current.delete(item.id as number));
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeIndex, count, items, logos]);
 
   // Start at middle copy on mount
   const initialOffset = middleStart * SLIDE_WIDTH;
@@ -260,8 +298,10 @@ export function SpotlightCarousel({
   // Auto-advance timer — always goes forward by one slide
   const startTimer = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
+    if (count <= 1) {
+      return;
+    }
     timerRef.current = setTimeout(() => {
-      if (count <= 1) return;
       const nextReal = (activeIndex + 1) % count;
       const nextLooped = middleStart + nextReal;
       flatListRef.current?.scrollToIndex({ index: nextLooped, animated: true });
@@ -315,10 +355,14 @@ export function SpotlightCarousel({
         ref={flatListRef}
         data={loopedData}
         horizontal
+        initialNumToRender={CAROUSEL_RENDER_WINDOW}
+        maxToRenderPerBatch={CAROUSEL_RENDER_WINDOW}
+        windowSize={CAROUSEL_RENDER_WINDOW}
         pagingEnabled
         snapToInterval={SLIDE_WIDTH}
         decelerationRate="fast"
         showsHorizontalScrollIndicator={false}
+        removeClippedSubviews
         keyExtractor={(_, idx) => `spotlight-${idx}`}
         renderItem={renderItem}
         onScroll={onScroll}

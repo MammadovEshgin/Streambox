@@ -2,10 +2,11 @@ import { Feather, Ionicons } from "@expo/vector-icons";
 import { getFocusedRouteNameFromRoute } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { useTranslation } from "react-i18next";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "styled-components/native";
 
 import { ActorDetailScreen } from "../screens/ActorDetailScreen";
-import { AzClassicDetailScreen } from "../screens/AzClassicDetailScreen";
 import { DiscoverGridScreen } from "../screens/DiscoverGridScreen";
 import { FranchiseCatalogScreen } from "../screens/FranchiseCatalogScreen";
 import { FranchiseTimelineScreen } from "../screens/FranchiseTimelineScreen";
@@ -41,7 +42,6 @@ function HomeStackScreen() {
       <HomeStack.Screen name="SearchResults" component={SearchResultsScreen} />
       <HomeStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <HomeStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
-      <HomeStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <HomeStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <HomeStack.Screen name="Player" component={PlayerScreen} />
     </HomeStack.Navigator>
@@ -58,7 +58,6 @@ function MoviesStackScreen() {
       <MoviesStack.Screen name="SearchResults" component={SearchResultsScreen} />
       <MoviesStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <MoviesStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
-      <MoviesStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <MoviesStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <MoviesStack.Screen name="Player" component={PlayerScreen} />
     </MoviesStack.Navigator>
@@ -85,7 +84,6 @@ function ProfileStackScreen() {
       <ProfileStack.Screen name="ProfileFeed" component={ProfileScreen} />
       <ProfileStack.Screen name="ProfileSeeAll" component={ProfileSeeAllScreen} />
       <ProfileStack.Screen name="ProfileSettings" component={ProfileSettingsScreen} />
-      <ProfileStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <ProfileStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <ProfileStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <ProfileStack.Screen name="ActorDetail" component={ActorDetailScreen} />
@@ -96,10 +94,9 @@ function ProfileStackScreen() {
 
 function StatsStackScreen() {
   return (
-    <StatsStack.Navigator screenOptions={{ headerShown: false }}>
+      <StatsStack.Navigator screenOptions={{ headerShown: false }}>
       <StatsStack.Screen name="StatsFeed" component={StatsScreen} />
       <StatsStack.Screen name="WatchedGrid" component={WatchedGridScreen} />
-      <StatsStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <StatsStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <StatsStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <StatsStack.Screen name="ActorDetail" component={ActorDetailScreen} />
@@ -108,11 +105,17 @@ function StatsStackScreen() {
   );
 }
 
-const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "AzClassicDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll", "FranchiseCatalog", "FranchiseTimeline"]);
+const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll", "FranchiseCatalog", "FranchiseTimeline"]);
 const STACK_TABS = new Set<keyof RootTabParamList>(["Discover", "Movies", "Series", "Stats", "Profile"]);
 
 export function Navigation() {
   const currentTheme = useTheme();
+  const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, 12);
+  const pillHeight = 60;
+  const pillMarginBottom = bottomInset + 6;
+  const tabBarHeight = pillHeight + pillMarginBottom + 8;
 
   return (
     <Tab.Navigator
@@ -122,24 +125,43 @@ export function Navigation() {
           DETAIL_ROUTES.has(getFocusedRouteNameFromRoute(route) ?? "")
               ? { display: "none" }
             : {
-                height: 64,
-                paddingTop: 8,
-                paddingBottom: 8,
-                borderTopWidth: 0,
-                elevation: 0,
-                backgroundColor: currentTheme.colors.background
+                position: "absolute",
+                left: 16,
+                right: 16,
+                bottom: pillMarginBottom,
+                height: pillHeight,
+                paddingTop: 0,
+                paddingBottom: 0,
+                paddingHorizontal: 6,
+                borderTopWidth: 1,
+                borderWidth: 1,
+                borderColor: currentTheme.colors.border,
+                borderRadius: 999,
+                elevation: 12,
+                shadowColor: "#000",
+                shadowOpacity: 0.45,
+                shadowRadius: 16,
+                shadowOffset: { width: 0, height: 8 },
+                backgroundColor: currentTheme.colors.surface
               })
+        },
+        tabBarItemStyle: {
+          paddingVertical: 0,
+          height: pillHeight
         },
         headerShown: false,
         freezeOnBlur: true,
         tabBarActiveTintColor: currentTheme.colors.primary,
-        tabBarInactiveTintColor: currentTheme.colors.textSecondary,
+        tabBarInactiveTintColor: currentTheme.colors.textTertiary,
         tabBarLabelStyle: {
           fontFamily: currentTheme.typography.MetaSmall.fontFamily,
-          fontSize: currentTheme.typography.MetaSmall.fontSize,
-          lineHeight: currentTheme.typography.MetaSmall.lineHeight,
-          letterSpacing: 0.2
+          fontSize: 10,
+          lineHeight: 12,
+          letterSpacing: 0.6,
+          textTransform: "uppercase",
+          marginTop: 2
         },
+        tabBarLabel: t(`nav.${route.name.toLowerCase()}`),
         tabBarIcon: ({ color, focused }) => {
           const ioniconsMap: Partial<Record<keyof RootTabParamList, [keyof typeof Ionicons.glyphMap, keyof typeof Ionicons.glyphMap]>> = {
             Movies: ["film-outline", "film"],
