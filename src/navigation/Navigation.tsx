@@ -112,10 +112,8 @@ export function Navigation() {
   const currentTheme = useTheme();
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const bottomInset = Math.max(insets.bottom, 12);
-  const pillHeight = 64;
-  const pillMarginBottom = bottomInset + 6;
-  const tabBarHeight = pillHeight + pillMarginBottom + 8;
+  const tabBarBottomPadding = Math.max(insets.bottom + 5, 15);
+  const tabBarHeight = 58 + tabBarBottomPadding;
 
   return (
     <Tab.Navigator
@@ -125,41 +123,23 @@ export function Navigation() {
           DETAIL_ROUTES.has(getFocusedRouteNameFromRoute(route) ?? "")
               ? { display: "none" }
             : {
-                position: "absolute",
-                left: 16,
-                right: 16,
-                bottom: pillMarginBottom,
-                height: pillHeight,
-                paddingTop: 10,
-                paddingBottom: 10,
-                paddingHorizontal: 6,
-                borderTopWidth: 1,
-                borderWidth: 1,
-                borderColor: currentTheme.colors.border,
-                borderRadius: 22,
-                elevation: 12,
-                shadowColor: "#000",
-                shadowOpacity: 0.45,
-                shadowRadius: 16,
-                shadowOffset: { width: 0, height: 8 },
-                backgroundColor: currentTheme.colors.surface
+                height: tabBarHeight,
+                paddingTop: 8,
+                paddingBottom: tabBarBottomPadding,
+                borderTopWidth: 0,
+                elevation: 0,
+                backgroundColor: currentTheme.colors.background
               })
-        },
-        tabBarItemStyle: {
-          paddingVertical: 0,
-          height: pillHeight - 20
         },
         headerShown: false,
         freezeOnBlur: true,
         tabBarActiveTintColor: currentTheme.colors.primary,
-        tabBarInactiveTintColor: currentTheme.colors.textTertiary,
+        tabBarInactiveTintColor: currentTheme.colors.textSecondary,
         tabBarLabelStyle: {
           fontFamily: currentTheme.typography.MetaSmall.fontFamily,
-          fontSize: 10,
-          lineHeight: 12,
-          letterSpacing: 0.6,
-          textTransform: "uppercase",
-          marginTop: 2
+          fontSize: currentTheme.typography.MetaSmall.fontSize,
+          lineHeight: currentTheme.typography.MetaSmall.lineHeight,
+          letterSpacing: 0.2
         },
         tabBarLabel: t(`nav.${route.name.toLowerCase()}`),
         tabBarIcon: ({ color, focused }) => {
