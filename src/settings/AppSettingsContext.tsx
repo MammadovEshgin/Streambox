@@ -11,12 +11,14 @@ import {
 } from "react";
 
 import { enqueueProfileAssetSync, enqueueProfileSettingsSync } from "../services/userDataSync";
+import type { AppLanguage } from "../localization/types";
 import { createTheme, DEFAULT_THEME_ID, type AppTheme, type ThemeId } from "../theme/Theme";
 import {
   APP_SETTINGS_STORAGE_KEY,
   DEFAULT_PROFILE_NAME,
   createDefaultSettings,
   normalizeSettings,
+  type PersonaPresentation,
   type PersistedSettings,
 } from "./settingsStorage";
 
@@ -26,6 +28,8 @@ export { APP_SETTINGS_STORAGE_KEY, DEFAULT_PROFILE_NAME } from "./settingsStorag
 type AppSettingsContextValue = {
   activeTheme: AppTheme;
   themeId: ThemeId;
+  language: AppLanguage;
+  personaPresentation: PersonaPresentation;
   profileName: string;
   profileBio: string;
   profileLocation: string;
@@ -33,9 +37,13 @@ type AppSettingsContextValue = {
   joinedDate: string;
   profileImageUri: string | null;
   bannerImageUri: string | null;
+  profileImageVersion: number;
+  bannerImageVersion: number;
   isReady: boolean;
   storageRevision: number;
   setThemeId: (themeId: ThemeId) => Promise<void>;
+  setLanguage: (language: AppLanguage) => Promise<void>;
+  setPersonaPresentation: (personaPresentation: PersonaPresentation) => Promise<void>;
   setProfileName: (profileName: string) => Promise<void>;
   setProfileBio: (bio: string) => Promise<void>;
   setProfileLocation: (location: string) => Promise<void>;
@@ -118,8 +126,22 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
         auditMetadata?: Record<string, unknown>;
       }
     ) => {
+      let baseSettings = settingsRef.current;
+
+      try {
+        const persistedRaw = await AsyncStorage.getItem(APP_SETTINGS_STORAGE_KEY);
+        if (persistedRaw) {
+          baseSettings = normalizeSettings(
+            JSON.parse(persistedRaw) as Partial<PersistedSettings>,
+            DEFAULT_THEME_ID
+          );
+        }
+      } catch {
+        // Fall back to the in-memory snapshot if disk state is unavailable.
+      }
+
       const next: PersistedSettings = {
-        ...settingsRef.current,
+        ...baseSettings,
         ...partial,
       };
 
@@ -139,6 +161,17 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
 
   const setThemeId = useCallback(async (themeId: ThemeId) => {
     await persist({ themeId }, { auditMetadata: { source: "theme_picker" } });
+  }, [persist]);
+
+  const setLanguage = useCallback(async (language: AppLanguage) => {
+    await persist({ language }, { auditMetadata: { source: "language_picker", fields: ["language"] } });
+  }, [persist]);
+
+  const setPersonaPresentation = useCallback(async (personaPresentation: PersonaPresentation) => {
+    await persist(
+      { personaPresentation },
+      { auditMetadata: { source: "persona_picker", fields: ["personaPresentation"] } }
+    );
   }, [persist]);
 
   const setProfileName = useCallback(async (profileName: string) => {
@@ -194,7 +227,13 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
 
   const setProfileImageUri = useCallback(async (profileImageUri: string | null) => {
     const previousSettings = settingsRef.current;
-    await persist({ profileImageUri }, { syncRemote: false });
+    await persist(
+      {
+        profileImageUri,
+        profileImageVersion: Math.max(previousSettings.profileImageVersion, 0) + 1,
+      },
+      { syncRemote: false }
+    );
     void enqueueProfileAssetSync(
       "avatar",
       profileImageUri,
@@ -205,7 +244,13 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
 
   const setBannerImageUri = useCallback(async (bannerImageUri: string | null) => {
     const previousSettings = settingsRef.current;
-    await persist({ bannerImageUri }, { syncRemote: false });
+    await persist(
+      {
+        bannerImageUri,
+        bannerImageVersion: Math.max(previousSettings.bannerImageVersion, 0) + 1,
+      },
+      { syncRemote: false }
+    );
     void enqueueProfileAssetSync(
       "banner",
       bannerImageUri,
@@ -222,6 +267,8 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
   const value = useMemo<AppSettingsContextValue>(() => ({
     activeTheme: createTheme(settings.themeId),
     themeId: settings.themeId,
+    language: settings.language,
+    personaPresentation: settings.personaPresentation,
     profileName: settings.profileName,
     profileBio: settings.profileBio,
     profileLocation: settings.profileLocation,
@@ -229,9 +276,13 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
     joinedDate: settings.joinedDate,
     profileImageUri: settings.profileImageUri,
     bannerImageUri: settings.bannerImageUri,
+    profileImageVersion: settings.profileImageVersion,
+    bannerImageVersion: settings.bannerImageVersion,
     isReady,
     storageRevision,
     setThemeId,
+    setLanguage,
+    setPersonaPresentation,
     setProfileName,
     setProfileBio,
     setProfileLocation,
@@ -254,6 +305,8 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
     setProfileLocation,
     setProfileName,
     setThemeId,
+    setLanguage,
+    setPersonaPresentation,
     settings,
     storageRevision,
     updateProfile,

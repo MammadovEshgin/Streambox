@@ -2,8 +2,10 @@ import { Feather } from "@expo/vector-icons";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ScrollView } from "react-native";
+import type { ImageSourcePropType } from "react-native";
 import Animated, {
   Easing,
   FadeInDown,
@@ -30,26 +32,45 @@ import {
   getSeriesExternalRatings,
   getSeriesSeasonEpisodes,
   getSeriesTrailerUrl,
+  getQuickSimilarSeries,
   getSmartSimilarSeries,
   getTmdbSeasonEpisodeFallbackImages,
   getTmdbImageUrl
 } from "../api/tmdb";
+import { isValidMediaItemArray } from "../api/mediaFormatting";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { RatingServiceIcon } from "../components/common/RatingServiceIcon";
 import { CastCrewSection } from "../components/detail/CastCrewSection";
 import { DetailHeader } from "../components/detail/DetailHeader";
 import { MetaPill } from "../components/detail/MetaPill";
-import { SeriesWatchedModal } from "../components/detail/SeriesWatchedModal";
 import {
-  formatWatchedDateLabel,
-  normalizeWatchedDate,
+  SeriesWatchedModal,
+  type SeriesSeasonWatchedDraft,
+} from "../components/detail/SeriesWatchedModal";
+import {
+  formatWatchHistoryEntryLabel,
+  normalizeWatchedMonth,
 } from "../components/detail/WatchedDateModal";
 import { MediaCard } from "../components/home/MediaCard";
+import { getWatchedStampImage } from "../constants/imageAssets";
+import { formatLocalizedMonthDayYear } from "../localization/format";
 import { useLikedSeries } from "../hooks/useLikedSeries";
 import { useWatchHistory } from "../hooks/useWatchHistory";
 import { useWatchedEpisodes } from "../hooks/useWatchedEpisodes";
 import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
 import { HomeStackParamList } from "../navigation/types";
+import {
+  readPersistedRuntimeCache,
+  readRuntimeCache,
+  writePersistedRuntimeCache,
+} from "../services/runtimeCache";
+import { useAppSettings } from "../settings/AppSettingsContext";
+
+const SERIES_SIMILAR_CACHE_PREFIX = "series-detail-similar-v1";
+
+function getSeriesSimilarCacheKey(seriesId: string, language: string) {
+  return `${SERIES_SIMILAR_CACHE_PREFIX}:${language}:${seriesId}`;
+}
 
 const Root = styled.View`
   flex: 1;
@@ -66,26 +87,27 @@ const Body = styled.View`
   margin-top: -22px;
   border-top-left-radius: 22px;
   border-top-right-radius: 22px;
-  background-color: #000000;
+  background-color: ${({ theme }) => theme.colors.background};
   padding: 14px 16px 28px;
 `;
 
 const TopInfo = styled.View``;
 
 const DateText = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
+  color: ${({ theme }) => theme.colors.textTertiary};
+  font-family: Outfit_500Medium;
   font-size: 12px;
   line-height: 16px;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.4px;
 `;
 
 const Title = styled.Text`
   margin-top: 8px;
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 25px;
-  line-height: 30px;
-  font-weight: 800;
-  letter-spacing: -0.4px;
+  font-family: Outfit_700Bold;
+  font-size: 28px;
+  line-height: 33px;
+  letter-spacing: -0.8px;
 `;
 
 const PillsRow = styled.View`
@@ -115,15 +137,15 @@ const RatingDivider = styled.View`
   width: 1px;
   height: 18px;
   margin: 0 10px;
-  background-color: rgba(255, 255, 255, 0.14);
+  background-color: ${({ theme }) => theme.colors.glassBorder};
 `;
 
 const SourceValue = styled.Text`
   margin-left: 6px;
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
   font-size: 11px;
   line-height: 14px;
-  font-weight: 700;
   letter-spacing: 0.1px;
 `;
 
@@ -184,6 +206,7 @@ const WatchedButton = styled.Pressable<{ $active: boolean }>`
 const WatchedMetaText = styled.Text`
   margin-top: 8px;
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 12px;
   line-height: 16px;
   letter-spacing: 0.15px;
@@ -199,17 +222,27 @@ const SectionHeader = styled.View`
 
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 17px;
-  line-height: 21px;
-  font-weight: 700;
-  letter-spacing: -0.2px;
+  font-family: Outfit_700Bold;
+  font-size: 22px;
+  line-height: 28px;
+  letter-spacing: -0.6px;
+`;
+
+const SectionHint = styled.Text`
+  margin-top: -1px;
+  margin-bottom: 12px;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
+  font-size: 12px;
+  line-height: 17px;
+  letter-spacing: 0.1px;
 `;
 
 const SynopsisText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 15px;
   line-height: 23px;
-  text-align: justify;
 `;
 
 const ReadMoreButton = styled.Pressable`
@@ -219,9 +252,9 @@ const ReadMoreButton = styled.Pressable`
 
 const ReadMoreText = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_600SemiBold;
   font-size: 14px;
   line-height: 18px;
-  font-weight: 600;
 `;
 
 const SeasonSelector = styled.ScrollView.attrs({
@@ -231,18 +264,20 @@ const SeasonSelector = styled.ScrollView.attrs({
 
 const SeasonChip = styled.Pressable<{ $active: boolean }>`
   margin-right: 8px;
-  padding: 8px 12px;
+  min-height: 36px;
+  padding: 8px 14px;
   border-radius: 4px;
   border-width: 1px;
-  border-color: ${({ $active, theme }) => ($active ? theme.colors.primary : "rgba(255,255,255,0.12)")};
-  background-color: ${({ $active }) => ($active ? "rgba(255,77,0,0.14)" : "rgba(255,255,255,0.04)")};
+  border-color: ${({ $active, theme }) => ($active ? theme.colors.primaryMuted : theme.colors.glassBorder)};
+  background-color: ${({ $active, theme }) => ($active ? theme.colors.primarySoft : theme.colors.glassFill)};
+  justify-content: center;
 `;
 
 const SeasonChipText = styled.Text<{ $active: boolean }>`
   color: ${({ $active, theme }) => ($active ? theme.colors.primary : theme.colors.textPrimary)};
+  font-family: Outfit_600SemiBold;
   font-size: 12px;
-  line-height: 15px;
-  font-weight: 600;
+  line-height: 16px;
   letter-spacing: 0.2px;
 `;
 
@@ -252,12 +287,12 @@ const EpisodesWrap = styled.View`
 
 const EpisodeCard = styled.View`
   height: 112px;
-  border-radius: 10px;
+  border-radius: 14px;
   padding: 0;
   margin-bottom: 10px;
-  background-color: rgba(255, 255, 255, 0.04);
+  background-color: ${({ theme }) => theme.colors.glassFill};
   border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.07);
+  border-color: ${({ theme }) => theme.colors.glassBorder};
   overflow: hidden;
 `;
 
@@ -274,9 +309,9 @@ const EpisodeRow = styled.View`
 const EpisodeStillWrap = styled.View`
   width: 136px;
   align-self: stretch;
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
   border-right-width: 1px;
-  border-right-color: rgba(255, 255, 255, 0.08);
+  border-right-color: ${({ theme }) => theme.colors.glassBorder};
 `;
 
 const EpisodeStill = styled.Image`
@@ -292,6 +327,7 @@ const EpisodeStillPlaceholder = styled.View`
 
 const EpisodeStillPlaceholderText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_500Medium;
   font-size: 9px;
   letter-spacing: 0.25px;
   text-transform: uppercase;
@@ -311,9 +347,9 @@ const EpisodeHead = styled.View`
 
 const EpisodeName = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
   font-size: 13px;
   line-height: 16px;
-  font-weight: 700;
   letter-spacing: -0.1px;
   flex: 1;
   margin-right: 8px;
@@ -321,6 +357,7 @@ const EpisodeName = styled.Text`
 
 const EpisodeMeta = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_500Medium;
   font-size: 10px;
   line-height: 13px;
 `;
@@ -328,6 +365,7 @@ const EpisodeMeta = styled.Text`
 const EpisodeOverview = styled.Text`
   margin-top: 4px;
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 11px;
   line-height: 16px;
 `;
@@ -335,6 +373,7 @@ const EpisodeOverview = styled.Text`
 const EmptyEpisodes = styled.Text`
   margin-top: 12px;
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 13px;
 `;
 
@@ -386,12 +425,21 @@ interface SwipeableEpisodeCardProps {
   episode: SeriesEpisode;
   stillUri: string | null;
   isWatched: boolean;
+  watchedStampSource: ImageSourcePropType;
   onToggleWatched: () => void;
   onPress: () => void;
 }
 
-function SwipeableEpisodeCard({ episode, stillUri, isWatched, onToggleWatched, onPress }: SwipeableEpisodeCardProps) {
+function SwipeableEpisodeCard({
+  episode,
+  stillUri,
+  isWatched,
+  watchedStampSource,
+  onToggleWatched,
+  onPress,
+}: SwipeableEpisodeCardProps) {
   const currentTheme = useTheme();
+  const { t } = useTranslation();
   const translateX = useSharedValue(0);
   const isSwiping = useSharedValue(false);
 
@@ -475,15 +523,12 @@ function SwipeableEpisodeCard({ episode, stillUri, isWatched, onToggleWatched, o
                     <EpisodeStill source={{ uri: stillUri }} resizeMode="cover" />
                   ) : (
                     <EpisodeStillPlaceholder>
-                      <EpisodeStillPlaceholderText>No Still</EpisodeStillPlaceholderText>
+                      <EpisodeStillPlaceholderText>{t("common.noStill")}</EpisodeStillPlaceholderText>
                     </EpisodeStillPlaceholder>
                   )}
                   {/* Watched Stamp Overlay */}
                   {isWatched && (
-                    <StampImage
-                      source={require("../../src/assets/watched_stamp.png")}
-                      resizeMode="cover"
-                    />
+                    <StampImage source={watchedStampSource} resizeMode="cover" />
                   )}
                 </EpisodeStillWrap>
                 <EpisodeContent>
@@ -510,13 +555,14 @@ const MemoizedSwipeableEpisodeCard = React.memo(SwipeableEpisodeCard, (prev, nex
   return (
     prev.episode.id === next.episode.id &&
     prev.isWatched === next.isWatched &&
-    prev.stillUri === next.stillUri
+    prev.stillUri === next.stillUri &&
+    prev.watchedStampSource === next.watchedStampSource
   );
 });
 
-function formatDate(value: string): string {
+function formatDate(value: string, fallbackLabel: string): string {
   if (!value) {
-    return "Unknown release date";
+    return fallbackLabel;
   }
 
   const parsed = new Date(`${value}T00:00:00`);
@@ -524,11 +570,7 @@ function formatDate(value: string): string {
     return value;
   }
 
-  return parsed.toLocaleDateString("en-US", {
-    month: "long",
-    day: "numeric",
-    year: "numeric"
-  });
+  return formatLocalizedMonthDayYear(parsed);
 }
 
 function formatEpisodeMeta(item: SeriesEpisode): string {
@@ -545,12 +587,27 @@ function formatEpisodeMeta(item: SeriesEpisode): string {
   return segments.join(" | ");
 }
 
+function getSeasonEpisodeNumbers(episodeCount: number) {
+  return Array.from({ length: episodeCount }, (_, index) => index + 1);
+}
+
 export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const currentTheme = useTheme();
+  const { t } = useTranslation();
+  const { language } = useAppSettings();
+  const watchedStampImage = getWatchedStampImage(language);
   const { isEpisodeWatched, toggleEpisodeWatched, markSeasonWatched, unmarkSeasonWatched } = useWatchedEpisodes();
   const { isInWatchlist, toggleWatchlist } = useSeriesWatchlist();
   const { isLiked, toggleLikedSeries } = useLikedSeries();
-  const { getWatchHistoryEntry, saveSeriesToWatchHistory, removeFromWatchHistory } = useWatchHistory();
+  const {
+    getWatchHistoryEntry,
+    getSeriesSeasonWatchEntry,
+    getSeriesSeasonWatchEntries,
+    saveSeriesToWatchHistory,
+    saveSeriesSeasonToWatchHistory,
+    removeFromWatchHistory,
+    removeSeriesSeasonFromWatchHistory,
+  } = useWatchHistory();
   const [details, setDetails] = useState<SeriesDetails | null>(null);
   const [ratings, setRatings] = useState<SeriesExternalRatings | null>(null);
   const [similarSeries, setSimilarSeries] = useState<MediaItem[]>([]);
@@ -558,61 +615,148 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const [selectedSeasonNumber, setSelectedSeasonNumber] = useState<number | null>(null);
   const [episodes, setEpisodes] = useState<SeriesEpisode[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRelatedLoading, setIsRelatedLoading] = useState(true);
   const [isEpisodesLoading, setIsEpisodesLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSynopsisExpanded, setIsSynopsisExpanded] = useState(false);
   const [isWatchedDateModalVisible, setIsWatchedDateModalVisible] = useState(false);
   const [trailerUrl, setTrailerUrl] = useState<string | null>(null);
+  const [isTrailerLoading, setIsTrailerLoading] = useState(true);
   const loveProgress = useSharedValue(0);
+  const trailerRequestRef = useRef<Promise<string | null> | null>(null);
+  const detailRequestRef = useRef(0);
+  const reconcileSeriesWatchRef = useRef<"idle" | "saving" | "removing">("idle");
+
+  const loadTrailer = useCallback(() => {
+    setIsTrailerLoading(true);
+    const request = getSeriesTrailerUrl(route.params.seriesId)
+      .then((url) => {
+        setTrailerUrl(url);
+        setIsTrailerLoading(false);
+        return url;
+      })
+      .catch(() => {
+        setTrailerUrl(null);
+        setIsTrailerLoading(false);
+        return null;
+      });
+
+    trailerRequestRef.current = request;
+    return request;
+  }, [route.params.seriesId]);
 
   const loadSeries = useCallback(async () => {
+    const requestId = detailRequestRef.current + 1;
+    detailRequestRef.current = requestId;
+    const similarCacheKey = getSeriesSimilarCacheKey(route.params.seriesId, language);
+    const cachedSimilar = readRuntimeCache<MediaItem[]>(similarCacheKey);
+
     setIsLoading(true);
+    setIsRelatedLoading(!cachedSimilar);
     setErrorMessage(null);
+    setTrailerUrl(null);
+    setRatings(null);
+    setSimilarSeries(cachedSimilar?.value ?? []);
+    setEpisodeFallbackImages({});
+    void loadTrailer();
+    void readPersistedRuntimeCache<MediaItem[]>(similarCacheKey, {
+      validate: isValidMediaItemArray,
+    }).then((entry) => {
+      if (detailRequestRef.current !== requestId || !entry) {
+        return;
+      }
+
+      setSimilarSeries(entry.value.filter((item) => String(item.id) !== route.params.seriesId).slice(0, 12));
+      setIsRelatedLoading(false);
+    });
 
     try {
       const detailResponse = await getSeriesDetails(route.params.seriesId);
+      if (detailRequestRef.current !== requestId) {
+        return;
+      }
 
       setDetails(detailResponse);
       setSelectedSeasonNumber(detailResponse.seasons[0]?.seasonNumber ?? null);
+      setIsLoading(false);
 
-      const [ratingsResult, similarResult, fallbackResult] = await Promise.allSettled([
-        getSeriesExternalRatings(route.params.seriesId, detailResponse.imdbId),
-        getSmartSimilarSeries(route.params.seriesId, detailResponse),
-        getSeriesEpisodeFallbackImagesWithImdb(detailResponse.title, detailResponse.imdbId)
-      ]);
+      void getSeriesExternalRatings(route.params.seriesId, detailResponse.imdbId).then((ratingsResponse) => {
+        if (detailRequestRef.current !== requestId) {
+          return;
+        }
 
-      if (ratingsResult.status === "fulfilled") {
-        setRatings(ratingsResult.value);
-      } else {
-        setRatings({
-          imdb: null,
-          rottenTomatoes: null,
-          metacritic: null
-        });
-      }
+        setRatings(ratingsResponse);
+      }).catch(() => {
+        if (detailRequestRef.current === requestId) {
+          setRatings({
+            imdb: null,
+            rottenTomatoes: null,
+            metacritic: null
+          });
+        }
+      });
 
-      if (similarResult.status === "fulfilled") {
-        setSimilarSeries(
-          similarResult.value.filter((item) => String(item.id) !== route.params.seriesId).slice(0, 12)
-        );
-      } else {
-        setSimilarSeries([]);
-      }
+      void getQuickSimilarSeries(route.params.seriesId, detailResponse).then((quickSimilarResponse) => {
+        if (detailRequestRef.current !== requestId) {
+          return;
+        }
 
-      if (fallbackResult.status === "fulfilled") {
-        setEpisodeFallbackImages(fallbackResult.value);
-      } else {
-        setEpisodeFallbackImages({});
-      }
+        const quickSimilarSeries = quickSimilarResponse
+          .filter((item) => String(item.id) !== route.params.seriesId)
+          .slice(0, 12);
+        if (quickSimilarSeries.length > 0) {
+          setSimilarSeries(quickSimilarSeries);
+          setIsRelatedLoading(false);
+          void writePersistedRuntimeCache(similarCacheKey, quickSimilarSeries);
+        }
+      }).catch(() => undefined);
 
-      getSeriesTrailerUrl(route.params.seriesId).then((url) => setTrailerUrl(url));
+      void getSmartSimilarSeries(route.params.seriesId, detailResponse).then((similarResponse) => {
+        if (detailRequestRef.current !== requestId) {
+          return;
+        }
+
+        const nextSimilarSeries = similarResponse
+          .filter((item) => String(item.id) !== route.params.seriesId)
+          .slice(0, 12);
+        setSimilarSeries(nextSimilarSeries);
+        void writePersistedRuntimeCache(similarCacheKey, nextSimilarSeries);
+      }).catch(() => {
+        if (detailRequestRef.current === requestId) {
+          setSimilarSeries((current) => current);
+        }
+      }).finally(() => {
+        if (detailRequestRef.current === requestId) {
+          setIsRelatedLoading(false);
+        }
+      });
+
+      void getSeriesEpisodeFallbackImagesWithImdb(detailResponse.title, detailResponse.imdbId).then((fallbackImages) => {
+        if (detailRequestRef.current !== requestId) {
+          return;
+        }
+
+        setEpisodeFallbackImages(fallbackImages);
+      }).catch(() => {
+        if (detailRequestRef.current === requestId) {
+          setEpisodeFallbackImages({});
+        }
+      });
     } catch (error) {
+      if (detailRequestRef.current !== requestId) {
+        return;
+      }
+
       const message = error instanceof Error ? error.message : "Unable to load series details.";
       setErrorMessage(message);
+      setDetails(null);
+      setIsRelatedLoading(false);
     } finally {
-      setIsLoading(false);
+      if (detailRequestRef.current === requestId) {
+        setIsLoading(false);
+      }
     }
-  }, [route.params.seriesId]);
+  }, [language, loadTrailer, route.params.seriesId]);
 
   useEffect(() => {
     void loadSeries();
@@ -666,10 +810,10 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
     return () => {
       isCancelled = true;
     };
-  }, [details, selectedSeasonNumber]);
+  }, [details, language, selectedSeasonNumber]);
 
   const synopsisText = useMemo(() => {
-    const fullText = details?.overview || "No synopsis available.";
+    const fullText = details?.overview || t("detail.noSynopsisAvailable");
     if (isSynopsisExpanded || fullText.length <= 220) {
       return fullText;
     }
@@ -689,10 +833,67 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const currentSeriesId = details?.id ?? Number(route.params.seriesId);
   const isCurrentSeriesWatchlisted = Number.isFinite(currentSeriesId) ? isInWatchlist(currentSeriesId) : false;
   const isCurrentSeriesLiked = Number.isFinite(currentSeriesId) ? isLiked(currentSeriesId) : false;
-  const currentWatchedEntry = Number.isFinite(currentSeriesId)
+  const currentSeriesWatchEntry = Number.isFinite(currentSeriesId)
     ? getWatchHistoryEntry(currentSeriesId, "tv")
     : null;
-  const isCurrentSeriesWatched = currentWatchedEntry !== null;
+  const explicitSeasonWatchEntries = useMemo(
+    () => (details ? getSeriesSeasonWatchEntries(details.id) : []),
+    [details, getSeriesSeasonWatchEntries]
+  );
+  const trackedSeasons = useMemo(
+    () =>
+      details?.seasons.filter((season) => season.seasonNumber > 0 && season.episodeCount > 0) ?? [],
+    [details]
+  );
+  const allTrackedSeasonsWatched = useMemo(() => {
+    if (!details || trackedSeasons.length === 0) {
+      return false;
+    }
+
+    return trackedSeasons.every((season) =>
+      getSeasonEpisodeNumbers(season.episodeCount).every((episodeNumber) =>
+        isEpisodeWatched(details.id, season.seasonNumber, episodeNumber)
+      )
+    );
+  }, [details, isEpisodeWatched, trackedSeasons]);
+  const defaultSeasonWatchedMonth = useMemo(() => normalizeWatchedMonth(new Date()), []);
+  const seasonWatchDrafts = useMemo<SeriesSeasonWatchedDraft[]>(() => {
+    if (!details) {
+      return [];
+    }
+
+    return details.seasons.map((season) => {
+      const seasonEntry = getSeriesSeasonWatchEntry(details.id, season.seasonNumber);
+      const episodeNumbers = getSeasonEpisodeNumbers(season.episodeCount);
+      const isSeasonFullyWatched =
+        episodeNumbers.length > 0 &&
+        episodeNumbers.every((episodeNumber) =>
+          isEpisodeWatched(details.id, season.seasonNumber, episodeNumber)
+        );
+
+      let mode: SeriesSeasonWatchedDraft["mode"] = "unwatched";
+      if (seasonEntry?.watchPrecision === "month") {
+        mode = "month";
+      } else if (seasonEntry || isSeasonFullyWatched) {
+        mode = "undated";
+      }
+
+      return {
+        seasonNumber: season.seasonNumber,
+        mode,
+        watchedAt:
+          seasonEntry?.watchPrecision === "month"
+            ? normalizeWatchedMonth(new Date(seasonEntry.watchedAt))
+            : seasonEntry?.watchedAt ?? defaultSeasonWatchedMonth,
+      };
+    });
+  }, [defaultSeasonWatchedMonth, details, getSeriesSeasonWatchEntry, isEpisodeWatched]);
+  const watchedSeasonCount = useMemo(
+    () => seasonWatchDrafts.filter((draft) => draft.mode !== "unwatched").length,
+    [seasonWatchDrafts]
+  );
+  const isCurrentSeriesWatched =
+    watchedSeasonCount > 0 || currentSeriesWatchEntry !== null || allTrackedSeasonsWatched;
 
   const nextEpisode = useMemo(() => {
     if (!details?.seasons?.length) return null;
@@ -754,28 +955,150 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   }, []);
 
   const handleWatchedConfirm = useCallback(
-    async (allSeasonsWatched: boolean) => {
+    async (drafts: SeriesSeasonWatchedDraft[]) => {
       if (!details) return;
+
       const auditDetails = {
         title: details.title,
         imdbId: details.imdbId,
         posterPath: details.posterPath,
         year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
       };
-      if (allSeasonsWatched) {
-        await saveSeriesToWatchHistory(details, normalizeWatchedDate(new Date()), auditDetails);
-      } else if (getWatchHistoryEntry(details.id, "tv")) {
+
+      for (const season of details.seasons) {
+        const draft = drafts.find((item) => item.seasonNumber === season.seasonNumber);
+        if (!draft) {
+          continue;
+        }
+
+        const episodeNumbers = getSeasonEpisodeNumbers(season.episodeCount);
+        const hasAnyEpisodeWatched = episodeNumbers.some((episodeNumber) =>
+          isEpisodeWatched(details.id, season.seasonNumber, episodeNumber)
+        );
+        const isSeasonFullyWatched =
+          episodeNumbers.length > 0 &&
+          episodeNumbers.every((episodeNumber) =>
+            isEpisodeWatched(details.id, season.seasonNumber, episodeNumber)
+          );
+        const currentSeasonEntry = getSeriesSeasonWatchEntry(details.id, season.seasonNumber);
+
+        if (draft.mode === "unwatched") {
+          if (hasAnyEpisodeWatched) {
+            await unmarkSeasonWatched(details.id, season.seasonNumber, episodeNumbers);
+          }
+
+          if (currentSeasonEntry) {
+            await removeSeriesSeasonFromWatchHistory(details.id, season.seasonNumber, auditDetails);
+          }
+          continue;
+        }
+
+        if (!isSeasonFullyWatched) {
+          await markSeasonWatched(details.id, season.seasonNumber, episodeNumbers);
+        }
+
+        const nextPrecision = draft.mode === "month" ? "month" : "none";
+        const nextWatchedAt =
+          draft.mode === "month"
+            ? draft.watchedAt
+            : currentSeasonEntry?.watchedAt ?? Date.now();
+        const shouldUpdateSeasonEntry =
+          !currentSeasonEntry ||
+          currentSeasonEntry.watchPrecision !== nextPrecision ||
+          (nextPrecision === "month" &&
+            normalizeWatchedMonth(new Date(currentSeasonEntry.watchedAt)) !== draft.watchedAt);
+
+        if (shouldUpdateSeasonEntry) {
+          await saveSeriesSeasonToWatchHistory(
+            details,
+            season,
+            nextWatchedAt,
+            nextPrecision,
+            auditDetails
+          );
+        }
+      }
+
+      const datedOrUndatedSeasons = drafts.filter((draft) => draft.mode !== "unwatched");
+      if (datedOrUndatedSeasons.length > 0) {
+        const latestWatchedAt = datedOrUndatedSeasons.reduce((latest, draft) => {
+          const candidate = draft.mode === "month" ? draft.watchedAt : latest;
+          return Math.max(latest, candidate);
+        }, Date.now());
+        await saveSeriesToWatchHistory(details, latestWatchedAt, auditDetails, { precision: "none" });
+      } else if (currentSeriesWatchEntry) {
         await removeFromWatchHistory(details.id, "tv", auditDetails);
       }
     },
-    [details, saveSeriesToWatchHistory, removeFromWatchHistory, getWatchHistoryEntry]
+    [
+      currentSeriesWatchEntry,
+      details,
+      getSeriesSeasonWatchEntry,
+      isEpisodeWatched,
+      markSeasonWatched,
+      removeFromWatchHistory,
+      removeSeriesSeasonFromWatchHistory,
+      saveSeriesSeasonToWatchHistory,
+      saveSeriesToWatchHistory,
+      unmarkSeasonWatched,
+    ]
   );
+
+  useEffect(() => {
+    if (!details) {
+      return;
+    }
+
+    const auditDetails = {
+      title: details.title,
+      imdbId: details.imdbId,
+      posterPath: details.posterPath,
+      year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
+    };
+
+    if (allTrackedSeasonsWatched && !currentSeriesWatchEntry) {
+      if (reconcileSeriesWatchRef.current !== "idle") {
+        return;
+      }
+
+      reconcileSeriesWatchRef.current = "saving";
+      void saveSeriesToWatchHistory(details, Date.now(), auditDetails, { precision: "none" }).finally(() => {
+        reconcileSeriesWatchRef.current = "idle";
+      });
+      return;
+    }
+
+    if (
+      !allTrackedSeasonsWatched &&
+      explicitSeasonWatchEntries.length === 0 &&
+      currentSeriesWatchEntry?.watchPrecision === "none"
+    ) {
+      if (reconcileSeriesWatchRef.current !== "idle") {
+        return;
+      }
+
+      reconcileSeriesWatchRef.current = "removing";
+      void removeFromWatchHistory(details.id, "tv", auditDetails).finally(() => {
+        reconcileSeriesWatchRef.current = "idle";
+      });
+      return;
+    }
+
+    reconcileSeriesWatchRef.current = "idle";
+  }, [
+    allTrackedSeasonsWatched,
+    currentSeriesWatchEntry,
+    details,
+    explicitSeasonWatchEntries.length,
+    removeFromWatchHistory,
+    saveSeriesToWatchHistory,
+  ]);
 
   if (isLoading && !details) {
     return (
       <Root>
         <LoaderWrap>
-          <MovieLoader label="Loading series" />
+          <MovieLoader label={t("loaders.loadingSeriesDetail")} />
         </LoaderWrap>
       </Root>
     );
@@ -792,7 +1115,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
           showLikeAction={false}
         />
         <Body>
-          <ErrorText>{errorMessage ?? "No detail data available."}</ErrorText>
+          <ErrorText>{errorMessage ?? t("detail.noDetailDataAvailable")}</ErrorText>
         </Body>
       </Root>
     );
@@ -817,13 +1140,18 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
             }
           }}
           showLikeAction={false}
-          showTrailerAction={!!trailerUrl}
-          onTrailer={() => {
+          showTrailerAction={isTrailerLoading || !!trailerUrl}
+          onTrailer={async () => {
+            const resolvedTrailerUrl = trailerUrl ?? await (trailerRequestRef.current ?? loadTrailer());
+            if (!resolvedTrailerUrl) {
+              return;
+            }
+
             navigation.navigate("Player", {
               mediaType: "tv",
               tmdbId: String(details.id),
               title: `${details.title} - Trailer`,
-              trailerUrl: trailerUrl!,
+              trailerUrl: resolvedTrailerUrl,
               year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
             });
           }}
@@ -832,12 +1160,12 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
         <Body>
           <Animated.View entering={FadeInDown.duration(420).delay(70)}>
             <TopInfo>
-              <DateText>{formatDate(details.firstAirDate)}</DateText>
+              <DateText>{formatDate(details.firstAirDate, t("detail.unknownReleaseDate"))}</DateText>
               <Title numberOfLines={2}>{details.title}</Title>
 
               <PillsRow>
-                <MetaPill label={`${details.numberOfSeasons} Seasons`} />
-                <MetaPill label={`${details.numberOfEpisodes} Episodes`} />
+                <MetaPill label={t("detail.seasonsCount", { count: details.numberOfSeasons })} />
+                <MetaPill label={t("detail.episodesCount", { count: details.numberOfEpisodes })} />
                 {details.genres.slice(0, 2).map((genre) => (
                   <MetaPill key={genre} label={genre} />
                 ))}
@@ -903,7 +1231,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                       >
                         <Feather name="play-circle" size={20} color="#FFFFFF" />
                         <TopWatchButtonText>
-                          {nextEpisode ? `Watch S${nextEpisode.season} E${nextEpisode.episode}` : "Watch Now"}
+                          {nextEpisode ? t("detail.watchEpisode", { season: nextEpisode.season, episode: nextEpisode.episode }) : t("common.watchNow")}
                         </TopWatchButtonText>
                       </TopWatchButton>
                     </PrimaryActionWrap>
@@ -915,8 +1243,10 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                       />
                     </WatchedButton>
                   </ActionRow>
-                  {currentWatchedEntry ? (
-                    <WatchedMetaText>Watched on {formatWatchedDateLabel(currentWatchedEntry.watchedAt)}</WatchedMetaText>
+                  {watchedSeasonCount > 0 ? (
+                    <WatchedMetaText>{t("detail.seasonsMarkedWatched", { count: watchedSeasonCount })}</WatchedMetaText>
+                  ) : currentSeriesWatchEntry ? (
+                    <WatchedMetaText>{formatWatchHistoryEntryLabel(currentSeriesWatchEntry, t)}</WatchedMetaText>
                   ) : null}
                 </WatchNowWrap>
               </Animated.View>
@@ -925,7 +1255,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
 
           <Animated.View entering={FadeInDown.duration(420).delay(130)}>
             <SectionHeader>
-              <SectionTitle>Synopsis</SectionTitle>
+              <SectionTitle>{t("detail.synopsis")}</SectionTitle>
             </SectionHeader>
             <SynopsisText>{synopsisText}</SynopsisText>
             {canExpandSynopsis ? (
@@ -934,15 +1264,16 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                   setIsSynopsisExpanded((previous) => !previous);
                 }}
               >
-                <ReadMoreText>{isSynopsisExpanded ? "Read less" : "Read more"}</ReadMoreText>
+                <ReadMoreText>{isSynopsisExpanded ? t("common.readLess") : t("common.readMore")}</ReadMoreText>
               </ReadMoreButton>
             ) : null}
           </Animated.View>
 
           <Animated.View entering={FadeInDown.duration(420).delay(170)}>
             <SectionHeader>
-              <SectionTitle>Seasons & Episodes</SectionTitle>
+              <SectionTitle>{t("detail.seasonsEpisodes")}</SectionTitle>
             </SectionHeader>
+            <SectionHint>{t("detail.episodeSwipeHint")}</SectionHint>
             <SeasonSelector>
               {details.seasons.map((season) => {
                 const isActive = season.seasonNumber === selectedSeasonNumber;
@@ -955,7 +1286,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                     }}
                   >
                     <SeasonChipText $active={isActive}>
-                      {season.name || `Season ${season.seasonNumber}`}
+                      {season.name || t("detail.seasonLabel", { number: season.seasonNumber })}
                     </SeasonChipText>
                   </SeasonChip>
                 );
@@ -971,7 +1302,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                 {isEpisodesLoading ? (
                   <MovieLoader size={28} />
                 ) : episodes.length === 0 ? (
-                  <EmptyEpisodes>No episodes available for this season.</EmptyEpisodes>
+                  <EmptyEpisodes>{t("detail.noEpisodesForSeason")}</EmptyEpisodes>
                 ) : (
                   (() => {
                     const selectedSeason = details.seasons.find(
@@ -992,6 +1323,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                           episode={episode}
                           stillUri={stillUri}
                           isWatched={isEpisodeWatched(details.id, episode.seasonNumber, episode.episodeNumber)}
+                          watchedStampSource={watchedStampImage}
                           onToggleWatched={() => {
                             toggleEpisodeWatched(details.id, episode.seasonNumber, episode.episodeNumber);
                           }}
@@ -1018,7 +1350,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
 
           <Animated.View entering={FadeInDown.duration(420).delay(210)}>
             <SectionHeader>
-              <SectionTitle>Cast & Crew</SectionTitle>
+              <SectionTitle>{t("detail.castCrew")}</SectionTitle>
             </SectionHeader>
             <CastWrap>
               <CastCrewSection
@@ -1036,16 +1368,23 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
 
           <Animated.View entering={FadeInDown.duration(420).delay(250)}>
             <SectionHeader>
-              <SectionTitle>Similar Series</SectionTitle>
+              <SectionTitle>{t("detail.similarSeries")}</SectionTitle>
             </SectionHeader>
             <SimilarWrap>
-              <FlashList
-                data={similarSeries}
-                horizontal
-                keyExtractor={(item) => String(item.id)}
-                renderItem={renderSimilarItem}
-                showsHorizontalScrollIndicator={false}
-              />
+              {isRelatedLoading && similarSeries.length === 0 ? (
+                <LoaderWrap>
+                  <MovieLoader size={28} />
+                </LoaderWrap>
+              ) : (
+                <FlashList
+                  data={similarSeries}
+                  horizontal
+                  keyExtractor={(item) => String(item.id)}
+                  renderItem={renderSimilarItem}
+                  showsHorizontalScrollIndicator={false}
+                  removeClippedSubviews
+                />
+              )}
             </SimilarWrap>
           </Animated.View>
         </Body>
@@ -1054,11 +1393,8 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
         visible={isWatchedDateModalVisible}
         seriesTitle={details.title}
         seasons={details.seasons}
-        seriesId={details.id}
-        isEpisodeWatched={isEpisodeWatched}
-        markSeasonWatched={markSeasonWatched}
-        unmarkSeasonWatched={unmarkSeasonWatched}
-        onConfirm={handleWatchedConfirm}
+        initialDrafts={seasonWatchDrafts}
+        onSave={handleWatchedConfirm}
         onClose={handleCloseWatchedDateModal}
       />
     </Root>

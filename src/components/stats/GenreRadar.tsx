@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import Svg, { Circle, Line, Polygon, Text as SvgText, TSpan } from "react-native-svg";
 import styled, { useTheme } from "styled-components/native";
 
@@ -13,7 +14,6 @@ const RadarWrap = styled.View`
 
 type Props = {
   history: WatchHistoryEntry[];
-  onGenrePress?: (genre: string) => void;
 };
 
 const SIZE = 296;
@@ -52,8 +52,9 @@ function getLabelAnchor(x: number): "start" | "middle" | "end" {
   return "middle";
 }
 
-export function GenreRadar({ history, onGenrePress }: Props) {
+export function GenreRadar({ history }: Props) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const { genres, values, dominantGenre, dominantShare } = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const entry of history) {
@@ -98,7 +99,7 @@ export function GenreRadar({ history, onGenrePress }: Props) {
     .join(" ");
 
   return (
-    <StatsSection title="Genre Radar" subtitle="A visual map of how your top genres compare.">
+    <StatsSection title={t("stats.genreRadarTitle")} subtitle={t("stats.genreRadarSubtitle")}>
       <RadarWrap>
         <Svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
           {[0.33, 0.66, 1].map((pct) => (
@@ -140,11 +141,11 @@ export function GenreRadar({ history, onGenrePress }: Props) {
 
       <SectionGrid>
         <MiniPanel>
-          <DataMeta style={{ textAlign: "center" }}>Dominant</DataMeta>
+          <DataMeta style={{ textAlign: "center" }}>{t("stats.dominant")}</DataMeta>
           <DataLabel style={{ marginTop: 6, textAlign: "center" }}>{dominantGenre ?? "-"}</DataLabel>
         </MiniPanel>
         <MiniPanel>
-          <DataMeta style={{ textAlign: "center" }}>Share</DataMeta>
+          <DataMeta style={{ textAlign: "center" }}>{t("stats.share")}</DataMeta>
           <DataLabel style={{ marginTop: 6, textAlign: "center" }}>{dominantShare}%</DataLabel>
         </MiniPanel>
       </SectionGrid>

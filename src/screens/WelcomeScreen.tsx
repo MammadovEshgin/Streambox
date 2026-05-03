@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Pressable } from "react-native";
 import Animated, {
   FadeIn,
@@ -15,9 +16,9 @@ import Animated, {
   Easing,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import styled, { useTheme } from "styled-components/native";
+import styled from "styled-components/native";
 
-import { onboardingPreviewImage } from "../assets/images";
+import { onboardingPreviewImage } from "../constants/imageAssets";
 
 type WelcomeScreenProps = {
   onContinue: () => void;
@@ -143,7 +144,7 @@ const AppPreviewImage = styled.Image`
 `;
 
 const MiddleSpace = styled.View`
-  flex: 0.7;
+  flex: 0.55;
 `;
 
 const CopyBlock = styled(Animated.View)`
@@ -155,66 +156,66 @@ const CopyBlock = styled(Animated.View)`
 const Title = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
   font-family: ${({ theme }) => theme.typography.Display.fontFamily};
-  font-size: 36px;
-  line-height: 42px;
-  letter-spacing: -1.2px;
+  font-size: 26px;
+  line-height: 31px;
+  letter-spacing: -0.8px;
   text-align: center;
-  max-width: 320px;
+  max-width: 268px;
 `;
 
 const TitleAccent = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
   font-family: ${({ theme }) => theme.typography.Display.fontFamily};
-  font-size: 36px;
-  line-height: 42px;
-  letter-spacing: -1.2px;
+  font-size: 26px;
+  line-height: 31px;
+  letter-spacing: -0.8px;
   text-align: center;
 `;
 
 const Description = styled(Animated.Text)`
-  margin-top: 14px;
+  margin-top: 10px;
   color: ${({ theme }) => theme.colors.textSecondary};
   font-family: ${({ theme }) => theme.typography.BodyMedium.fontFamily};
-  font-size: 15px;
-  line-height: 24px;
+  font-size: 13px;
+  line-height: 20px;
   text-align: center;
-  max-width: 290px;
+  max-width: 254px;
 `;
 
 const BottomSpace = styled.View`
-  flex: 0.8;
+  flex: 0.52;
 `;
 
 const Footer = styled(Animated.View)`
   align-items: center;
   justify-content: center;
-  min-height: 56px;
+  min-height: 50px;
 `;
 
 const StartButton = styled(Pressable)`
   align-items: center;
   justify-content: center;
-  min-height: 56px;
-  min-width: 190px;
+  min-height: 48px;
+  min-width: 164px;
   flex-direction: row;
-  gap: 12px;
+  gap: 10px;
   border-radius: 99px;
   background-color: ${({ theme }) => theme.colors.primary};
-  padding: 0 32px;
+  padding: 0 24px;
 `;
 
 const StartText = styled.Text`
   color: #ffffff;
   font-family: ${({ theme }) => theme.typography.Button.fontFamily};
-  font-size: 16px;
-  letter-spacing: 0.3px;
+  font-size: 14px;
+  letter-spacing: 0.2px;
 `;
 
 const ArrowWrap = styled(Animated.View)``;
 
 export function WelcomeScreen({ onContinue }: WelcomeScreenProps) {
   const insets = useSafeAreaInsets();
-  const theme = useTheme();
+  const { t } = useTranslation();
 
   // Floating device animation
   const deviceFloat = useSharedValue(0);
@@ -302,7 +303,7 @@ export function WelcomeScreen({ onContinue }: WelcomeScreenProps) {
             <Device entering={FadeInDown.duration(600).springify().damping(14)} style={deviceStyle}>
               <DeviceScreen colors={["#20140E", "#100D0A", "#090807"]}>
                 <TopBar>
-                  <TopTitle>Welcome to</TopTitle>
+                  <TopTitle>{t("welcome.topTitle")}</TopTitle>
                 </TopBar>
 
                 <HeroCard>
@@ -326,11 +327,11 @@ export function WelcomeScreen({ onContinue }: WelcomeScreenProps) {
 
         <CopyBlock entering={FadeInUp.duration(500).delay(300)}>
           <Title>
-            Stream Movies and Series.{"\n"}
-            <TitleAccent>All in One App.</TitleAccent>
+            {t("welcome.headline")}{"\n"}
+            <TitleAccent>{t("welcome.headlineAccent")}</TitleAccent>
           </Title>
           <Description entering={FadeIn.duration(600).delay(600)}>
-            Discover, watch, and track thousands of movies and series with personalized recommendations and detailed insights.
+            {t("welcome.description")}
           </Description>
         </CopyBlock>
 
@@ -341,7 +342,7 @@ export function WelcomeScreen({ onContinue }: WelcomeScreenProps) {
             onPress={onContinue}
             style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.98 : 1 }] }]}
           >
-            <StartText>Get Started</StartText>
+            <StartText>{t("welcome.cta")}</StartText>
             <ArrowWrap style={arrowStyle}>
               <Feather name="arrow-right" size={18} color="#FFFFFF" />
             </ArrowWrap>

@@ -2,26 +2,49 @@ import { Feather } from "@expo/vector-icons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useIsFocused } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Dimensions, FlatList, ListRenderItemInfo } from "react-native";
+import { useTranslation } from "react-i18next";
+import { Dimensions, FlatList, ListRenderItemInfo, Modal, Pressable, TouchableWithoutFeedback } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
 import {
+  GENRE_ID_MAP,
   MediaItem,
   MediaType,
   getTmdbImageUrl,
   getMovieSummary,
   getSeriesSummary
 } from "../api/tmdb";
+import { formatRating } from "../api/mediaFormatting";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { useLikedMovies } from "../hooks/useLikedMovies";
 import { useLikedSeries } from "../hooks/useLikedSeries";
 import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
-import { useWatchHistory } from "../hooks/useWatchHistory";
+import { useWatchHistory, type WatchHistoryEntry } from "../hooks/useWatchHistory";
 import { useWatchlist } from "../hooks/useWatchlist";
+import { normalizeAppLanguage, type AppLanguage } from "../localization/types";
 import type { ProfileStackParamList } from "../navigation/types";
 
 type Props = NativeStackScreenProps<ProfileStackParamList, "ProfileSeeAll">;
+type ProfileShelfSort = "recent" | "rating" | "year" | "title";
+type ProfileShelfFilters = {
+  sortBy: ProfileShelfSort;
+  genre: string | null;
+};
+type ProfileShelfRecord = {
+  item: MediaItem;
+  order: number;
+  watchedAt?: number;
+  genres: string[];
+};
+
+const DEFAULT_SHELF_FILTERS: ProfileShelfFilters = {
+  sortBy: "recent",
+  genre: null,
+};
+
+const PROFILE_SHELF_SORT_OPTIONS: readonly ProfileShelfSort[] = ["recent", "rating", "year", "title"];
 
 const NUM_COLUMNS = 3;
 const HORIZONTAL_PADDING = 16;
@@ -58,7 +81,13 @@ const ScreenTitle = styled.Text`
 
 const ToggleRow = styled.View`
   flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
   padding: 0 16px 12px;
+`;
+
+const ToggleGroup = styled.View`
+  flex-direction: row;
   gap: 8px;
 `;
 
@@ -79,6 +108,17 @@ const ToggleLabel = styled.Text<{ $active: boolean }>`
   line-height: 15px;
   font-weight: 600;
   letter-spacing: 0.2px;
+`;
+
+const FilterIconButton = styled.Pressable<{ $active: boolean }>`
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border-width: 1px;
+  border-color: ${({ $active, theme }) => ($active ? `${theme.colors.primary}40` : theme.colors.border)};
+  background-color: ${({ $active, theme }) => ($active ? theme.colors.primarySoftStrong : theme.colors.surfaceRaised)};
+  align-items: center;
+  justify-content: center;
 `;
 
 const GridWrap = styled.View`
@@ -174,44 +214,213 @@ const LoadingWrap = styled.View`
   justify-content: center;
 `;
 
+const FilterSheetOverlay = styled.View`
+  flex: 1;
+  background-color: rgba(0, 0, 0, 0.74);
+  justify-content: flex-end;
+`;
+
+const FilterSheet = styled.View`
+  border-top-left-radius: 24px;
+  border-top-right-radius: 24px;
+  background-color: ${({ theme }) => theme.colors.surface};
+  border-top-width: 1px;
+  border-left-width: 1px;
+  border-right-width: 1px;
+  border-color: ${({ theme }) => theme.colors.border};
+  padding: 12px 18px 18px;
+`;
+
+const FilterSheetHandle = styled.View`
+  width: 42px;
+  height: 4px;
+  border-radius: 999px;
+  align-self: center;
+  background-color: rgba(255, 255, 255, 0.16);
+`;
+
+const FilterSheetTitle = styled.Text`
+  margin-top: 18px;
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 700;
+  letter-spacing: -0.35px;
+`;
+
+const FilterSheetSubtitle = styled.Text`
+  margin-top: 8px;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-size: 13px;
+  line-height: 19px;
+`;
+
+const FilterSection = styled.View`
+  margin-top: 22px;
+`;
+
+const FilterSectionLabel = styled.Text`
+  margin-bottom: 12px;
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+`;
+
+const FilterChipWrap = styled.View`
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+`;
+
+const FilterChip = styled.Pressable<{ $active: boolean }>`
+  padding: 8px 12px;
+  border-radius: 999px;
+  border-width: 1px;
+  border-color: ${({ $active, theme }) => ($active ? `${theme.colors.primary}4D` : theme.colors.border)};
+  background-color: ${({ $active, theme }) => ($active ? theme.colors.primarySoftStrong : theme.colors.surfaceRaised)};
+`;
+
+const FilterChipText = styled.Text<{ $active: boolean }>`
+  color: ${({ $active, theme }) => ($active ? theme.colors.primary : theme.colors.textSecondary)};
+  font-size: 12px;
+  line-height: 15px;
+  font-weight: 500;
+`;
+
+const FilterSheetEmpty = styled.Text`
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-size: 12px;
+  line-height: 17px;
+`;
+
+const FilterSheetFooter = styled.View`
+  margin-top: 24px;
+  flex-direction: row;
+  gap: 10px;
+`;
+
+const FilterFooterButton = styled.Pressable<{ $primary?: boolean }>`
+  flex: 1;
+  min-height: 46px;
+  border-radius: 12px;
+  align-items: center;
+  justify-content: center;
+  border-width: 1px;
+  border-color: ${({ $primary, theme }) => ($primary ? theme.colors.primary : theme.colors.border)};
+  background-color: ${({ $primary, theme }) => ($primary ? theme.colors.primarySoftStrong : theme.colors.surfaceRaised)};
+`;
+
+const FilterFooterLabel = styled.Text<{ $primary?: boolean }>`
+  color: ${({ $primary, theme }) => ($primary ? theme.colors.primary : theme.colors.textPrimary)};
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 600;
+`;
+
 // ---------------------------------------------------------------------------
 // Hydration
 // ---------------------------------------------------------------------------
 
 type Cache = Map<string, MediaItem>;
 
-import { getAzClassicMovieSummary } from "../api/azClassics";
-
-async function hydrateList(ids: (number | string)[], type: MediaType, cache: Cache): Promise<MediaItem[]> {
-  const items: MediaItem[] = [];
+async function hydrateList(
+  ids: (number | string)[],
+  type: MediaType,
+  cache: Cache,
+  language: AppLanguage
+): Promise<MediaItem[]> {
   const fetcher = type === "movie" ? getMovieSummary : getSeriesSummary;
 
-  await Promise.all(
+  const items = await Promise.all(
     ids.map(async (id) => {
-      const key = `${type}-${id}`;
+      const key = `${language}:${type}-${id}`;
       if (cache.has(key)) {
-        items.push(cache.get(key)!);
-        return;
+        return cache.get(key) ?? null;
       }
       try {
-        let item: MediaItem | null = null;
-        if (typeof id === "string" && id.includes("-")) {
-          item = await getAzClassicMovieSummary(id);
-        } else {
-          item = await fetcher(Number(id));
+        const numericId = Number(id);
+        if (!Number.isFinite(numericId)) {
+          return null;
         }
+        const item = await fetcher(numericId);
 
         if (item) {
           cache.set(key, item);
-          items.push(item);
         }
+        return item;
       } catch {
-        // skip
+        return null;
       }
     })
   );
 
-  return items;
+  return items.filter((item): item is MediaItem => item !== null);
+}
+
+function deriveGenresFromMediaItem(item: MediaItem): string[] {
+  return (item.genreIds ?? [])
+    .map((genreId) => GENRE_ID_MAP[genreId])
+    .filter((genreName): genreName is string => typeof genreName === "string" && genreName.length > 0);
+}
+
+function buildHydratedShelfRecords(items: MediaItem[]): ProfileShelfRecord[] {
+  return items.map((item, index) => ({
+    item,
+    order: index,
+    genres: deriveGenresFromMediaItem(item),
+  }));
+}
+
+function getWatchHistoryMediaId(entry: WatchHistoryEntry) {
+  const sourceId = entry.sourceTmdbId ?? entry.id;
+  const numericId = Number(sourceId);
+
+  if (!Number.isFinite(numericId)) {
+    return null;
+  }
+
+  return sourceId;
+}
+
+function getAvailableGenres(records: ProfileShelfRecord[]) {
+  return Array.from(new Set(records.flatMap((record) => record.genres))).sort((left, right) =>
+    left.localeCompare(right)
+  );
+}
+
+function applyShelfFilters(records: ProfileShelfRecord[], filters: ProfileShelfFilters): MediaItem[] {
+  let next = filters.genre
+    ? records.filter((record) => record.genres.includes(filters.genre ?? ""))
+    : records.slice();
+
+  switch (filters.sortBy) {
+    case "rating":
+      next.sort((left, right) => (right.item.rating ?? 0) - (left.item.rating ?? 0));
+      break;
+    case "year":
+      next.sort((left, right) => Number(right.item.year || 0) - Number(left.item.year || 0));
+      break;
+    case "title":
+      next.sort((left, right) => left.item.title.localeCompare(right.item.title));
+      break;
+    case "recent":
+    default:
+      next.sort((left, right) => {
+        if (typeof left.watchedAt === "number" || typeof right.watchedAt === "number") {
+          return (right.watchedAt ?? 0) - (left.watchedAt ?? 0);
+        }
+        return left.order - right.order;
+      });
+      break;
+  }
+
+  return next.map((record) => record.item);
+}
+
+function isShelfFilterActive(filters: ProfileShelfFilters) {
+  return filters.sortBy !== DEFAULT_SHELF_FILTERS.sortBy || filters.genre !== DEFAULT_SHELF_FILTERS.genre;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,12 +429,21 @@ async function hydrateList(ids: (number | string)[], type: MediaType, cache: Cac
 
 export function ProfileSeeAllScreen({ route, navigation }: Props) {
   const { section, filter: initialFilter } = route.params;
+  const { t, i18n: translationI18n } = useTranslation();
   const currentTheme = useTheme();
   const isFocused = useIsFocused();
+  const insets = useSafeAreaInsets();
+  const resolvedContentLanguage = useMemo(
+    () => normalizeAppLanguage(translationI18n.resolvedLanguage ?? translationI18n.language),
+    [translationI18n.language, translationI18n.resolvedLanguage]
+  );
 
   const [filter, setFilter] = useState<"movie" | "tv">(initialFilter);
   const [items, setItems] = useState<MediaItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [filters, setFilters] = useState<ProfileShelfFilters>(DEFAULT_SHELF_FILTERS);
+  const [draftFilters, setDraftFilters] = useState<ProfileShelfFilters>(DEFAULT_SHELF_FILTERS);
+  const [filterVisible, setFilterVisible] = useState(false);
 
   const cacheRef = useRef<Cache>(new Map());
 
@@ -245,6 +463,11 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
     }
   }, [isFocused, reloadWl, reloadSwl, reloadLm, reloadLs, reloadWh]);
 
+  useEffect(() => {
+    setFilters(DEFAULT_SHELF_FILTERS);
+    setDraftFilters(DEFAULT_SHELF_FILTERS);
+  }, [filter, section]);
+
   const ids = useMemo(() => {
     if (section === "watched") return [];
     if (section === "watchlist") {
@@ -254,29 +477,59 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
   }, [section, filter, movieWatchlist, seriesWatchlist, likedMovies, likedSeries]);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (section === "watched") {
       const mediaType: MediaType = filter === "tv" ? "tv" : "movie";
-      const watchedItems: MediaItem[] = watchHistory
-        .filter((e) => e.mediaType === mediaType)
-        .map((e) => ({
-          id: e.id,
-          title: e.title,
-          posterPath: e.posterPath,
-          backdropPath: null,
-          rating: e.voteAverage,
-          overview: "",
-          year: e.year,
-          mediaType: e.mediaType,
-        }));
-      setItems(watchedItems);
+      const watchedEntries = watchHistory.filter((entry) => entry.mediaType === mediaType);
+      const watchedIds = Array.from(
+        new Set(
+          watchedEntries
+            .map(getWatchHistoryMediaId)
+            .filter((id): id is number | string => id !== null)
+        )
+      );
+
+      setIsLoading(true);
+      hydrateList(watchedIds, mediaType, cacheRef.current, resolvedContentLanguage).then((localizedItems) => {
+        if (cancelled) {
+          return;
+        }
+
+        const localizedById = new Map(localizedItems.map((item) => [String(item.id), item]));
+        const watchedItems: MediaItem[] = watchedEntries.map((entry) => {
+          const sourceId = getWatchHistoryMediaId(entry);
+          const localizedItem = sourceId === null ? null : localizedById.get(String(sourceId)) ?? null;
+
+          return {
+            id: sourceId ?? entry.id,
+            title: localizedItem?.title ?? entry.title,
+            posterPath: localizedItem?.posterPath ?? entry.posterPath,
+            backdropPath: localizedItem?.backdropPath ?? null,
+            rating: localizedItem?.rating ?? entry.voteAverage,
+            overview: localizedItem?.overview ?? "",
+            year: localizedItem?.year ?? entry.year,
+            mediaType: entry.mediaType,
+            genreIds: localizedItem?.genreIds,
+          };
+        });
+
+        setItems(watchedItems);
+        setIsLoading(false);
+      });
+
+      return () => { cancelled = true; };
+    }
+
+    if (ids.length === 0) {
+      setItems([]);
       setIsLoading(false);
       return;
     }
 
-    let cancelled = false;
     setIsLoading(true);
 
-    hydrateList(ids, filter === "movie" ? "movie" : "tv", cacheRef.current).then((result) => {
+    hydrateList(ids, filter === "movie" ? "movie" : "tv", cacheRef.current, resolvedContentLanguage).then((result) => {
       if (!cancelled) {
         setItems(result);
         setIsLoading(false);
@@ -284,16 +537,87 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
     });
 
     return () => { cancelled = true; };
-  }, [ids, filter, section, watchHistory]);
+  }, [ids, filter, resolvedContentLanguage, section, watchHistory]);
+
+  const shelfRecords = useMemo<ProfileShelfRecord[]>(() => {
+    if (section === "watched") {
+      const watchedEntries = watchHistory.filter((entry) => entry.mediaType === (filter === "tv" ? "tv" : "movie"));
+      const watchedMeta = new Map(
+        watchedEntries.map((entry) => [String(getWatchHistoryMediaId(entry) ?? entry.id), entry])
+      );
+
+      return items.map((item, index) => {
+        const entry = watchedMeta.get(String(item.id));
+        return {
+          item,
+          order: index,
+          watchedAt: entry?.watchedAt,
+          genres: deriveGenresFromMediaItem(item),
+        };
+      });
+    }
+
+    return buildHydratedShelfRecords(items);
+  }, [filter, items, section, watchHistory]);
+
+  const genreOptions = useMemo(() => getAvailableGenres(shelfRecords), [shelfRecords]);
+
+  useEffect(() => {
+    if (filters.genre && !genreOptions.includes(filters.genre)) {
+      setFilters((current) => ({ ...current, genre: null }));
+    }
+  }, [filters.genre, genreOptions]);
+
+  useEffect(() => {
+    if (draftFilters.genre && !genreOptions.includes(draftFilters.genre)) {
+      setDraftFilters((current) => ({ ...current, genre: null }));
+    }
+  }, [draftFilters.genre, genreOptions]);
+
+  const filteredItems = useMemo(() => applyShelfFilters(shelfRecords, filters), [filters, shelfRecords]);
+
+  const handleOpenFilters = useCallback(() => {
+    setDraftFilters(filters);
+    setFilterVisible(true);
+  }, [filters]);
+
+  const handleCloseFilters = useCallback(() => {
+    setFilterVisible(false);
+    setDraftFilters(filters);
+  }, [filters]);
+
+  const handleApplyFilters = useCallback(() => {
+    setFilters(draftFilters);
+    setFilterVisible(false);
+  }, [draftFilters]);
+
+  const handleResetFilters = useCallback(() => {
+    setDraftFilters(DEFAULT_SHELF_FILTERS);
+    setFilters(DEFAULT_SHELF_FILTERS);
+    setFilterVisible(false);
+  }, []);
+
+  const getSortLabel = useCallback(
+    (sortOption: ProfileShelfSort) => {
+      switch (sortOption) {
+        case "rating":
+          return t("profile.sortHighestRated");
+        case "year":
+          return t("profile.sortNewestYear");
+        case "title":
+          return t("profile.sortTitleAZ");
+        case "recent":
+        default:
+          return t("profile.sortRecentlyAdded");
+      }
+    },
+    [t]
+  );
 
   const handlePressItem = useCallback(
     (item: MediaItem) => {
       if (item.mediaType === "movie") {
-        if (typeof item.id === "string" && item.id.includes("-")) {
-          navigation.navigate("AzClassicDetail", { movieId: item.id });
-        } else {
-          navigation.navigate("MovieDetail", { movieId: String(item.id) });
-        }
+        navigation.navigate("MovieDetail", { movieId: String(item.id) });
       } else {
         navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
       }
@@ -314,13 +638,13 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
               <PosterImage source={{ uri: posterUri }} resizeMode="cover" />
             ) : (
               <NoImage>
-                <NoImageText>No Image</NoImageText>
+                <NoImageText>{t("common.noImage")}</NoImageText>
               </NoImage>
             )}
-            {typeof item.id !== "string" && !item.imdbId?.startsWith("az-") && (
+            {typeof item.id !== "string" && (
               <Badge>
                 <Feather name="star" size={10} color="#FFD700" style={{ marginRight: 3 }} />
-                <BadgeValue>{item.rating.toFixed(1)}</BadgeValue>
+                <BadgeValue>{formatRating(item.rating)}</BadgeValue>
               </Badge>
             )}
           </PosterFrame>
@@ -329,12 +653,17 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
         </CardRoot>
       );
     },
-    [handlePressItem]
+    [handlePressItem, t]
   );
 
   const keyExtractor = useCallback((item: MediaItem) => `${item.mediaType}-${item.id}`, []);
 
-  const title = section === "watchlist" ? "Watchlist" : section === "liked" ? "Liked" : "Watched";
+  const title = section === "watchlist" ? t("profile.watchlist") : section === "liked" ? t("profile.liked") : t("profile.watched");
+  const emptyText = section === "watchlist"
+    ? (filter === "movie" ? t("profile.noMoviesInWatchlist") : t("profile.noSeriesInWatchlist"))
+    : section === "liked"
+      ? (filter === "movie" ? t("profile.noMoviesLikedYet") : t("profile.noSeriesLikedYet"))
+      : (filter === "movie" ? t("profile.noMoviesWatchedYet") : t("profile.noSeriesWatchedYet"));
 
   return (
     <SafeContainer>
@@ -346,31 +675,40 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
       </HeaderRow>
 
       <ToggleRow>
-        <ToggleChip $active={filter === "movie"} onPress={() => setFilter("movie")}>
-          <ToggleLabel $active={filter === "movie"}>Movies</ToggleLabel>
-        </ToggleChip>
-        <ToggleChip $active={filter === "tv"} onPress={() => setFilter("tv")}>
-          <ToggleLabel $active={filter === "tv"}>Series</ToggleLabel>
-        </ToggleChip>
+        <ToggleGroup>
+          <ToggleChip $active={filter === "movie"} onPress={() => setFilter("movie")}>
+            <ToggleLabel $active={filter === "movie"}>{t("common.movies")}</ToggleLabel>
+          </ToggleChip>
+          <ToggleChip $active={filter === "tv"} onPress={() => setFilter("tv")}>
+            <ToggleLabel $active={filter === "tv"}>{t("common.series")}</ToggleLabel>
+          </ToggleChip>
+        </ToggleGroup>
+        <FilterIconButton $active={isShelfFilterActive(filters)} onPress={handleOpenFilters}>
+          <Feather
+            name="sliders"
+            size={15}
+            color={isShelfFilterActive(filters) ? currentTheme.colors.primary : currentTheme.colors.textSecondary}
+          />
+        </FilterIconButton>
       </ToggleRow>
 
       {isLoading ? (
         <LoadingWrap>
-          <MovieLoader size={44} label="Loading..." />
+          <MovieLoader size={44} label={t("common.loading")} />
         </LoadingWrap>
-      ) : items.length === 0 ? (
+      ) : filteredItems.length === 0 ? (
         <EmptyWrap>
           <Feather
             name={section === "watchlist" ? "bookmark" : section === "liked" ? "heart" : "play-circle"}
             size={32}
             color={currentTheme.colors.textSecondary}
           />
-          <EmptyText>No {filter === "movie" ? "movies" : "series"} yet</EmptyText>
+          <EmptyText>{emptyText}</EmptyText>
         </EmptyWrap>
       ) : (
         <GridWrap>
           <FlatList
-            data={items}
+            data={filteredItems}
             numColumns={NUM_COLUMNS}
             keyExtractor={keyExtractor}
             renderItem={renderItem}
@@ -379,6 +717,79 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
           />
         </GridWrap>
       )}
+
+      <Modal visible={filterVisible} transparent animationType="fade" statusBarTranslucent>
+        <TouchableWithoutFeedback onPress={handleCloseFilters}>
+          <FilterSheetOverlay>
+            <TouchableWithoutFeedback onPress={() => undefined}>
+              <FilterSheet style={{ paddingBottom: Math.max(insets.bottom, 16) }}>
+                <FilterSheetHandle />
+                <FilterSheetTitle>{t("profile.filterSheetTitle")}</FilterSheetTitle>
+                <FilterSheetSubtitle>
+                  {section === "watched"
+                    ? t("profile.filterWatchedDescription")
+                    : section === "watchlist"
+                      ? t("profile.filterWatchlistDescription")
+                      : t("profile.filterLikedDescription")}
+                </FilterSheetSubtitle>
+
+                <FilterSection>
+                  <FilterSectionLabel>{t("profile.sortBy")}</FilterSectionLabel>
+                  <FilterChipWrap>
+                    {PROFILE_SHELF_SORT_OPTIONS.map((sortOption) => (
+                      <FilterChip
+                        key={sortOption}
+                        $active={draftFilters.sortBy === sortOption}
+                        onPress={() => setDraftFilters((current) => ({ ...current, sortBy: sortOption }))}
+                      >
+                        <FilterChipText $active={draftFilters.sortBy === sortOption}>
+                          {getSortLabel(sortOption)}
+                        </FilterChipText>
+                      </FilterChip>
+                    ))}
+                  </FilterChipWrap>
+                </FilterSection>
+
+                <FilterSection>
+                  <FilterSectionLabel>{t("profile.genreFilterTitle")}</FilterSectionLabel>
+                  {genreOptions.length > 0 ? (
+                    <FilterChipWrap>
+                      <FilterChip
+                        $active={draftFilters.genre === null}
+                        onPress={() => setDraftFilters((current) => ({ ...current, genre: null }))}
+                      >
+                        <FilterChipText $active={draftFilters.genre === null}>
+                          {t("profile.allGenres")}
+                        </FilterChipText>
+                      </FilterChip>
+                      {genreOptions.map((genre) => (
+                        <FilterChip
+                          key={genre}
+                          $active={draftFilters.genre === genre}
+                          onPress={() => setDraftFilters((current) => ({ ...current, genre }))}
+                        >
+                          <FilterChipText $active={draftFilters.genre === genre}>{genre}</FilterChipText>
+                        </FilterChip>
+                      ))}
+                    </FilterChipWrap>
+                  ) : (
+                    <FilterSheetEmpty>{t("profile.noGenreFiltersAvailable")}</FilterSheetEmpty>
+                  )}
+                </FilterSection>
+
+                <FilterSheetFooter>
+                  <FilterFooterButton onPress={handleResetFilters}>
+                    <FilterFooterLabel>{t("profile.resetFilters")}</FilterFooterLabel>
+                  </FilterFooterButton>
+                  <FilterFooterButton $primary={true} onPress={handleApplyFilters}>
+                    <FilterFooterLabel $primary={true}>{t("profile.applyFilters")}</FilterFooterLabel>
+                  </FilterFooterButton>
+                </FilterSheetFooter>
+              </FilterSheet>
+            </TouchableWithoutFeedback>
+          </FilterSheetOverlay>
+        </TouchableWithoutFeedback>
+      </Modal>
     </SafeContainer>
   );
 }

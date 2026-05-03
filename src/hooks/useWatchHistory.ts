@@ -8,6 +8,7 @@ import {
   type MediaType,
   type MovieDetails,
   type SeriesDetails,
+  type SeriesSeason,
 } from "../api/tmdb";
 import { useAppSettings } from "../settings/AppSettingsContext";
 import {
@@ -18,11 +19,17 @@ import {
 } from "../services/userDataSync";
 import { WATCH_HISTORY_STORAGE_KEY } from "../services/userDataStorage";
 
-const METADATA_VERSION = 4;
+const METADATA_VERSION = 5;
+
+export type WatchPrecision = "day" | "month" | "none";
+export type WatchHistoryKind = "title" | "season";
 
 export type WatchHistoryEntry = {
   id: number | string;
+  sourceTmdbId: number | null;
   mediaType: MediaType;
+  historyKind: WatchHistoryKind;
+  seasonNumber: number | null;
   title: string;
   posterPath: string | null;
   genres: string[];
@@ -38,6 +45,7 @@ export type WatchHistoryEntry = {
   directorNames: string[];
   directorProfilePaths: (string | null)[];
   watchedAt: number;
+  watchPrecision: WatchPrecision;
   metadataVersion: number;
 };
 
@@ -67,10 +75,55 @@ function topDirectors(directors: { id: number; name: string; profilePath: string
   };
 }
 
+function normalizeWatchPrecision(value: unknown): WatchPrecision {
+  if (value === "month") return "month";
+  if (value === "none") return "none";
+  return "day";
+}
+
+function normalizeWatchHistoryKind(value: unknown): WatchHistoryKind {
+  return value === "season" ? "season" : "title";
+}
+
+function buildSeriesSeasonInternalId(seriesId: number, seasonNumber: number) {
+  return `series-season:${seriesId}:${seasonNumber}`;
+}
+
+export function buildSeriesSeasonWatchTitle(seriesTitle: string, seasonName: string | null, seasonNumber: number) {
+  const normalizedSeasonName = seasonName?.trim();
+  if (normalizedSeasonName && normalizedSeasonName.length > 0) {
+    return `${seriesTitle} - ${normalizedSeasonName}`;
+  }
+
+  return `${seriesTitle} - Season ${seasonNumber}`;
+}
+
+function resolveSourceTmdbId(entry: Pick<WatchHistoryEntry, "id" | "sourceTmdbId">) {
+  if (typeof entry.sourceTmdbId === "number" && Number.isFinite(entry.sourceTmdbId) && entry.sourceTmdbId > 0) {
+    return entry.sourceTmdbId;
+  }
+
+  return typeof entry.id === "number" && Number.isFinite(entry.id) ? entry.id : null;
+}
+
 function normalizeStoredEntry(entry: StoredEntry): WatchHistoryEntry {
+  const historyKind = normalizeWatchHistoryKind(entry.historyKind);
+  const sourceTmdbId =
+    typeof entry.sourceTmdbId === "number" && Number.isFinite(entry.sourceTmdbId)
+      ? entry.sourceTmdbId
+      : typeof entry.id === "number" && Number.isFinite(entry.id)
+        ? entry.id
+        : null;
+
   return {
     id: entry.id,
+    sourceTmdbId,
     mediaType: entry.mediaType,
+    historyKind,
+    seasonNumber:
+      typeof entry.seasonNumber === "number" && Number.isFinite(entry.seasonNumber)
+        ? entry.seasonNumber
+        : null,
     title: entry.title,
     posterPath: entry.posterPath ?? null,
     genres: Array.isArray(entry.genres) ? entry.genres : [],
@@ -86,14 +139,22 @@ function normalizeStoredEntry(entry: StoredEntry): WatchHistoryEntry {
     directorNames: Array.isArray(entry.directorNames) ? entry.directorNames : [],
     directorProfilePaths: Array.isArray(entry.directorProfilePaths) ? entry.directorProfilePaths : [],
     watchedAt: entry.watchedAt,
+    watchPrecision: normalizeWatchPrecision(entry.watchPrecision),
     metadataVersion: typeof entry.metadataVersion === "number" ? entry.metadataVersion : 1,
   };
 }
 
-function buildMovieWatchEntry(details: MovieDetails, watchedAt: number): WatchHistoryEntry {
+function buildMovieWatchEntry(
+  details: MovieDetails,
+  watchedAt: number,
+  watchPrecision: WatchPrecision
+): WatchHistoryEntry {
   return {
     id: details.id,
+    sourceTmdbId: details.id,
     mediaType: "movie",
+    historyKind: "title",
+    seasonNumber: null,
     title: details.title,
     posterPath: details.posterPath,
     genres: details.genres,
@@ -104,14 +165,22 @@ function buildMovieWatchEntry(details: MovieDetails, watchedAt: number): WatchHi
     ...topCast(details.cast),
     ...topDirectors(details.directors),
     watchedAt,
+    watchPrecision,
     metadataVersion: METADATA_VERSION,
   };
 }
 
-function buildSeriesWatchEntry(details: SeriesDetails, watchedAt: number): WatchHistoryEntry {
+function buildSeriesWatchEntry(
+  details: SeriesDetails,
+  watchedAt: number,
+  watchPrecision: WatchPrecision
+): WatchHistoryEntry {
   return {
     id: details.id,
+    sourceTmdbId: details.id,
     mediaType: "tv",
+    historyKind: "title",
+    seasonNumber: null,
     title: details.title,
     posterPath: details.posterPath,
     genres: details.genres,
@@ -122,35 +191,44 @@ function buildSeriesWatchEntry(details: SeriesDetails, watchedAt: number): Watch
     ...topCast(details.cast),
     ...topDirectors(details.directors),
     watchedAt,
+    watchPrecision,
     metadataVersion: METADATA_VERSION,
   };
 }
 
-function buildAzClassicWatchEntry(details: any, watchedAt: number): WatchHistoryEntry {
+function buildSeriesSeasonWatchEntry(
+  details: SeriesDetails,
+  season: SeriesSeason,
+  watchedAt: number,
+  watchPrecision: WatchPrecision
+): WatchHistoryEntry {
   return {
-    id: details.id,
-    mediaType: "movie",
-    title: details.title,
-    posterPath: details.posterUrl || details.posterPath || null,
-    genres: details.genre ? [details.genre] : (details.genres || []),
-    runtimeMinutes: details.runtimeMinutes || null,
-    episodeCount: null,
-    voteAverage: details.voteAverage || 0,
-    year: String(details.year || ""),
-    castIds: [],
-    castNames: Array.isArray(details.cast) ? details.cast.map((c: any) => c.name) : [],
-    castProfilePaths: Array.isArray(details.cast) ? details.cast.map((c: any) => c.photoUrl || null) : [],
-    castGenders: [],
-    directorIds: [],
-    directorNames: Array.isArray(details.crew) ? details.crew.filter((c: any) => c.role?.toLowerCase().includes("rejissor") || c.role?.toLowerCase().includes("director")).map((c: any) => c.name) : [],
-    directorProfilePaths: [],
+    id: buildSeriesSeasonInternalId(details.id, season.seasonNumber),
+    sourceTmdbId: details.id,
+    mediaType: "tv",
+    historyKind: "season",
+    seasonNumber: season.seasonNumber,
+    title: buildSeriesSeasonWatchTitle(details.title, season.name ?? null, season.seasonNumber),
+    posterPath: season.posterPath ?? details.posterPath,
+    genres: details.genres,
+    runtimeMinutes: details.episodeRuntimeMinutes,
+    episodeCount: season.episodeCount,
+    voteAverage: details.voteAverage,
+    year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : "",
+    ...topCast(details.cast),
+    ...topDirectors(details.directors),
     watchedAt,
+    watchPrecision,
     metadataVersion: METADATA_VERSION,
   };
+}
+
+function getSortTimestamp(entry: WatchHistoryEntry) {
+  return entry.watchedAt;
 }
 
 function sortEntries(entries: WatchHistoryEntry[]) {
-  return [...entries].sort((left, right) => right.watchedAt - left.watchedAt);
+  return [...entries].sort((left, right) => getSortTimestamp(right) - getSortTimestamp(left));
 }
 
 export function useWatchHistory() {
@@ -159,7 +237,13 @@ export function useWatchHistory() {
   const { notifyStorageChanged, storageRevision } = useAppSettings();
 
   const enrichEntry = useCallback(async (entry: WatchHistoryEntry): Promise<WatchHistoryEntry> => {
-    // Skip enrichment for internal media (string IDs)
+    if (entry.historyKind === "season") {
+      return {
+        ...entry,
+        metadataVersion: METADATA_VERSION,
+      };
+    }
+
     if (typeof entry.id === "string") {
       return {
         ...entry,
@@ -249,65 +333,85 @@ export function useWatchHistory() {
     void loadEntries();
   }, [loadEntries, storageRevision]);
 
-  const persistEntries = useCallback(async (nextEntries: WatchHistoryEntry[]) => {
-    const sorted = sortEntries(nextEntries);
-    setEntries(sorted);
-    await AsyncStorage.setItem(WATCH_HISTORY_STORAGE_KEY, JSON.stringify(sorted));
-    notifyStorageChanged();
-  }, [notifyStorageChanged]);
+  const persistEntries = useCallback(
+    async (nextEntries: WatchHistoryEntry[]) => {
+      const sorted = sortEntries(nextEntries);
+      setEntries(sorted);
+      await AsyncStorage.setItem(WATCH_HISTORY_STORAGE_KEY, JSON.stringify(sorted));
+      notifyStorageChanged();
+    },
+    [notifyStorageChanged]
+  );
 
-  const saveMovieToWatchHistory = useCallback(
-    async (details: MovieDetails, watchedAt: number, auditDetails?: UserMediaSyncDetails | null) => {
-      const nextEntry = buildMovieWatchEntry(details, watchedAt);
-      const filtered = entries.filter((entry) => !(entry.id === details.id && entry.mediaType === "movie"));
+  const upsertWatchHistoryEntry = useCallback(
+    async (nextEntry: WatchHistoryEntry, auditDetails?: UserMediaSyncDetails | null) => {
+      const filtered = entries.filter(
+        (entry) => !(entry.id === nextEntry.id && entry.mediaType === nextEntry.mediaType)
+      );
       const nextEntries = [nextEntry, ...filtered];
       await persistEntries(nextEntries);
-      await enqueueWatchHistoryUpsert(nextEntry, {
+      await enqueueWatchHistoryUpsert(nextEntry, auditDetails ?? {});
+      await syncCurrentWatchHistoryToSupabase(nextEntries);
+    },
+    [entries, persistEntries]
+  );
+
+  const saveMovieToWatchHistory = useCallback(
+    async (
+      details: MovieDetails,
+      watchedAt: number,
+      auditDetails?: UserMediaSyncDetails | null,
+      options?: { precision?: WatchPrecision }
+    ) => {
+      const nextEntry = buildMovieWatchEntry(details, watchedAt, options?.precision ?? "day");
+      await upsertWatchHistoryEntry(nextEntry, {
         title: details.title,
         imdbId: details.imdbId,
         posterPath: details.posterPath,
         year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
         ...auditDetails,
       });
-      await syncCurrentWatchHistoryToSupabase(nextEntries);
     },
-    [entries, persistEntries]
+    [upsertWatchHistoryEntry]
   );
 
   const saveSeriesToWatchHistory = useCallback(
-    async (details: SeriesDetails, watchedAt: number, auditDetails?: UserMediaSyncDetails | null) => {
-      const nextEntry = buildSeriesWatchEntry(details, watchedAt);
-      const filtered = entries.filter((entry) => !(entry.id === details.id && entry.mediaType === "tv"));
-      const nextEntries = [nextEntry, ...filtered];
-      await persistEntries(nextEntries);
-      await enqueueWatchHistoryUpsert(nextEntry, {
+    async (
+      details: SeriesDetails,
+      watchedAt: number,
+      auditDetails?: UserMediaSyncDetails | null,
+      options?: { precision?: WatchPrecision }
+    ) => {
+      const nextEntry = buildSeriesWatchEntry(details, watchedAt, options?.precision ?? "day");
+      await upsertWatchHistoryEntry(nextEntry, {
         title: details.title,
         imdbId: details.imdbId,
         posterPath: details.posterPath,
         year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
         ...auditDetails,
       });
-      await syncCurrentWatchHistoryToSupabase(nextEntries);
     },
-    [entries, persistEntries]
+    [upsertWatchHistoryEntry]
   );
 
-  const saveAzClassicToWatchHistory = useCallback(
-    async (details: any, watchedAt: number, auditDetails?: UserMediaSyncDetails | null) => {
-      const nextEntry = buildAzClassicWatchEntry(details, watchedAt);
-      const filtered = entries.filter((entry) => !(entry.id === details.id && entry.mediaType === "movie"));
-      const nextEntries = [nextEntry, ...filtered];
-      await persistEntries(nextEntries);
-      await enqueueWatchHistoryUpsert(nextEntry, {
-        title: details.title,
-        imdbId: details.imdbId || null,
-        posterPath: details.posterUrl || details.posterPath || null,
-        year: String(details.year || ""),
+  const saveSeriesSeasonToWatchHistory = useCallback(
+    async (
+      details: SeriesDetails,
+      season: SeriesSeason,
+      watchedAt: number,
+      watchPrecision: Extract<WatchPrecision, "month" | "none">,
+      auditDetails?: UserMediaSyncDetails | null
+    ) => {
+      const nextEntry = buildSeriesSeasonWatchEntry(details, season, watchedAt, watchPrecision);
+      await upsertWatchHistoryEntry(nextEntry, {
+        title: nextEntry.title,
+        imdbId: details.imdbId,
+        posterPath: nextEntry.posterPath,
+        year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
         ...auditDetails,
       });
-      await syncCurrentWatchHistoryToSupabase(nextEntries);
     },
-    [entries, persistEntries]
+    [upsertWatchHistoryEntry]
   );
 
   const removeFromWatchHistory = useCallback(
@@ -320,40 +424,120 @@ export function useWatchHistory() {
     [entries, persistEntries]
   );
 
+  const removeSeriesSeasonFromWatchHistory = useCallback(
+    async (
+      seriesId: number,
+      seasonNumber: number,
+      auditDetails?: UserMediaSyncDetails | null
+    ) => {
+      await removeFromWatchHistory(buildSeriesSeasonInternalId(seriesId, seasonNumber), "tv", auditDetails);
+    },
+    [removeFromWatchHistory]
+  );
+
+  const titleHistory = useMemo(
+    () => sortEntries(entries.filter((entry) => entry.historyKind === "title")),
+    [entries]
+  );
+
+  const activityHistory = useMemo(
+    () =>
+      sortEntries(
+        entries.filter((entry) => {
+          if (entry.watchPrecision === "none") {
+            return false;
+          }
+
+          if (entry.mediaType === "movie") {
+            return true;
+          }
+
+          return entry.historyKind === "season";
+        })
+      ),
+    [entries]
+  );
+
   const getWatchHistoryEntry = useCallback(
-    (id: number | string, mediaType: MediaType) => entries.find((entry) => entry.id === id && entry.mediaType === mediaType) ?? null,
+    (id: number | string, mediaType: MediaType) =>
+      titleHistory.find((entry) => entry.id === id && entry.mediaType === mediaType) ?? null,
+    [titleHistory]
+  );
+
+  const getSeriesSeasonWatchEntry = useCallback(
+    (seriesId: number, seasonNumber: number) =>
+      entries.find(
+        (entry) =>
+          entry.mediaType === "tv" &&
+          entry.historyKind === "season" &&
+          resolveSourceTmdbId(entry) === seriesId &&
+          entry.seasonNumber === seasonNumber
+      ) ?? null,
+    [entries]
+  );
+
+  const getSeriesSeasonWatchEntries = useCallback(
+    (seriesId: number) =>
+      sortEntries(
+        entries.filter(
+          (entry) =>
+            entry.mediaType === "tv" &&
+            entry.historyKind === "season" &&
+            resolveSourceTmdbId(entry) === seriesId
+        )
+      ),
     [entries]
   );
 
   const isWatched = useCallback(
-    (id: number | string, mediaType: MediaType) => entries.some((entry) => entry.id === id && entry.mediaType === mediaType),
+    (id: number | string, mediaType: MediaType) => {
+      if (mediaType === "movie") {
+        return entries.some((entry) => entry.mediaType === "movie" && entry.id === id);
+      }
+
+      if (typeof id === "number") {
+        return entries.some(
+          (entry) => entry.mediaType === "tv" && resolveSourceTmdbId(entry) === id
+        );
+      }
+
+      return entries.some((entry) => entry.mediaType === "tv" && entry.id === id);
+    },
     [entries]
   );
 
-  const history = useMemo(() => sortEntries(entries), [entries]);
-
   return useMemo(
     () => ({
-      history,
+      history: titleHistory,
+      rawHistory: sortEntries(entries),
+      activityHistory,
       isLoading,
       isWatched,
       getWatchHistoryEntry,
+      getSeriesSeasonWatchEntry,
+      getSeriesSeasonWatchEntries,
       saveMovieToWatchHistory,
       saveSeriesToWatchHistory,
-      saveAzClassicToWatchHistory,
+      saveSeriesSeasonToWatchHistory,
       removeFromWatchHistory,
+      removeSeriesSeasonFromWatchHistory,
       reload: loadEntries,
     }),
     [
+      activityHistory,
+      entries,
+      getSeriesSeasonWatchEntries,
+      getSeriesSeasonWatchEntry,
       getWatchHistoryEntry,
-      history,
       isLoading,
       isWatched,
       loadEntries,
       removeFromWatchHistory,
+      removeSeriesSeasonFromWatchHistory,
       saveMovieToWatchHistory,
+      saveSeriesSeasonToWatchHistory,
       saveSeriesToWatchHistory,
-      saveAzClassicToWatchHistory,
+      titleHistory,
     ]
   );
 }

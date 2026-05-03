@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Animated, Dimensions, InteractionManager, LayoutChangeEvent, ScrollView } from "react-native";
 import styled, { useTheme } from "styled-components/native";
 
@@ -14,7 +15,7 @@ import {
   toggleFranchiseEntryWatched,
 } from "../api/franchises";
 import { getMovieDetails, getSeriesDetails } from "../api/tmdb";
-import { resolveFranchiseImageUriBlocking, warmFranchiseImageCache } from "../services/franchisePosterCache";
+import { prefetchRemoteImages } from "../services/remoteImageCache";
 import { TimelinePath, NodeRect } from "../components/franchise/TimelinePath";
 import { TimelineNode, POSTER_WIDTH, POSTER_HEIGHT, NODE_FULL_WIDTH } from "../components/franchise/TimelineNode";
 import { ProgressRing } from "../components/franchise/ProgressRing";
@@ -23,21 +24,27 @@ import { SafeContainer } from "../components/common/SafeContainer";
 import { HomeStackParamList } from "../navigation/types";
 import { useAuth } from "../context/AuthContext";
 import { useWatchHistory } from "../hooks/useWatchHistory";
+import {
+  formatFranchiseCollectionTitle,
+  getCachedLocalizedFranchiseCopy,
+  getLocalizedFranchiseCopy,
+} from "../services/franchiseLocalization";
+import { useAppSettings } from "../settings/AppSettingsContext";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
 // Layout constants
 const NODE_LEFT_MARGIN = (SCREEN_WIDTH - NODE_FULL_WIDTH) / 2;
-const NODE_SPACING = 206;
-const INITIAL_VISIBLE_COUNT = 12;
+const NODE_SPACING = 194;
+const INITIAL_VISIBLE_COUNT = 8;
 
 const Root = styled.View`
   flex: 1;
-  background-color: #111114;
+  background-color: ${({ theme }) => theme.colors.background};
 `;
 
 const Header = styled.View`
-  padding: 8px 16px 6px;
+  padding: 10px 16px 8px;
   flex-direction: row;
   align-items: center;
 `;
@@ -45,10 +52,12 @@ const Header = styled.View`
 const BackButton = styled.Pressable`
   width: 34px;
   height: 34px;
-  border-radius: 10px;
+  border-radius: 3px;
   align-items: center;
   justify-content: center;
-  background-color: rgba(255, 255, 255, 0.06);
+  background-color: ${({ theme }) => theme.colors.glassFill};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
 `;
 
 const HeaderTextWrap = styled.View`
@@ -75,14 +84,14 @@ const HeaderSubtitle = styled.Text`
 
 // ── Progress Banner ─────────────────────────────────────────────────────
 const ProgressBanner = styled.View`
-  margin: 8px 16px 4px;
-  padding: 16px 18px;
-  border-radius: 16px;
+  margin: 8px 16px 10px;
+  padding: 14px 16px;
+  border-radius: 5px;
   flex-direction: row;
   align-items: center;
-  background-color: rgba(255, 255, 255, 0.035);
+  background-color: ${({ theme }) => theme.colors.surface};
   border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.06);
+  border-color: ${({ theme }) => theme.colors.border};
 `;
 
 const ProgressInfo = styled.View`
@@ -169,12 +178,12 @@ const ToastWrap = styled(Animated.View)`
   left: 24px;
   right: 24px;
   padding: 14px 18px;
-  border-radius: 14px;
+  border-radius: 5px;
   flex-direction: row;
   align-items: center;
-  background-color: rgba(24, 24, 27, 0.95);
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
   border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.08);
+  border-color: ${({ theme }) => theme.colors.border};
 `;
 
 const ToastText = styled.Text`
@@ -233,8 +242,10 @@ type FranchiseTimelineProps = NativeStackScreenProps<HomeStackParamList, "Franch
 export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimelineProps) {
   const { franchiseId, franchiseTitle } = route.params;
   const theme = useTheme();
+  const { t } = useTranslation();
   const { user } = useAuth();
-  const { saveMovieToWatchHistory, saveSeriesToWatchHistory, removeFromWatchHistory, isWatched: isInWatchHistory } = useWatchHistory();
+  const { language } = useAppSettings();
+  const { saveMovieToWatchHistory, saveSeriesToWatchHistory, removeFromWatchHistory } = useWatchHistory();
   const accent = theme.colors.primary;
 
   const [entries, setEntries] = useState<FranchiseEntry[]>([]);
@@ -273,6 +284,50 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
     }
     return null;
   }, [entries, watchedEntryIds]);
+  const displayFranchiseTitle = useMemo(
+    () => formatFranchiseCollectionTitle(franchiseTitle, language),
+    [franchiseTitle, language]
+  );
+  const [nextEntryDisplayTitle, setNextEntryDisplayTitle] = useState<string | null>(() => {
+    if (!nextEntry) {
+      return null;
+    }
+    return getCachedLocalizedFranchiseCopy(nextEntry, language)?.title ?? nextEntry.title;
+  });
+
+  useEffect(() => {
+    let active = true;
+
+    if (!nextEntry) {
+      setNextEntryDisplayTitle(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    const fallbackTitle = getCachedLocalizedFranchiseCopy(nextEntry, language)?.title ?? nextEntry.title;
+    setNextEntryDisplayTitle(fallbackTitle);
+
+    if (language !== "tr" || !nextEntry.tmdbId) {
+      return () => {
+        active = false;
+      };
+    }
+
+    void getLocalizedFranchiseCopy(nextEntry, language)
+      .then((copy) => {
+        if (!active || !copy?.title) {
+          return;
+        }
+
+        setNextEntryDisplayTitle(copy.title);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, [language, nextEntry]);
 
   // ── Data Loading ────────────────────────────────────────────────────
   useEffect(() => {
@@ -289,23 +344,8 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
 
         if (!active) return;
 
-        const priorityEntries = await Promise.all(
-          fetchedEntries.map(async (entry, index) => {
-            if (index >= INITIAL_VISIBLE_COUNT || !entry.posterUrl || entry.cachedPosterUrl) {
-              return entry;
-            }
-
-            return {
-              ...entry,
-              cachedPosterUrl: await resolveFranchiseImageUriBlocking(entry.posterUrl),
-            };
-          })
-        );
-
-        if (!active) return;
-
         startTransition(() => {
-          setEntries(priorityEntries);
+          setEntries(fetchedEntries);
           setProgress(fetchedProgress);
           setVisibleCount(INITIAL_VISIBLE_COUNT);
           setIsLoading(false);
@@ -372,7 +412,14 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
         }
 
         warmTask = InteractionManager.runAfterInteractions(() => {
-          void warmFranchiseImageCache(priorityEntries.map((entry) => entry.posterUrl), 10).catch(() => undefined);
+          void prefetchRemoteImages(
+            fetchedEntries
+              .filter((entry) => entry.isReleased)
+              .slice(0, 12)
+              .map((entry) => entry.posterUrl),
+            12,
+            3
+          ).catch(() => undefined);
         });
       } catch (error) {
         console.warn("Failed to load franchise timeline:", error);
@@ -427,7 +474,7 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
   const handleLongPressEntry = useCallback(
     async (entry: FranchiseEntry) => {
       if (!user) {
-        showToast("Sign in to track your progress");
+        showToast(t("franchise.signInToTrackProgress"));
         return;
       }
 
@@ -468,14 +515,14 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
 
         showToast(
           newWatched
-            ? `Marked "${entry.title}" as watched`
-            : `Unmarked "${entry.title}"`
+            ? t("franchise.markedWatched", { title: entry.title })
+            : t("franchise.unmarkedWatched", { title: entry.title })
         );
       } catch (error) {
-        showToast("Failed to update progress");
+        showToast(t("franchise.failedToUpdateProgress"));
       }
     },
-    [user, watchedEntryIds, franchiseId, showToast, saveMovieToWatchHistory, saveSeriesToWatchHistory, removeFromWatchHistory]
+    [franchiseId, removeFromWatchHistory, saveMovieToWatchHistory, saveSeriesToWatchHistory, showToast, t, user, watchedEntryIds]
   );
 
   // ── Scroll handler for lazy loading + SVG viewport culling ──────────
@@ -549,7 +596,7 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
     return (
       <SafeContainer>
         <LoadingWrap>
-          <MovieLoader label="Loading timeline" />
+          <MovieLoader label={t("franchise.loadingTimeline")} />
         </LoadingWrap>
       </SafeContainer>
     );
@@ -564,12 +611,12 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
               <Feather name="arrow-left" size={18} color="#FFFFFF" />
             </BackButton>
             <HeaderTextWrap>
-              <HeaderTitle>{franchiseTitle}</HeaderTitle>
+              <HeaderTitle>{displayFranchiseTitle}</HeaderTitle>
             </HeaderTextWrap>
           </Header>
           <EmptyWrap>
             <Feather name="film" size={36} color="rgba(255,255,255,0.2)" />
-            <EmptyText>No entries found for this franchise.</EmptyText>
+            <EmptyText>{t("franchise.noEntries")}</EmptyText>
           </EmptyWrap>
         </Root>
       </SafeContainer>
@@ -584,9 +631,9 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
             <Feather name="arrow-left" size={18} color="#FFFFFF" />
           </BackButton>
           <HeaderTextWrap>
-            <HeaderTitle numberOfLines={1}>{franchiseTitle}</HeaderTitle>
+            <HeaderTitle numberOfLines={1}>{displayFranchiseTitle}</HeaderTitle>
             <HeaderSubtitle>
-              {entries.length} titles in the journey
+              {t("franchise.titlesInJourney", { count: entries.length })}
             </HeaderSubtitle>
           </HeaderTextWrap>
         </Header>
@@ -602,16 +649,16 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
           />
           <ProgressInfo>
             <ProgressTitle>
-              {watchedCount} of {entries.length} completed
+              {t("franchise.progressCompleted", { watched: watchedCount, total: entries.length })}
             </ProgressTitle>
             <ProgressSubtitle>
               {watchedCount === entries.length
-                ? "You have completed this entire franchise"
-                : "Long press any title to mark as watched"}
+                ? t("franchise.progressCompletedSubtitleDone")
+                : t("franchise.progressCompletedSubtitleHint")}
             </ProgressSubtitle>
             {nextEntry ? (
               <NextUpRow>
-                Next up: <NextUpTitle $color={accent}>{nextEntry.title}</NextUpTitle>
+                {t("franchise.nextUp")} <NextUpTitle $color={accent}>{nextEntryDisplayTitle ?? nextEntry.title}</NextUpTitle>
               </NextUpRow>
             ) : null}
           </ProgressInfo>
@@ -657,12 +704,12 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
               <EndDivider $color={accent} />
               <EndDot $color={accent} />
               <EndTitle $color={accent}>
-                {watchedCount === entries.length ? "Journey Complete" : "End of Timeline"}
+                {watchedCount === entries.length ? t("franchise.journeyComplete") : t("franchise.endOfTimeline")}
               </EndTitle>
               <EndSubtitle>
                 {watchedCount === entries.length
-                  ? `You've experienced all ${entries.length} titles in this saga. What a ride.`
-                  : `${entries.length} titles. One epic journey. How far will you go?`}
+                  ? t("franchise.completeSagaMessage", { count: entries.length })
+                  : t("franchise.epicJourneyMessage", { count: entries.length })}
               </EndSubtitle>
             </EndOfTimelineWrap>
           )}

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Image, Pressable } from "react-native";
+import { useTranslation } from "react-i18next";
 import styled from "styled-components/native";
 
 import type { WatchHistoryEntry } from "../../hooks/useWatchHistory";
@@ -76,6 +77,7 @@ type ActorStat = {
 };
 
 export function TopActors({ history, itemLabelSingular, itemLabelPlural, onActorPress }: Props) {
+  const { t } = useTranslation();
   const [filter, setFilter] = useState<ActorFilter>("all");
 
   const topActors = useMemo(() => {
@@ -94,7 +96,7 @@ export function TopActors({ history, itemLabelSingular, itemLabelPlural, onActor
         } else {
           actorMap.set(id, {
             id,
-            name: entry.castNames[index] ?? "Unknown",
+            name: entry.castNames[index] ?? t("common.unknown"),
             profilePath: entry.castProfilePaths[index] ?? null,
             count: 1,
           });
@@ -109,26 +111,26 @@ export function TopActors({ history, itemLabelSingular, itemLabelPlural, onActor
 
   const emptyText =
     filter === "male"
-      ? "No male actors yet."
+      ? t("stats.noMaleActors")
       : filter === "female"
-        ? "No female actors yet."
-        : "No actor patterns yet.";
+        ? t("stats.noFemaleActors")
+        : t("stats.noActorPatterns");
 
   return (
     <StatsSection
-      title="Top Actors"
-      subtitle="The faces that keep showing up in your watches."
+      title={t("stats.topActorsTitle")}
+      subtitle={t("stats.topActorsSubtitle")}
       accentGlow
       action={
         <PillRow>
           <FilterChip $active={filter === "all"} onPress={() => setFilter("all")}>
-            <FilterLabel $active={filter === "all"}>All</FilterLabel>
+            <FilterLabel $active={filter === "all"}>{t("common.all")}</FilterLabel>
           </FilterChip>
           <FilterChip $active={filter === "male"} onPress={() => setFilter("male")}>
-            <FilterLabel $active={filter === "male"}>Male</FilterLabel>
+            <FilterLabel $active={filter === "male"}>{t("common.male")}</FilterLabel>
           </FilterChip>
           <FilterChip $active={filter === "female"} onPress={() => setFilter("female")}>
-            <FilterLabel $active={filter === "female"}>Female</FilterLabel>
+            <FilterLabel $active={filter === "female"}>{t("common.female")}</FilterLabel>
           </FilterChip>
         </PillRow>
       }

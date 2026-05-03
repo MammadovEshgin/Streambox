@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useCallback, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Keyboard,
@@ -14,6 +15,7 @@ import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
+import { AUTH_EMAIL_OTP_LENGTH, sanitizeAuthEmailOtp } from "../../services/authConfig";
 import {
   signOut,
   updatePassword,
@@ -27,7 +29,7 @@ type ResetPasswordScreenProps = {
   onBack: () => void;
 };
 
-const OTP_LENGTH = 8;
+const OTP_LENGTH = AUTH_EMAIL_OTP_LENGTH;
 
 const Root = styled.View`
   flex: 1;
@@ -98,11 +100,6 @@ const Subtitle = styled.Text`
   font-size: 14px;
   line-height: 20px;
   text-align: center;
-`;
-
-const EmailHighlight = styled.Text`
-  color: ${({ theme }) => theme.colors.primary};
-  font-weight: 600;
 `;
 
 const FormCard = styled.View`
@@ -236,6 +233,7 @@ const GoToLoginLabel = styled.Text`
 
 export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPasswordScreenProps) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const [otpCode, setOtpCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -258,15 +256,15 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
     setGeneralError("");
 
     if (otpCode.length !== OTP_LENGTH) {
-      setOtpError("Enter the full 8-character code");
+      setOtpError(t("auth.enterFullOtp"));
       return;
     }
     if (!passwordValidation.isValid) {
-      setPasswordError("Password doesn't meet requirements");
+      setPasswordError(t("auth.passwordRequirements"));
       return;
     }
     if (newPassword !== confirmPassword) {
-      setPasswordError("Passwords don't match");
+      setPasswordError(t("auth.passwordsDoNotMatch"));
       return;
     }
 
@@ -282,16 +280,16 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
       await signOut();
       setIsSuccess(true);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Reset failed";
+      const msg = err instanceof Error ? err.message : t("auth.resetFailed");
       if (msg.toLowerCase().includes("token") || msg.toLowerCase().includes("otp") || msg.toLowerCase().includes("expired")) {
-        setOtpError(msg.includes("expired") ? "Code expired. Request a new one." : "Invalid code");
+        setOtpError(msg.includes("expired") ? t("auth.codeExpired") : t("auth.invalidCode"));
       } else {
         setGeneralError(msg);
       }
     } finally {
       setIsSubmitting(false);
     }
-  }, [otpCode, newPassword, confirmPassword, email, passwordValidation.isValid]);
+  }, [confirmPassword, email, newPassword, otpCode, passwordValidation.isValid, t]);
 
   if (isSuccess) {
     return (
@@ -302,12 +300,12 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
             <SuccessCircle>
               <Feather name="check" size={36} color={theme.colors.primary} />
             </SuccessCircle>
-            <SuccessTitle>Password Changed</SuccessTitle>
+            <SuccessTitle>{t("auth.passwordChanged")}</SuccessTitle>
             <SuccessSubtitle>
-              Your password has been successfully updated. You can now sign in with your new password.
+              {t("auth.passwordChangedDescription")}
             </SuccessSubtitle>
             <GoToLoginButton onPress={onResetComplete}>
-              <GoToLoginLabel>Back to Sign In</GoToLoginLabel>
+              <GoToLoginLabel>{t("auth.backToSignIn")}</GoToLoginLabel>
             </GoToLoginButton>
           </SuccessWrap>
         </Inner>
@@ -336,13 +334,13 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
                   <Feather name="shield" size={28} color={theme.colors.primary} />
                 </IconCircle>
 
-                <Title>Set New Password</Title>
+                <Title>{t("auth.setNewPassword")}</Title>
                 <Subtitle>
-                  Enter the code sent to <EmailHighlight>{email}</EmailHighlight> and create your new password.
+                  {t("auth.setNewPasswordDescription", { email })}
                 </Subtitle>
 
                 <FormCard>
-                  <FieldLabel>Reset Code</FieldLabel>
+                  <FieldLabel>{t("auth.resetCode")}</FieldLabel>
                   <InputWrap $error={!!otpError}>
                     <Feather
                       name="hash"
@@ -353,13 +351,14 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
                     <StyledInput
                       value={otpCode}
                       onChangeText={(v) => {
-                        setOtpCode(v.replace(/[^0-9a-zA-Z]/g, "").slice(0, OTP_LENGTH));
+                        setOtpCode(sanitizeAuthEmailOtp(v));
                         if (otpError) setOtpError("");
                       }}
-                      placeholder="8-character code"
+                      placeholder={t("auth.resetCodePlaceholder")}
                       placeholderTextColor={theme.colors.textSecondary}
                       autoCapitalize="none"
                       autoComplete="one-time-code"
+                      keyboardType="number-pad"
                       maxLength={OTP_LENGTH}
                       returnKeyType="next"
                       onSubmitEditing={() => passwordRef.current?.focus()}
@@ -367,7 +366,7 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
                   </InputWrap>
                   {otpError ? <ErrorText>{otpError}</ErrorText> : null}
 
-                  <FieldLabel>New Password</FieldLabel>
+                  <FieldLabel>{t("auth.newPassword")}</FieldLabel>
                   <InputWrap $error={!!passwordError}>
                     <Feather
                       name="lock"
@@ -382,7 +381,7 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
                         setNewPassword(v);
                         if (passwordError) setPasswordError("");
                       }}
-                      placeholder="New password"
+                      placeholder={t("auth.newPasswordPlaceholder")}
                       placeholderTextColor={theme.colors.textSecondary}
                       secureTextEntry={!showPassword}
                       autoCapitalize="none"
@@ -403,12 +402,12 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
                   {newPassword.length > 0 ? (
                     <PasswordRulesList>
                       {[
-                        { label: "8+ characters", met: newPassword.length >= 8 },
-                        { label: "Lowercase letter", met: /[a-z]/.test(newPassword) },
-                        { label: "Uppercase letter", met: /[A-Z]/.test(newPassword) },
-                        { label: "Digit", met: /\d/.test(newPassword) },
-                        { label: "Special character", met: /[^a-zA-Z0-9]/.test(newPassword) },
-                      ].map((rule) => (
+                        { label: t("auth.ruleMinLength"), met: newPassword.length >= 8 },
+                        { label: t("auth.ruleLowercase"), met: /[a-z]/.test(newPassword) },
+                      { label: t("auth.ruleUppercase"), met: /[A-Z]/.test(newPassword) },
+                      { label: t("auth.ruleDigit"), met: /\d/.test(newPassword) },
+                      { label: t("auth.ruleSpecial"), met: /[^a-zA-Z0-9]/.test(newPassword) },
+                    ].map((rule) => (
                         <PasswordRule key={rule.label}>
                           <Feather
                             name={rule.met ? "check-circle" : "circle"}
@@ -421,7 +420,7 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
                     </PasswordRulesList>
                   ) : null}
 
-                  <FieldLabel>Confirm New Password</FieldLabel>
+                  <FieldLabel>{t("auth.confirmNewPassword")}</FieldLabel>
                   <InputWrap>
                     <Feather
                       name="lock"
@@ -433,7 +432,7 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
                       ref={confirmRef}
                       value={confirmPassword}
                       onChangeText={setConfirmPassword}
-                      placeholder="Re-enter new password"
+                      placeholder={t("auth.reenterNewPassword")}
                       placeholderTextColor={theme.colors.textSecondary}
                       secureTextEntry={!showPassword}
                       autoCapitalize="none"
@@ -451,7 +450,7 @@ export function ResetPasswordScreen({ email, onResetComplete, onBack }: ResetPas
                     {isSubmitting ? (
                       <ActivityIndicator color="#ffffff" size="small" />
                     ) : (
-                      <SubmitLabel>Reset Password</SubmitLabel>
+                      <SubmitLabel>{t("auth.resetPasswordTitle")}</SubmitLabel>
                     )}
                   </SubmitButton>
 

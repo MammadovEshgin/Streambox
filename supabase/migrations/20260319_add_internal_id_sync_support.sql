@@ -1,4 +1,4 @@
--- Migration to support internal_id (AzClassic movies) in user synchronization
+-- Migration to support internal_id-based user synchronization
 -- This adds the necessary columns and unique constraints for 'user_media_library' and 'user_watch_history'
 
 begin;

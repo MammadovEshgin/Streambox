@@ -5,14 +5,12 @@ import test from "node:test";
 
 const rootPath = path.resolve(process.cwd());
 const playerScreenPath = path.join(rootPath, "src", "screens", "PlayerScreen.tsx");
-const customUiPath = path.join(rootPath, "src", "components", "player", "CustomPlayerUI.tsx");
 
-test("player screen uses custom controls and does not embed web rendering primitives", () => {
+test("player screen keeps direct playback native and cleans provider web fallbacks", () => {
   const playerScreenSource = fs.readFileSync(playerScreenPath, "utf8");
-  const customUiSource = fs.readFileSync(customUiPath, "utf8");
-  const merged = `${playerScreenSource}\n${customUiSource}`.toLowerCase();
-
-  assert.equal(merged.includes("webview"), false);
-  assert.equal(merged.includes("iframe"), false);
-  assert.equal(playerScreenSource.includes("useNativeControls={false}"), true);
+  assert.equal(playerScreenSource.includes("useVideoPlayer"), true);
+  assert.equal(playerScreenSource.includes("<VideoView"), true);
+  assert.equal(playerScreenSource.includes("YoutubeIframe"), true);
+  assert.equal(playerScreenSource.includes("nativeControls"), true);
+  assert.equal(playerScreenSource.includes("clearCache?.(true)"), true);
 });

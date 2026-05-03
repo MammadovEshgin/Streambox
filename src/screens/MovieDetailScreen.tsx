@@ -2,7 +2,8 @@ import { Feather } from "@expo/vector-icons";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Pressable, ScrollView } from "react-native";
 import Animated, {
   Easing,
@@ -21,8 +22,10 @@ import {
   getMovieDetails,
   getMovieExternalRatings,
   getMovieTrailerUrl,
+  getQuickSimilarMovies,
   getSmartSimilarMovies
 } from "../api/tmdb";
+import { isValidMediaItemArray } from "../api/mediaFormatting";
 import { CastCrewSection } from "../components/detail/CastCrewSection";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { RatingServiceIcon } from "../components/common/RatingServiceIcon";
@@ -30,14 +33,28 @@ import { DetailHeader } from "../components/detail/DetailHeader";
 import { MetaPill } from "../components/detail/MetaPill";
 import {
   WatchedDateModal,
-  formatWatchedDateLabel,
+  type WatchedSelectionMode,
+  formatWatchHistoryEntryLabel,
   normalizeWatchedDate
 } from "../components/detail/WatchedDateModal";
 import { MediaCard } from "../components/home/MediaCard";
+import { formatLocalizedMonthDayYear } from "../localization/format";
 import { useLikedMovies } from "../hooks/useLikedMovies";
 import { useWatchHistory } from "../hooks/useWatchHistory";
 import { useWatchlist } from "../hooks/useWatchlist";
 import { HomeStackParamList } from "../navigation/types";
+import {
+  readPersistedRuntimeCache,
+  readRuntimeCache,
+  writePersistedRuntimeCache,
+} from "../services/runtimeCache";
+import { useAppSettings } from "../settings/AppSettingsContext";
+
+const MOVIE_SIMILAR_CACHE_PREFIX = "movie-detail-similar-v1";
+
+function getMovieSimilarCacheKey(movieId: string, language: string) {
+  return `${MOVIE_SIMILAR_CACHE_PREFIX}:${language}:${movieId}`;
+}
 
 const Root = styled.View`
   flex: 1;
@@ -54,26 +71,27 @@ const Body = styled.View`
   margin-top: -22px;
   border-top-left-radius: 22px;
   border-top-right-radius: 22px;
-  background-color: #000000;
+  background-color: ${({ theme }) => theme.colors.background};
   padding: 14px 16px 28px;
 `;
 
 const TopInfo = styled.View``;
 
 const DateText = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
+  color: ${({ theme }) => theme.colors.textTertiary};
+  font-family: Outfit_500Medium;
   font-size: 12px;
   line-height: 16px;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.4px;
 `;
 
 const Title = styled.Text`
   margin-top: 8px;
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 25px;
-  line-height: 30px;
-  font-weight: 800;
-  letter-spacing: -0.4px;
+  font-family: Outfit_700Bold;
+  font-size: 28px;
+  line-height: 33px;
+  letter-spacing: -0.8px;
 `;
 
 const PillsRow = styled.View`
@@ -104,15 +122,15 @@ const RatingDivider = styled.View`
   width: 1px;
   height: 18px;
   margin: 0 10px;
-  background-color: rgba(255, 255, 255, 0.14);
+  background-color: ${({ theme }) => theme.colors.glassBorder};
 `;
 
 const SourceValue = styled.Text`
   margin-left: 6px;
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
   font-size: 11px;
   line-height: 14px;
-  font-weight: 700;
   letter-spacing: 0.1px;
 `;
 
@@ -173,6 +191,7 @@ const WatchedButton = styled(Pressable)<{ $active: boolean }>`
 const WatchedMetaText = styled.Text`
   margin-top: 8px;
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 12px;
   line-height: 16px;
   letter-spacing: 0.15px;
@@ -188,10 +207,10 @@ const SectionHeader = styled.View`
 
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 20px;
-  line-height: 24px;
-  font-weight: 700;
-  letter-spacing: -0.25px;
+  font-family: Outfit_700Bold;
+  font-size: 22px;
+  line-height: 28px;
+  letter-spacing: -0.6px;
 `;
 
 const CastWrap = styled.View`
@@ -200,9 +219,9 @@ const CastWrap = styled.View`
 
 const SynopsisText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 15px;
   line-height: 23px;
-  text-align: justify;
 `;
 
 const ReadMoreButton = styled.Pressable`
@@ -212,9 +231,9 @@ const ReadMoreButton = styled.Pressable`
 
 const ReadMoreText = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_600SemiBold;
   font-size: 14px;
   line-height: 18px;
-  font-weight: 600;
 `;
 
 const SimilarWrap = styled.View`
@@ -229,14 +248,15 @@ const ErrorText = styled.Text`
   margin-top: 12px;
   text-align: center;
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 14px;
 `;
 
 type MovieDetailProps = NativeStackScreenProps<HomeStackParamList, "MovieDetail">;
 
-function formatReleaseDate(value: string): string {
+function formatReleaseDate(value: string, fallbackLabel: string): string {
   if (!value) {
-    return "Unknown release date";
+    return fallbackLabel;
   }
 
   const parsed = new Date(`${value}T00:00:00`);
@@ -244,11 +264,7 @@ function formatReleaseDate(value: string): string {
     return value;
   }
 
-  return parsed.toLocaleDateString("en-US", {
-    month: "long",
-    day: "numeric",
-    year: "numeric"
-  });
+  return formatLocalizedMonthDayYear(parsed);
 }
 
 function formatRuntime(minutes: number | null): string {
@@ -267,6 +283,8 @@ function formatRuntime(minutes: number | null): string {
 
 export function MovieDetailScreen({ route, navigation }: MovieDetailProps) {
   const currentTheme = useTheme();
+  const { t } = useTranslation();
+  const { language } = useAppSettings();
   const { isInWatchlist, removeFromWatchlist, toggleWatchlist } = useWatchlist();
   const { isLiked, toggleLikedMovie } = useLikedMovies();
   const { getWatchHistoryEntry, saveMovieToWatchHistory, removeFromWatchHistory } = useWatchHistory();
@@ -274,41 +292,124 @@ export function MovieDetailScreen({ route, navigation }: MovieDetailProps) {
   const [externalRatings, setExternalRatings] = useState<ExternalRatings | null>(null);
   const [similarMovies, setSimilarMovies] = useState<MediaItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRelatedLoading, setIsRelatedLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSynopsisExpanded, setIsSynopsisExpanded] = useState(false);
   const [trailerUrl, setTrailerUrl] = useState<string | null>(null);
+  const [isTrailerLoading, setIsTrailerLoading] = useState(true);
   const [isWatchedDateModalVisible, setIsWatchedDateModalVisible] = useState(false);
   const [selectedWatchedDate, setSelectedWatchedDate] = useState(() => new Date());
+  const [selectedWatchedMode, setSelectedWatchedMode] = useState<WatchedSelectionMode>("dated");
   const watchButtonScale = useSharedValue(1);
   const loveProgress = useSharedValue(0);
+  const trailerRequestRef = useRef<Promise<string | null> | null>(null);
+  const detailRequestRef = useRef(0);
+
+  const loadTrailer = useCallback(() => {
+    setIsTrailerLoading(true);
+    const request = getMovieTrailerUrl(route.params.movieId)
+      .then((url) => {
+        setTrailerUrl(url);
+        setIsTrailerLoading(false);
+        return url;
+      })
+      .catch(() => {
+        setTrailerUrl(null);
+        setIsTrailerLoading(false);
+        return null;
+      });
+
+    trailerRequestRef.current = request;
+    return request;
+  }, [route.params.movieId]);
 
   const loadDetails = useCallback(async () => {
+    const requestId = detailRequestRef.current + 1;
+    detailRequestRef.current = requestId;
+    const similarCacheKey = getMovieSimilarCacheKey(route.params.movieId, language);
+    const cachedSimilar = readRuntimeCache<MediaItem[]>(similarCacheKey);
+
     setIsLoading(true);
+    setIsRelatedLoading(!cachedSimilar);
     setErrorMessage(null);
+    setTrailerUrl(null);
+    setExternalRatings(null);
+    setSimilarMovies(cachedSimilar?.value ?? []);
+    void loadTrailer();
+    void readPersistedRuntimeCache<MediaItem[]>(similarCacheKey, {
+      validate: isValidMediaItemArray,
+    }).then((entry) => {
+      if (detailRequestRef.current !== requestId || !entry) {
+        return;
+      }
+
+      setSimilarMovies(entry.value.filter((item) => String(item.id) !== route.params.movieId));
+      setIsRelatedLoading(false);
+    });
 
     try {
       const detailResponse = await getMovieDetails(route.params.movieId);
+      if (detailRequestRef.current !== requestId) {
+        return;
+      }
+
       setDetails(detailResponse);
+      setIsLoading(false);
 
-      const [ratingsResponse, similarResponse] = await Promise.all([
-        getMovieExternalRatings(route.params.movieId, detailResponse.imdbId),
-        getSmartSimilarMovies(route.params.movieId, detailResponse)
-      ]);
+      void getMovieExternalRatings(route.params.movieId, detailResponse.imdbId).then((ratingsResponse) => {
+        if (detailRequestRef.current !== requestId) {
+          return;
+        }
 
-      setExternalRatings(ratingsResponse);
-      setSimilarMovies(
-        similarResponse.filter((item) => String(item.id) !== route.params.movieId)
-      );
+        setExternalRatings(ratingsResponse);
+      }).catch(() => undefined);
 
-      // Fetch trailer URL in background
-      getMovieTrailerUrl(route.params.movieId).then((url) => setTrailerUrl(url));
+      void getQuickSimilarMovies(route.params.movieId, detailResponse).then((quickSimilarResponse) => {
+        if (detailRequestRef.current !== requestId) {
+          return;
+        }
+
+        const quickSimilarMovies = quickSimilarResponse.filter((item) => String(item.id) !== route.params.movieId);
+        if (quickSimilarMovies.length > 0) {
+          setSimilarMovies(quickSimilarMovies);
+          setIsRelatedLoading(false);
+          void writePersistedRuntimeCache(similarCacheKey, quickSimilarMovies);
+        }
+      }).catch(() => undefined);
+
+      void getSmartSimilarMovies(route.params.movieId, detailResponse).then((similarResponse) => {
+        if (detailRequestRef.current !== requestId) {
+          return;
+        }
+
+        const nextSimilarMovies = similarResponse.filter((item) => String(item.id) !== route.params.movieId);
+        setSimilarMovies(nextSimilarMovies);
+        void writePersistedRuntimeCache(similarCacheKey, nextSimilarMovies);
+      }).catch(() => {
+        if (detailRequestRef.current === requestId) {
+          setSimilarMovies((current) => current);
+        }
+      }).finally(() => {
+        if (detailRequestRef.current === requestId) {
+          setIsRelatedLoading(false);
+        }
+      });
+
     } catch (error) {
+      if (detailRequestRef.current !== requestId) {
+        return;
+      }
+
       const message = error instanceof Error ? error.message : "Unable to load movie details.";
       setErrorMessage(message);
+      setDetails(null);
+      setIsRelatedLoading(false);
     } finally {
-      setIsLoading(false);
+      if (detailRequestRef.current === requestId) {
+        setIsLoading(false);
+      }
     }
-  }, [route.params.movieId]);
+  }, [language, loadTrailer, route.params.movieId]);
 
   useEffect(() => {
     void loadDetails();
@@ -321,13 +422,13 @@ export function MovieDetailScreen({ route, navigation }: MovieDetailProps) {
   });
 
   const synopsisText = useMemo(() => {
-    const fullText = details?.overview || "No synopsis available.";
+    const fullText = details?.overview || t("detail.noSynopsisAvailable");
     if (isSynopsisExpanded || fullText.length <= 210) {
       return fullText;
     }
 
     return `${fullText.slice(0, 210).trimEnd()}...`;
-  }, [details, isSynopsisExpanded]);
+  }, [details, isSynopsisExpanded, t]);
 
   const canExpandSynopsis = (details?.overview?.length ?? 0) > 210;
   const currentMovieId = details?.id ?? Number(route.params.movieId);
@@ -362,6 +463,7 @@ export function MovieDetailScreen({ route, navigation }: MovieDetailProps) {
   useEffect(() => {
     if (!isWatchedDateModalVisible) {
       setSelectedWatchedDate(currentWatchedEntry ? new Date(currentWatchedEntry.watchedAt) : new Date());
+      setSelectedWatchedMode(currentWatchedEntry?.watchPrecision === "none" ? "undated" : "dated");
     }
   }, [currentWatchedEntry, isWatchedDateModalVisible]);
 
@@ -395,6 +497,7 @@ export function MovieDetailScreen({ route, navigation }: MovieDetailProps) {
 
   const handleOpenWatchedDateModal = useCallback(() => {
     setSelectedWatchedDate(currentWatchedEntry ? new Date(currentWatchedEntry.watchedAt) : new Date());
+    setSelectedWatchedMode(currentWatchedEntry?.watchPrecision === "none" ? "undated" : "dated");
     setIsWatchedDateModalVisible(true);
   }, [currentWatchedEntry]);
 
@@ -403,24 +506,38 @@ export function MovieDetailScreen({ route, navigation }: MovieDetailProps) {
   }, []);
 
   const handleSaveWatchedDate = useCallback(async () => {
-  if (!details) {
-    return;
-  }
+    if (!details) {
+      return;
+    }
 
-  await saveMovieToWatchHistory(details, normalizeWatchedDate(selectedWatchedDate), {
-    title: details.title,
-    imdbId: details.imdbId,
-    posterPath: details.posterPath,
-    year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
-  });
-  await removeFromWatchlist(details.id, {
-    title: details.title,
-    imdbId: details.imdbId,
-    posterPath: details.posterPath,
-    year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
-  });
-  setIsWatchedDateModalVisible(false);
-}, [details, removeFromWatchlist, saveMovieToWatchHistory, selectedWatchedDate]);
+    await saveMovieToWatchHistory(
+      details,
+      selectedWatchedMode === "dated"
+        ? normalizeWatchedDate(selectedWatchedDate)
+        : currentWatchedEntry?.watchedAt ?? Date.now(),
+      {
+        title: details.title,
+        imdbId: details.imdbId,
+        posterPath: details.posterPath,
+        year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
+      },
+      { precision: selectedWatchedMode === "dated" ? "day" : "none" }
+    );
+    await removeFromWatchlist(details.id, {
+      title: details.title,
+      imdbId: details.imdbId,
+      posterPath: details.posterPath,
+      year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
+    });
+    setIsWatchedDateModalVisible(false);
+  }, [
+    currentWatchedEntry?.watchedAt,
+    details,
+    removeFromWatchlist,
+    saveMovieToWatchHistory,
+    selectedWatchedDate,
+    selectedWatchedMode,
+  ]);
 
 const handleRemoveWatchedDate = useCallback(async () => {
   if (!details) {
@@ -440,7 +557,7 @@ if (isLoading && !details) {
   return (
     <Root>
       <LoaderWrap>
-        <MovieLoader label="Loading detail" />
+        <MovieLoader label={t("loaders.loadingMovieDetail")} />
       </LoaderWrap>
     </Root>
   );
@@ -461,7 +578,7 @@ if (!details) {
         }}
       />
       <Body>
-        <ErrorText>{errorMessage ?? "No detail data available."}</ErrorText>
+          <ErrorText>{errorMessage ?? t("detail.noDetailDataAvailable")}</ErrorText>
       </Body>
     </Root>
   );
@@ -486,25 +603,28 @@ if (!details) {
             }
           }}
           showLikeAction={false}
-          showTrailerAction={!!trailerUrl}
-          onTrailer={() => {
-            if (trailerUrl) {
-              navigation.push("Player", {
-                mediaType: "movie",
-                tmdbId: String(details.id),
-                imdbId: details.imdbId,
-                title: `${details.title} - Trailer`,
-                trailerUrl,
-                year: details.releaseDate ? details.releaseDate.slice(0, 4) : null
-              });
+          showTrailerAction={isTrailerLoading || !!trailerUrl}
+          onTrailer={async () => {
+            const resolvedTrailerUrl = trailerUrl ?? await (trailerRequestRef.current ?? loadTrailer());
+            if (!resolvedTrailerUrl) {
+              return;
             }
+
+            navigation.push("Player", {
+              mediaType: "movie",
+              tmdbId: String(details.id),
+              imdbId: details.imdbId,
+              title: `${details.title} - Trailer`,
+              trailerUrl: resolvedTrailerUrl,
+              year: details.releaseDate ? details.releaseDate.slice(0, 4) : null
+            });
           }}
         />
 
         <Body>
           <Animated.View entering={FadeInDown.duration(420).delay(70)}>
             <TopInfo>
-              <DateText>{formatReleaseDate(details.releaseDate)}</DateText>
+              <DateText>{formatReleaseDate(details.releaseDate, t("detail.unknownReleaseDate"))}</DateText>
               <Title numberOfLines={2}>{details.title}</Title>
 
               <PillsRow>
@@ -585,7 +705,7 @@ if (!details) {
                           }}
                         >
                           <Feather name="play-circle" size={20} color="#FFFFFF" />
-                          <TopWatchButtonText>Watch Now</TopWatchButtonText>
+                          <TopWatchButtonText>{t("common.watchNow")}</TopWatchButtonText>
                         </TopWatchButton>
                       </Animated.View>
                     </PrimaryActionWrap>
@@ -598,7 +718,7 @@ if (!details) {
                     </WatchedButton>
                   </ActionRow>
                   {currentWatchedEntry ? (
-                    <WatchedMetaText>Watched on {formatWatchedDateLabel(currentWatchedEntry.watchedAt)}</WatchedMetaText>
+                    <WatchedMetaText>{formatWatchHistoryEntryLabel(currentWatchedEntry, t)}</WatchedMetaText>
                   ) : null}
                 </WatchNowWrap>
               </Animated.View>
@@ -607,7 +727,7 @@ if (!details) {
 
           <Animated.View entering={FadeInDown.duration(420).delay(180)}>
             <SectionHeader>
-              <SectionTitle>Synopsis</SectionTitle>
+              <SectionTitle>{t("detail.synopsis")}</SectionTitle>
             </SectionHeader>
             <SynopsisText>{synopsisText}</SynopsisText>
             {canExpandSynopsis ? (
@@ -616,14 +736,14 @@ if (!details) {
                   setIsSynopsisExpanded((previous) => !previous);
                 }}
               >
-                <ReadMoreText>{isSynopsisExpanded ? "Read less" : "Read more"}</ReadMoreText>
+                <ReadMoreText>{isSynopsisExpanded ? t("common.readLess") : t("common.readMore")}</ReadMoreText>
               </ReadMoreButton>
             ) : null}
           </Animated.View>
 
           <Animated.View entering={FadeInDown.duration(420).delay(220)}>
             <SectionHeader>
-              <SectionTitle>Cast & Crew</SectionTitle>
+              <SectionTitle>{t("detail.castCrew")}</SectionTitle>
             </SectionHeader>
             <CastWrap>
               <CastCrewSection
@@ -641,16 +761,23 @@ if (!details) {
 
           <Animated.View entering={FadeInDown.duration(420).delay(260)}>
             <SectionHeader>
-              <SectionTitle>Similar Movies</SectionTitle>
+              <SectionTitle>{t("detail.similarMovies")}</SectionTitle>
             </SectionHeader>
             <SimilarWrap>
-              <FlashList
-                data={similarMovies}
-                horizontal
-                keyExtractor={(item) => String(item.id)}
-                renderItem={renderSimilarItem}
-                showsHorizontalScrollIndicator={false}
-              />
+              {isRelatedLoading && similarMovies.length === 0 ? (
+                <LoaderWrap>
+                  <MovieLoader size={28} />
+                </LoaderWrap>
+              ) : (
+                <FlashList
+                  data={similarMovies}
+                  horizontal
+                  keyExtractor={(item) => String(item.id)}
+                  renderItem={renderSimilarItem}
+                  showsHorizontalScrollIndicator={false}
+                  removeClippedSubviews
+                />
+              )}
             </SimilarWrap>
           </Animated.View>
         </Body>
@@ -660,8 +787,10 @@ if (!details) {
         title={details.title}
         mediaLabel="movie"
         selectedDate={selectedWatchedDate}
+        selectedMode={selectedWatchedMode}
         isWatched={isCurrentMovieWatched}
         onChangeDate={setSelectedWatchedDate}
+        onChangeMode={setSelectedWatchedMode}
         onClose={handleCloseWatchedDateModal}
         onSave={handleSaveWatchedDate}
         onRemove={isCurrentMovieWatched ? handleRemoveWatchedDate : undefined}

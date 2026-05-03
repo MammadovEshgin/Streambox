@@ -37,9 +37,6 @@ export type HomeStackParamList = {
   ActorDetail: {
     actorId: string;
   };
-  AzClassicDetail: {
-    movieId: string;
-  };
   Player: {
     mediaType: MediaType,
     tmdbId: string,
@@ -52,7 +49,6 @@ export type HomeStackParamList = {
     trailerUrl?: string,
     year?: string | null;
     videoId?: string | null;
-    isAzClassic?: boolean;
   };
 };
 
@@ -65,9 +61,6 @@ export type ProfileStackParamList = {
     filter: "movie" | "tv";
   };
   ProfileSettings: undefined;
-  AzClassicDetail: {
-    movieId: string;
-  };
   MovieDetail: {
     movieId: string;
   };
@@ -89,7 +82,6 @@ export type ProfileStackParamList = {
     trailerUrl?: string;
     year?: string | null;
     videoId?: string | null;
-    isAzClassic?: boolean;
   };
 };
 
@@ -112,9 +104,6 @@ export type StatsStackParamList = {
     watchedAtMax?: number;
     ids?: (number | string)[];
   };
-  AzClassicDetail: {
-    movieId: string;
-  };
   MovieDetail: {
     movieId: string;
   };
@@ -136,7 +125,6 @@ export type StatsStackParamList = {
     trailerUrl?: string;
     year?: string | null;
     videoId?: string | null;
-    isAzClassic?: boolean;
   };
 };
 
