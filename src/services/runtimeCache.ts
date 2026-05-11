@@ -8,9 +8,53 @@ export type CacheEntry<T> = {
 
 const runtimeCache = new Map<string, CacheEntry<unknown>>();
 const PERSISTENT_CACHE_PREFIX = "@streambox/runtime-cache-v1:";
+const PERSISTENT_CACHE_WRITE_DEBOUNCE_MS = 250;
+const pendingPersistentWrites = new Map<string, CacheEntry<unknown>>();
+const persistentWriteTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function getPersistentCacheKey(key: string) {
   return `${PERSISTENT_CACHE_PREFIX}${key}`;
+}
+
+function cancelPersistentWrite(key: string) {
+  const timer = persistentWriteTimers.get(key);
+  if (timer) {
+    clearTimeout(timer);
+    persistentWriteTimers.delete(key);
+  }
+
+  pendingPersistentWrites.delete(key);
+}
+
+async function flushPendingPersistentWrite(key: string) {
+  const entry = pendingPersistentWrites.get(key);
+  pendingPersistentWrites.delete(key);
+  persistentWriteTimers.delete(key);
+
+  if (!entry) {
+    return;
+  }
+
+  try {
+    await AsyncStorage.setItem(getPersistentCacheKey(key), JSON.stringify(entry));
+  } catch {
+    // Best-effort disk cache.
+  }
+}
+
+function schedulePersistentWrite(key: string, entry: CacheEntry<unknown>) {
+  pendingPersistentWrites.set(key, entry);
+
+  const existingTimer = persistentWriteTimers.get(key);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(() => {
+    void flushPendingPersistentWrite(key);
+  }, PERSISTENT_CACHE_WRITE_DEBOUNCE_MS);
+
+  persistentWriteTimers.set(key, timer);
 }
 
 export function readRuntimeCache<T>(key: string): CacheEntry<T> | null {
@@ -65,6 +109,7 @@ export async function readPersistedRuntimeCache<T>(
   if (inMemoryEntry) {
     if (options?.validate && !options.validate(inMemoryEntry.value)) {
       runtimeCache.delete(key);
+      cancelPersistentWrite(key);
       void AsyncStorage.removeItem(getPersistentCacheKey(key)).catch(() => undefined);
       return null;
     }
@@ -89,6 +134,7 @@ export async function readPersistedRuntimeCache<T>(
     }
 
     if (options?.validate && !options.validate(parsed.value)) {
+      cancelPersistentWrite(key);
       void AsyncStorage.removeItem(getPersistentCacheKey(key)).catch(() => undefined);
       return null;
     }
@@ -106,12 +152,7 @@ export async function writePersistedRuntimeCache<T>(
   options?: WriteRuntimeCacheOptions
 ): Promise<CacheEntry<T>> {
   const entry = writeRuntimeCache(key, value, options);
-
-  try {
-    await AsyncStorage.setItem(getPersistentCacheKey(key), JSON.stringify(entry));
-  } catch {
-    // Best-effort disk cache.
-  }
+  schedulePersistentWrite(key, entry as CacheEntry<unknown>);
 
   return entry;
 }
@@ -122,6 +163,9 @@ export function clearInMemoryRuntimeCache() {
 
 export async function clearPersistedRuntimeCaches(): Promise<void> {
   clearInMemoryRuntimeCache();
+  persistentWriteTimers.forEach((timer) => clearTimeout(timer));
+  persistentWriteTimers.clear();
+  pendingPersistentWrites.clear();
 
   try {
     const keys = await AsyncStorage.getAllKeys();

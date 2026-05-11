@@ -49,6 +49,8 @@ export type UserFranchiseProgress = {
 let collectionsRequest: Promise<FranchiseCollection[]> | null = null;
 const entriesRequests = new Map<string, Promise<FranchiseEntry[]>>();
 const progressRequests = new Map<string, Promise<UserFranchiseProgress[]>>();
+const prefetchedEntryFranchises = new Set<string>();
+const prefetchedProgressFranchises = new Set<string>();
 
 function normalizeCachedCollections(rawValue: string | null): FranchiseCollection[] {
   if (!rawValue) {
@@ -468,14 +470,36 @@ export async function toggleFranchiseEntryWatched(
   await AsyncStorage.setItem(cacheKey, JSON.stringify(freshProgress));
 }
 
-export function prefetchFranchiseEntries(franchiseId: string) {
+export function prefetchFranchiseEntries(franchiseId: string, userId?: string | null) {
   const cacheKey = `${FRANCHISE_ENTRIES_CACHE_PREFIX}${franchiseId}`;
-  void fetchFreshFranchiseEntries(franchiseId)
-    .then(async (entries) => {
-      await AsyncStorage.setItem(cacheKey, JSON.stringify(entries));
-      warmEntryImages(entries);
-    })
-    .catch(() => undefined);
+  if (!prefetchedEntryFranchises.has(franchiseId)) {
+    prefetchedEntryFranchises.add(franchiseId);
+
+    void fetchFreshFranchiseEntries(franchiseId)
+      .then(async (entries) => {
+        await AsyncStorage.setItem(cacheKey, JSON.stringify(entries));
+        warmEntryImages(entries);
+      })
+      .catch(() => {
+        prefetchedEntryFranchises.delete(franchiseId);
+      });
+  }
+
+  if (userId) {
+    const progressPrefetchKey = `${userId}:${franchiseId}`;
+    const progressCacheKey = `${FRANCHISE_PROGRESS_CACHE_PREFIX}${franchiseId}`;
+    if (!prefetchedProgressFranchises.has(progressPrefetchKey)) {
+      prefetchedProgressFranchises.add(progressPrefetchKey);
+
+      void fetchFreshUserProgress(userId, franchiseId)
+        .then(async (progress) => {
+          await AsyncStorage.setItem(progressCacheKey, JSON.stringify(progress));
+        })
+        .catch(() => {
+          prefetchedProgressFranchises.delete(progressPrefetchKey);
+        });
+    }
+  }
 }
 
 export async function clearFranchiseCache(): Promise<void> {
@@ -490,4 +514,7 @@ export async function clearFranchiseCache(): Promise<void> {
   if (franchiseKeys.length > 0) {
     await AsyncStorage.multiRemove(franchiseKeys);
   }
+
+  prefetchedEntryFranchises.clear();
+  prefetchedProgressFranchises.clear();
 }

@@ -1,6 +1,6 @@
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { memo, startTransition, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FlatList, ScrollView } from "react-native";
 import styled from "styled-components/native";
@@ -24,7 +24,9 @@ import {
 import { SpotlightCarousel } from "../components/home/SpotlightCarousel";
 import { HomeHeader } from "../components/home/HomeHeader";
 import { MediaCard } from "../components/home/MediaCard";
-import { FranchiseCollectionArtwork } from "../components/franchise/FranchiseCollectionArtwork";
+import { franchiseCardBackgroundImage } from "../constants/imageAssets";
+import { useAuth } from "../context/AuthContext";
+import { useUserDataSync } from "../context/UserDataSyncContext";
 import { useRuntimeCacheAutoRefresh } from "../hooks/useRuntimeCacheAutoRefresh";
 import { HomeStackParamList } from "../navigation/types";
 import { formatFranchiseCollectionTitle } from "../services/franchiseLocalization";
@@ -117,8 +119,14 @@ const FranchiseCardRoot = styled.Pressable`
 const FranchiseArtworkFrame = styled.View`
   width: 132px;
   height: 198px;
-  border-radius: 12px;
+  border-radius: 4px;
   overflow: hidden;
+  background-color: #0b0d12;
+`;
+
+const FranchisePosterImage = styled.Image`
+  width: 100%;
+  height: 100%;
 `;
 
 const FranchiseCardTitle = styled.Text`
@@ -230,6 +238,8 @@ type HomeScreenProps = NativeStackScreenProps<HomeStackParamList, "HomeFeed">;
 export function HomeScreen({ navigation }: HomeScreenProps) {
   const { t } = useTranslation();
   const { language } = useAppSettings();
+  const { user } = useAuth();
+  const { isReady: isUserDataReady } = useUserDataSync();
   const localizedCacheKey = `${HOME_DISCOVERY_CACHE_KEY}:${language}`;
   const discoveryCacheEntry = readRuntimeCache<HomeDiscoveryCache>(localizedCacheKey);
   const cachedDiscovery = discoveryCacheEntry?.value;
@@ -244,6 +254,7 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const idlePrefetchedFranchiseIdsRef = useRef<Set<string>>(new Set());
 
   const hasDiscoveryData = popularMovies.length > 0 || trendingMovies.length > 0 || trendingSeries.length > 0;
 
@@ -406,6 +417,33 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isUserDataReady || franchises.length === 0) {
+      return;
+    }
+
+    const prefetchScope = user?.id ?? "anon";
+    const idsToPrefetch = franchises
+      .slice(0, 5)
+      .map((franchise) => franchise.id)
+      .filter((id) => !idlePrefetchedFranchiseIdsRef.current.has(`${prefetchScope}:${id}`));
+
+    if (idsToPrefetch.length === 0) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      idsToPrefetch.forEach((id) => {
+        idlePrefetchedFranchiseIdsRef.current.add(`${prefetchScope}:${id}`);
+        prefetchFranchiseEntries(id, user?.id);
+      });
+    }, 1500);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [franchises, isUserDataReady, user?.id]);
+
   const spotlightItems = useMemo(() => {
     const pool = popularMovies.length > 0 ? popularMovies : [...trendingMovies, ...trendingSeries];
     return pool.filter((i) => i.backdropPath).slice(0, 10);
@@ -443,11 +481,11 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
               accentColor: item.accentColor ?? undefined,
             });
           }}
-          onPressIn={() => prefetchFranchiseEntries(String(item.id))}
+          onPressIn={() => prefetchFranchiseEntries(String(item.id), user?.id)}
           style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}
         >
           <FranchiseArtworkFrame>
-            <FranchiseCollectionArtwork title={item.originalTitle} accentColor={item.accentColor} compact />
+            <FranchisePosterImage source={franchiseCardBackgroundImage} resizeMode="cover" />
           </FranchiseArtworkFrame>
           <FranchiseCardTitle numberOfLines={1}>{item.title}</FranchiseCardTitle>
           <FranchiseCardMeta>{item.year}</FranchiseCardMeta>
