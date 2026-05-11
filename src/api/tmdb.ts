@@ -439,6 +439,8 @@ type TmdbImageSize = "w185" | "w300" | "w342" | "w500" | "w780" | "original";
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p";
 
+const tmdbProxyBaseUrl = process.env.EXPO_PUBLIC_TMDB_PROXY_BASE_URL?.trim() || null;
+const usesTmdbProxy = Boolean(tmdbProxyBaseUrl);
 const tmdbApiKey = process.env.EXPO_PUBLIC_TMDB_API_KEY;
 const tmdbAccessToken = process.env.EXPO_PUBLIC_TMDB_ACCESS_TOKEN;
 const tmdbAuth = resolveTmdbAuth(tmdbApiKey, tmdbAccessToken);
@@ -468,7 +470,7 @@ function getLocalizedTmdbCacheKey(scope: string, id: string | number) {
 }
 
 const tmdbClient = axios.create({
-  baseURL: TMDB_BASE_URL,
+  baseURL: tmdbProxyBaseUrl ?? TMDB_BASE_URL,
   timeout: 12000
 });
 
@@ -492,7 +494,9 @@ function applyTmdbAuthToConfig(config: any, mode: TmdbAuthMode) {
   headers.delete("Authorization");
   delete nextConfig.params.api_key;
 
-  if (mode === "api_key" && tmdbAuth.apiKeyParam) {
+  if (usesTmdbProxy) {
+    headers.set("X-StreamBox-Proxy-Target", "tmdb");
+  } else if (mode === "api_key" && tmdbAuth.apiKeyParam) {
     nextConfig.params.api_key = tmdbAuth.apiKeyParam;
   } else if (mode === "bearer" && tmdbAuth.bearerToken) {
     headers.set("Authorization", `Bearer ${tmdbAuth.bearerToken}`);
@@ -516,6 +520,10 @@ tmdbClient.interceptors.request.use((config) => {
 tmdbClient.interceptors.response.use(
   (response) => response,
   async (error) => {
+    if (usesTmdbProxy) {
+      return Promise.reject(error);
+    }
+
     const status = error?.response?.status;
     const config = error?.config as any;
 
@@ -536,9 +544,9 @@ tmdbClient.interceptors.response.use(
 );
 
 function assertCredentials() {
-  if (tmdbAuth.mode === "none") {
+  if (!usesTmdbProxy && tmdbAuth.mode === "none") {
     throw new Error(
-      "Missing TMDB credentials. Set EXPO_PUBLIC_TMDB_API_KEY or EXPO_PUBLIC_TMDB_ACCESS_TOKEN."
+      "Missing TMDB credentials. Set EXPO_PUBLIC_TMDB_PROXY_BASE_URL, EXPO_PUBLIC_TMDB_API_KEY, or EXPO_PUBLIC_TMDB_ACCESS_TOKEN."
     );
   }
 }

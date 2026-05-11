@@ -3,6 +3,7 @@ import type { AppLanguage } from "../localization/types";
 import type { PersonaPresentation } from "../settings/settingsStorage";
 
 export const onboardingPreviewImage = require("../../assets/images/onboarding/app-preview.jpeg");
+export const franchiseCardBackgroundImage = require("../../assets/images/franchise/frenchise-poster-card-v2.jpg");
 
 const watchedStampImages = {
   en: require("../../assets/images/stamps/watched-stamp-eng.png"),

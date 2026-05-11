@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components/native";
 
@@ -13,7 +13,9 @@ import {
 } from "../api/franchises";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
-import { FranchiseCollectionArtwork } from "../components/franchise/FranchiseCollectionArtwork";
+import { franchiseCardBackgroundImage } from "../constants/imageAssets";
+import { useAuth } from "../context/AuthContext";
+import { useUserDataSync } from "../context/UserDataSyncContext";
 import { HomeStackParamList } from "../navigation/types";
 import { formatFranchiseCollectionTitle } from "../services/franchiseLocalization";
 import { useAppSettings } from "../settings/AppSettingsContext";
@@ -71,11 +73,14 @@ const CardPressable = styled.Pressable`
 const PosterFrame = styled.View`
   width: 100%;
   aspect-ratio: 0.6667;
-  border-radius: 8px;
+  border-radius: 4px;
   overflow: hidden;
-  background-color: ${({ theme }) => theme.colors.surface};
-  border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.border};
+  background-color: #0b0d12;
+`;
+
+const FranchisePosterImage = styled.Image`
+  width: 100%;
+  height: 100%;
 `;
 
 const CardTitle = styled.Text`
@@ -152,9 +157,12 @@ type FranchiseCatalogProps = NativeStackScreenProps<HomeStackParamList, "Franchi
 export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
   const { t } = useTranslation();
   const { language } = useAppSettings();
+  const { user } = useAuth();
+  const { isReady: isUserDataReady } = useUserDataSync();
   const [franchises, setFranchises] = useState<FranchiseCollection[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const idlePrefetchedFranchiseIdsRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -208,6 +216,33 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isUserDataReady || franchises.length === 0) {
+      return;
+    }
+
+    const prefetchScope = user?.id ?? "anon";
+    const idsToPrefetch = franchises
+      .slice(0, GRID_COLUMNS * 3)
+      .map((franchise) => franchise.id)
+      .filter((id) => !idlePrefetchedFranchiseIdsRef.current.has(`${prefetchScope}:${id}`));
+
+    if (idsToPrefetch.length === 0) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      idsToPrefetch.forEach((id) => {
+        idlePrefetchedFranchiseIdsRef.current.add(`${prefetchScope}:${id}`);
+        prefetchFranchiseEntries(id, user?.id);
+      });
+    }, 900);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [franchises, isUserDataReady, user?.id]);
+
   const handlePressCard = useCallback(
     (franchise: FranchiseCollection) => {
       navigation.navigate("FranchiseTimeline", {
@@ -220,8 +255,8 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
   );
 
   const handlePressInCard = useCallback((franchiseId: string) => {
-    prefetchFranchiseEntries(franchiseId);
-  }, []);
+    prefetchFranchiseEntries(franchiseId, user?.id);
+  }, [user?.id]);
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<FranchiseCollection>) => {
@@ -231,7 +266,7 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
           onPressIn={() => handlePressInCard(item.id)}
         >
           <PosterFrame>
-            <FranchiseCollectionArtwork title={item.title} accentColor={item.accentColor} />
+            <FranchisePosterImage source={franchiseCardBackgroundImage} resizeMode="cover" />
           </PosterFrame>
           <CardTitle>{formatFranchiseCollectionTitle(item.title, language)}</CardTitle>
         </CardPressable>

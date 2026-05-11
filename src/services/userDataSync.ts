@@ -158,6 +158,10 @@ type PendingSyncOperation =
 export type UserMediaSyncDetails = { title?: string; imdbId?: string | null; posterPath?: string | null; year?: string | null; overview?: string | null; };
 
 let flushPromise: Promise<void> | null = null;
+const SYNC_FLUSH_DEBOUNCE_MS = 30_000;
+const SYNC_RETRY_DEBOUNCE_MS = 5_000;
+const MAX_SYNC_OPERATIONS_PER_FLUSH = 25;
+const scheduledFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function resolveThemeId(value: unknown): ThemeId { return typeof value === "string" && VALID_THEME_IDS.has(value as ThemeId) ? (value as ThemeId) : DEFAULT_THEME_ID; }
@@ -422,6 +426,20 @@ async function enqueuePendingOperation(op: PendingSyncOperation) {
   const idx = queue.findIndex(q => getQueueOperationKey(q) === key);
   if (idx >= 0) queue[idx] = op; else queue.push(op);
   await writePendingQueue(queue);
+}
+
+function scheduleSupabaseUserDataSync(userId: string, delayMs = SYNC_FLUSH_DEBOUNCE_MS) {
+  const existingTimer = scheduledFlushTimers.get(userId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(() => {
+    scheduledFlushTimers.delete(userId);
+    void flushSupabaseUserDataSync(userId);
+  }, delayMs);
+
+  scheduledFlushTimers.set(userId, timer);
 }
 
 function unionIds(p: (number | string)[], s: (number | string)[]) { return Array.from(new Set([...p, ...s])); }
@@ -737,19 +755,42 @@ async function executePendingOperation(op: PendingSyncOperation) {
 }
 
 export async function clearLocalUserDataCache() {
+  scheduledFlushTimers.forEach((timer) => clearTimeout(timer));
+  scheduledFlushTimers.clear();
   const keys = [APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY, SERIES_OF_DAY_CURRENT_STORAGE_KEY, ACTIVE_SYNC_USER_KEY, SYNC_QUEUE_STORAGE_KEY];
   const all = await AsyncStorage.getAllKeys(); const bKeys = all.filter(k => k.startsWith(BOOTSTRAP_COMPLETE_KEY_PREFIX));
   await AsyncStorage.multiRemove([...keys, ...bKeys]);
 }
 
 export async function flushSupabaseUserDataSync(targetId?: string) {
+  if (targetId) {
+    const scheduledTimer = scheduledFlushTimers.get(targetId);
+    if (scheduledTimer) {
+      clearTimeout(scheduledTimer);
+      scheduledFlushTimers.delete(targetId);
+    }
+  }
+
   if (flushPromise) { await flushPromise; return; }
   flushPromise = (async () => {
     const uid = targetId || (await getCurrentUserId()); if (!uid) return;
+    const scheduledTimer = scheduledFlushTimers.get(uid);
+    if (scheduledTimer) {
+      clearTimeout(scheduledTimer);
+      scheduledFlushTimers.delete(uid);
+    }
+
     const q = await readPendingQueue(); if (q.length === 0) return;
-    const r = q.filter(e => e.userId !== uid); const a = q.filter(e => e.userId === uid); const f: any[] = [];
-    for (const op of a) { try { await executePendingOperation(op); } catch (e) { console.warn("Sync failed", e); f.push(op); } }
-    await writePendingQueue([...r, ...f]);
+    const r = q.filter(e => e.userId !== uid);
+    const a = q.filter(e => e.userId === uid);
+    const batch = a.slice(0, MAX_SYNC_OPERATIONS_PER_FLUSH);
+    const remaining = a.slice(MAX_SYNC_OPERATIONS_PER_FLUSH);
+    const f: PendingSyncOperation[] = [];
+    for (const op of batch) { try { await executePendingOperation(op); } catch (e) { console.warn("Sync failed", e); f.push(op); } }
+    await writePendingQueue([...r, ...remaining, ...f]);
+    if (remaining.length > 0) {
+      scheduleSupabaseUserDataSync(uid, SYNC_RETRY_DEBOUNCE_MS);
+    }
   })().finally(() => { flushPromise = null; });
   await flushPromise;
 }
@@ -785,47 +826,47 @@ export async function bootstrapSupabaseUserData() {
 export async function enqueueProfileSettingsSync(settings: PersistedSettings, audit: SyncMetadata = {}) {
   const uid = await getCurrentUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "profile_settings", userId: uid, settings, auditMetadata: normalizeSyncMetadata(audit) });
-  void flushSupabaseUserDataSync(uid);
+  scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueProfileAssetSync(kind: SyncAssetKind, uri: string | null, prev: string | null, ver: number) {
   const uid = await getCurrentUserId(); if (!uid || !uri || !isLocalFileUri(uri)) return;
   await enqueuePendingOperation({ kind: "asset_upload", userId: uid, assetKind: kind, localUri: uri, previousPath: prev, nextVersion: Math.max(ver, 0) + 1 });
-  void flushSupabaseUserDataSync(uid);
+  scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueMediaLibrarySync(i: { operation: "upsert" | "delete"; listKind: SyncListKind; mediaType: MediaType; tmdbId: number | string; details?: UserMediaSyncDetails | null; occurredAt?: string; }) {
   const uid = await getCurrentUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "media_library", userId: uid, operation: i.operation, listKind: i.listKind, mediaType: i.mediaType, tmdbId: i.tmdbId, imdbId: i.details?.imdbId ?? null, collectedAt: i.occurredAt ?? new Date().toISOString(), snapshot: normalizeMediaSnapshot(i.details), auditMetadata: normalizeSyncMetadata({ title: i.details?.title }) });
-  void flushSupabaseUserDataSync(uid);
+  scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueWatchHistoryUpsert(e: WatchHistoryEntry, a: SyncMetadata = {}) {
   const uid = await getCurrentUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "watch_history_upsert", userId: uid, entry: e, auditMetadata: normalizeSyncMetadata(a) });
-  void flushSupabaseUserDataSync(uid);
+  scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueWatchHistoryDelete(t: MediaType, id: number | string, a: SyncMetadata = {}) {
   const uid = await getCurrentUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "watch_history_delete", userId: uid, mediaType: t, tmdbId: id, auditMetadata: normalizeSyncMetadata(a) });
-  void flushSupabaseUserDataSync(uid);
+  scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueEpisodeProgressSync(t: number, s: number, e: number, w: boolean, a: SyncMetadata = {}) {
   const uid = await getCurrentUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "episode_progress", userId: uid, seriesTmdbId: t, seasonNumber: s, episodeNumber: e, isWatched: w, watchedAt: new Date().toISOString(), auditMetadata: normalizeSyncMetadata(a) });
-  void flushSupabaseUserDataSync(uid);
+  scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueDailyRecommendationSync(m: Record<string, any> | null, d: string) {
   const uid = await getCurrentUserId(); if (!uid || !m || !m.id) return;
   await enqueuePendingOperation({ kind: "daily_recommendation", userId: uid, recommendationKind: MOVIE_OF_DAY_KIND, recommendationDate: d, mediaType: "movie", tmdbId: m.id, imdbId: m.imdbId || null, strategy: "device_generated", snapshot: { movie: m } });
-  void flushSupabaseUserDataSync(uid);
+  scheduleSupabaseUserDataSync(uid);
 }
 
 export async function logSupabaseUserEvent(cat: string, type: string, meta: SyncMetadata = {}, opts?: any) {
   const uid = await getCurrentUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "auth_event", userId: uid, actionCategory: cat, actionType: type, entityType: opts?.entityType ?? null, entityKey: opts?.entityKey ?? null, metadata: normalizeSyncMetadata(meta), createdAt: new Date().toISOString() });
-  if (opts?.flushImmediately) await flushSupabaseUserDataSync(uid); else void flushSupabaseUserDataSync(uid);
+  if (opts?.flushImmediately) await flushSupabaseUserDataSync(uid); else scheduleSupabaseUserDataSync(uid);
 }

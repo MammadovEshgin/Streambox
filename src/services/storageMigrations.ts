@@ -1,9 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { clearPersistedMediaHydrationCache } from "./mediaHydration";
 import { clearPersistedRuntimeCaches } from "./runtimeCache";
 
 const STORAGE_SCHEMA_KEY = "@streambox/storage-schema-version";
-const CURRENT_STORAGE_SCHEMA_VERSION = "2";
+const CURRENT_STORAGE_SCHEMA_VERSION = "3";
 
 export async function runStorageMigrationsIfNeeded(): Promise<void> {
   try {
@@ -13,6 +14,7 @@ export async function runStorageMigrationsIfNeeded(): Promise<void> {
     }
 
     await clearPersistedRuntimeCaches();
+    await clearPersistedMediaHydrationCache();
     await AsyncStorage.setItem(STORAGE_SCHEMA_KEY, CURRENT_STORAGE_SCHEMA_VERSION);
   } catch (error) {
     console.warn("[storageMigrations] failed to run schema migration:", error);
