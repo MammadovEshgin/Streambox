@@ -14,7 +14,7 @@ import { clearFranchiseImageCache } from "../services/franchisePosterCache";
 import { clearManagedRemoteImageCaches } from "../services/remoteImageCache";
 import { clearPersistedRuntimeCaches } from "../services/runtimeCache";
 import { signOutFromGoogle } from "../services/auth";
-import { supabase } from "../services/supabase";
+import { clearSupabaseAuthStorage, supabase } from "../services/supabase";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
 const LAST_ACTIVE_KEY = "@streambox/last-active-ts";
@@ -42,6 +42,14 @@ async function isSessionExpiredByInactivity(): Promise<boolean> {
   return Date.now() - Number(raw) > INACTIVITY_LIMIT_MS;
 }
 
+function isInvalidRefreshTokenError(error: unknown) {
+  const candidate = error && typeof error === "object" ? error as { message?: string; code?: string } : null;
+  const message = candidate?.message?.toLowerCase() ?? "";
+  return candidate?.code === "refresh_token_not_found"
+    || candidate?.code === "refresh_token_already_used"
+    || (message.includes("invalid refresh token") && message.includes("refresh token"));
+}
+
 export function AuthProvider({ children }: PropsWithChildren) {
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -49,13 +57,41 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const signOutPromiseRef = useRef<Promise<void> | null>(null);
   const { reloadPersistedSettings } = useAppSettings();
 
+  const clearDeviceAuthState = useCallback(async () => {
+    await Promise.allSettled([
+      clearSupabaseAuthStorage(),
+      signOutFromGoogle(),
+      AsyncStorage.removeItem(LAST_ACTIVE_KEY),
+      clearLocalUserDataCache(),
+      clearFranchiseCache(),
+      clearFranchiseImageCache(),
+      clearManagedRemoteImageCaches(),
+      clearPersistedRuntimeCaches(),
+      reloadPersistedSettings(),
+    ]);
+  }, [reloadPersistedSettings]);
+
   useEffect(() => {
     let active = true;
 
     async function init() {
       const {
         data: { session: initialSession },
+        error: sessionError,
       } = await supabase.auth.getSession();
+
+      if (sessionError) {
+        if (isInvalidRefreshTokenError(sessionError)) {
+          await clearDeviceAuthState();
+          if (active) {
+            setSession(null);
+            setIsLoading(false);
+          }
+          return;
+        }
+
+        throw sessionError;
+      }
 
       if (initialSession) {
         const expired = await isSessionExpiredByInactivity();
@@ -67,19 +103,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
             { entityType: "session", entityKey: initialSession.user.id, flushImmediately: true }
           ).catch(() => undefined);
           await syncCurrentLocalUserSnapshotToSupabase(initialSession.user.id).catch(() => undefined);
-          await Promise.allSettled([
-            supabase.auth.signOut(),
-            signOutFromGoogle(),
-          ]);
-          await Promise.all([
-            AsyncStorage.removeItem(LAST_ACTIVE_KEY),
-            clearLocalUserDataCache(),
-            clearFranchiseCache(),
-            clearFranchiseImageCache(),
-            clearManagedRemoteImageCaches(),
-            clearPersistedRuntimeCaches(),
-          ]);
-          await reloadPersistedSettings().catch(() => undefined);
+          await clearDeviceAuthState();
           if (active) {
             setSession(null);
             setIsLoading(false);
@@ -96,7 +120,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
       }
     }
 
-    void init();
+    void init().catch(async (error) => {
+      console.warn("Auth initialization failed:", error);
+      await clearDeviceAuthState();
+      if (active) {
+        setSession(null);
+        setIsLoading(false);
+      }
+    });
 
     const {
       data: { subscription },
@@ -121,7 +152,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       active = false;
       subscription.unsubscribe();
     };
-  }, []);
+  }, [clearDeviceAuthState]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (nextState) => {
@@ -160,19 +191,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
         }
 
         await Promise.allSettled([
-          supabase.auth.signOut(),
-          signOutFromGoogle(),
+          supabase.auth.signOut({ scope: "local" }),
+          clearDeviceAuthState(),
         ]);
-
-        await Promise.all([
-          AsyncStorage.removeItem(LAST_ACTIVE_KEY).catch(() => undefined),
-          clearLocalUserDataCache().catch(() => undefined),
-          clearFranchiseCache().catch(() => undefined),
-          clearFranchiseImageCache().catch(() => undefined),
-          clearManagedRemoteImageCaches().catch(() => undefined),
-          clearPersistedRuntimeCaches().catch(() => undefined),
-        ]);
-        await reloadPersistedSettings().catch(() => undefined);
         setSession(null);
       } catch (err) {
         console.error("Sign out cleanup failed:", err);
@@ -183,7 +204,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     })();
 
     await signOutPromiseRef.current;
-  }, [reloadPersistedSettings, session]);
+  }, [clearDeviceAuthState, session]);
 
   const value: AuthContextValue = {
     session,
