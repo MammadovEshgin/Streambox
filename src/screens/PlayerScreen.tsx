@@ -34,6 +34,12 @@ import { resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayer
 import { getProviderConfig } from "../services/providerConfigService";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
+function debugLog(...args: unknown[]) {
+  if (__DEV__) {
+    console.log(...args);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Cinema facts shown during loading
 // ---------------------------------------------------------------------------
@@ -2146,7 +2152,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     })
       .then((result) => {
         if (cancelled) return;
-        console.log("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
+        debugLog("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
 
         if (result.qualityWarning && result.source !== "not_found") {
           setIsResolving(false);
@@ -2264,7 +2270,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   useEffect(() => {
     if (!videoPlayer || !directStreamUrl) return;
 
-    console.log("[Player] Loading direct stream:", directStreamUrl, "referer:", streamReferer);
+    debugLog("[Player] Loading direct stream:", directStreamUrl, "referer:", streamReferer);
     const contentType: ContentType | undefined = directStreamType === "m3u8" ? "hls" : undefined;
     const source = {
       uri: directStreamUrl,
@@ -2287,15 +2293,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     const statusSub = videoPlayer.addListener("statusChange", (ev: any) => {
       if (ev.status === "readyToPlay" && !hasStarted) {
         hasStarted = true;
-        console.log("[Player] Ready â€” starting playback");
-        console.log("[Player] Available subtitle tracks:", JSON.stringify(videoPlayer.availableSubtitleTracks));
+        debugLog("[Player] Ready - starting playback");
+        debugLog("[Player] Available subtitle tracks:", JSON.stringify(videoPlayer.availableSubtitleTracks));
         setAvailableSubtitleTracks(videoPlayer.availableSubtitleTracks);
         setSelectedSubtitleTrack(videoPlayer.subtitleTrack ?? null);
         videoPlayer.play();
         setIsPlaybackReady(true);
       }
       if (ev.status === "error") {
-        console.log("[Player] Video error:", ev.error?.message);
+        debugLog("[Player] Video error:", ev.error?.message);
         setPlayerResult((prev) => {
           if (prev?.source === "dizipal_direct") {
             return { url: prev.url, source: "dizipal" };
@@ -2313,7 +2319,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     });
 
     const subtitleSub = videoPlayer.addListener("availableSubtitleTracksChange", (ev: any) => {
-      console.log("[Player] Subtitle tracks available:", JSON.stringify(ev.availableSubtitleTracks));
+      debugLog("[Player] Subtitle tracks available:", JSON.stringify(ev.availableSubtitleTracks));
       setAvailableSubtitleTracks(ev.availableSubtitleTracks);
     });
 
@@ -2365,22 +2371,22 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       })
       .then((response) => {
         if (cancelled) return;
-        console.log(
+        debugLog(
           "[Player] Subtitle response preview:",
           response.data.slice(0, 200).replace(/\s+/g, " ")
         );
         const cues = parseSubtitleDocument(response.data);
-        console.log("[Player] Parsed external subtitles:", selectedExternalSubtitle.label, cues.length);
+        debugLog("[Player] Parsed external subtitles:", selectedExternalSubtitle.label, cues.length);
         if (cues.length === 0) {
           // Log raw bytes to debug encoding issues
           const rawChars = response.data.slice(0, 60);
-          console.log("[Player] Subtitle raw char codes:", Array.from(rawChars).map((c: string) => c.charCodeAt(0)).join(","));
+          debugLog("[Player] Subtitle raw char codes:", Array.from(rawChars).map((c: string) => c.charCodeAt(0)).join(","));
         }
         setExternalSubtitleCues(cues);
       })
       .catch((error) => {
         if (cancelled) return;
-        console.log("[Player] Failed to load external subtitles:", selectedExternalSubtitle.url, error?.message ?? String(error));
+        debugLog("[Player] Failed to load external subtitles:", selectedExternalSubtitle.url, error?.message ?? String(error));
         setExternalSubtitleCues([]);
         setActiveSubtitleText(null);
       });

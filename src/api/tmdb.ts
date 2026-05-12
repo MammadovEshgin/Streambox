@@ -4,6 +4,7 @@ import { getCachedOmdbRatings } from "./ratingsProxy";
 import i18n from "../localization/i18n";
 import { getLanguageLocale, normalizeAppLanguage, type AppLanguage } from "../localization/types";
 import { shouldFetchExternalRatings, type ExternalRatingsSurface } from "../services/externalRatingsPolicy";
+import { trackNetworkFailure } from "../services/telemetryService";
 import {
   getImdbTop250Movies,
   getImdbTop250Shows,
@@ -508,7 +509,22 @@ function applyTmdbAuthToConfig(config: any, mode: TmdbAuthMode) {
 
   nextConfig.headers = headers;
   nextConfig._tmdbAuthMode = mode;
+  nextConfig._requestStartedAt = config._requestStartedAt ?? Date.now();
   return nextConfig;
+}
+
+function getTelemetryEndpoint(config: any) {
+  const rawUrl = String(config?.url ?? "");
+  if (!rawUrl) {
+    return "unknown";
+  }
+
+  try {
+    const parsed = rawUrl.startsWith("http") ? new URL(rawUrl) : new URL(rawUrl, "https://streambox.local");
+    return parsed.pathname;
+  } catch {
+    return rawUrl.split("?")[0].slice(0, 120);
+  }
 }
 
 tmdbClient.interceptors.request.use((config) => {
@@ -520,12 +536,21 @@ tmdbClient.interceptors.request.use((config) => {
 tmdbClient.interceptors.response.use(
   (response) => response,
   async (error) => {
+    const status = error?.response?.status;
+    const config = error?.config as any;
+    if (status === 429 || status >= 500 || !status) {
+      trackNetworkFailure("tmdb", {
+        status: status ?? null,
+        endpoint: getTelemetryEndpoint(config),
+        usesProxy: usesTmdbProxy,
+        durationMs: config?._requestStartedAt ? Date.now() - config._requestStartedAt : null,
+        rateLimitRemaining: error?.response?.headers?.["x-ratelimit-remaining"] ?? null,
+      }, status === 429 ? "error" : "warning");
+    }
+
     if (usesTmdbProxy) {
       return Promise.reject(error);
     }
-
-    const status = error?.response?.status;
-    const config = error?.config as any;
 
     if (status !== 401 || !config || config._tmdbRetried) {
       return Promise.reject(error);

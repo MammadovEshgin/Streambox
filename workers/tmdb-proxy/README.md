@@ -30,3 +30,5 @@ For production builds, remove `EXPO_PUBLIC_TMDB_API_KEY` and `EXPO_PUBLIC_TMDB_A
 - `/3/movie/123` and `/movie/123` are both accepted.
 - Query params are forwarded except `api_key`, which is always stripped from client requests.
 - Search responses are cached for 5 minutes; other successful TMDB responses are cached for 6 hours.
+- Requests are rate-limited per client IP. Defaults are `120` requests per `60` seconds and can be tuned with `RATE_LIMIT_MAX_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS`.
+- Worker logs are structured JSON with `tmdb_proxy_response`, `tmdb_proxy_rate_limited`, and `tmdb_proxy_error` events for production monitoring.

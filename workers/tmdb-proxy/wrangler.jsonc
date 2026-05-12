@@ -8,6 +8,8 @@
     "head_sampling_rate": 0.1
   },
   "vars": {
-    "ALLOWED_ORIGINS": ""
+    "ALLOWED_ORIGINS": "",
+    "RATE_LIMIT_WINDOW_SECONDS": "60",
+    "RATE_LIMIT_MAX_REQUESTS": "120"
   }
 }

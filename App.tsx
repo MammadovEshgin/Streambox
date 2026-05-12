@@ -10,6 +10,7 @@ import * as Updates from "expo-updates";
 import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
 import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { I18nextProvider, useTranslation } from "react-i18next";
@@ -28,6 +29,7 @@ import { OtpVerificationScreen } from "./src/screens/auth/OtpVerificationScreen"
 import { ResetPasswordScreen } from "./src/screens/auth/ResetPasswordScreen";
 import { WelcomeScreen } from "./src/screens/WelcomeScreen";
 import { initialiseProviderConfigs } from "./src/services/providerConfigService";
+import { flushTelemetry, initialiseTelemetry, trackAppError, trackEvent, trackPerformance } from "./src/services/telemetryService";
 import { AppSettingsProvider, useAppSettings } from "./src/settings/AppSettingsContext";
 import { migrateLegacyContentImageCaches } from "./src/services/remoteImageCache";
 import { clearPersistedRuntimeCaches } from "./src/services/runtimeCache";
@@ -298,6 +300,17 @@ function AppShell() {
   const [migrationsReady, setMigrationsReady] = useState(false);
   const isResettingPasswordRef = useRef(false);
   const previousSessionUserIdRef = useRef<string | null>(null);
+  const appStartedAtRef = useRef(Date.now());
+  const hasTrackedAppReadyRef = useRef(false);
+
+  useEffect(() => {
+    initialiseTelemetry({
+      platform: Platform.OS,
+      appVersion: String(Updates.runtimeVersion ?? "unknown"),
+      buildChannel: Updates.channel ?? null,
+      updateId: Updates.updateId ?? null,
+    });
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -388,6 +401,7 @@ function AppShell() {
     const previousSessionUserId = previousSessionUserIdRef.current;
 
     if (previousSessionUserId && !currentSessionUserId) {
+      trackEvent("session_signed_out", "app");
       void AsyncStorage.setItem(SIGN_OUT_WELCOME_KEY, "1");
       setAuthFlow("main");
       setPendingEmail("");
@@ -396,7 +410,23 @@ function AppShell() {
     }
 
     previousSessionUserIdRef.current = currentSessionUserId;
+    if (currentSessionUserId) {
+      trackEvent("session_available", "app");
+      void flushTelemetry();
+    }
   }, [authLoading, session]);
+
+  useEffect(() => {
+    if (launchPhase !== "app" || !isUserDataReady || hasTrackedAppReadyRef.current) {
+      return;
+    }
+
+    hasTrackedAppReadyRef.current = true;
+    trackPerformance("app_ready", Date.now() - appStartedAtRef.current, {
+      launchPhase,
+      hasSession: Boolean(session?.user),
+    });
+  }, [isUserDataReady, launchPhase, session?.user]);
 
   const handleContinueFromWelcome = useCallback(async () => {
     try {
@@ -473,6 +503,9 @@ function AppShell() {
       capturedAt: new Date().toISOString(),
     });
     void AsyncStorage.setItem(LAST_STARTUP_ERROR_KEY, payload).catch(() => undefined);
+    trackAppError("startup_render_crash", error, {
+      componentStack: info.componentStack ?? null,
+    }, "fatal");
   }, []);
 
   const showStartupErrorDetails = useMemo(() => isInternalBuild(), []);

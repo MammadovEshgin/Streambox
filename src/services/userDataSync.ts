@@ -14,6 +14,7 @@ import {
 } from "../settings/settingsStorage";
 import { DEFAULT_THEME_ID, THEME_OPTIONS, type ThemeId } from "../theme/Theme";
 import { supabase } from "./supabase";
+import { trackNetworkFailure } from "./telemetryService";
 import {
   LIKED_MOVIES_STORAGE_KEY,
   LIKED_SERIES_STORAGE_KEY,
@@ -771,7 +772,10 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
     }
   }
 
-  if (flushPromise) { await flushPromise; return; }
+  if (flushPromise) {
+    await flushPromise;
+    return flushSupabaseUserDataSync(targetId);
+  }
   flushPromise = (async () => {
     const uid = targetId || (await getCurrentUserId()); if (!uid) return;
     const scheduledTimer = scheduledFlushTimers.get(uid);
@@ -786,9 +790,20 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
     const batch = a.slice(0, MAX_SYNC_OPERATIONS_PER_FLUSH);
     const remaining = a.slice(MAX_SYNC_OPERATIONS_PER_FLUSH);
     const f: PendingSyncOperation[] = [];
-    for (const op of batch) { try { await executePendingOperation(op); } catch (e) { console.warn("Sync failed", e); f.push(op); } }
+    for (const op of batch) {
+      try {
+        await executePendingOperation(op);
+      } catch (e) {
+        console.warn("Sync failed", e);
+        trackNetworkFailure("supabase", {
+          operationKind: op.kind,
+          message: e instanceof Error ? e.message : String(e),
+        }, "error");
+        f.push(op);
+      }
+    }
     await writePendingQueue([...r, ...remaining, ...f]);
-    if (remaining.length > 0) {
+    if (remaining.length > 0 || f.length > 0) {
       scheduleSupabaseUserDataSync(uid, SYNC_RETRY_DEBOUNCE_MS);
     }
   })().finally(() => { flushPromise = null; });

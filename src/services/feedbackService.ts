@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { trackNetworkFailure } from "./telemetryService";
 import type { AppLanguage } from "../localization/types";
 import type { ThemeId } from "../theme/Theme";
 
@@ -64,10 +65,17 @@ export async function sendUserFeedback(payload: FeedbackPayload) {
   }
 
   if (!response.ok) {
+    trackNetworkFailure("feedback", {
+      status: response.status,
+    }, "warning");
     throw new Error(data?.message || "Unable to send feedback right now.");
   }
 
   if (!data?.success) {
+    trackNetworkFailure("feedback", {
+      status: response.status,
+      success: false,
+    }, "warning");
     throw new Error(data?.message || "Unable to send feedback right now.");
   }
 

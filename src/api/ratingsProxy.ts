@@ -1,4 +1,5 @@
 import axios from "axios";
+import { trackNetworkFailure } from "../services/telemetryService";
 
 type CachedOmdbRatings = {
   imdb: string | null;
@@ -53,7 +54,11 @@ export async function getCachedOmdbRatings(imdbId: string): Promise<CachedOmdbRa
       );
 
       return normalizeRatings(response.data.ratings);
-    } catch {
+    } catch (error) {
+      trackNetworkFailure("external-ratings", {
+        status: axios.isAxiosError(error) ? error.response?.status ?? null : null,
+        imdbId: normalizedImdbId,
+      });
       return null;
     } finally {
       inFlightRatingsRequests.delete(normalizedImdbId);
