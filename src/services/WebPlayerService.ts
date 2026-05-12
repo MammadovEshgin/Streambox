@@ -45,6 +45,12 @@ export type WebPlayerResult = {
 const UA =
   "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
 
+function debugLog(...args: unknown[]) {
+  if (__DEV__) {
+    console.log(...args);
+  }
+}
+
 function getHdfilmBaseUrl(): string {
   return getProviderConfig("hdfilm").baseUrl;
 }
@@ -316,7 +322,7 @@ async function queryHdFilm(query: string): Promise<SearchResult[]> {
       }))
       .filter((result) => result.href.length > 0);
   } catch (error: any) {
-    console.log(`[WebPlayer] HdFilm search error for "${query}":`, error?.message);
+    debugLog(`[WebPlayer] HdFilm search error for "${query}":`, error?.message);
     return [];
   }
 }
@@ -540,7 +546,7 @@ async function findSeriesEpisodeUrl(
     }) ?? null;
 
   } catch (e: any) {
-    console.log(`[WebPlayer] Error fetching series page: ${seriesPageUrl}`, e?.message || String(e));
+    debugLog(`[WebPlayer] Error fetching series page: ${seriesPageUrl}`, e?.message || String(e));
     return null;
   }
 }

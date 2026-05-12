@@ -13,6 +13,7 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
+import { trackNetworkFailure } from "./telemetryService";
 
 // ─── Types ──────────────────────────────────────────────────────────
 export type ProviderEntry = {
@@ -37,6 +38,12 @@ const SUPABASE_URL = (process.env.EXPO_PUBLIC_SUPABASE_URL ?? "").replace(/\/+$/
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "";
 const FUNCTION_URL = SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/provider-configs` : "";
 const FETCH_TIMEOUT_MS = 6_000;
+
+function debugLog(...args: unknown[]) {
+  if (__DEV__) {
+    console.log(...args);
+  }
+}
 
 /**
  * Hard-coded fallbacks — these are the URLs at the time of writing.
@@ -70,7 +77,7 @@ export async function initialiseProviderConfigs(): Promise<void> {
     _configs = remote;
     _initialised = true;
     await persistToStorage(remote);
-    console.log("[ProviderConfig] Loaded from remote", summarise(remote));
+    debugLog("[ProviderConfig] Loaded from remote", summarise(remote));
     return;
   }
 
@@ -79,13 +86,13 @@ export async function initialiseProviderConfigs(): Promise<void> {
   if (cached) {
     _configs = cached;
     _initialised = true;
-    console.log("[ProviderConfig] Loaded from local cache", summarise(cached));
+    debugLog("[ProviderConfig] Loaded from local cache", summarise(cached));
     return;
   }
 
   // 3. Hardcoded fallback (already set)
   _initialised = true;
-  console.log("[ProviderConfig] Using hardcoded fallback", summarise(_configs));
+  debugLog("[ProviderConfig] Using hardcoded fallback", summarise(_configs));
 }
 
 /** Synchronous getter — safe to call anywhere after init. */
@@ -112,7 +119,7 @@ export async function refreshProviderConfigs(): Promise<boolean> {
   if (remote) {
     _configs = remote;
     await persistToStorage(remote);
-    console.log("[ProviderConfig] Refreshed from remote", summarise(remote));
+    debugLog("[ProviderConfig] Refreshed from remote", summarise(remote));
     return true;
   }
   return false;
@@ -137,6 +144,9 @@ async function fetchRemoteConfigs(): Promise<ProviderConfigMap | null> {
     return mergeWithFallback(data.providers);
   } catch (e) {
     console.warn("[ProviderConfig] Remote fetch failed:", e);
+    trackNetworkFailure("provider-configs", {
+      message: e instanceof Error ? e.message : String(e),
+    });
     return null;
   }
 }

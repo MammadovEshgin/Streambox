@@ -3,6 +3,7 @@ node_modules/
 
 # expo and react-native
 .expo/
+.expo-export-test/
 dist/
 web-build/
 android-build/
@@ -42,3 +43,9 @@ Thumbs.db
 # local media assets
 posters/
 roadmap timeline.webp
+assets/frenchise.png
+assets/images/franchise/frenchise-card-bg.jpg
+
+# local tool caches
+.npm-cache/
+supabase/.temp/

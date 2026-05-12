@@ -1,1 +1,0 @@
-export { FranchiseCollectionArtwork } from "./FranchiseArtworkCard";

@@ -2,6 +2,16 @@ const TMDB_API_BASE_URL = "https://api.themoviedb.org/3";
 const DEFAULT_CACHE_TTL_SECONDS = 60 * 60 * 6;
 const SEARCH_CACHE_TTL_SECONDS = 60 * 5;
 const ERROR_CACHE_TTL_SECONDS = 30;
+const DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60;
+const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 120;
+
+function logMetric(event, fields = {}) {
+  console.log(JSON.stringify({
+    service: "streambox-tmdb-proxy",
+    event,
+    ...fields,
+  }));
+}
 
 function jsonResponse(body, init = {}) {
   return new Response(JSON.stringify(body), {
@@ -32,6 +42,64 @@ function buildCorsHeaders(request, env) {
     "access-control-allow-headers": "content-type, x-streambox-proxy-target",
     "access-control-max-age": "86400",
     vary: "Origin",
+  };
+}
+
+function getClientIp(request) {
+  return request.headers.get("cf-connecting-ip")
+    || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+    || "unknown";
+}
+
+function getRateLimitConfig(env) {
+  const windowSeconds = Number(env.RATE_LIMIT_WINDOW_SECONDS ?? DEFAULT_RATE_LIMIT_WINDOW_SECONDS);
+  const maxRequests = Number(env.RATE_LIMIT_MAX_REQUESTS ?? DEFAULT_RATE_LIMIT_MAX_REQUESTS);
+
+  return {
+    windowSeconds: Number.isFinite(windowSeconds) && windowSeconds > 0
+      ? Math.floor(windowSeconds)
+      : DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
+    maxRequests: Number.isFinite(maxRequests) && maxRequests > 0
+      ? Math.floor(maxRequests)
+      : DEFAULT_RATE_LIMIT_MAX_REQUESTS,
+  };
+}
+
+async function checkRateLimit(request, env) {
+  const { windowSeconds, maxRequests } = getRateLimitConfig(env);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const windowId = Math.floor(nowSeconds / windowSeconds);
+  const clientIp = getClientIp(request);
+  const cache = caches.default;
+  const cacheKey = new Request(
+    `https://streambox.internal/rate-limit/tmdb/${encodeURIComponent(clientIp)}/${windowId}`
+  );
+  const cached = await cache.match(cacheKey);
+  const currentCount = cached ? Number(await cached.text()) || 0 : 0;
+  const nextCount = currentCount + 1;
+
+  if (nextCount > maxRequests) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, (windowId + 1) * windowSeconds - nowSeconds),
+      limit: maxRequests,
+      remaining: 0,
+    };
+  }
+
+  const countResponse = new Response(String(nextCount), {
+    headers: {
+      "cache-control": `private, max-age=${Math.max(1, windowSeconds + 5)}`,
+    },
+  });
+
+  await cache.put(cacheKey, countResponse);
+
+  return {
+    allowed: true,
+    retryAfterSeconds: 0,
+    limit: maxRequests,
+    remaining: Math.max(0, maxRequests - nextCount),
   };
 }
 
@@ -108,14 +176,10 @@ async function fetchTmdb(targetUrl, request, env) {
   return fetch(targetUrl, {
     method: request.method,
     headers: buildTmdbHeaders(env),
-    cf: {
-      cacheEverything: true,
-      cacheTtl: getCacheTtlSeconds(targetUrl, 200),
-    },
   });
 }
 
-function withResponseHeaders(response, request, env, targetUrl) {
+function withResponseHeaders(response, request, env, targetUrl, rateLimitResult) {
   const headers = new Headers(response.headers);
   const corsHeaders = buildCorsHeaders(request, env);
 
@@ -125,6 +189,10 @@ function withResponseHeaders(response, request, env, targetUrl) {
 
   headers.set("cache-control", `public, max-age=${getCacheTtlSeconds(targetUrl, response.status)}`);
   headers.set("x-streambox-tmdb-proxy", "hit");
+  if (rateLimitResult) {
+    headers.set("x-ratelimit-limit", String(rateLimitResult.limit));
+    headers.set("x-ratelimit-remaining", String(rateLimitResult.remaining));
+  }
   headers.delete("set-cookie");
 
   return new Response(response.body, {
@@ -136,6 +204,8 @@ function withResponseHeaders(response, request, env, targetUrl) {
 
 export default {
   async fetch(request, env, ctx) {
+    const startedAt = Date.now();
+
     if (request.method === "OPTIONS") {
       return handleOptions(request, env);
     }
@@ -154,9 +224,36 @@ export default {
       );
     }
 
+    const rateLimitResult = await checkRateLimit(request, env);
+    if (!rateLimitResult.allowed) {
+      logMetric("tmdb_proxy_rate_limited", {
+        method: request.method,
+        remaining: rateLimitResult.remaining,
+        retryAfterSeconds: rateLimitResult.retryAfterSeconds,
+        durationMs: Date.now() - startedAt,
+      });
+      return jsonResponse(
+        { error: "Too many requests" },
+        {
+          status: 429,
+          headers: {
+            ...buildCorsHeaders(request, env),
+            "retry-after": String(rateLimitResult.retryAfterSeconds),
+            "x-ratelimit-limit": String(rateLimitResult.limit),
+            "x-ratelimit-remaining": "0",
+          },
+        }
+      );
+    }
+
     const requestUrl = new URL(request.url);
     const targetUrl = buildTmdbUrl(requestUrl);
     if (!targetUrl) {
+      logMetric("tmdb_proxy_invalid_path", {
+        method: request.method,
+        path: requestUrl.pathname,
+        durationMs: Date.now() - startedAt,
+      });
       return jsonResponse(
         { error: "Invalid TMDB path" },
         { status: 400, headers: buildCorsHeaders(request, env) }
@@ -167,19 +264,41 @@ export default {
     const cacheKey = new Request(targetUrl.toString(), { method: request.method });
     const cachedResponse = await cache.match(cacheKey);
     if (cachedResponse) {
-      return withResponseHeaders(cachedResponse, request, env, targetUrl);
+      logMetric("tmdb_proxy_response", {
+        method: request.method,
+        path: targetUrl.pathname,
+        status: cachedResponse.status,
+        cacheStatus: "hit",
+        rateLimitRemaining: rateLimitResult.remaining,
+        durationMs: Date.now() - startedAt,
+      });
+      return withResponseHeaders(cachedResponse, request, env, targetUrl, rateLimitResult);
     }
 
     try {
       const upstreamResponse = await fetchTmdb(targetUrl, request, env);
-      const response = withResponseHeaders(upstreamResponse, request, env, targetUrl);
+      const response = withResponseHeaders(upstreamResponse, request, env, targetUrl, rateLimitResult);
+      logMetric("tmdb_proxy_response", {
+        method: request.method,
+        path: targetUrl.pathname,
+        status: upstreamResponse.status,
+        cacheStatus: "miss",
+        rateLimitRemaining: rateLimitResult.remaining,
+        durationMs: Date.now() - startedAt,
+      });
 
       if (request.method === "GET" && upstreamResponse.ok) {
         ctx.waitUntil(cache.put(cacheKey, response.clone()));
       }
 
       return response;
-    } catch {
+    } catch (error) {
+      logMetric("tmdb_proxy_error", {
+        method: request.method,
+        path: targetUrl.pathname,
+        message: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - startedAt,
+      });
       return jsonResponse(
         { error: "TMDB upstream request failed" },
         { status: 502, headers: buildCorsHeaders(request, env) }

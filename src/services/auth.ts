@@ -149,10 +149,6 @@ async function signInWithGoogleOAuth() {
     options: {
       redirectTo,
       skipBrowserRedirect: true,
-      queryParams: {
-        access_type: "offline",
-        prompt: "consent",
-      },
     },
   });
 
