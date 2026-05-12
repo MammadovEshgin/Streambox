@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useCallback, useState } from "react";
 import { ActivityIndicator, Alert, Modal, ScrollView, TextInput } from "react-native";
 import { BlurView } from "expo-blur";
-import Animated, { FadeInDown, FadeOut, FadeIn } from "react-native-reanimated";
+import Animated, { FadeOut, FadeIn } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
 
 import { SafeContainer } from "../components/common/SafeContainer";
@@ -691,7 +691,7 @@ export function ProfileSettingsScreen({ navigation }: Props) {
 
       <Modal visible={signingOut} transparent animationType="fade" statusBarTranslucent>
         <SignOutOverlay entering={FadeIn.duration(300)} exiting={FadeOut.duration(200)}>
-          <SignOutContent entering={FadeInDown.duration(400)}>
+          <SignOutContent entering={FadeIn.duration(250)}>
             <ActivityIndicator size="large" color={currentTheme.colors.primary} />
             <SignOutTitle>{t("settings.signingOut")}</SignOutTitle>
           </SignOutContent>
@@ -701,7 +701,7 @@ export function ProfileSettingsScreen({ navigation }: Props) {
       <Modal visible={showSignOutConfirm} transparent animationType="none" statusBarTranslucent>
         <ConfirmModalOverlay entering={FadeIn.duration(200)} exiting={FadeOut.duration(200)}>
           <ConfirmModalBlur intensity={70} tint="dark" />
-          <ConfirmModalContent entering={FadeInDown.duration(300)}>
+          <ConfirmModalContent entering={FadeIn.duration(220)}>
             <Feather name="log-out" size={32} color={currentTheme.colors.primary} style={{ marginBottom: 20 }} />
             <ConfirmTitle>{t("settings.signOutConfirmTitle")}</ConfirmTitle>
             <ConfirmSub>{t("settings.signOutConfirmMessage")}</ConfirmSub>

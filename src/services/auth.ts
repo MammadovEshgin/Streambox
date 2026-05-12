@@ -1,6 +1,6 @@
 import * as AuthSession from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
-import { Platform } from "react-native";
+import { NativeModules, Platform } from "react-native";
 
 import { supabase } from "./supabase";
 
@@ -101,6 +101,11 @@ function getGoogleIosClientId() {
 }
 
 function getNativeGoogleModule(): GoogleSignInModule | null {
+  if (Platform.OS === "web" || !NativeModules.RNGoogleSignin) {
+    nativeGoogleModule = null;
+    return null;
+  }
+
   if (nativeGoogleModule !== undefined) {
     return nativeGoogleModule;
   }
@@ -115,7 +120,7 @@ function getNativeGoogleModule(): GoogleSignInModule | null {
 }
 
 function canUseNativeGoogleSignIn() {
-  return Platform.OS !== "web" && !!getNativeGoogleModule() && !!getGoogleWebClientId();
+  return !!getNativeGoogleModule() && !!getGoogleWebClientId();
 }
 
 async function configureNativeGoogleSignIn(module: GoogleSignInModule) {
