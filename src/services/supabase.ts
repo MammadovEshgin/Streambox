@@ -3,8 +3,11 @@ import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "";
+const HAS_SUPABASE_CONFIG = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+const SAFE_SUPABASE_URL = HAS_SUPABASE_CONFIG ? SUPABASE_URL : "https://streambox-placeholder.supabase.co";
+const SAFE_SUPABASE_ANON_KEY = HAS_SUPABASE_CONFIG ? SUPABASE_ANON_KEY : "missing-supabase-anon-key";
 
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+if (!HAS_SUPABASE_CONFIG) {
   console.warn("Supabase URL or anon key missing from environment variables.");
 }
 
@@ -17,6 +20,7 @@ function getSupabaseProjectRef() {
 }
 
 export const SUPABASE_AUTH_STORAGE_KEY = `sb-${getSupabaseProjectRef()}-auth-token`;
+export const isSupabaseConfigured = HAS_SUPABASE_CONFIG;
 
 export async function clearSupabaseAuthStorage() {
   await AsyncStorage.multiRemove([
@@ -26,7 +30,7 @@ export async function clearSupabaseAuthStorage() {
   ]);
 }
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+export const supabase = createClient(SAFE_SUPABASE_URL, SAFE_SUPABASE_ANON_KEY, {
   auth: {
     storage: AsyncStorage,
     autoRefreshToken: false,
