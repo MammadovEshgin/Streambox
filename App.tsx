@@ -180,7 +180,7 @@ const StartupSecondaryButton = styled.Pressable`
 `;
 
 const StartupPrimaryText = styled.Text`
-  color: #031106;
+  color: #FFFFFF;
   font-family: Outfit_700Bold;
   font-size: 15px;
 `;
@@ -534,7 +534,7 @@ function AppShell() {
       {shouldShowAppLoader ? (
         <LoaderScreen>
           <LoaderGradient
-            colors={["#040404", activeTheme.colors.primaryGlow, "#040404"]}
+            colors={[activeTheme.colors.background, activeTheme.colors.primaryGlow, activeTheme.colors.background]}
             locations={[0, 0.5, 1]}
           />
           <LoaderGlow $color={activeTheme.colors.primary} />

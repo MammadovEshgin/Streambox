@@ -158,13 +158,7 @@ type AddonInstance = {
   minAcceptableQuality: number;
 };
 
-const ADDON_INSTANCES: AddonInstance[] = [
-  {
-    id: "nuvio",
-    baseUrl: "https://nuviostreams.hayd.uk",
-    minAcceptableQuality: 720
-  }
-];
+const ADDON_INSTANCES: AddonInstance[] = [];
 
 // ---------------------------------------------------------------------------
 // Utility functions
@@ -624,6 +618,10 @@ export async function resolveDirectLink(
 ): Promise<StreamResolveResult> {
   const attemptedProviders: string[] = [];
   const allCandidates: StreamCandidate[] = [];
+
+  if (ADDON_INSTANCES.length === 0) {
+    throw new Error("No direct stream providers are currently configured.");
+  }
 
   // Query all addon instances in parallel
   const results = await Promise.allSettled(

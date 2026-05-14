@@ -120,7 +120,7 @@ const PrimaryButton = styled(Pressable)`
 `;
 
 const PrimaryButtonLabel = styled.Text`
-  color: #031106;
+  color: #FFFFFF;
   font-family: Outfit_700Bold;
   font-size: 15px;
 `;

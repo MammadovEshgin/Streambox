@@ -38,7 +38,7 @@ const Darken = styled.View`
   right: 0;
   bottom: 0;
   left: 0;
-  background-color: rgba(11, 11, 14, 0.18);
+  background-color: rgba(8, 8, 8, 0.18);
 `;
 
 const FadeGradient = styled(LinearGradient)`
