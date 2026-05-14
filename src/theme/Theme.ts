@@ -1,49 +1,58 @@
 import { Typography } from "./Typography";
 
 export type ThemeId =
-  | "emerald-noir"
   | "cinema-ember"
   | "velvet-crimson"
-  | "aurora-cyan";
+  | "aurora-cyan"
+  | "emerald-noir"
+  | "luxe-gold"
+  | "glacier-blue";
 
 type ThemeOption = {
   id: ThemeId;
   name: string;
   description: string;
   primary: string;
-  primaryDesaturated: string;
 };
 
-export const DEFAULT_THEME_ID: ThemeId = "emerald-noir";
+export const DEFAULT_THEME_ID: ThemeId = "cinema-ember";
 
 export const THEME_OPTIONS: ThemeOption[] = [
-  {
-    id: "emerald-noir",
-    name: "Emerald Noir",
-    description: "Dark screen, rich green highlights, understated and premium.",
-    primary: "#22C55E",
-    primaryDesaturated: "#3DAA70"
-  },
   {
     id: "cinema-ember",
     name: "Cinema Ember",
     description: "Classic StreamBox heat with a premium cinema glow.",
-    primary: "#FF4D00",
-    primaryDesaturated: "#E8632A"
+    primary: "#FF4D00"
   },
   {
     id: "velvet-crimson",
     name: "Netflix Red",
     description: "Netflix-inspired signature red for a bold but familiar premium streaming look.",
-    primary: "#E50914",
-    primaryDesaturated: "#D43743"
+    primary: "#E50914"
   },
   {
     id: "aurora-cyan",
     name: "Prime Video Blue",
     description: "Prime Video-inspired blue with a bright streaming accent and familiar dark-mode contrast.",
-    primary: "#00A8E1",
-    primaryDesaturated: "#3AAAD0"
+    primary: "#00A8E1"
+  },
+  {
+    id: "emerald-noir",
+    name: "Emerald Noir",
+    description: "Dark screen, rich green highlights, understated and premium.",
+    primary: "#22C55E"
+  },
+  {
+    id: "luxe-gold",
+    name: "Luxe Gold",
+    description: "Soft brushed gold with warm editorial character and less visual fatigue.",
+    primary: "#B9974F"
+  },
+  {
+    id: "glacier-blue",
+    name: "Glacier Blue",
+    description: "Refined slate-blue accent with a cool premium tone instead of harsh brightness.",
+    primary: "#7B97C9"
   }
 ];
 
@@ -80,30 +89,29 @@ function resolveThemeOption(themeId: ThemeId): ThemeOption {
 
 export function createTheme(themeId: ThemeId = DEFAULT_THEME_ID) {
   const option = resolveThemeOption(themeId);
-  const accent = option.primaryDesaturated;
 
   return {
     id: option.id,
     displayName: option.name,
     colors: {
-      background: "#0B0B0E",
-      surface: "#131318",
-      surfaceRaised: "#1B1B22",
-      surfaceHigh: "#23232C",
-      primary: accent,
-      primarySoft: withAlpha(accent, 0.14),
-      primarySoftStrong: withAlpha(accent, 0.22),
-      primaryMuted: withAlpha(accent, 0.4),
-      primaryGlow: withAlpha(accent, 0.32),
-      primaryTransparent: withAlpha(accent, 0),
-      textPrimary: "#F2F1EE",
-      textSecondary: "#9A9AA8",
-      textTertiary: "#5C5C68",
-      border: "#2A2A33",
-      borderSoft: "#1F1F26",
-      overlayScrim: "rgba(11, 11, 14, 0.72)",
-      glassFill: "rgba(255, 255, 255, 0.06)",
-      glassBorder: "rgba(255, 255, 255, 0.10)"
+      background: "#080808",
+      surface: "#101012",
+      surfaceRaised: "#18181B",
+      surfaceHigh: "#18181B",
+      primary: option.primary,
+      primarySoft: withAlpha(option.primary, 0.14),
+      primarySoftStrong: withAlpha(option.primary, 0.2),
+      primaryMuted: withAlpha(option.primary, 0.4),
+      primaryGlow: withAlpha(option.primary, 0.35),
+      primaryTransparent: withAlpha(option.primary, 0),
+      textPrimary: "#F4F4F5",
+      textSecondary: "#A1A1AA",
+      textTertiary: "#A1A1AA",
+      border: "#27272A",
+      borderSoft: "#27272A",
+      overlayScrim: "rgba(8, 8, 8, 0.72)",
+      glassFill: "rgba(255, 255, 255, 0.05)",
+      glassBorder: "rgba(255, 255, 255, 0.08)"
     },
     typography: Typography,
     spacing: {

@@ -48,4 +48,5 @@ assets/images/franchise/frenchise-card-bg.jpg
 
 # local tool caches
 .npm-cache/
+.wrangler/
 supabase/.temp/

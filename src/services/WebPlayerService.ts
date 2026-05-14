@@ -1142,7 +1142,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
       };
     }
   } catch (error) {
-    console.error("[WebPlayerService] Direct resolution failed:", error);
+    debugLog("[WebPlayerService] Direct resolution skipped:", error);
   }
 
   return { url: "", source: "not_found" };

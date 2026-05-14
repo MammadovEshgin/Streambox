@@ -55,8 +55,14 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     referer: "https://www.hdfilmcehennemi.nl/",
   },
   dizipal: {
-    baseUrl: "https://dizipal2031.com",
-    referer: "https://dizipal2031.com/",
+    baseUrl: "https://dizipal2070.com",
+    referer: "https://dizipal2070.com/",
+  },
+};
+
+const STALE_PROVIDER_BASE_URLS: Partial<Record<keyof ProviderConfigMap, Record<string, ProviderEntry>>> = {
+  dizipal: {
+    "https://dizipal2031.com": HARDCODED_FALLBACK.dizipal,
   },
 };
 
@@ -162,9 +168,12 @@ function mergeWithFallback(
 
   for (const key of Object.keys(result) as Array<keyof ProviderConfigMap>) {
     if (remote[key]?.baseUrl) {
+      const baseUrl = remote[key].baseUrl.replace(/\/+$/, "");
+      const replacement = STALE_PROVIDER_BASE_URLS[key]?.[baseUrl];
+
       result[key] = {
-        baseUrl: remote[key].baseUrl.replace(/\/+$/, ""),
-        referer: remote[key].referer || `${remote[key].baseUrl.replace(/\/+$/, "")}/`,
+        baseUrl: replacement?.baseUrl ?? baseUrl,
+        referer: replacement?.referer ?? (remote[key].referer || `${baseUrl}/`),
       };
     }
   }
@@ -185,7 +194,7 @@ async function loadFromStorage(): Promise<ProviderConfigMap | null> {
 
     const parsed = JSON.parse(raw);
     if (parsed?.hdfilm?.baseUrl && parsed?.dizipal?.baseUrl) {
-      return parsed as ProviderConfigMap;
+      return mergeWithFallback(parsed);
     }
     return null;
   } catch {
