@@ -18,6 +18,7 @@ import {
 import { getImdbTop250Movies, getImdbTop250Shows, type ImdbTop250Item } from "../api/imdb";
 import i18n from "../localization/i18n";
 import { normalizeAppLanguage } from "../localization/types";
+import { mapWithConcurrency } from "../utils/concurrency";
 import { enqueueDailyRecommendationSync } from "./userDataSync";
 
 const CURRENT_MOVIE_KEY = "streambox/movie-of-day/current";
@@ -28,6 +29,7 @@ const MOVIE_CANDIDATE_DISCOVER_PAGES = 4;
 const SERIES_CANDIDATE_PAGES = 2;
 const TOP_SCORING_SLICE = 6;
 const IMDB_TOP_FALLBACK_LIMIT = 100;
+const DAILY_PICK_PROFILE_CONCURRENCY = 4;
 
 type StoredDailyPick = {
   dateKey: string;
@@ -289,7 +291,9 @@ async function buildMovieTasteModel(sourceMovieIds: number[]): Promise<MovieTast
 
   const sampledIds = sourceMovieIds.slice(0, PROFILE_MEDIA_LIMIT);
   const profiles = (
-    await Promise.all(sampledIds.map((id) => getMovieTasteProfile(id)))
+    await mapWithConcurrency(sampledIds, DAILY_PICK_PROFILE_CONCURRENCY, async (id) =>
+      getMovieTasteProfile(id)
+    )
   ).filter((profile): profile is MovieTasteProfile => profile !== null);
 
   return profiles.length > 0 ? profiles : null;
@@ -416,10 +420,10 @@ async function pickPersonalizedMovie(
   }
 
   const candidateProfiles = (
-    await Promise.all(
-      filteredCandidates
-        .slice(0, CANDIDATE_PROFILE_LIMIT)
-        .map((candidate) => getMovieTasteProfile(candidate.id as number))
+    await mapWithConcurrency(
+      filteredCandidates.slice(0, CANDIDATE_PROFILE_LIMIT),
+      DAILY_PICK_PROFILE_CONCURRENCY,
+      async (candidate) => getMovieTasteProfile(candidate.id as number)
     )
   ).filter((profile): profile is MovieTasteProfile => profile !== null);
 
@@ -461,7 +465,9 @@ async function buildSeriesTasteModel(sourceSeriesIds: number[]): Promise<SeriesT
 
   const sampledIds = sourceSeriesIds.slice(0, PROFILE_MEDIA_LIMIT);
   const details = (
-    await Promise.all(sampledIds.map((id) => getSeriesDetails(String(id)).catch(() => null)))
+    await mapWithConcurrency(sampledIds, DAILY_PICK_PROFILE_CONCURRENCY, async (id) =>
+      getSeriesDetails(String(id)).catch(() => null)
+    )
   ).filter((entry): entry is SeriesDetails => entry !== null);
 
   if (details.length === 0) {

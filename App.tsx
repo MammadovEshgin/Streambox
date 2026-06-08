@@ -38,6 +38,8 @@ import { runStorageMigrationsIfNeeded } from "./src/services/storageMigrations";
 const FIRST_OPEN_KEY = "@streambox/first-open-complete-v6";
 const SIGN_OUT_WELCOME_KEY = "@streambox/sign-out-welcome-v1";
 const LAST_STARTUP_ERROR_KEY = "@streambox/last-startup-error-v1";
+const FIRST_LAUNCH_FALLBACK_MS = 2200;
+const FONT_LOAD_FALLBACK_MS = 2600;
 
 const INTERNAL_UPDATE_CHANNELS = new Set(["preview", "staging", "internal"]);
 
@@ -304,6 +306,16 @@ function AppShell() {
   const hasTrackedAppReadyRef = useRef(false);
 
   useEffect(() => {
+    const timeout = setTimeout(() => {
+      setLaunchPhase((current) => (current === "loading" ? "welcome" : current));
+    }, FIRST_LAUNCH_FALLBACK_MS);
+
+    return () => {
+      clearTimeout(timeout);
+    };
+  }, []);
+
+  useEffect(() => {
     initialiseTelemetry({
       platform: Platform.OS,
       appVersion: String(Updates.runtimeVersion ?? "unknown"),
@@ -316,10 +328,13 @@ function AppShell() {
     let active = true;
 
     async function runMigrations() {
-      await runStorageMigrationsIfNeeded();
-      void migrateLegacyContentImageCaches().catch(() => undefined);
-      if (active) {
-        setMigrationsReady(true);
+      try {
+        await runStorageMigrationsIfNeeded();
+        void migrateLegacyContentImageCaches().catch(() => undefined);
+      } finally {
+        if (active) {
+          setMigrationsReady(true);
+        }
       }
     }
 
@@ -601,14 +616,43 @@ function AppShell() {
 }
 
 export default function App() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontLoadError] = useFonts({
     Outfit_400Regular,
     Outfit_500Medium,
     Outfit_600SemiBold,
     Outfit_700Bold,
   });
+  const [fontFallbackReady, setFontFallbackReady] = useState(false);
 
-  if (!fontsLoaded) {
+  useEffect(() => {
+    if (fontsLoaded || fontLoadError) {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      setFontFallbackReady(true);
+    }, FONT_LOAD_FALLBACK_MS);
+
+    return () => {
+      clearTimeout(timeout);
+    };
+  }, [fontLoadError, fontsLoaded]);
+
+  useEffect(() => {
+    if (fontLoadError) {
+      console.warn("Font loading failed; continuing startup with system fallback fonts.", fontLoadError);
+    }
+  }, [fontLoadError]);
+
+  const canRenderApp = fontsLoaded || Boolean(fontLoadError) || fontFallbackReady;
+
+  useEffect(() => {
+    if (canRenderApp) {
+      void SplashScreen.hideAsync().catch(() => undefined);
+    }
+  }, [canRenderApp]);
+
+  if (!canRenderApp) {
     return null;
   }
 

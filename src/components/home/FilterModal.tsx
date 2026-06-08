@@ -1,8 +1,10 @@
 import { Feather } from "@expo/vector-icons";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  BackHandler,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   View
@@ -18,12 +20,12 @@ import { Genre, MediaType, getMovieGenres, getTvGenres } from "../../api/tmdb";
 
 const AnimatedBackdrop = styled(Animated.View)`
   flex: 1;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: rgba(3, 5, 4, 0.76);
   justify-content: flex-end;
 `;
 
 const Sheet = styled(Animated.View)`
-  background-color: ${({ theme }) => theme.colors.background};
+  background-color: ${({ theme }) => theme.colors.surface};
   border-top-left-radius: 12px;
   border-top-right-radius: 12px;
   border-top-width: 1px;
@@ -32,21 +34,25 @@ const Sheet = styled(Animated.View)`
   padding-bottom: 34px;
 `;
 
+const HandleTouchArea = styled.View`
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+`;
+
 const Handle = styled.View`
-  width: 40px;
-  height: 4px;
+  width: 72px;
+  height: 5px;
   border-radius: 2px;
-  background-color: ${({ theme }) => theme.colors.border};
-  align-self: center;
-  margin-top: 12px;
-  margin-bottom: 8px;
+  background-color: ${({ theme }) => theme.colors.textSecondary};
+  opacity: 0.42;
 `;
 
 const SheetHeader = styled.View`
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 20px 16px;
+  padding: 6px 20px 16px;
   border-bottom-width: 1px;
   border-bottom-color: ${({ theme }) => theme.colors.border};
 `;
@@ -73,7 +79,7 @@ const ResetText = styled.Text`
 `;
 
 const Section = styled.View`
-  padding: 20px 20px 0;
+  padding: 18px 20px 0;
 `;
 
 const SectionTitle = styled.Text`
@@ -97,7 +103,7 @@ const Chip = styled(Pressable)<{ $active: boolean }>`
   border-color: ${({ theme, $active }) =>
     $active ? theme.colors.primaryMuted : theme.colors.border};
   background-color: ${({ theme, $active }) =>
-    $active ? theme.colors.primarySoft : theme.colors.surface};
+    $active ? theme.colors.primarySoft : theme.colors.surfaceRaised};
 `;
 
 const ChipText = styled.Text<{ $active: boolean }>`
@@ -120,7 +126,7 @@ const RangeInput = styled.TextInput`
   border-radius: 3px;
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.border};
-  background-color: ${({ theme }) => theme.colors.background};
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
   color: ${({ theme }) => theme.colors.textPrimary};
   font-family: Outfit_500Medium;
   font-size: 15px;
@@ -147,7 +153,7 @@ const RatingChip = styled(Pressable)<{ $active: boolean }>`
   border-color: ${({ theme, $active }) =>
     $active ? theme.colors.primaryMuted : theme.colors.border};
   background-color: ${({ theme, $active }) =>
-    $active ? theme.colors.primarySoft : theme.colors.surface};
+    $active ? theme.colors.primarySoft : theme.colors.surfaceRaised};
   align-items: center;
   justify-content: center;
   flex-direction: row;
@@ -172,7 +178,7 @@ const SortOption = styled(Pressable)<{ $active: boolean }>`
   border-color: ${({ theme, $active }) =>
     $active ? theme.colors.primaryMuted : theme.colors.border};
   background-color: ${({ theme, $active }) =>
-    $active ? theme.colors.primarySoft : theme.colors.surface};
+    $active ? theme.colors.primarySoft : theme.colors.surfaceRaised};
   flex-direction: row;
   align-items: center;
   padding: 0 16px;
@@ -271,6 +277,34 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
   const [local, setLocal] = useState<FilterState>(filters);
   const [genres, setGenres] = useState<Genre[]>([]);
 
+  useEffect(() => {
+    if (!visible) {
+      return undefined;
+    }
+
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      onClose();
+      return true;
+    });
+
+    return () => subscription.remove();
+  }, [onClose, visible]);
+
+  const handlePanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_event, gesture) =>
+          gesture.dy > 8 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+        onPanResponderRelease: (_event, gesture) => {
+          if (gesture.dy > 34 || gesture.vy > 0.45) {
+            onClose();
+          }
+        },
+      }),
+    [onClose]
+  );
+
   // Sync local state when modal opens
   useEffect(() => {
     if (visible) {
@@ -312,7 +346,7 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
   }, [local, onApply, onClose]);
 
   return (
-    <Modal visible={visible} transparent animationType="none" statusBarTranslucent>
+    <Modal visible={visible} transparent animationType="none" statusBarTranslucent onRequestClose={onClose}>
       <AnimatedBackdrop entering={FadeIn.duration(250)} exiting={FadeOut.duration(200)}>
         <Pressable style={{ flex: 1 }} onPress={onClose} />
         <Sheet
@@ -321,7 +355,9 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
           onStartShouldSetResponder={() => true}
           onMoveShouldSetResponder={() => false}
         >
-          <Handle />
+          <HandleTouchArea {...handlePanResponder.panHandlers}>
+            <Handle />
+          </HandleTouchArea>
           <SheetHeader>
             <SheetTitle>{t("filters.title")}</SheetTitle>
             <ResetButton onPress={handleReset}>

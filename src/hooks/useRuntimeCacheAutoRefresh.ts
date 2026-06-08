@@ -20,9 +20,14 @@ export function useRuntimeCacheAutoRefresh({
   onRefresh,
 }: UseRuntimeCacheAutoRefreshOptions) {
   const lastRefreshAttemptAtRef = useRef(0);
+  const inFlightRefreshRef = useRef<Promise<void> | null>(null);
 
   const maybeRefresh = useCallback(() => {
     if (!enabled) {
+      return;
+    }
+
+    if (inFlightRefreshRef.current) {
       return;
     }
 
@@ -37,7 +42,12 @@ export function useRuntimeCacheAutoRefresh({
     }
 
     lastRefreshAttemptAtRef.current = now;
-    void onRefresh(Boolean(entry));
+    const refreshPromise = Promise.resolve(onRefresh(Boolean(entry)))
+      .catch(() => undefined)
+      .finally(() => {
+        inFlightRefreshRef.current = null;
+      });
+    inFlightRefreshRef.current = refreshPromise;
   }, [enabled, entry, getExpectedVersion, maxAgeMs, onRefresh]);
 
   useFocusEffect(

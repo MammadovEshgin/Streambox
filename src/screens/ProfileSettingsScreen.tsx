@@ -490,7 +490,6 @@ export function ProfileSettingsScreen({ navigation }: Props) {
     "emerald-noir": { nameKey: "settings.themeEmeraldNoirName", descriptionKey: "settings.themeEmeraldNoirDescription" },
     "cinema-ember": { nameKey: "settings.themeCinemaEmberName", descriptionKey: "settings.themeCinemaEmberDescription" },
     "velvet-crimson": { nameKey: "settings.themeVelvetCrimsonName", descriptionKey: "settings.themeVelvetCrimsonDescription" },
-    "aurora-cyan": { nameKey: "settings.themeAuroraCyanName", descriptionKey: "settings.themeAuroraCyanDescription" },
   };
 
   const handleSendFeedback = useCallback(async () => {

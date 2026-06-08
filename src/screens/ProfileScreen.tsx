@@ -21,7 +21,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
 import { GENRE_ID_MAP, type MediaItem, type MediaType } from "../api/tmdb";
-import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
 import { useLikedMovies } from "../hooks/useLikedMovies";
@@ -306,12 +305,6 @@ const EmptyText = styled.Text`
   font-size: 13px;
 `;
 
-const LoadingWrap = styled.View`
-  flex: 1;
-  align-items: center;
-  justify-content: center;
-`;
-
 const BottomSpacer = styled.View`
   height: 40px;
 `;
@@ -400,6 +393,8 @@ const EditModalSaveLabel = styled.Text`
 const EditModalContent = styled.ScrollView.attrs({
   showsVerticalScrollIndicator: false,
   keyboardShouldPersistTaps: "handled",
+  keyboardDismissMode: "on-drag",
+  contentContainerStyle: { paddingBottom: 156 },
 })`
   flex: 1;
 `;
@@ -533,7 +528,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const { watchlist: seriesWatchlist, isLoading: swlLoading } = useSeriesWatchlist();
   const { likedMovies, isLoading: lmLoading } = useLikedMovies();
   const { likedSeries, isLoading: lsLoading } = useLikedSeries();
-  const { history: watchHistory, isLoading: whLoading } = useWatchHistory();
+  const { history: watchHistory, rawHistory: fullWatchHistory, isLoading: whLoading } = useWatchHistory();
 
   const [watchlistMovieItems, setWatchlistMovieItems] = useState<MediaItem[]>([]);
   const [watchlistSeriesItems, setWatchlistSeriesItems] = useState<MediaItem[]>([]);
@@ -541,7 +536,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const [likedSeriesItems, setLikedSeriesItems] = useState<MediaItem[]>([]);
   const [watchedMovieItems, setWatchedMovieItems] = useState<MediaItem[]>([]);
   const [watchedSeriesItems, setWatchedSeriesItems] = useState<MediaItem[]>([]);
-  const [isHydrating, setIsHydrating] = useState(true);
 
   const [watchedFilter, setWatchedFilter] = useState<"movie" | "tv">("movie");
   const [watchlistFilter, setWatchlistFilter] = useState<"movie" | "tv">("movie");
@@ -657,13 +651,38 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     () =>
       Array.from(
         new Set(
-          watchHistory
+          fullWatchHistory
             .filter((entry) => entry.mediaType === "tv")
             .map((entry) => entry.sourceTmdbId ?? entry.id)
             .filter((value): value is number | string => value !== null && value !== undefined)
         )
       ),
-    [watchHistory]
+    [fullWatchHistory]
+  );
+
+  const watchedSeriesHistory = useMemo(
+    () => {
+      const records = new Map<string, typeof fullWatchHistory[number]>();
+
+      fullWatchHistory
+        .filter((entry) => entry.mediaType === "tv")
+        .forEach((entry) => {
+          const seriesId = entry.sourceTmdbId ?? entry.id;
+          const key = String(seriesId);
+          const existing = records.get(key);
+
+          if (
+            !existing
+            || entry.watchedAt > existing.watchedAt
+            || (entry.historyKind === "title" && existing.historyKind !== "title" && entry.watchedAt === existing.watchedAt)
+          ) {
+            records.set(key, entry);
+          }
+        });
+
+      return Array.from(records.values()).sort((left, right) => right.watchedAt - left.watchedAt);
+    },
+    [fullWatchHistory]
   );
 
   useEffect(() => {
@@ -680,12 +699,10 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     });
 
     if (hydrationKey === lastHydrationKeyRef.current) {
-      setIsHydrating(false);
       return;
     }
 
     let cancelled = false;
-    const hasHydratedContent = lastHydrationKeyRef.current.length > 0;
     const hasListsToHydrate =
       movieWatchlist.length > 0
       || seriesWatchlist.length > 0
@@ -693,10 +710,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
       || likedSeries.length > 0
       || watchedMovieHydrationIds.length > 0
       || watchedSeriesHydrationIds.length > 0;
-
-    if (!hasHydratedContent && hasListsToHydrate) {
-      setIsHydrating(true);
-    }
 
     if (!hasListsToHydrate) {
       lastHydrationKeyRef.current = hydrationKey;
@@ -707,34 +720,33 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
         setLikedSeriesItems([]);
         setWatchedMovieItems([]);
         setWatchedSeriesItems([]);
-        setIsHydrating(false);
       });
       return;
     }
 
     async function hydrate() {
       const cache = cacheRef.current;
+      const hydrateSection = async (
+        task: Promise<MediaItem[]>,
+        apply: (items: MediaItem[]) => void
+      ) => {
+        const items = await task;
+        if (!cancelled) {
+          startTransition(() => apply(items));
+        }
+      };
 
-      const [wlMovies, wlSeries, lkMovies, lkSeries, whMovies, whSeries] = await Promise.all([
-        hydrateMediaIds(movieWatchlist, [], cache),
-        hydrateMediaIds([], seriesWatchlist, cache),
-        hydrateMediaIds(likedMovies, [], cache),
-        hydrateMediaIds([], likedSeries, cache),
-        hydrateMediaIds(watchedMovieHydrationIds, [], cache),
-        hydrateMediaIds([], watchedSeriesHydrationIds, cache),
+      await Promise.all([
+        hydrateSection(hydrateMediaIds(movieWatchlist, [], cache), setWatchlistMovieItems),
+        hydrateSection(hydrateMediaIds([], seriesWatchlist, cache), setWatchlistSeriesItems),
+        hydrateSection(hydrateMediaIds(likedMovies, [], cache), setLikedMovieItems),
+        hydrateSection(hydrateMediaIds([], likedSeries, cache), setLikedSeriesItems),
+        hydrateSection(hydrateMediaIds(watchedMovieHydrationIds, [], cache), setWatchedMovieItems),
+        hydrateSection(hydrateMediaIds([], watchedSeriesHydrationIds, cache), setWatchedSeriesItems),
       ]);
 
       if (!cancelled) {
         lastHydrationKeyRef.current = hydrationKey;
-        startTransition(() => {
-          setWatchlistMovieItems(wlMovies);
-          setWatchlistSeriesItems(wlSeries);
-          setLikedMovieItems(lkMovies);
-          setLikedSeriesItems(lkSeries);
-          setWatchedMovieItems(whMovies);
-          setWatchedSeriesItems(whSeries);
-          setIsHydrating(false);
-        });
       }
     }
 
@@ -952,16 +964,15 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
         watchedSeriesItems.map((item) => [`tv-${item.id}`, item] as const)
       );
 
-      return watchHistory
-        .filter((entry) => entry.mediaType === "tv")
+      return watchedSeriesHistory
         .map((entry, index) => {
           const hydrationId = entry.sourceTmdbId ?? entry.id;
           const localizedItem = localizedItems.get(`tv-${hydrationId}`);
 
           return {
             item: {
-              id: entry.id,
-              title: entry.historyKind === "title" ? (localizedItem?.title ?? entry.title) : entry.title,
+              id: hydrationId,
+              title: localizedItem?.title ?? (entry.historyKind === "season" ? entry.title.split(" - ")[0] : entry.title),
               posterPath: localizedItem?.posterPath ?? entry.posterPath,
               backdropPath: localizedItem?.backdropPath ?? null,
               rating: localizedItem?.rating ?? entry.voteAverage,
@@ -976,7 +987,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           };
         });
     },
-    [watchHistory, watchedSeriesItems]
+    [watchedSeriesHistory, watchedSeriesItems]
   );
 
   const watchlistMovieRecords = useMemo(() => buildHydratedShelfRecords(watchlistMovieItems), [watchlistMovieItems]);
@@ -992,16 +1003,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const watchlistItems = useMemo(() => watchlistSectionRecords.map((record) => record.item), [watchlistSectionRecords]);
   const likedItems = useMemo(() => likedSectionRecords.map((record) => record.item), [likedSectionRecords]);
 
-
-  if ((hooksLoading || isHydrating) && watchlistMovieItems.length === 0 && watchlistSeriesItems.length === 0 && likedMovieItems.length === 0 && likedSeriesItems.length === 0) {
-    return (
-      <SafeContainer>
-        <LoadingWrap>
-          <MovieLoader size={48} label={t("loaders.loadingProfile")} />
-        </LoadingWrap>
-      </SafeContainer>
-    );
-  }
 
   const watchlistCount = movieWatchlist.length + seriesWatchlist.length;
   const likedCount = likedMovies.length + likedSeries.length;
@@ -1356,7 +1357,11 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </EditModalSaveButton>
           </EditModalHeader>
 
-          <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            keyboardVerticalOffset={Platform.OS === "ios" ? insets.top : 0}
+          >
             <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
               <EditModalContent>
                 {/* Banner preview + change */}

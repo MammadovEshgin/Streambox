@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   getMovieDetails,
@@ -18,8 +18,10 @@ import {
   type UserMediaSyncDetails,
 } from "../services/userDataSync";
 import { WATCH_HISTORY_STORAGE_KEY } from "../services/userDataStorage";
+import { mapWithConcurrency } from "../utils/concurrency";
 
 const METADATA_VERSION = 5;
+const LEGACY_METADATA_MIGRATION_CONCURRENCY = 4;
 
 export type WatchPrecision = "day" | "month" | "none";
 export type WatchHistoryKind = "title" | "season";
@@ -233,8 +235,13 @@ function sortEntries(entries: WatchHistoryEntry[]) {
 
 export function useWatchHistory() {
   const [entries, setEntries] = useState<WatchHistoryEntry[]>([]);
+  const entriesRef = useRef<WatchHistoryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const { notifyStorageChanged, storageRevision } = useAppSettings();
+
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   const enrichEntry = useCallback(async (entry: WatchHistoryEntry): Promise<WatchHistoryEntry> => {
     if (entry.historyKind === "season") {
@@ -294,13 +301,14 @@ export function useWatchHistory() {
         return;
       }
 
-      const enriched = await Promise.all(
-        currentEntries.map((entry) =>
-          entry.metadataVersion < METADATA_VERSION ? enrichEntry(entry) : entry
-        )
+      const enriched = await mapWithConcurrency(
+        currentEntries,
+        LEGACY_METADATA_MIGRATION_CONCURRENCY,
+        async (entry) => entry.metadataVersion < METADATA_VERSION ? enrichEntry(entry) : entry
       );
 
       const sorted = sortEntries(enriched);
+      entriesRef.current = sorted;
       setEntries(sorted);
       await AsyncStorage.setItem(WATCH_HISTORY_STORAGE_KEY, JSON.stringify(sorted));
     },
@@ -311,17 +319,20 @@ export function useWatchHistory() {
     try {
       const raw = await AsyncStorage.getItem(WATCH_HISTORY_STORAGE_KEY);
       if (!raw) {
+        entriesRef.current = [];
         setEntries([]);
         return;
       }
 
       const parsed = JSON.parse(raw) as StoredEntry[];
       if (!Array.isArray(parsed)) {
+        entriesRef.current = [];
         setEntries([]);
         return;
       }
 
       const normalized = sortEntries(parsed.map(normalizeStoredEntry));
+      entriesRef.current = normalized;
       setEntries(normalized);
       void enrichLegacyEntries(normalized);
     } finally {
@@ -336,6 +347,7 @@ export function useWatchHistory() {
   const persistEntries = useCallback(
     async (nextEntries: WatchHistoryEntry[]) => {
       const sorted = sortEntries(nextEntries);
+      entriesRef.current = sorted;
       setEntries(sorted);
       await AsyncStorage.setItem(WATCH_HISTORY_STORAGE_KEY, JSON.stringify(sorted));
       notifyStorageChanged();
@@ -345,7 +357,8 @@ export function useWatchHistory() {
 
   const upsertWatchHistoryEntry = useCallback(
     async (nextEntry: WatchHistoryEntry, auditDetails?: UserMediaSyncDetails | null) => {
-      const filtered = entries.filter(
+      const currentEntries = entriesRef.current;
+      const filtered = currentEntries.filter(
         (entry) => !(entry.id === nextEntry.id && entry.mediaType === nextEntry.mediaType)
       );
       const nextEntries = [nextEntry, ...filtered];
@@ -353,7 +366,7 @@ export function useWatchHistory() {
       await enqueueWatchHistoryUpsert(nextEntry, auditDetails ?? {});
       await syncCurrentWatchHistoryToSupabase(nextEntries);
     },
-    [entries, persistEntries]
+    [persistEntries]
   );
 
   const saveMovieToWatchHistory = useCallback(
@@ -416,12 +429,13 @@ export function useWatchHistory() {
 
   const removeFromWatchHistory = useCallback(
     async (id: number | string, mediaType: MediaType, auditDetails?: UserMediaSyncDetails | null) => {
-      const filtered = entries.filter((entry) => !(entry.id === id && entry.mediaType === mediaType));
+      const currentEntries = entriesRef.current;
+      const filtered = currentEntries.filter((entry) => !(entry.id === id && entry.mediaType === mediaType));
       await persistEntries(filtered);
       await enqueueWatchHistoryDelete(mediaType, id, auditDetails ?? {});
       await syncCurrentWatchHistoryToSupabase(filtered);
     },
-    [entries, persistEntries]
+    [persistEntries]
   );
 
   const removeSeriesSeasonFromWatchHistory = useCallback(

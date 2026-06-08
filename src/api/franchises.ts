@@ -4,8 +4,8 @@ import { getMovieSummary, getSeriesSummary, getTmdbImageUrl } from "./tmdb";
 import { prefetchRemoteImages } from "../services/remoteImageCache";
 import { supabase } from "../services/supabase";
 
-export const FRANCHISE_CATALOG_CACHE_KEY = "@streambox/franchise-catalog-v12";
-export const FRANCHISE_ENTRIES_CACHE_PREFIX = "@streambox/franchise-entries-v12-";
+export const FRANCHISE_CATALOG_CACHE_KEY = "@streambox/franchise-catalog-v13";
+export const FRANCHISE_ENTRIES_CACHE_PREFIX = "@streambox/franchise-entries-v13-";
 export const FRANCHISE_PROGRESS_CACHE_PREFIX = "@streambox/franchise-progress-v10-";
 const ENTRY_IMAGE_WARM_LIMIT = 12;
 const ENTRY_POSTER_ENRICH_BATCH_SIZE = 6;

@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useAppSettings } from "../settings/AppSettingsContext";
 import { enqueueEpisodeProgressSync } from "../services/userDataSync";
@@ -7,7 +7,12 @@ import { WATCHED_EPISODES_STORAGE_KEY } from "../services/userDataStorage";
 
 export function useWatchedEpisodes() {
   const [watchedEpisodes, setWatchedEpisodes] = useState<Record<string, boolean>>({});
+  const watchedEpisodesRef = useRef<Record<string, boolean>>({});
   const { notifyStorageChanged, storageRevision } = useAppSettings();
+
+  useEffect(() => {
+    watchedEpisodesRef.current = watchedEpisodes;
+  }, [watchedEpisodes]);
 
   useEffect(() => {
     let isMounted = true;
@@ -18,6 +23,7 @@ export function useWatchedEpisodes() {
           return;
         }
         if (!data) {
+          watchedEpisodesRef.current = {};
           setWatchedEpisodes({});
           return;
         }
@@ -25,10 +31,17 @@ export function useWatchedEpisodes() {
         try {
           const parsed = JSON.parse(data) as unknown;
           if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            setWatchedEpisodes(parsed as Record<string, boolean>);
+            const next = parsed as Record<string, boolean>;
+            watchedEpisodesRef.current = next;
+            setWatchedEpisodes(next);
+          } else {
+            watchedEpisodesRef.current = {};
+            setWatchedEpisodes({});
           }
         } catch (error) {
           console.error("Failed to parse watched episodes", error);
+          watchedEpisodesRef.current = {};
+          setWatchedEpisodes({});
         }
       })
       .catch((error) => console.error("Failed to load watched episodes", error));
@@ -50,50 +63,45 @@ export function useWatchedEpisodes() {
     [getEpisodeKey, watchedEpisodes]
   );
 
+  const persistWatchedEpisodes = useCallback(
+    async (nextState: Record<string, boolean>) => {
+      watchedEpisodesRef.current = nextState;
+      setWatchedEpisodes(nextState);
+      await AsyncStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(nextState));
+      notifyStorageChanged();
+    },
+    [notifyStorageChanged]
+  );
+
   const toggleEpisodeWatched = useCallback(
     async (seriesId: string | number, seasonNumber: number, episodeNumber: number) => {
       const key = getEpisodeKey(seriesId, seasonNumber, episodeNumber);
-      
-      let wasWatched = false;
-      setWatchedEpisodes((prev) => {
-        wasWatched = !!prev[key];
-        const nextWatched = !wasWatched;
-        const nextState = { ...prev };
-        if (nextWatched) {
-          nextState[key] = true;
-        } else {
-          delete nextState[key];
-        }
-        
-        // Save to storage asynchronously
-        AsyncStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(nextState))
-          .then(() => notifyStorageChanged())
-          .catch((error) => console.error("Failed to save watched episodes", error));
-          
-        return nextState;
-      });
-
+      const wasWatched = !!watchedEpisodesRef.current[key];
       const nextWatched = !wasWatched;
+      const nextState = { ...watchedEpisodesRef.current };
+
+      if (nextWatched) {
+        nextState[key] = true;
+      } else {
+        delete nextState[key];
+      }
+
+      await persistWatchedEpisodes(nextState);
       
       await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, nextWatched, {
         source: "episode_toggle",
       });
     },
-    [getEpisodeKey, notifyStorageChanged]
+    [getEpisodeKey, persistWatchedEpisodes]
   );
 
   const markSeasonWatched = useCallback(
     async (seriesId: string | number, seasonNumber: number, episodeNumbers: number[]) => {
-      setWatchedEpisodes((prev) => {
-        const nextState = { ...prev };
-        for (const episodeNumber of episodeNumbers) {
-          nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)] = true;
-        }
-        AsyncStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(nextState))
-          .then(() => notifyStorageChanged())
-          .catch((error) => console.error("Failed", error));
-        return nextState;
-      });
+      const nextState = { ...watchedEpisodesRef.current };
+      for (const episodeNumber of episodeNumbers) {
+        nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)] = true;
+      }
+      await persistWatchedEpisodes(nextState);
 
       for (const episodeNumber of episodeNumbers) {
         await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, true, {
@@ -101,21 +109,16 @@ export function useWatchedEpisodes() {
         });
       }
     },
-    [getEpisodeKey, notifyStorageChanged]
+    [getEpisodeKey, persistWatchedEpisodes]
   );
 
   const unmarkSeasonWatched = useCallback(
     async (seriesId: string | number, seasonNumber: number, episodeNumbers: number[]) => {
-      setWatchedEpisodes((prev) => {
-        const nextState = { ...prev };
-        for (const episodeNumber of episodeNumbers) {
-          delete nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)];
-        }
-        AsyncStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(nextState))
-          .then(() => notifyStorageChanged())
-          .catch((error) => console.error("Failed", error));
-        return nextState;
-      });
+      const nextState = { ...watchedEpisodesRef.current };
+      for (const episodeNumber of episodeNumbers) {
+        delete nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)];
+      }
+      await persistWatchedEpisodes(nextState);
 
       for (const episodeNumber of episodeNumbers) {
         await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, false, {
@@ -123,7 +126,7 @@ export function useWatchedEpisodes() {
         });
       }
     },
-    [getEpisodeKey, notifyStorageChanged]
+    [getEpisodeKey, persistWatchedEpisodes]
   );
 
   return {

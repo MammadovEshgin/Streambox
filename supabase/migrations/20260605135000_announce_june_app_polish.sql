@@ -1,0 +1,47 @@
+insert into public.app_announcements (
+  slug,
+  priority,
+  is_active,
+  requires_auth,
+  display_version,
+  title_en,
+  title_tr,
+  body_en,
+  body_tr,
+  eyebrow_en,
+  eyebrow_tr,
+  accent_hex,
+  starts_at,
+  platforms
+)
+values (
+  'streambox-june-2026-polish',
+  950,
+  true,
+  false,
+  1,
+  'New StreamBox improvements',
+  'Yeni StreamBox iyilestirmeleri',
+  'Actor pages and search are smarter, grids now load as you scroll, filters and profile editing feel smoother, and Cinematic Journeys now includes a corrected James Bond order.',
+  'Oyuncu sayfalari ve arama daha akilli, listeler kaydirdikca yukleniyor, filtreler ve profil duzenleme daha akici, Cinematic Journeys artik duzeltilmis James Bond siralamasini iceriyor.',
+  'What changed',
+  'Neler degisti',
+  '#22C55E',
+  timezone('utc', now()),
+  array['android', 'ios']::text[]
+)
+on conflict (slug) do update
+  set priority = excluded.priority,
+      is_active = excluded.is_active,
+      requires_auth = excluded.requires_auth,
+      display_version = public.app_announcements.display_version + 1,
+      title_en = excluded.title_en,
+      title_tr = excluded.title_tr,
+      body_en = excluded.body_en,
+      body_tr = excluded.body_tr,
+      eyebrow_en = excluded.eyebrow_en,
+      eyebrow_tr = excluded.eyebrow_tr,
+      accent_hex = excluded.accent_hex,
+      starts_at = excluded.starts_at,
+      platforms = excluded.platforms,
+      updated_at = timezone('utc', now());
