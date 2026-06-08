@@ -133,26 +133,6 @@ const FooterWrap = styled.View`
   align-items: center;
 `;
 
-const LoadMoreButton = styled.Pressable`
-  min-width: 124px;
-  height: 42px;
-  padding: 0 18px;
-  border-radius: 12px;
-  align-items: center;
-  justify-content: center;
-  background-color: ${({ theme }) => theme.colors.surface};
-  border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.border};
-`;
-
-const LoadMoreText = styled.Text`
-  color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 13px;
-  line-height: 16px;
-  font-family: Outfit_600SemiBold;
-  letter-spacing: 0.15px;
-`;
-
 const LoadingWrap = styled.View`
   flex: 1;
   align-items: center;
@@ -184,7 +164,7 @@ function mergeUniqueMedia(existing: MediaItem[], incoming: MediaItem[]): MediaIt
 }
 
 export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
-  const { source, title } = route.params;
+  const { source, title, items: routeItems } = route.params;
   const { t } = useTranslation();
   const { language } = useAppSettings();
   const [items, setItems] = useState<MediaItem[]>([]);
@@ -200,6 +180,22 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
     setErrorMessage(null);
 
     try {
+      if (routeItems) {
+        setItems(routeItems);
+        setPage(1);
+        setTotalPages(1);
+        setVisibleCount(Math.min(INITIAL_BATCH, routeItems.length));
+        return;
+      }
+
+      if (!source) {
+        setItems([]);
+        setPage(1);
+        setTotalPages(1);
+        setVisibleCount(0);
+        return;
+      }
+
       const response = await getDiscoverCollectionPage(source, 1);
       setItems(response.items);
       setPage(response.page);
@@ -211,7 +207,7 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [source, t, language]);
+  }, [source, routeItems, t, language]);
 
   useEffect(() => {
     void loadInitial();
@@ -223,12 +219,12 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
     }
 
     const availableInBuffer = items.length - visibleCount;
-    if (availableInBuffer >= BATCH_SIZE) {
-      setVisibleCount((prev) => prev + BATCH_SIZE);
+    if (availableInBuffer > 0) {
+      setVisibleCount((prev) => Math.min(prev + BATCH_SIZE, items.length));
       return;
     }
 
-    if (availableInBuffer <= 0 && page >= totalPages) {
+    if (!source || (availableInBuffer <= 0 && page >= totalPages)) {
       return;
     }
 
@@ -240,7 +236,7 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
       let workingPage = page;
       let workingTotalPages = totalPages;
 
-      // Fetch as many pages as needed so one click can reveal a full 3x3 batch.
+      // Fetch as many pages as needed so each scroll reveal fills a 3x3 batch.
       while (workingItems.length - visibleCount < BATCH_SIZE && workingPage < workingTotalPages) {
         const response = await getDiscoverCollectionPage(source, workingPage + 1);
         workingItems = mergeUniqueMedia(workingItems, response.items);
@@ -258,10 +254,11 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
     } finally {
       setIsLoadingMore(false);
     }
-  }, [isLoadingMore, items.length, language, page, source, t, totalPages, visibleCount]);
+  }, [isLoadingMore, items, page, source, t, totalPages, visibleCount]);
 
   const visibleItems = useMemo(() => items.slice(0, visibleCount), [items, visibleCount]);
   const hasMore = visibleCount < items.length || page < totalPages;
+  const shouldShowEmptyState = visibleItems.length === 0;
 
   const openMedia = useCallback(
     async (item: MediaItem) => {
@@ -367,31 +364,34 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
           </HeaderTextWrap>
         </Header>
 
-        <FlashList
-          data={visibleItems}
-          numColumns={GRID_COLUMNS}
-          keyExtractor={(item) => {
-            return `${item.mediaType}-${item.id}`;
-          }}
-          renderItem={renderItem}
-          contentContainerStyle={{
-            paddingHorizontal: HORIZONTAL_PADDING - GRID_GAP / 2,
-            paddingBottom: BOTTOM_PADDING
-          }}
-          style={{ flex: 1 }}
-          showsVerticalScrollIndicator={false}
-          removeClippedSubviews
-          ListEmptyComponent={<EmptyText>{errorMessage ?? t("discover.noTitlesFound")}</EmptyText>}
-          ListFooterComponent={
-            hasMore ? (
-              <FooterWrap>
-                <LoadMoreButton onPress={loadMore}>
-                  <LoadMoreText>{isLoadingMore ? t("common.loading") : t("discover.loadMore")}</LoadMoreText>
-                </LoadMoreButton>
-              </FooterWrap>
-            ) : null
-          }
-        />
+        {shouldShowEmptyState ? (
+          <EmptyText>{errorMessage ?? t("discover.noTitlesFound")}</EmptyText>
+        ) : (
+          <FlashList
+            data={visibleItems}
+            numColumns={GRID_COLUMNS}
+            keyExtractor={(item) => {
+              return `${item.mediaType}-${item.id}`;
+            }}
+            renderItem={renderItem}
+            contentContainerStyle={{
+              paddingHorizontal: HORIZONTAL_PADDING - GRID_GAP / 2,
+              paddingBottom: BOTTOM_PADDING
+            }}
+            style={{ flex: 1 }}
+            showsVerticalScrollIndicator={false}
+            removeClippedSubviews
+            onEndReached={hasMore ? loadMore : undefined}
+            onEndReachedThreshold={0.65}
+            ListFooterComponent={
+              isLoadingMore ? (
+                <FooterWrap>
+                  <MovieLoader label={t("common.loading")} />
+                </FooterWrap>
+              ) : null
+            }
+          />
+        )}
       </Root>
     </SafeContainer>
   );

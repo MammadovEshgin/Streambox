@@ -18,7 +18,9 @@ const PosterFrame = styled.View`
   height: 198px;
   border-radius: 14px;
   overflow: hidden;
-  background-color: ${({ theme }) => theme.colors.surface};
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
 `;
 
 const PosterImage = styled(CachedRemoteImage)`

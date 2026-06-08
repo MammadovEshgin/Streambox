@@ -3,9 +3,7 @@ import { Typography } from "./Typography";
 export type ThemeId =
   | "cinema-ember"
   | "velvet-crimson"
-  | "aurora-cyan"
   | "emerald-noir"
-  | "luxe-gold"
   | "glacier-blue";
 
 type ThemeOption = {
@@ -15,9 +13,15 @@ type ThemeOption = {
   primary: string;
 };
 
-export const DEFAULT_THEME_ID: ThemeId = "cinema-ember";
+export const DEFAULT_THEME_ID: ThemeId = "emerald-noir";
 
 export const THEME_OPTIONS: ThemeOption[] = [
+  {
+    id: "emerald-noir",
+    name: "Emerald Noir",
+    description: "Dark screen, rich green highlights, understated and premium.",
+    primary: "#22C55E"
+  },
   {
     id: "cinema-ember",
     name: "Cinema Ember",
@@ -29,24 +33,6 @@ export const THEME_OPTIONS: ThemeOption[] = [
     name: "Netflix Red",
     description: "Netflix-inspired signature red for a bold but familiar premium streaming look.",
     primary: "#E50914"
-  },
-  {
-    id: "aurora-cyan",
-    name: "Prime Video Blue",
-    description: "Prime Video-inspired blue with a bright streaming accent and familiar dark-mode contrast.",
-    primary: "#00A8E1"
-  },
-  {
-    id: "emerald-noir",
-    name: "Emerald Noir",
-    description: "Dark screen, rich green highlights, understated and premium.",
-    primary: "#22C55E"
-  },
-  {
-    id: "luxe-gold",
-    name: "Luxe Gold",
-    description: "Soft brushed gold with warm editorial character and less visual fatigue.",
-    primary: "#B9974F"
   },
   {
     id: "glacier-blue",
@@ -94,24 +80,24 @@ export function createTheme(themeId: ThemeId = DEFAULT_THEME_ID) {
     id: option.id,
     displayName: option.name,
     colors: {
-      background: "#080808",
-      surface: "#101012",
-      surfaceRaised: "#18181B",
-      surfaceHigh: "#18181B",
+      background: "#0D100F",
+      surface: "#151917",
+      surfaceRaised: "#1B211E",
+      surfaceHigh: "#232A26",
       primary: option.primary,
-      primarySoft: withAlpha(option.primary, 0.14),
-      primarySoftStrong: withAlpha(option.primary, 0.2),
-      primaryMuted: withAlpha(option.primary, 0.4),
-      primaryGlow: withAlpha(option.primary, 0.35),
+      primarySoft: withAlpha(option.primary, 0.12),
+      primarySoftStrong: withAlpha(option.primary, 0.18),
+      primaryMuted: withAlpha(option.primary, 0.36),
+      primaryGlow: withAlpha(option.primary, 0.28),
       primaryTransparent: withAlpha(option.primary, 0),
-      textPrimary: "#F4F4F5",
-      textSecondary: "#A1A1AA",
-      textTertiary: "#A1A1AA",
-      border: "#27272A",
-      borderSoft: "#27272A",
-      overlayScrim: "rgba(8, 8, 8, 0.72)",
-      glassFill: "rgba(255, 255, 255, 0.05)",
-      glassBorder: "rgba(255, 255, 255, 0.08)"
+      textPrimary: "#F6F7F4",
+      textSecondary: "#B2B8B1",
+      textTertiary: "#858D86",
+      border: "#2A312D",
+      borderSoft: "#202722",
+      overlayScrim: "rgba(13, 16, 15, 0.70)",
+      glassFill: "rgba(255, 255, 255, 0.065)",
+      glassBorder: "rgba(255, 255, 255, 0.11)"
     },
     typography: Typography,
     spacing: {

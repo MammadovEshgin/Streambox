@@ -25,6 +25,7 @@ import { useWatchHistory, type WatchHistoryEntry } from "../hooks/useWatchHistor
 import { useWatchlist } from "../hooks/useWatchlist";
 import { normalizeAppLanguage, type AppLanguage } from "../localization/types";
 import type { ProfileStackParamList } from "../navigation/types";
+import { mapWithConcurrency } from "../utils/concurrency";
 
 type Props = NativeStackScreenProps<ProfileStackParamList, "ProfileSeeAll">;
 type ProfileShelfSort = "recent" | "rating" | "year" | "title";
@@ -324,6 +325,7 @@ const FilterFooterLabel = styled.Text<{ $primary?: boolean }>`
 // ---------------------------------------------------------------------------
 
 type Cache = Map<string, MediaItem>;
+const SEE_ALL_HYDRATION_CONCURRENCY = 6;
 
 async function hydrateList(
   ids: (number | string)[],
@@ -333,8 +335,10 @@ async function hydrateList(
 ): Promise<MediaItem[]> {
   const fetcher = type === "movie" ? getMovieSummary : getSeriesSummary;
 
-  const items = await Promise.all(
-    ids.map(async (id) => {
+  const items = await mapWithConcurrency(
+    ids,
+    SEE_ALL_HYDRATION_CONCURRENCY,
+    async (id) => {
       const key = `${language}:${type}-${id}`;
       if (cache.has(key)) {
         return cache.get(key) ?? null;
@@ -353,7 +357,7 @@ async function hydrateList(
       } catch {
         return null;
       }
-    })
+    }
   );
 
   return items.filter((item): item is MediaItem => item !== null);

@@ -234,7 +234,7 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
       },
       { syncRemote: false }
     );
-    void enqueueProfileAssetSync(
+    await enqueueProfileAssetSync(
       "avatar",
       profileImageUri,
       previousSettings.profileImageStoragePath,
@@ -251,7 +251,7 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
       },
       { syncRemote: false }
     );
-    void enqueueProfileAssetSync(
+    await enqueueProfileAssetSync(
       "banner",
       bannerImageUri,
       previousSettings.bannerImageStoragePath,

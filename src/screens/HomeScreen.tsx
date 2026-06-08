@@ -119,9 +119,11 @@ const FranchiseCardRoot = styled.Pressable`
 const FranchiseArtworkFrame = styled.View`
   width: 132px;
   height: 198px;
-  border-radius: 4px;
+  border-radius: 14px;
   overflow: hidden;
-  background-color: #0b0d12;
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
 `;
 
 const FranchisePosterImage = styled.Image`
@@ -132,19 +134,20 @@ const FranchisePosterImage = styled.Image`
 const FranchiseCardTitle = styled.Text`
   margin-top: 10px;
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: ${({ theme }) => theme.typography.BodySmall.fontFamily};
+  font-family: Outfit_600SemiBold;
   font-size: 14px;
-  line-height: 19px;
+  line-height: 18px;
   letter-spacing: -0.15px;
 `;
 
 const FranchiseCardMeta = styled.Text`
-  margin-top: 3px;
-  color: ${({ theme }) => theme.colors.textSecondary};
+  margin-top: 4px;
+  color: ${({ theme }) => theme.colors.textTertiary};
   font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
-  font-size: 12px;
-  line-height: 16px;
-  letter-spacing: 0.3px;
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
 `;
 
 const EmptyRail = styled.View`
@@ -276,7 +279,11 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
       };
     }
 
-    void readPersistedRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, { validate: isValidHomeDiscoveryCache })
+    void readPersistedRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, {
+      validate: isValidHomeDiscoveryCache,
+      expectedVersion: getDiscoveryFreshnessVersion(),
+      maxAgeMs: HOME_DISCOVERY_CACHE_TTL_MS,
+    })
       .then((entry) => {
         if (!active) {
           return;
@@ -300,7 +307,7 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     return () => {
       active = false;
     };
-  }, [cachedDiscovery, localizedCacheKey]);
+  }, [cachedDiscovery, getDiscoveryFreshnessVersion, localizedCacheKey]);
 
   const loadDiscovery = useCallback(async (background = false) => {
     if (!background && !hasDiscoveryData) {
@@ -329,22 +336,6 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
         setTrendingMovies(movies);
         setTrendingSeries(series);
         setErrorMessage(null);
-      });
-
-      void getFranchiseCollections().catch(() => [] as FranchiseCollection[]).then((franchiseData) => {
-        const nextState: HomeDiscoveryCache = {
-          popularMovies: popular,
-          trendingMovies: movies,
-          trendingSeries: series,
-        };
-
-        const freshnessVersion = getDiscoveryFreshnessVersion();
-        writeRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, nextState, { version: freshnessVersion });
-        void writePersistedRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, nextState, { version: freshnessVersion });
-
-        startTransition(() => {
-          setFranchises(franchiseData);
-        });
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to load discovery feed.";

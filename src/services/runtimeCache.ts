@@ -99,7 +99,28 @@ export function isRuntimeCacheFresh(
 
 type ReadPersistedRuntimeCacheOptions<T> = {
   validate?: (value: unknown) => value is T;
+  expectedVersion?: string | null;
+  maxAgeMs?: number;
 };
+
+function isPersistedEntryUsable(
+  entry: CacheEntry<unknown>,
+  options?: ReadPersistedRuntimeCacheOptions<unknown>
+) {
+  if (
+    options
+    && "expectedVersion" in options
+    && (options.expectedVersion ?? null) !== (entry.version ?? null)
+  ) {
+    return false;
+  }
+
+  if (typeof options?.maxAgeMs === "number" && Date.now() - entry.updatedAt > options.maxAgeMs) {
+    return false;
+  }
+
+  return true;
+}
 
 export async function readPersistedRuntimeCache<T>(
   key: string,
@@ -107,7 +128,10 @@ export async function readPersistedRuntimeCache<T>(
 ): Promise<CacheEntry<T> | null> {
   const inMemoryEntry = readRuntimeCache<T>(key);
   if (inMemoryEntry) {
-    if (options?.validate && !options.validate(inMemoryEntry.value)) {
+    if (
+      !isPersistedEntryUsable(inMemoryEntry as CacheEntry<unknown>, options)
+      || (options?.validate && !options.validate(inMemoryEntry.value))
+    ) {
       runtimeCache.delete(key);
       cancelPersistentWrite(key);
       void AsyncStorage.removeItem(getPersistentCacheKey(key)).catch(() => undefined);
@@ -133,7 +157,10 @@ export async function readPersistedRuntimeCache<T>(
       return null;
     }
 
-    if (options?.validate && !options.validate(parsed.value)) {
+    if (
+      !isPersistedEntryUsable(parsed as CacheEntry<unknown>, options)
+      || (options?.validate && !options.validate(parsed.value))
+    ) {
       cancelPersistentWrite(key);
       void AsyncStorage.removeItem(getPersistentCacheKey(key)).catch(() => undefined);
       return null;

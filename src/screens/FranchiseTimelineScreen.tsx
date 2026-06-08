@@ -257,6 +257,7 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
   // Scroll tracking for viewport-based SVG culling
   const [scrollY, setScrollY] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(Dimensions.get("window").height);
+  const lastScrollStateUpdateAt = useRef(0);
 
   // Pagination: load entries in chunks of 10 for performance
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_COUNT);
@@ -534,10 +535,13 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
       const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
       if (!layoutMeasurement || !contentOffset || !contentSize) return;
 
-      // Track scroll position for SVG culling
-      setScrollY(contentOffset.y);
-
       const isNearBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 600;
+      const now = Date.now();
+
+      if (isNearBottom || now - lastScrollStateUpdateAt.current > 96) {
+        lastScrollStateUpdateAt.current = now;
+        setScrollY(contentOffset.y);
+      }
 
       if (isNearBottom && visibleCount < entries.length) {
         setVisibleCount((prev) => Math.min(prev + 10, entries.length));
@@ -664,7 +668,7 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
           </ProgressInfo>
         </ProgressBanner>
 
-        <TimelineScroll onScroll={handleScroll} scrollEventThrottle={16} onLayout={handleLayout}>
+        <TimelineScroll onScroll={handleScroll} scrollEventThrottle={32} onLayout={handleLayout}>
           <TimelineContainer style={{ height: totalHeight }}>
             {/* SVG curved path between nodes */}
             <TimelinePath

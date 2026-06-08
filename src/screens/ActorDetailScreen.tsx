@@ -82,7 +82,7 @@ const Body = styled.View`
   margin-top: -26px;
   border-top-left-radius: 22px;
   border-top-right-radius: 22px;
-  background-color: #000000;
+  background-color: ${({ theme }) => theme.colors.background};
   padding: 16px 16px 28px;
 `;
 
@@ -138,7 +138,7 @@ const SectionHeader = styled.View`
   margin-bottom: 10px;
   flex-direction: row;
   align-items: baseline;
-  justify-content: flex-start;
+  justify-content: space-between;
 `;
 
 const SectionTitle = styled.Text`
@@ -147,6 +147,17 @@ const SectionTitle = styled.Text`
   line-height: 26px;
   font-weight: 700;
   letter-spacing: -0.25px;
+`;
+
+const SeeAllButton = styled.Pressable`
+  padding: 4px 0 4px 12px;
+`;
+
+const SeeAllText = styled.Text`
+  color: ${({ theme }) => theme.colors.primary};
+  font-size: 13px;
+  line-height: 16px;
+  font-family: Outfit_600SemiBold;
 `;
 
 const KnownForWrap = styled.View`
@@ -431,15 +442,31 @@ export function ActorDetailScreen({ route, navigation }: ActorDetailProps) {
             <Animated.View entering={FadeInDown.duration(380).delay(160)}>
               <SectionHeader>
                 <SectionTitle>{t("actor.knownFor")}</SectionTitle>
+                {details.knownForMovies.length > 0 ? (
+                  <SeeAllButton
+                    onPress={() => {
+                      navigation.navigate("DiscoverGrid", {
+                        title: `${details.name} - ${t("actor.knownFor")}`,
+                        items: details.knownForMovies
+                      });
+                    }}
+                  >
+                    <SeeAllText>{t("common.seeAll")}</SeeAllText>
+                  </SeeAllButton>
+                ) : null}
               </SectionHeader>
               <KnownForWrap>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  {details.knownForMovies.map((item) => (
+                  {details.knownForMovies.slice(0, 12).map((item) => (
                     <CardWrap key={item.id}>
                       <MediaCard
                         item={item}
                         onPress={() => {
-                          navigation.push("MovieDetail", { movieId: String(item.id) });
+                          if (item.mediaType === "tv") {
+                            navigation.push("SeriesDetail", { seriesId: String(item.id) });
+                          } else {
+                            navigation.push("MovieDetail", { movieId: String(item.id) });
+                          }
                         }}
                       />
                     </CardWrap>

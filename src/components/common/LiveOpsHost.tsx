@@ -156,6 +156,7 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
   const refreshInFlightRef = useRef(false);
   const mountedRef = useRef(true);
   const bootTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const didForceUpdateCheckRef = useRef(false);
   const appVersion = useMemo(
     () => String(Constants.expoConfig?.version ?? "1.0.0"),
     []
@@ -169,13 +170,16 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
 
     refreshInFlightRef.current = true;
     try {
+      const shouldForceUpdateCheck = !didForceUpdateCheckRef.current;
+      didForceUpdateCheckRef.current = true;
+
       const [nextAnnouncement, pendingUpdate] = await Promise.all([
         fetchNextLiveAnnouncement({
           language,
           appVersion,
           userId: session?.user.id ?? null,
         }),
-        checkForPendingAppUpdate(),
+        checkForPendingAppUpdate({ force: shouldForceUpdateCheck }),
       ]);
 
       if (!mountedRef.current) {

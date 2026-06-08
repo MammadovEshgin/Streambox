@@ -3,6 +3,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getMovieSummary, getSeriesSummary, type MediaItem } from "../api/tmdb";
 import i18n from "../localization/i18n";
 import { normalizeAppLanguage, type AppLanguage } from "../localization/types";
+import { mapWithConcurrency } from "../utils/concurrency";
 
 export type HydratedMediaCache = Map<string, MediaItem>;
 
@@ -12,6 +13,7 @@ const HYDRATION_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const HYDRATION_FLUSH_DEBOUNCE_MS = 250;
 const HYDRATION_MAX_PERSISTED_ENTRIES = 1000;
 const HYDRATION_STORAGE_SCHEMA_VERSION = 1;
+const HYDRATION_FETCH_CONCURRENCY = 6;
 
 type PersistedHydratedMediaEntry = {
   item: MediaItem;
@@ -259,8 +261,10 @@ export async function hydrateMediaIds(
   const language = getActiveLanguage();
   await ensurePersistedHydrationLoaded(language, cache);
 
-  const movieItems = await Promise.all(
-    movieIds.map(async (id) => {
+  const movieItems = await mapWithConcurrency(
+    movieIds,
+    HYDRATION_FETCH_CONCURRENCY,
+    async (id) => {
       const key = getLocalizedCacheKey(language, "movie", id);
       const cached = getCachedMediaItem(cache, key);
       if (cached) {
@@ -268,11 +272,13 @@ export async function hydrateMediaIds(
       }
 
       return fetchHydratedMediaItem("movie", id, key, language, cache);
-    })
+    }
   );
 
-  const seriesItems = await Promise.all(
-    seriesIds.map(async (id) => {
+  const seriesItems = await mapWithConcurrency(
+    seriesIds,
+    HYDRATION_FETCH_CONCURRENCY,
+    async (id) => {
       const key = getLocalizedCacheKey(language, "tv", id);
       const cached = getCachedMediaItem(cache, key);
       if (cached) {
@@ -280,7 +286,7 @@ export async function hydrateMediaIds(
       }
 
       return fetchHydratedMediaItem("tv", id, key, language, cache);
-    })
+    }
   );
 
   return [...movieItems, ...seriesItems].filter((item): item is MediaItem => item !== null);

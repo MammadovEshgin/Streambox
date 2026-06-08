@@ -581,24 +581,54 @@ async function mergeInitialSnapshot(local: LocalUserSnapshot, remoteB: RemoteBoo
   } satisfies LocalUserSnapshot;
 }
 
-function buildProfilePayload(s: PersistedSettings) {
-  return {
+function buildProfileRpcPayload(s: PersistedSettings) {
+  const payload: Record<string, unknown> = {
+    displayName: s.profileName,
+    bio: s.profileBio,
+    location: s.profileLocation,
+    birthday: formatBirthdayForDatabase(s.profileBirthday),
+    joinedAt: s.joinedDate || new Date().toISOString(),
+  };
+
+  if (!isLocalFileUri(s.profileImageUri) || s.profileImageStoragePath) {
+    payload.avatarPath = s.profileImageStoragePath;
+    payload.avatarVersion = s.profileImageVersion;
+  }
+
+  if (!isLocalFileUri(s.bannerImageUri) || s.bannerImageStoragePath) {
+    payload.bannerPath = s.bannerImageStoragePath;
+    payload.bannerVersion = s.bannerImageVersion;
+  }
+
+  return payload;
+}
+
+function buildProfileRowPayload(s: PersistedSettings) {
+  const payload: Record<string, unknown> = {
     display_name: s.profileName,
     bio: s.profileBio,
     location: s.profileLocation,
     location_text: s.profileLocation,
     birthday: formatBirthdayForDatabase(s.profileBirthday),
     joined_at: s.joinedDate || new Date().toISOString(),
-    avatar_path: s.profileImageStoragePath,
-    banner_path: s.bannerImageStoragePath,
-    avatar_version: s.profileImageVersion,
-    banner_version: s.bannerImageVersion,
   };
+
+  if (!isLocalFileUri(s.profileImageUri) || s.profileImageStoragePath) {
+    payload.avatar_path = s.profileImageStoragePath;
+    payload.avatar_version = s.profileImageVersion;
+  }
+
+  if (!isLocalFileUri(s.bannerImageUri) || s.bannerImageStoragePath) {
+    payload.banner_path = s.bannerImageStoragePath;
+    payload.banner_version = s.bannerImageVersion;
+  }
+
+  return payload;
 }
 
 function buildSettingsPayload(s: PersistedSettings) {
   return {
-    theme_id: s.themeId,
+    themeId: s.themeId,
     preferences: {
       language: s.language,
       app_language: s.language,
@@ -625,7 +655,7 @@ function buildDailyRecommendationRows(snapshot: LocalUserSnapshot) {
 }
 
 async function backfillSnapshotToRemote(userId: string, snapshot: LocalUserSnapshot) {
-  const profileRow = buildProfilePayload(snapshot.settings);
+  const profileRow = buildProfileRowPayload(snapshot.settings);
   const settingsRow = {
     user_id: userId,
     theme_id: snapshot.settings.themeId,
@@ -709,7 +739,10 @@ export async function syncCurrentWatchHistoryToSupabase(entries?: WatchHistoryEn
 export async function syncCurrentLocalUserSnapshotToSupabase(targetId?: string) {
   const userId = targetId || await getCurrentUserId();
   if (!userId) return;
-  const snapshot = await readLocalUserSnapshot();
+  let snapshot = await readLocalUserSnapshot();
+  await queueInitialAssetUploads(userId, snapshot.settings);
+  await flushSupabaseUserDataSync(userId);
+  snapshot = await readLocalUserSnapshot();
   await backfillSnapshotToRemote(userId, snapshot);
 }
 
@@ -723,13 +756,28 @@ function inferAssetContentType(uri: string) { const e = inferAssetExtension(uri)
 
 async function executePendingOperation(op: PendingSyncOperation) {
   switch (op.kind) {
-    case "profile_settings": await supabase.rpc("sync_streambox_profile_and_settings", { profile_payload: buildProfilePayload(op.settings), settings_payload: buildSettingsPayload(op.settings), audit_metadata: op.auditMetadata }); break;
+    case "profile_settings": {
+      const { error } = await supabase.rpc("sync_streambox_profile_and_settings", {
+        profile_payload: buildProfileRpcPayload(op.settings),
+        settings_payload: buildSettingsPayload(op.settings),
+        audit_metadata: op.auditMetadata,
+      });
+      if (error) throw error;
+      break;
+    }
     case "asset_upload": {
       const ext = inferAssetExtension(op.localUri); const folder = op.assetKind === "avatar" ? "avatars" : "banners"; const path = `${op.userId}/${folder}/${op.assetKind}-${Date.now()}.${ext}`;
       const base64 = await FileSystem.readAsStringAsync(op.localUri, { encoding: FileSystem.EncodingType.Base64 });
       const { error } = await supabase.storage.from(PROFILE_ASSETS_BUCKET).upload(path, decode(base64), { contentType: inferAssetContentType(op.localUri) });
       if (error) throw error;
-      await supabase.rpc("sync_streambox_profile_and_settings", { profile_payload: op.assetKind === "avatar" ? { avatar_path: path, avatar_version: op.nextVersion } : { banner_path: path, banner_version: op.nextVersion }, settings_payload: {}, audit_metadata: { source: "asset_upload", assetKind: op.assetKind } });
+      const { error: rpcError } = await supabase.rpc("sync_streambox_profile_and_settings", {
+        profile_payload: op.assetKind === "avatar"
+          ? { avatarPath: path, avatarVersion: op.nextVersion }
+          : { bannerPath: path, bannerVersion: op.nextVersion },
+        settings_payload: {},
+        audit_metadata: { source: "asset_upload", assetKind: op.assetKind },
+      });
+      if (rpcError) throw rpcError;
       if (op.previousPath) await supabase.storage.from(PROFILE_ASSETS_BUCKET).remove([op.previousPath]);
       await updateLocalAssetMetadata(op.assetKind, op.localUri, path, op.nextVersion);
       break;
@@ -821,9 +869,11 @@ export async function hasWarmBootstrappedUserData(userId: string) {
 
 export async function bootstrapSupabaseUserData() {
   const uid = await getCurrentUserId(); if (!uid) return;
-  const pId = await AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY); const local = await readLocalUserSnapshot(); const bDone = (await AsyncStorage.getItem(getBootstrapCompleteKey(uid))) === "1";
+  const pId = await AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY); let local = await readLocalUserSnapshot(); const bDone = (await AsyncStorage.getItem(getBootstrapCompleteKey(uid))) === "1";
   if (bDone && pId === uid) {
+    await queueInitialAssetUploads(uid, local.settings);
     await flushSupabaseUserDataSync(uid); await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, uid);
+    local = await readLocalUserSnapshot();
     if (!isLocalFileUri(local.settings.profileImageUri) || !isLocalFileUri(local.settings.bannerImageUri)) {
       const a = await resolveProfileAssetUris({ avatarPath: local.settings.profileImageStoragePath, bannerPath: local.settings.bannerImageStoragePath, avatarVersion: local.settings.profileImageVersion, bannerVersion: local.settings.bannerImageVersion });
       if (a.profileImageUri && !isLocalFileUri(local.settings.profileImageUri)) local.settings.profileImageUri = a.profileImageUri;

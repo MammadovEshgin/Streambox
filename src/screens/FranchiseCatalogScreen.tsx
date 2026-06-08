@@ -73,9 +73,11 @@ const CardPressable = styled.Pressable`
 const PosterFrame = styled.View`
   width: 100%;
   aspect-ratio: 0.6667;
-  border-radius: 4px;
+  border-radius: 14px;
   overflow: hidden;
-  background-color: #0b0d12;
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
 `;
 
 const FranchisePosterImage = styled.Image`
@@ -84,12 +86,12 @@ const FranchisePosterImage = styled.Image`
 `;
 
 const CardTitle = styled.Text`
-  margin-top: 8px;
+  margin-top: 10px;
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 13px;
-  line-height: 16px;
+  font-size: 14px;
+  line-height: 18px;
   font-family: Outfit_600SemiBold;
-  letter-spacing: -0.2px;
+  letter-spacing: -0.15px;
 `;
 
 const LoadingWrap = styled.View`

@@ -20,6 +20,7 @@ import {
   resolveTmdbMovieIdFromImdbId
 } from "../api/tmdb";
 import { formatRating, isValidMediaItem, isValidMediaItemArray } from "../api/mediaFormatting";
+import { HubHeroSkeleton, HubRailSkeleton } from "../components/common/HubSkeletons";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
@@ -38,7 +39,7 @@ import {
 } from "../services/runtimeCache";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
-const MOVIES_HUB_CACHE_KEY = "movies-hub-v1";
+const MOVIES_HUB_CACHE_KEY = "movies-hub-v2";
 const MOVIES_HUB_CACHE_TTL_MS = 1000 * 60 * 20;
 
 type MoviesHubCache = {
@@ -64,6 +65,16 @@ type SeedPageResponse = {
   items: MediaItem[];
   totalPages: number;
 };
+
+type AsyncResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: unknown };
+
+function toAsyncResult<T>(promise: Promise<T>): Promise<AsyncResult<T>> {
+  return promise
+    .then((value) => ({ ok: true, value }) as const)
+    .catch((error) => ({ ok: false, error }) as const);
+}
 
 const RootScroll = styled(ScrollView).attrs({
   showsVerticalScrollIndicator: false
@@ -258,6 +269,7 @@ type MoviesScreenProps = NativeStackScreenProps<HomeStackParamList, "MoviesFeed"
 type RailSectionProps = {
   title: string;
   items: MediaItem[];
+  isLoading?: boolean;
   onPressItem: (item: MediaItem) => void;
   onPressSeeAll: () => void;
 };
@@ -300,7 +312,31 @@ async function seedTopNewMovies(minimumCount: number, initialPage?: SeedPageResp
   return pool;
 }
 
-const RailSection = memo(function RailSection({ title, items, onPressItem, onPressSeeAll }: RailSectionProps) {
+async function seedImdbTopMovies(minimumCount: number, initialPage?: SeedPageResponse): Promise<MediaItem[]> {
+  const firstPage = initialPage ?? await getImdbTop250Page(1);
+  let pool = mergeUnique([], firstPage.items);
+
+  if (pool.length >= minimumCount || firstPage.totalPages <= 1) {
+    return pool;
+  }
+
+  const pagesToFetch = Array.from(
+    { length: Math.min(firstPage.totalPages, 5) - 1 },
+    (_, index) => index + 2
+  );
+
+  const responses = await Promise.all(pagesToFetch.map((page) => getImdbTop250Page(page)));
+  for (const response of responses) {
+    pool = mergeUnique(pool, response.items);
+    if (pool.length >= minimumCount) {
+      break;
+    }
+  }
+
+  return pool;
+}
+
+const RailSection = memo(function RailSection({ title, items, isLoading = false, onPressItem, onPressSeeAll }: RailSectionProps) {
   const { t } = useTranslation();
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<MediaItem>) => {
@@ -321,7 +357,9 @@ const RailSection = memo(function RailSection({ title, items, onPressItem, onPre
           <SectionLinkText>{t("common.seeAll")}</SectionLinkText>
         </SectionLink>
       </SectionHeader>
-      {items.length === 0 ? (
+      {isLoading && items.length === 0 ? (
+        <HubRailSkeleton />
+      ) : items.length === 0 ? (
         <EmptyRail>
           <EmptyRailText>{t("discover.noTitlesFound")}</EmptyRailText>
         </EmptyRail>
@@ -355,6 +393,8 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
   const [topNewMovies, setTopNewMovies] = useState<MediaItem[]>(cachedHub?.topNewMovies ?? []);
   const [imdbTopMovies, setImdbTopMovies] = useState<MediaItem[]>(cachedHub?.imdbTopMovies ?? []);
   const [isLoading, setIsLoading] = useState(!cachedHub);
+  const [isMovieOfDayLoading, setIsMovieOfDayLoading] = useState(!cachedHub);
+  const [isImdbTopLoading, setIsImdbTopLoading] = useState(!cachedHub);
   const [hasHydratedPersistentCache, setHasHydratedPersistentCache] = useState(Boolean(cachedHub));
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const watchedMovieIds = useMemo(
@@ -383,9 +423,11 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
     setMovieOfDay(cachedHub?.movieOfDay ?? null);
     setTopNewMovies(cachedHub?.topNewMovies ?? []);
     setImdbTopMovies(cachedHub?.imdbTopMovies ?? []);
+    setIsMovieOfDayLoading(!cachedHub);
+    setIsImdbTopLoading(!cachedHub);
     setErrorMessage(null);
     setIsLoading(!cachedHub);
-  }, [cachedHub, language]);
+  }, [language]);
 
   useEffect(() => {
     let active = true;
@@ -397,7 +439,11 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
       };
     }
 
-    void readPersistedRuntimeCache<MoviesHubCache>(localizedCacheKey, { validate: isValidMoviesHubCache })
+    void readPersistedRuntimeCache<MoviesHubCache>(localizedCacheKey, {
+      validate: isValidMoviesHubCache,
+      expectedVersion: getMoviesHubFreshnessVersion(),
+      maxAgeMs: MOVIES_HUB_CACHE_TTL_MS,
+    })
       .then((entry) => {
         if (!active) {
           return;
@@ -407,6 +453,8 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
           setMovieOfDay(entry.value.movieOfDay ?? null);
           setTopNewMovies(entry.value.topNewMovies ?? []);
           setImdbTopMovies(entry.value.imdbTopMovies ?? []);
+          setIsMovieOfDayLoading(false);
+          setIsImdbTopLoading(false);
           setIsLoading(false);
         }
 
@@ -421,7 +469,7 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
     return () => {
       active = false;
     };
-  }, [cachedHub, localizedCacheKey]);
+  }, [cachedHub, getMoviesHubFreshnessVersion, localizedCacheKey]);
 
   const applyHubState = useCallback((nextState: MoviesHubCache) => {
     const freshnessVersion = getMoviesHubFreshnessVersion();
@@ -436,37 +484,66 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
   }, [getMoviesHubFreshnessVersion, localizedCacheKey]);
 
   const loadMoviesData = useCallback(async (background = false) => {
-    if (isLikedMoviesLoading || isWatchHistoryLoading) {
-      return;
-    }
-
     if (!background && !hasHubData) {
       setIsLoading(true);
     }
 
+    const canLoadPersonalizedHero = !isLikedMoviesLoading && !isWatchHistoryLoading;
+    if (!movieOfDay) {
+      setIsMovieOfDayLoading(true);
+    }
+    if (imdbTopMovies.length === 0) {
+      setIsImdbTopLoading(true);
+    }
+    const currentState: MoviesHubCache = {
+      movieOfDay,
+      topNewMovies,
+      imdbTopMovies,
+    };
+
     try {
-      const [featured, topNewFirstPage, imdbTop] = await Promise.all([
-        getPersonalizedMovieOfTheDay({
-          userId: user?.id,
-          likedIds: likedMovies,
-          watchedIds: watchedMovieIds,
-        }),
-        getTopNewMoviesPage(1),
-        getImdbTop250Page(1)
-      ]);
+      const featuredPromise = canLoadPersonalizedHero
+        ? toAsyncResult(getPersonalizedMovieOfTheDay({
+            userId: user?.id,
+            likedIds: likedMovies,
+            watchedIds: watchedMovieIds,
+          }))
+        : Promise.resolve({ ok: true, value: movieOfDay } as const);
+      const topNewPromise = toAsyncResult(getTopNewMoviesPage(1));
+      const imdbTopPromise = toAsyncResult(getImdbTop250Page(1));
 
-      const initialState: MoviesHubCache = {
-        movieOfDay: featured,
-        topNewMovies: topNewFirstPage.items.slice(0, 20),
-        imdbTopMovies: imdbTop.items.slice(0, 20),
+      const topNewFirstPage = await topNewPromise;
+      let nextState: MoviesHubCache = {
+        ...currentState,
+        topNewMovies: topNewFirstPage.ok ? topNewFirstPage.value.items.slice(0, 20) : currentState.topNewMovies,
       };
-      applyHubState(initialState);
+      applyHubState(nextState);
+      setIsLoading(false);
 
-      if (topNewFirstPage.items.length < 16 && topNewFirstPage.totalPages > 1) {
-        const expandedTopNew = await seedTopNewMovies(16, topNewFirstPage);
-        if (expandedTopNew.length > initialState.topNewMovies.length) {
+      const [featuredResult, imdbTopResult] = await Promise.all([featuredPromise, imdbTopPromise]);
+      const seededImdbTopMovies =
+        imdbTopResult.ok
+          ? imdbTopResult.value.items.length >= 12
+            ? imdbTopResult.value.items
+            : await seedImdbTopMovies(12, imdbTopResult.value)
+          : nextState.imdbTopMovies;
+
+      nextState = {
+        movieOfDay: featuredResult.ok ? featuredResult.value : nextState.movieOfDay,
+        topNewMovies: nextState.topNewMovies,
+        imdbTopMovies: seededImdbTopMovies.slice(0, 20),
+      };
+      if (canLoadPersonalizedHero) {
+        setIsMovieOfDayLoading(false);
+      }
+      setIsImdbTopLoading(false);
+      applyHubState(nextState);
+
+      if (topNewFirstPage.ok && topNewFirstPage.value.items.length < 16 && topNewFirstPage.value.totalPages > 1) {
+        const expandedTopNew = await seedTopNewMovies(16, topNewFirstPage.value);
+        if (expandedTopNew.length > nextState.topNewMovies.length) {
           applyHubState({
-            ...initialState,
+            ...nextState,
             topNewMovies: expandedTopNew.slice(0, 20),
           });
         }
@@ -478,14 +555,29 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
       }
     } finally {
       setIsLoading(false);
+      if (canLoadPersonalizedHero) {
+        setIsMovieOfDayLoading(false);
+      }
+      setIsImdbTopLoading(false);
     }
-  }, [applyHubState, hasHubData, isLikedMoviesLoading, isWatchHistoryLoading, likedMovies, user?.id, watchedMovieIds]);
+  }, [
+    applyHubState,
+    hasHubData,
+    imdbTopMovies,
+    isLikedMoviesLoading,
+    isWatchHistoryLoading,
+    likedMovies,
+    movieOfDay,
+    topNewMovies,
+    user?.id,
+    watchedMovieIds,
+  ]);
 
   useRuntimeCacheAutoRefresh({
     entry: hubCacheEntry,
     maxAgeMs: MOVIES_HUB_CACHE_TTL_MS,
     getExpectedVersion: getMoviesHubFreshnessVersion,
-    enabled: hasHydratedPersistentCache && !isLikedMoviesLoading && !isWatchHistoryLoading,
+    enabled: hasHydratedPersistentCache,
     onRefresh: (hasCachedValue) => loadMoviesData(hasCachedValue),
   });
 
@@ -536,7 +628,9 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
       <RootScroll>
         <Content>
           <Animated.View entering={FadeInUp.duration(220)}>
-            {movieOfDay ? (
+            {isMovieOfDayLoading && !movieOfDay ? (
+              <HubHeroSkeleton />
+            ) : movieOfDay ? (
               <HeroPress
                 onPress={() => {
                   navigation.navigate("MovieDetail", { movieId: String(movieOfDay.id) });
@@ -597,6 +691,7 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
             <RailSection
               title={t("movies.imdbTop250")}
               items={imdbTopMovies}
+              isLoading={isImdbTopLoading}
               onPressItem={(item) => {
                 void openMovieDetail(item);
               }}

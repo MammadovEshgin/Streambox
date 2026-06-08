@@ -20,6 +20,7 @@ import {
   resolveTmdbTvIdFromImdbId
 } from "../api/tmdb";
 import { formatRating, isValidMediaItem, isValidMediaItemArray } from "../api/mediaFormatting";
+import { HubHeroSkeleton, HubRailSkeleton } from "../components/common/HubSkeletons";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
@@ -38,7 +39,7 @@ import {
 } from "../services/runtimeCache";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
-const SERIES_HUB_CACHE_KEY = "series-hub-v1";
+const SERIES_HUB_CACHE_KEY = "series-hub-v2";
 const SERIES_HUB_CACHE_TTL_MS = 1000 * 60 * 20;
 
 type SeriesHubCache = {
@@ -64,6 +65,16 @@ type SeedPageResponse = {
   items: MediaItem[];
   totalPages: number;
 };
+
+type AsyncResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: unknown };
+
+function toAsyncResult<T>(promise: Promise<T>): Promise<AsyncResult<T>> {
+  return promise
+    .then((value) => ({ ok: true, value }) as const)
+    .catch((error) => ({ ok: false, error }) as const);
+}
 
 const RootScroll = styled(ScrollView).attrs({
   showsVerticalScrollIndicator: false
@@ -258,6 +269,7 @@ type SeriesScreenProps = NativeStackScreenProps<HomeStackParamList, "SeriesFeed"
 type RailSectionProps = {
   title: string;
   items: MediaItem[];
+  isLoading?: boolean;
   onPressItem: (item: MediaItem) => void;
   onPressSeeAll: () => void;
 };
@@ -300,7 +312,31 @@ async function seedTopNewSeries(minimumCount: number, initialPage?: SeedPageResp
   return pool;
 }
 
-const RailSection = memo(function RailSection({ title, items, onPressItem, onPressSeeAll }: RailSectionProps) {
+async function seedImdbTopSeries(minimumCount: number, initialPage?: SeedPageResponse): Promise<MediaItem[]> {
+  const firstPage = initialPage ?? await getImdbTop250SeriesPage(1);
+  let pool = mergeUnique([], firstPage.items);
+
+  if (pool.length >= minimumCount || firstPage.totalPages <= 1) {
+    return pool;
+  }
+
+  const pagesToFetch = Array.from(
+    { length: Math.min(firstPage.totalPages, 5) - 1 },
+    (_, index) => index + 2
+  );
+
+  const responses = await Promise.all(pagesToFetch.map((page) => getImdbTop250SeriesPage(page)));
+  for (const response of responses) {
+    pool = mergeUnique(pool, response.items);
+    if (pool.length >= minimumCount) {
+      break;
+    }
+  }
+
+  return pool;
+}
+
+const RailSection = memo(function RailSection({ title, items, isLoading = false, onPressItem, onPressSeeAll }: RailSectionProps) {
   const { t } = useTranslation();
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<MediaItem>) => {
@@ -321,7 +357,9 @@ const RailSection = memo(function RailSection({ title, items, onPressItem, onPre
           <SectionLinkText>{t("common.seeAll")}</SectionLinkText>
         </SectionLink>
       </SectionHeader>
-      {items.length === 0 ? (
+      {isLoading && items.length === 0 ? (
+        <HubRailSkeleton />
+      ) : items.length === 0 ? (
         <EmptyRail>
           <EmptyRailText>{t("discover.noTitlesFound")}</EmptyRailText>
         </EmptyRail>
@@ -355,6 +393,8 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
   const [topNewSeries, setTopNewSeries] = useState<MediaItem[]>(cachedHub?.topNewSeries ?? []);
   const [imdbTopSeries, setImdbTopSeries] = useState<MediaItem[]>(cachedHub?.imdbTopSeries ?? []);
   const [isLoading, setIsLoading] = useState(!cachedHub);
+  const [isSeriesOfDayLoading, setIsSeriesOfDayLoading] = useState(!cachedHub);
+  const [isImdbTopLoading, setIsImdbTopLoading] = useState(!cachedHub);
   const [hasHydratedPersistentCache, setHasHydratedPersistentCache] = useState(Boolean(cachedHub));
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const watchedSeriesIds = useMemo(
@@ -383,9 +423,11 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
     setSeriesOfDay(cachedHub?.seriesOfDay ?? null);
     setTopNewSeries(cachedHub?.topNewSeries ?? []);
     setImdbTopSeries(cachedHub?.imdbTopSeries ?? []);
+    setIsSeriesOfDayLoading(!cachedHub);
+    setIsImdbTopLoading(!cachedHub);
     setErrorMessage(null);
     setIsLoading(!cachedHub);
-  }, [cachedHub, language]);
+  }, [language]);
 
   useEffect(() => {
     let active = true;
@@ -397,7 +439,11 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
       };
     }
 
-    void readPersistedRuntimeCache<SeriesHubCache>(localizedCacheKey, { validate: isValidSeriesHubCache })
+    void readPersistedRuntimeCache<SeriesHubCache>(localizedCacheKey, {
+      validate: isValidSeriesHubCache,
+      expectedVersion: getSeriesHubFreshnessVersion(),
+      maxAgeMs: SERIES_HUB_CACHE_TTL_MS,
+    })
       .then((entry) => {
         if (!active) {
           return;
@@ -407,6 +453,8 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
           setSeriesOfDay(entry.value.seriesOfDay ?? null);
           setTopNewSeries(entry.value.topNewSeries ?? []);
           setImdbTopSeries(entry.value.imdbTopSeries ?? []);
+          setIsSeriesOfDayLoading(false);
+          setIsImdbTopLoading(false);
           setIsLoading(false);
         }
 
@@ -421,7 +469,7 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
     return () => {
       active = false;
     };
-  }, [cachedHub, localizedCacheKey]);
+  }, [cachedHub, getSeriesHubFreshnessVersion, localizedCacheKey]);
 
   const applyHubState = useCallback((nextState: SeriesHubCache) => {
     const freshnessVersion = getSeriesHubFreshnessVersion();
@@ -436,37 +484,66 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
   }, [getSeriesHubFreshnessVersion, localizedCacheKey]);
 
   const loadSeriesData = useCallback(async (background = false) => {
-    if (isLikedSeriesLoading || isWatchHistoryLoading) {
-      return;
-    }
-
     if (!background && !hasHubData) {
       setIsLoading(true);
     }
 
+    const canLoadPersonalizedHero = !isLikedSeriesLoading && !isWatchHistoryLoading;
+    if (!seriesOfDay) {
+      setIsSeriesOfDayLoading(true);
+    }
+    if (imdbTopSeries.length === 0) {
+      setIsImdbTopLoading(true);
+    }
+    const currentState: SeriesHubCache = {
+      seriesOfDay,
+      topNewSeries,
+      imdbTopSeries,
+    };
+
     try {
-      const [featured, topNewFirstPage, imdbTop] = await Promise.all([
-        getPersonalizedSeriesOfTheDay({
-          userId: user?.id,
-          likedIds: likedSeries,
-          watchedIds: watchedSeriesIds,
-        }),
-        getTopNewSeriesPage(1),
-        getImdbTop250SeriesPage(1)
-      ]);
+      const featuredPromise = canLoadPersonalizedHero
+        ? toAsyncResult(getPersonalizedSeriesOfTheDay({
+            userId: user?.id,
+            likedIds: likedSeries,
+            watchedIds: watchedSeriesIds,
+          }))
+        : Promise.resolve({ ok: true, value: seriesOfDay } as const);
+      const topNewPromise = toAsyncResult(getTopNewSeriesPage(1));
+      const imdbTopPromise = toAsyncResult(getImdbTop250SeriesPage(1));
 
-      const initialState: SeriesHubCache = {
-        seriesOfDay: featured,
-        topNewSeries: topNewFirstPage.items.slice(0, 20),
-        imdbTopSeries: imdbTop.items.slice(0, 20),
+      const topNewFirstPage = await topNewPromise;
+      let nextState: SeriesHubCache = {
+        ...currentState,
+        topNewSeries: topNewFirstPage.ok ? topNewFirstPage.value.items.slice(0, 20) : currentState.topNewSeries,
       };
-      applyHubState(initialState);
+      applyHubState(nextState);
+      setIsLoading(false);
 
-      if (topNewFirstPage.items.length < 16 && topNewFirstPage.totalPages > 1) {
-        const expandedTopNew = await seedTopNewSeries(16, topNewFirstPage);
-        if (expandedTopNew.length > initialState.topNewSeries.length) {
+      const [featuredResult, imdbTopResult] = await Promise.all([featuredPromise, imdbTopPromise]);
+      const seededImdbTopSeries =
+        imdbTopResult.ok
+          ? imdbTopResult.value.items.length >= 12
+            ? imdbTopResult.value.items
+            : await seedImdbTopSeries(12, imdbTopResult.value)
+          : nextState.imdbTopSeries;
+
+      nextState = {
+        seriesOfDay: featuredResult.ok ? featuredResult.value : nextState.seriesOfDay,
+        topNewSeries: nextState.topNewSeries,
+        imdbTopSeries: seededImdbTopSeries.slice(0, 20),
+      };
+      if (canLoadPersonalizedHero) {
+        setIsSeriesOfDayLoading(false);
+      }
+      setIsImdbTopLoading(false);
+      applyHubState(nextState);
+
+      if (topNewFirstPage.ok && topNewFirstPage.value.items.length < 16 && topNewFirstPage.value.totalPages > 1) {
+        const expandedTopNew = await seedTopNewSeries(16, topNewFirstPage.value);
+        if (expandedTopNew.length > nextState.topNewSeries.length) {
           applyHubState({
-            ...initialState,
+            ...nextState,
             topNewSeries: expandedTopNew.slice(0, 20),
           });
         }
@@ -478,14 +555,29 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
       }
     } finally {
       setIsLoading(false);
+      if (canLoadPersonalizedHero) {
+        setIsSeriesOfDayLoading(false);
+      }
+      setIsImdbTopLoading(false);
     }
-  }, [applyHubState, hasHubData, isLikedSeriesLoading, isWatchHistoryLoading, likedSeries, user?.id, watchedSeriesIds]);
+  }, [
+    applyHubState,
+    hasHubData,
+    imdbTopSeries,
+    isLikedSeriesLoading,
+    isWatchHistoryLoading,
+    likedSeries,
+    seriesOfDay,
+    topNewSeries,
+    user?.id,
+    watchedSeriesIds,
+  ]);
 
   useRuntimeCacheAutoRefresh({
     entry: hubCacheEntry,
     maxAgeMs: SERIES_HUB_CACHE_TTL_MS,
     getExpectedVersion: getSeriesHubFreshnessVersion,
-    enabled: hasHydratedPersistentCache && !isLikedSeriesLoading && !isWatchHistoryLoading,
+    enabled: hasHydratedPersistentCache,
     onRefresh: (hasCachedValue) => loadSeriesData(hasCachedValue),
   });
 
@@ -536,7 +628,9 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
       <RootScroll>
         <Content>
           <Animated.View entering={FadeInUp.duration(220)}>
-            {seriesOfDay ? (
+            {isSeriesOfDayLoading && !seriesOfDay ? (
+              <HubHeroSkeleton />
+            ) : seriesOfDay ? (
               <HeroPress
                 onPress={() => {
                   void openSeriesDetail(seriesOfDay);
@@ -597,6 +691,7 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
             <RailSection
               title={t("series.imdbTop250Series")}
               items={imdbTopSeries}
+              isLoading={isImdbTopLoading}
               onPressItem={(item) => {
                 void openSeriesDetail(item);
               }}

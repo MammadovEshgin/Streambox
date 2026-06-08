@@ -82,6 +82,7 @@ function ProfileStackScreen() {
   return (
     <ProfileStack.Navigator screenOptions={{ headerShown: false }}>
       <ProfileStack.Screen name="ProfileFeed" component={ProfileScreen} />
+      <ProfileStack.Screen name="DiscoverGrid" component={DiscoverGridScreen} />
       <ProfileStack.Screen name="ProfileSeeAll" component={ProfileSeeAllScreen} />
       <ProfileStack.Screen name="ProfileSettings" component={ProfileSettingsScreen} />
       <ProfileStack.Screen name="MovieDetail" component={MovieDetailScreen} />
@@ -96,6 +97,7 @@ function StatsStackScreen() {
   return (
       <StatsStack.Navigator screenOptions={{ headerShown: false }}>
       <StatsStack.Screen name="StatsFeed" component={StatsScreen} />
+      <StatsStack.Screen name="DiscoverGrid" component={DiscoverGridScreen} />
       <StatsStack.Screen name="WatchedGrid" component={WatchedGridScreen} />
       <StatsStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <StatsStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
@@ -105,7 +107,7 @@ function StatsStackScreen() {
   );
 }
 
-const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll", "FranchiseCatalog", "FranchiseTimeline"]);
+const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline"]);
 const STACK_TABS = new Set<keyof RootTabParamList>(["Discover", "Movies", "Series", "Stats", "Profile"]);
 
 export function Navigation() {

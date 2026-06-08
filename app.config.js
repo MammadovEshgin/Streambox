@@ -17,7 +17,7 @@ const baseConfig = {
   },
   updates: {
     url: "https://u.expo.dev/0671c444-de91-4f8f-b705-179036f310f3",
-    checkAutomatically: "ON_ERROR_RECOVERY",
+    checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
   ios: {

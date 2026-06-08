@@ -1,4 +1,4 @@
-import type { DiscoverCollectionSource, MediaType } from "../api/tmdb";
+import type { DiscoverCollectionSource, MediaItem, MediaType } from "../api/tmdb";
 import type { NavigatorScreenParams } from "@react-navigation/native";
 
 export type SearchResultsParams = {
@@ -18,8 +18,9 @@ export type HomeStackParamList = {
   MoviesFeed: undefined;
   SeriesFeed: undefined;
   DiscoverGrid: {
-    source: DiscoverCollectionSource;
+    source?: DiscoverCollectionSource;
     title: string;
+    items?: MediaItem[];
   };
   FranchiseCatalog: undefined;
   FranchiseTimeline: {
@@ -56,6 +57,11 @@ export type ProfileSeeAllSection = "watchlist" | "liked" | "watched";
 
 export type ProfileStackParamList = {
   ProfileFeed: undefined;
+  DiscoverGrid: {
+    source?: DiscoverCollectionSource;
+    title: string;
+    items?: MediaItem[];
+  };
   ProfileSeeAll: {
     section: ProfileSeeAllSection;
     filter: "movie" | "tv";
@@ -87,6 +93,11 @@ export type ProfileStackParamList = {
 
 export type StatsStackParamList = {
   StatsFeed: undefined;
+  DiscoverGrid: {
+    source?: DiscoverCollectionSource;
+    title: string;
+    items?: MediaItem[];
+  };
   WatchedGrid: {
     filter: "movie" | "tv";
     title?: string;
