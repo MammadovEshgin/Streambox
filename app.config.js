@@ -28,7 +28,7 @@ const baseConfig = {
     adaptiveIcon: {
       foregroundImage: "./assets/app-icons/adaptive-foreground.png",
       monochromeImage: "./assets/app-icons/adaptive-monochrome.png",
-      backgroundColor: "#000000",
+      backgroundColor: "#FFFFFF",
     },
     package: "com.streambox.app",
     allowBackup: false,
