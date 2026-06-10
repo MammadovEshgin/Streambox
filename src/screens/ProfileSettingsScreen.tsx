@@ -26,7 +26,7 @@ type Props = NativeStackScreenProps<ProfileStackParamList, "ProfileSettings">;
 const HeaderRow = styled.View`
   flex-direction: row;
   align-items: center;
-  padding: 12px 16px 4px;
+  padding: 10px 16px 8px;
 `;
 
 const BackButton = styled.Pressable`
@@ -57,11 +57,11 @@ const Content = styled(ScrollView).attrs({
 
 const IntroCard = styled.View`
   margin: 8px 16px 2px;
-  padding: 18px 18px 20px;
-  border-radius: 24px;
+  padding: 16px 16px 18px;
+  border-radius: 12px;
   border-width: 1px;
   border-color: ${({ theme }) => withAlpha(theme.colors.primary, 0.16)};
-  background-color: ${({ theme }) => theme.colors.surface};
+  background-color: ${({ theme }) => theme.colors.surfaceHigh};
 `;
 
 const IntroTitle = styled.Text`
@@ -80,12 +80,7 @@ const IntroText = styled.Text`
 `;
 
 const Section = styled.View`
-  margin: 20px 16px 0;
-  padding: 20px 18px 18px;
-  border-radius: 24px;
-  border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.border};
-  background-color: ${({ theme }) => theme.colors.surface};
+  margin: 24px 16px 0;
 `;
 
 const SectionTitle = styled.Text`
@@ -104,11 +99,11 @@ const SectionText = styled.Text`
 `;
 
 const Card = styled.View`
-  margin-top: 18px;
-  padding: 18px;
-  border-radius: 20px;
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: 10px;
   border-width: 1px;
-  border-color: ${({ theme }) => withAlpha(theme.colors.textPrimary, 0.06)};
+  border-color: ${({ theme }) => theme.colors.borderSoft};
   background-color: ${({ theme }) => theme.colors.surfaceRaised};
 `;
 
@@ -121,16 +116,16 @@ const Label = styled.Text`
 `;
 
 const ThemeGrid = styled.View`
-  margin-top: 16px;
-  gap: 12px;
+  margin-top: 14px;
+  gap: 10px;
 `;
 
 const ThemePaletteRow = styled.View`
-  margin-top: 18px;
+  margin-top: 16px;
   flex-direction: row;
   flex-wrap: wrap;
   justify-content: space-between;
-  row-gap: 18px;
+  row-gap: 16px;
 `;
 
 const ThemeSwatchButton = styled.Pressable`
@@ -140,9 +135,9 @@ const ThemeSwatchButton = styled.Pressable`
 `;
 
 const ThemeSwatchCircle = styled.View<{ $color: string; $selected: boolean }>`
-  width: 58px;
-  height: 58px;
-  border-radius: 29px;
+  width: 54px;
+  height: 54px;
+  border-radius: 12px;
   background-color: ${({ $color }) => $color};
   border-width: ${({ $selected }) => ($selected ? 3 : 1)}px;
   border-color: ${({ $selected, theme }) =>
@@ -162,8 +157,9 @@ const ThemeSwatchLabel = styled.Text<{ $selected: boolean }>`
 `;
 
 const ThemeCard = styled.Pressable<{ $selected: boolean; $primary: string }>`
-  padding: 15px 14px;
-  border-radius: 18px;
+  min-height: 66px;
+  padding: 13px 14px;
+  border-radius: 10px;
   border-width: 1px;
   border-color: ${({ $selected, $primary, theme }) => ($selected ? $primary : theme.colors.border)};
   background-color: ${({ $selected, $primary, theme }) => ($selected ? withAlpha($primary, 0.14) : theme.colors.surfaceRaised)};
@@ -208,8 +204,8 @@ const Swatch = styled.View<{ $color: string }>`
 `;
 
 const BackupActions = styled.View`
-  margin-top: 18px;
-  gap: 12px;
+  margin-top: 16px;
+  gap: 10px;
 `;
 
 const BackupButton = styled.Pressable<{ $primary: boolean; $disabled: boolean }>`
@@ -265,7 +261,7 @@ const FeedbackInput = styled(TextInput).attrs(({ theme }) => ({
   margin-top: 16px;
   min-height: 144px;
   padding: 14px 16px;
-  border-radius: 14px;
+  border-radius: 10px;
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.border};
   background-color: ${({ theme }) => theme.colors.surfaceRaised};
@@ -288,7 +284,7 @@ const LogoutButton = styled.Pressable`
   align-items: center;
   justify-content: center;
   gap: 10px;
-  border-radius: 14px;
+  border-radius: 10px;
   border-width: 1px;
   border-color: #E50914;
   background-color: rgba(229, 9, 20, 0.1);
@@ -341,7 +337,7 @@ const ConfirmModalBlur = styled(BlurView)`
 const ConfirmModalContent = styled(Animated.View)`
   width: 85%;
   background-color: rgba(23, 23, 23, 0.95);
-  border-radius: 28px;
+  border-radius: 14px;
   border-width: 1px;
   border-color: rgba(255, 255, 255, 0.08);
   overflow: hidden;
@@ -374,7 +370,7 @@ const ConfirmActions = styled.View`
 const ConfirmButton = styled.Pressable<{ $primary?: boolean }>`
   width: 100%;
   height: 54px;
-  border-radius: 16px;
+  border-radius: 10px;
   align-items: center;
   justify-content: center;
   background-color: ${({ $primary, theme }) => 
