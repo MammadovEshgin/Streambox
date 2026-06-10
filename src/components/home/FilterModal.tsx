@@ -99,6 +99,13 @@ const ChipGrid = styled.View`
   gap: 8px;
 `;
 
+const GenreGrid = styled.View`
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  row-gap: 8px;
+`;
+
 const Chip = styled(Pressable)<{ $active: boolean }>`
   min-height: 42px;
   padding: 0 15px;
@@ -112,11 +119,27 @@ const Chip = styled(Pressable)<{ $active: boolean }>`
   justify-content: center;
 `;
 
+const TypeChip = styled(Chip)`
+  flex: 1;
+`;
+
+const GenreChip = styled(Chip)`
+  width: 23.5%;
+  min-height: 46px;
+  padding: 0 4px;
+`;
+
 const ChipText = styled.Text<{ $active: boolean }>`
   color: ${({ theme, $active }) =>
     $active ? theme.colors.primary : theme.colors.textSecondary};
   font-family: ${({ $active }) => ($active ? "Outfit_600SemiBold" : "Outfit_400Regular")};
   font-size: 14px;
+`;
+
+const GenreChipText = styled(ChipText)`
+  font-size: 12px;
+  line-height: 15px;
+  text-align: center;
 `;
 
 /* Slider-like year / rating row */
@@ -273,6 +296,8 @@ const SORT_OPTIONS: { labelKey: string; value: SortByOption; icon: keyof typeof 
   { labelKey: "filters.mostVoted", value: "vote_count.desc", icon: "thumbs-up" }
 ];
 
+const GENRE_GRID_ITEM_COUNT = 20;
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
@@ -351,6 +376,14 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
     onClose();
   }, [local, onApply, onClose]);
 
+  const genreGridItems = useMemo(
+    () => [
+      { id: 0, name: t("common.all"), isAll: true },
+      ...genres.slice(0, GENRE_GRID_ITEM_COUNT - 1).map((genre) => ({ ...genre, isAll: false })),
+    ],
+    [genres, t]
+  );
+
   return (
     <Modal visible={visible} transparent animationType="none" statusBarTranslucent onRequestClose={onClose}>
       <AnimatedBackdrop entering={FadeIn.duration(250)} exiting={FadeOut.duration(200)}>
@@ -358,8 +391,6 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
         <Sheet
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(280).easing(Easing.in(Easing.cubic))}
-          onStartShouldSetResponder={() => true}
-          onMoveShouldSetResponder={() => false}
         >
           <HandleTouchArea {...handlePanResponder.panHandlers}>
             <Handle />
@@ -374,40 +405,51 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
           <ScrollView
             showsVerticalScrollIndicator={false}
             bounces={false}
+            keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ paddingBottom: 16 }}
           >
             {/* Media Type */}
             <Section>
               <SectionTitle>{t("filters.type")}</SectionTitle>
               <ChipGrid>
-                <Chip
+                <TypeChip
                   $active={local.mediaType === "movie"}
                   onPress={() => setLocal((p) => ({ ...p, mediaType: "movie", genreIds: [] }))}
                 >
                   <ChipText $active={local.mediaType === "movie"}>{t("filters.movies")}</ChipText>
-                </Chip>
-                <Chip
+                </TypeChip>
+                <TypeChip
                   $active={local.mediaType === "tv"}
                   onPress={() => setLocal((p) => ({ ...p, mediaType: "tv", genreIds: [] }))}
                 >
                   <ChipText $active={local.mediaType === "tv"}>{t("filters.tvSeries")}</ChipText>
-                </Chip>
+                </TypeChip>
               </ChipGrid>
             </Section>
 
             {/* Genres */}
             <Section>
               <SectionTitle>{t("filters.genres")}</SectionTitle>
-              <ChipGrid>
-                {genres.map((genre) => {
-                  const active = local.genreIds.includes(genre.id);
+              <GenreGrid>
+                {genreGridItems.map((genre) => {
+                  const active = genre.isAll ? local.genreIds.length === 0 : local.genreIds.includes(genre.id);
                   return (
-                    <Chip key={genre.id} $active={active} onPress={() => toggleGenre(genre.id)}>
-                      <ChipText $active={active}>{genre.name}</ChipText>
-                    </Chip>
+                    <GenreChip
+                      key={genre.id}
+                      $active={active}
+                      onPress={() => {
+                        if (genre.isAll) {
+                          setLocal((prev) => ({ ...prev, genreIds: [] }));
+                          return;
+                        }
+                        toggleGenre(genre.id);
+                      }}
+                    >
+                      <GenreChipText $active={active} numberOfLines={2}>{genre.name}</GenreChipText>
+                    </GenreChip>
                   );
                 })}
-              </ChipGrid>
+              </GenreGrid>
             </Section>
 
             {/* Year Range */}
