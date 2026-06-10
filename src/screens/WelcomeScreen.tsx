@@ -4,7 +4,6 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable } from "react-native";
 import Animated, {
-  FadeIn,
   FadeInDown,
   FadeInUp,
   useAnimatedStyle,
@@ -172,24 +171,15 @@ const TitleAccent = styled.Text`
   text-align: center;
 `;
 
-const Description = styled(Animated.Text)`
-  margin-top: 10px;
-  color: ${({ theme }) => theme.colors.textSecondary};
-  font-family: ${({ theme }) => theme.typography.BodyMedium.fontFamily};
-  font-size: 13px;
-  line-height: 20px;
-  text-align: center;
-  max-width: 254px;
-`;
-
 const BottomSpace = styled.View`
-  flex: 0.52;
+  flex: 0.34;
 `;
 
 const Footer = styled(Animated.View)`
   align-items: center;
   justify-content: center;
   min-height: 50px;
+  margin-top: 22px;
 `;
 
 const StartButton = styled(Pressable)`
@@ -330,24 +320,20 @@ export function WelcomeScreen({ onContinue }: WelcomeScreenProps) {
             {t("welcome.headline")}{"\n"}
             <TitleAccent>{t("welcome.headlineAccent")}</TitleAccent>
           </Title>
-          <Description entering={FadeIn.duration(600).delay(600)}>
-            {t("welcome.description")}
-          </Description>
+          <Footer entering={FadeInUp.duration(400).delay(500)}>
+            <StartButton 
+              onPress={onContinue}
+              style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.98 : 1 }] }]}
+            >
+              <StartText>{t("welcome.cta")}</StartText>
+              <ArrowWrap style={arrowStyle}>
+                <Feather name="arrow-right" size={18} color="#FFFFFF" />
+              </ArrowWrap>
+            </StartButton>
+          </Footer>
         </CopyBlock>
 
         <BottomSpace />
-
-        <Footer entering={FadeInUp.duration(400).delay(800)}>
-          <StartButton 
-            onPress={onContinue}
-            style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.98 : 1 }] }]}
-          >
-            <StartText>{t("welcome.cta")}</StartText>
-            <ArrowWrap style={arrowStyle}>
-              <Feather name="arrow-right" size={18} color="#FFFFFF" />
-            </ArrowWrap>
-          </StartButton>
-        </Footer>
       </Content>
     </Root>
   );
