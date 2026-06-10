@@ -20,41 +20,41 @@ import { Genre, MediaType, getMovieGenres, getTvGenres } from "../../api/tmdb";
 
 const AnimatedBackdrop = styled(Animated.View)`
   flex: 1;
-  background-color: rgba(3, 5, 4, 0.76);
+  background-color: rgba(3, 5, 4, 0.72);
   justify-content: flex-end;
 `;
 
 const Sheet = styled(Animated.View)`
-  background-color: ${({ theme }) => theme.colors.surface};
-  border-top-left-radius: 12px;
-  border-top-right-radius: 12px;
+  background-color: ${({ theme }) => theme.colors.surfaceHigh};
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
   border-top-width: 1px;
-  border-top-color: ${({ theme }) => theme.colors.border};
-  max-height: 85%;
-  padding-bottom: 34px;
+  border-top-color: ${({ theme }) => theme.colors.glassBorder};
+  max-height: 88%;
+  padding-bottom: 20px;
 `;
 
 const HandleTouchArea = styled.View`
-  height: 34px;
+  height: 30px;
   align-items: center;
   justify-content: center;
 `;
 
 const Handle = styled.View`
-  width: 72px;
-  height: 5px;
-  border-radius: 2px;
+  width: 42px;
+  height: 4px;
+  border-radius: 1px;
   background-color: ${({ theme }) => theme.colors.textSecondary};
-  opacity: 0.42;
+  opacity: 0.34;
 `;
 
 const SheetHeader = styled.View`
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 20px 16px;
+  padding: 4px 18px 14px;
   border-bottom-width: 1px;
-  border-bottom-color: ${({ theme }) => theme.colors.border};
+  border-bottom-color: ${({ theme }) => theme.colors.borderSoft};
 `;
 
 const SheetTitle = styled.Text`
@@ -65,11 +65,14 @@ const SheetTitle = styled.Text`
 `;
 
 const ResetButton = styled(Pressable)`
-  padding: 6px 14px;
-  border-radius: 3px;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 7px;
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.border};
   background-color: ${({ theme }) => theme.colors.surface};
+  align-items: center;
+  justify-content: center;
 `;
 
 const ResetText = styled.Text`
@@ -79,7 +82,7 @@ const ResetText = styled.Text`
 `;
 
 const Section = styled.View`
-  padding: 18px 20px 0;
+  padding: 20px 18px 0;
 `;
 
 const SectionTitle = styled.Text`
@@ -97,13 +100,16 @@ const ChipGrid = styled.View`
 `;
 
 const Chip = styled(Pressable)<{ $active: boolean }>`
-  padding: 8px 16px;
-  border-radius: 3px;
+  min-height: 42px;
+  padding: 0 15px;
+  border-radius: 7px;
   border-width: 1px;
   border-color: ${({ theme, $active }) =>
     $active ? theme.colors.primaryMuted : theme.colors.border};
   background-color: ${({ theme, $active }) =>
     $active ? theme.colors.primarySoft : theme.colors.surfaceRaised};
+  align-items: center;
+  justify-content: center;
 `;
 
 const ChipText = styled.Text<{ $active: boolean }>`
@@ -122,8 +128,8 @@ const RangeRow = styled.View`
 
 const RangeInput = styled.TextInput`
   flex: 1;
-  height: 44px;
-  border-radius: 3px;
+  height: 46px;
+  border-radius: 7px;
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.border};
   background-color: ${({ theme }) => theme.colors.surfaceRaised};
@@ -147,8 +153,8 @@ const RatingRow = styled.View`
 
 const RatingChip = styled(Pressable)<{ $active: boolean }>`
   flex: 1;
-  height: 42px;
-  border-radius: 3px;
+  height: 44px;
+  border-radius: 7px;
   border-width: 1px;
   border-color: ${({ theme, $active }) =>
     $active ? theme.colors.primaryMuted : theme.colors.border};
@@ -172,8 +178,8 @@ const SortRow = styled.View`
 `;
 
 const SortOption = styled(Pressable)<{ $active: boolean }>`
-  height: 46px;
-  border-radius: 3px;
+  min-height: 48px;
+  border-radius: 7px;
   border-width: 1px;
   border-color: ${({ theme, $active }) =>
     $active ? theme.colors.primaryMuted : theme.colors.border};
@@ -195,7 +201,7 @@ const SortOptionText = styled.Text<{ $active: boolean }>`
 const ApplyButton = styled(Pressable)`
   margin: 24px 20px 0;
   height: 52px;
-  border-radius: 3px;
+  border-radius: 8px;
   background-color: ${({ theme }) => theme.colors.primary};
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.primaryMuted};
