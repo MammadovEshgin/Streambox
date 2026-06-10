@@ -41,6 +41,7 @@ import { useAppSettings } from "../settings/AppSettingsContext";
 
 const HOME_DISCOVERY_CACHE_KEY = "home-discovery-v1";
 const HOME_DISCOVERY_CACHE_TTL_MS = 1000 * 60 * 10;
+const HOME_DISCOVERY_FIRST_LOAD_RETRY_DELAYS_MS = [1_500, 4_000, 8_000];
 
 type HomeDiscoveryCache = {
   popularMovies: MediaItem[];
@@ -59,6 +60,12 @@ function isValidHomeDiscoveryCache(value: unknown): value is HomeDiscoveryCache 
     && isValidMediaItemArray(cache.trendingMovies)
     && isValidMediaItemArray(cache.trendingSeries)
   );
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 const Layout = styled(ScrollView).attrs({
@@ -314,31 +321,45 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
       setIsLoading(true);
     }
 
+    const retryDelays = !background && !hasDiscoveryData ? HOME_DISCOVERY_FIRST_LOAD_RETRY_DELAYS_MS : [];
+    let lastError: unknown = null;
+
     try {
-      const [popular, movies, series] = await Promise.all([
-        getPopular(),
-        getTrending("movie"),
-        getTrending("tv"),
-      ]);
+      for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+        try {
+          const [popular, movies, series] = await Promise.all([
+            getPopular(),
+            getTrending("movie"),
+            getTrending("tv"),
+          ]);
 
-      const coreState: HomeDiscoveryCache = {
-        popularMovies: popular,
-        trendingMovies: movies,
-        trendingSeries: series,
-      };
+          const coreState: HomeDiscoveryCache = {
+            popularMovies: popular,
+            trendingMovies: movies,
+            trendingSeries: series,
+          };
 
-      const freshnessVersion = getDiscoveryFreshnessVersion();
-      writeRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, coreState, { version: freshnessVersion });
-      void writePersistedRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, coreState, { version: freshnessVersion });
+          const freshnessVersion = getDiscoveryFreshnessVersion();
+          writeRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, coreState, { version: freshnessVersion });
+          void writePersistedRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, coreState, { version: freshnessVersion });
 
-      startTransition(() => {
-        setPopularMovies(popular);
-        setTrendingMovies(movies);
-        setTrendingSeries(series);
-        setErrorMessage(null);
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to load discovery feed.";
+          startTransition(() => {
+            setPopularMovies(popular);
+            setTrendingMovies(movies);
+            setTrendingSeries(series);
+            setErrorMessage(null);
+          });
+          return;
+        } catch (error) {
+          lastError = error;
+          const retryDelay = retryDelays[attempt];
+          if (retryDelay) {
+            await wait(retryDelay);
+          }
+        }
+      }
+
+      const message = lastError instanceof Error ? lastError.message : "Unable to load discovery feed.";
       if (!hasDiscoveryData) {
         setErrorMessage(message);
       }
