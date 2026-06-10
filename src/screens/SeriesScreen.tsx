@@ -21,7 +21,6 @@ import {
 } from "../api/tmdb";
 import { formatRating, isValidMediaItem, isValidMediaItemArray } from "../api/mediaFormatting";
 import { HubHeroSkeleton, HubRailSkeleton } from "../components/common/HubSkeletons";
-import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
 import { useRuntimeCacheAutoRefresh } from "../hooks/useRuntimeCacheAutoRefresh";
@@ -41,6 +40,7 @@ import { useAppSettings } from "../settings/AppSettingsContext";
 
 const SERIES_HUB_CACHE_KEY = "series-hub-v2";
 const SERIES_HUB_CACHE_TTL_MS = 1000 * 60 * 20;
+const HUB_FIRST_LOAD_RETRY_DELAYS_MS = [1_500, 4_000, 8_000];
 
 type SeriesHubCache = {
   seriesOfDay: MediaItem | null;
@@ -74,6 +74,33 @@ function toAsyncResult<T>(promise: Promise<T>): Promise<AsyncResult<T>> {
   return promise
     .then((value) => ({ ok: true, value }) as const)
     .catch((error) => ({ ok: false, error }) as const);
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function loadHubPageWithRetry<T extends SeedPageResponse>(
+  loadPage: () => Promise<T>,
+  retryDelays: number[]
+): Promise<AsyncResult<T>> {
+  let lastResult: AsyncResult<T> | null = null;
+
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    lastResult = await toAsyncResult(loadPage());
+    if (lastResult.ok && lastResult.value.items.length > 0) {
+      return lastResult;
+    }
+
+    const retryDelay = retryDelays[attempt];
+    if (retryDelay) {
+      await wait(retryDelay);
+    }
+  }
+
+  return lastResult ?? { ok: false, error: new Error("Unable to load hub page.") };
 }
 
 const RootScroll = styled(ScrollView).attrs({
@@ -249,12 +276,6 @@ const EmptyRail = styled.View`
 const EmptyRailText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
   font-size: 13px;
-`;
-
-const LoadingWrap = styled.View`
-  flex: 1;
-  align-items: center;
-  justify-content: center;
 `;
 
 const ErrorText = styled.Text`
@@ -509,8 +530,9 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
             watchedIds: watchedSeriesIds,
           }))
         : Promise.resolve({ ok: true, value: seriesOfDay } as const);
-      const topNewPromise = toAsyncResult(getTopNewSeriesPage(1));
-      const imdbTopPromise = toAsyncResult(getImdbTop250SeriesPage(1));
+      const initialRetryDelays = !background && !hasHubData ? HUB_FIRST_LOAD_RETRY_DELAYS_MS : [];
+      const topNewPromise = loadHubPageWithRetry(() => getTopNewSeriesPage(1), initialRetryDelays);
+      const imdbTopPromise = loadHubPageWithRetry(() => getImdbTop250SeriesPage(1), initialRetryDelays);
 
       const topNewFirstPage = await topNewPromise;
       let nextState: SeriesHubCache = {
@@ -613,16 +635,6 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
     [navigation]
   );
 
-  if ((isLoading || isLikedSeriesLoading || isWatchHistoryLoading) && !hasHubData) {
-    return (
-      <SafeContainer>
-        <LoadingWrap>
-          <MovieLoader label={t("loaders.loadingSeries")} />
-        </LoadingWrap>
-      </SafeContainer>
-    );
-  }
-
   return (
     <SafeContainer>
       <RootScroll>
@@ -675,6 +687,7 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
             <RailSection
               title={t("series.topNewSeries")}
               items={topNewSeries}
+              isLoading={isLoading && topNewSeries.length === 0}
               onPressItem={(item) => {
                 void openSeriesDetail(item);
               }}

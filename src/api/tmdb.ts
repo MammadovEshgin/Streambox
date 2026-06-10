@@ -7,6 +7,7 @@ import { shouldFetchExternalRatings, type ExternalRatingsSurface } from "../serv
 import { trackNetworkFailure } from "../services/telemetryService";
 import { mapWithConcurrency } from "../utils/concurrency";
 import {
+  getImdbPopularMovies,
   getImdbTop250Movies,
   getImdbTop250Shows,
   getImdbRating,
@@ -481,6 +482,8 @@ const similarMoviesCache = new Map<string, MediaItem[]>();
 const similarSeriesCache = new Map<string, MediaItem[]>();
 const LIST_ENRICHMENT_CONCURRENCY = 4;
 const IMDB_TOP250_RESOLVE_CONCURRENCY = 6;
+const IMDB_POPULAR_SPOTLIGHT_RESOLVE_LIMIT = 36;
+const MIN_IMDB_POPULAR_SPOTLIGHT_ITEMS = 6;
 
 function getLocalizedTmdbCacheKey(scope: string, id: string | number) {
   return `${getTmdbRequestLanguage()}:${scope}:${id}`;
@@ -1361,7 +1364,7 @@ async function resolveImdbEntryToMediaItem(
         title: found.title ?? entry.title,
         posterPath: found.poster_path,
         backdropPath: found.backdrop_path,
-        rating: entry.imdbRating,
+        rating: entry.imdbRating > 0 ? entry.imdbRating : found.vote_average,
         overview: found.overview ?? "",
         year: found.release_date ? found.release_date.split("-")[0] ?? "----" : "----",
         mediaType: "movie",
@@ -1380,7 +1383,7 @@ async function resolveImdbEntryToMediaItem(
       title: found.name ?? entry.title,
       posterPath: found.poster_path,
       backdropPath: found.backdrop_path,
-      rating: entry.imdbRating,
+      rating: entry.imdbRating > 0 ? entry.imdbRating : found.vote_average,
       overview: found.overview ?? "",
       year: found.first_air_date ? found.first_air_date.split("-")[0] ?? "----" : "----",
       mediaType: "tv",
@@ -1479,8 +1482,31 @@ export async function getDiscoverCollectionPage(
 
 export async function getPopular(): Promise<MediaItem[]> {
   assertCredentials();
+  try {
+    const imdbPopular = await getImdbPopularMovies();
+    const resolved = await mapWithConcurrency(
+      imdbPopular.slice(0, IMDB_POPULAR_SPOTLIGHT_RESOLVE_LIMIT),
+      IMDB_TOP250_RESOLVE_CONCURRENCY,
+      async (entry) => resolveImdbEntryToMediaItem(entry, "movie"),
+    );
+    const imdbItems = resolved
+      .filter((item): item is MediaItem => item !== null)
+      .filter(isQualityItem)
+      .filter((item) => item.backdropPath);
+
+    if (imdbItems.length >= MIN_IMDB_POPULAR_SPOTLIGHT_ITEMS) {
+      return imdbItems;
+    }
+  } catch {
+    // Keep the hero resilient if IMDb blocks or changes its chart markup.
+  }
+
   const { data } = await tmdbClient.get<TmdbListResponse>("/movie/popular");
-  return enrichItemsWithImdbRatings(mapList(data, "movie"));
+  const fallbackItems = data.results
+    .filter((record) => isAllowedForTrendingFeedRecord(record, "movie"))
+    .map((record) => normalizeMedia(record, "movie"))
+    .filter(isQualityItem);
+  return enrichItemsWithImdbRatings(fallbackItems);
 }
 
 export async function getMovieDetails(id: string): Promise<MovieDetails> {

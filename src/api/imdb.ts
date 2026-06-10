@@ -39,6 +39,7 @@ type Top250Kind = "movies" | "shows";
 
 const OFFICIAL_IMDB_TOP250_MOVIES_URL = "https://www.imdb.com/chart/top/?hl=en-US";
 const OFFICIAL_IMDB_TOP250_SHOWS_URL = "https://www.imdb.com/chart/toptv/?hl=en-US";
+const OFFICIAL_IMDB_POPULAR_MOVIES_URL = "https://www.imdb.com/chart/moviemeter/?hl=en-US";
 
 const GITHUB_TOP250_MOVIES_URL =
   "https://raw.githubusercontent.com/crazyuploader/IMDb_Top_50/main/data/top250/movies.json";
@@ -57,6 +58,7 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const PERSISTED_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PERSISTED_TOP250_MOVIES_KEY = "@streambox/imdb-top250-movies-v2";
 const PERSISTED_TOP250_SHOWS_KEY = "@streambox/imdb-top250-shows-v2";
+const PERSISTED_POPULAR_MOVIES_KEY = "@streambox/imdb-popular-movies-v1";
 
 const IMDB_CHART_HEADERS = {
   Accept:
@@ -69,8 +71,10 @@ const IMDB_CHART_HEADERS = {
 
 let cachedTop250Movies: ImdbTop250Item[] | null = null;
 let cachedTop250Shows: ImdbTop250Item[] | null = null;
+let cachedPopularMovies: ImdbTop250Item[] | null = null;
 let moviesLastFetch = 0;
 let showsLastFetch = 0;
+let popularMoviesLastFetch = 0;
 
 const imdbRatingCache = new Map<string, number | null>();
 const inFlightImdbRatingRequests = new Map<string, Promise<number | null>>();
@@ -363,6 +367,16 @@ async function fetchOfficialTop250(url: string): Promise<ImdbTop250Item[]> {
   return parseOfficialImdbChartHtml(data);
 }
 
+async function fetchOfficialPopularMovies(): Promise<ImdbTop250Item[]> {
+  const { data } = await axios.get<string>(OFFICIAL_IMDB_POPULAR_MOVIES_URL, {
+    headers: IMDB_CHART_HEADERS,
+    timeout: TOP250_FETCH_TIMEOUT,
+    transformResponse: [(value) => String(value ?? "")],
+  });
+
+  return parseOfficialImdbChartHtml(data);
+}
+
 async function fetchGithubTop250Movies(): Promise<ImdbTop250Item[]> {
   const { data } = await axios.get<ImdbTop250MovieEntry[]>(GITHUB_TOP250_MOVIES_URL, {
     timeout: GITHUB_FETCH_TIMEOUT,
@@ -475,6 +489,39 @@ async function getTop250(kind: Top250Kind): Promise<ImdbTop250Item[]> {
   }
 
   return refreshTop250(kind);
+}
+
+async function refreshPopularMovies(): Promise<ImdbTop250Item[]> {
+  try {
+    const officialItems = await fetchOfficialPopularMovies();
+    if (officialItems.length >= MIN_ACCEPTABLE_OFFICIAL_ITEMS) {
+      cachedPopularMovies = officialItems;
+      popularMoviesLastFetch = Date.now();
+      persistTop250(PERSISTED_POPULAR_MOVIES_KEY, officialItems);
+      return officialItems;
+    }
+  } catch {
+    // TMDB popular is the fallback at the caller so the hero never goes empty.
+  }
+
+  return [];
+}
+
+export async function getImdbPopularMovies(): Promise<ImdbTop250Item[]> {
+  const now = Date.now();
+  if (cachedPopularMovies && now - popularMoviesLastFetch < CACHE_TTL_MS) {
+    return cachedPopularMovies;
+  }
+
+  const persistedItems = await readPersistedTop250(PERSISTED_POPULAR_MOVIES_KEY);
+  if (persistedItems) {
+    cachedPopularMovies = persistedItems;
+    popularMoviesLastFetch = Date.now();
+    void refreshPopularMovies().catch(() => undefined);
+    return persistedItems;
+  }
+
+  return refreshPopularMovies();
 }
 
 export function getImdbTop250Movies(): Promise<ImdbTop250Item[]> {

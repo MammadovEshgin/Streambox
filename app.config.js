@@ -11,7 +11,7 @@ const baseConfig = {
   icon: "./assets/app-icons/app-icon-1024.png",
   assetBundlePatterns: ["**/*"],
   splash: {
-    image: "./assets/app-icons/adaptive-foreground.png",
+    image: "./assets/app-icons/splash-brand.png",
     resizeMode: "contain",
     backgroundColor: "#000000",
   },
@@ -42,8 +42,8 @@ const baseConfig = {
       "expo-splash-screen",
       {
         backgroundColor: "#000000",
-        image: "./assets/app-icons/adaptive-foreground.png",
-        imageWidth: 136,
+        image: "./assets/app-icons/splash-brand.png",
+        imageWidth: 220,
       },
     ],
     "@react-native-community/datetimepicker",
