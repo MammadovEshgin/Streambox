@@ -458,7 +458,11 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
   return { url: scored[0].href, qualityWarning: scored[0].qualityWarning };
 }
 
-type VideoCheck = { available: boolean; qualityWarning?: string };
+type VideoCheck = {
+  available: boolean;
+  qualityWarning?: string;
+  nativeFallback?: DizipalStreamInfo | null;
+};
 
 async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
   try {
@@ -479,6 +483,8 @@ async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
     const available = hasRapidrame || hasAlternativeLink || hasPlayerIframe || html.includes('kePlayerTitle');
     if (!available) return { available: false };
 
+    const nativeFallback = hasRapidrame ? await getCachedHdFilmNativeFallback(pageUrl, html) : null;
+
     // Check server/source buttons for low-quality markers (CAM Sürüm, TS, etc.)
     const linkButtons = html.match(/<button[^>]*class=["'][^"']*alternative-link[^"']*["'][^>]*>[\s\S]*?<\/button>/gi) || [];
     if (linkButtons.length > 0) {
@@ -490,11 +496,11 @@ async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
         // Extract the specific marker from the first button for the warning message
         const firstText = (linkButtons[0] ?? "").replace(/<[^>]+>/g, " ").toLowerCase();
         const markerMatch = firstText.match(/\b(cam|hdcam|ts|telesync|screener)\b/);
-        return { available: true, qualityWarning: markerMatch ? markerMatch[1].toUpperCase() : "CAM" };
+        return { available: true, qualityWarning: markerMatch ? markerMatch[1].toUpperCase() : "CAM", nativeFallback };
       }
     }
 
-    return { available: true };
+    return { available: true, nativeFallback };
   } catch {
     return { available: false };
   }
@@ -507,6 +513,38 @@ function matchesSeriesEpisodeUrl(url: string, seasonNumber: number, episodeNumbe
   const episodeRegex = new RegExp(`(bolum[/-]?${episodeNumber}\\b|\\b${episodeNumber}[/-]?bolum|\\be${episodeNumber}\\b|ep[/-]?${episodeNumber}\\b)`, 'i');
 
   return seasonRegex.test(normalized) && episodeRegex.test(normalized);
+}
+
+function buildHdFilmResult(pageUrl: string, qualityWarning?: string, nativeFallback?: DizipalStreamInfo | null): WebPlayerResult {
+  if (nativeFallback?.preferNative) {
+    return {
+      url: nativeFallback.streamUrl,
+      source: "direct",
+      streamUrl: nativeFallback.streamUrl,
+      streamType: nativeFallback.streamType,
+      poster: nativeFallback.poster,
+      referer: nativeFallback.referer,
+      embedUrl: nativeFallback.referer,
+      subtitles: nativeFallback.subtitles,
+      qualityWarning
+    };
+  }
+
+  return {
+    url: pageUrl,
+    source: "hdfilm",
+    qualityWarning,
+    ...(nativeFallback
+      ? {
+          streamUrl: nativeFallback.streamUrl,
+          streamType: nativeFallback.streamType,
+          poster: nativeFallback.poster,
+          referer: nativeFallback.referer,
+          embedUrl: nativeFallback.referer,
+          subtitles: nativeFallback.subtitles
+        }
+      : {})
+  };
 }
 
 async function findSeriesEpisodeUrl(
@@ -691,7 +729,231 @@ type DizipalStreamInfo = {
   poster: string;
   referer: string;
   subtitles: SubtitleTrack[];
+  preferNative?: boolean;
 };
+
+const HDFILM_NATIVE_FALLBACK_CACHE_LIMIT = 80;
+const hdfilmNativeFallbackCache = new Map<string, Promise<DizipalStreamInfo | null>>();
+
+function getCachedHdFilmNativeFallback(pageUrl: string, pageHtml: string) {
+  const cacheKey = pageUrl;
+  const cached = hdfilmNativeFallbackCache.get(cacheKey);
+  if (cached) return cached;
+
+  const task = resolveHdFilmNativeFallback(pageUrl, pageHtml);
+  hdfilmNativeFallbackCache.set(cacheKey, task);
+
+  if (hdfilmNativeFallbackCache.size > HDFILM_NATIVE_FALLBACK_CACHE_LIMIT) {
+    const oldestKey = hdfilmNativeFallbackCache.keys().next().value;
+    if (oldestKey) hdfilmNativeFallbackCache.delete(oldestKey);
+  }
+
+  return task;
+}
+
+const BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function decodeBase64Binary(value: string): string {
+  const cleaned = value.replace(/[^A-Za-z0-9+/=]/g, "");
+  let output = "";
+  let buffer = 0;
+  let bits = 0;
+
+  for (const char of cleaned) {
+    if (char === "=") break;
+    const index = BASE64_CHARS.indexOf(char);
+    if (index === -1) continue;
+
+    buffer = (buffer << 6) | index;
+    bits += 6;
+
+    if (bits >= 8) {
+      bits -= 8;
+      output += String.fromCharCode((buffer >> bits) & 0xff);
+    }
+  }
+
+  return output;
+}
+
+function rot13(value: string): string {
+  return value.replace(/[a-zA-Z]/g, (char) => {
+    const code = char.charCodeAt(0);
+    const base = code <= 90 ? 65 : 97;
+    return String.fromCharCode(((code - base + 13) % 26) + base);
+  });
+}
+
+function decodeRapidrameValue(valueParts: string[]): string {
+  let result = decodeBase64Binary(valueParts.join(""));
+  result = rot13(result);
+  result = result.split("").reverse().join("");
+
+  let unmix = "";
+  for (let index = 0; index < result.length; index += 1) {
+    const nextCode = (result.charCodeAt(index) - (399756995 % (index + 5)) + 256) % 256;
+    unmix += String.fromCharCode(nextCode);
+  }
+
+  return unmix;
+}
+
+function extractJsonArrayLiteral(value: string): string | null {
+  const start = value.indexOf("[");
+  if (start === -1) return null;
+
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === "[") {
+      depth += 1;
+    } else if (char === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return value.slice(start, index + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractRapidrameStreamUrl(embedHtml: string): string | null {
+  const sourceVariable = embedHtml.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*(s_[A-Za-z0-9_]+)/)?.[1];
+  if (!sourceVariable) return null;
+
+  const variableIndex = embedHtml.indexOf(`var ${sourceVariable}`);
+  if (variableIndex === -1) return null;
+
+  const variableSnippet = embedHtml.slice(variableIndex, variableIndex + 2200);
+  const arrayLiteral = extractJsonArrayLiteral(variableSnippet);
+  if (!arrayLiteral) return null;
+
+  try {
+    const parts = JSON.parse(arrayLiteral);
+    if (!Array.isArray(parts) || parts.some((part) => typeof part !== "string")) {
+      return null;
+    }
+
+    const decoded = decodeRapidrameValue(parts);
+    return /^https?:\/\//i.test(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractHdFilmEmbedUrl(pageHtml: string, pageUrl: string): string | null {
+  const iframeMatch = pageHtml.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+  if (iframeMatch?.[1] && /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer/i.test(iframeMatch[1])) {
+    return toAbsoluteUrl(pageUrl, iframeMatch[1]);
+  }
+
+  const dataVideoMatch = pageHtml.match(/data-(?:video|link|url)=["']([^"']+)["']/i);
+  if (dataVideoMatch?.[1] && /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer/i.test(dataVideoMatch[1])) {
+    return toAbsoluteUrl(pageUrl, dataVideoMatch[1]);
+  }
+
+  return null;
+}
+
+function extractRapidrameSubtitles(embedHtml: string): SubtitleTrack[] {
+  const subtitles: SubtitleTrack[] = [];
+  const trackBlock = embedHtml.match(/tracks\s*:\s*(\[[\s\S]*?\])\s*,\s*captions\s*:/i)?.[1];
+  if (!trackBlock) return subtitles;
+
+  const regex = /"file"\s*:\s*"([^"]+)"[\s\S]*?"kind"\s*:\s*"captions"[\s\S]*?"label"\s*:\s*"([^"]*)"/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(trackBlock)) !== null) {
+    const url = match[1].replace(/\\\//g, "/");
+    const label = match[2] || "Subtitle";
+    const langMatch = url.match(/[-_/]([a-z]{2,3})(?:[-_.][^/?#]*)?\.vtt/i);
+    subtitles.push({ url, label, lang: langMatch?.[1] ?? label.toLowerCase().slice(0, 3) });
+  }
+
+  return subtitles;
+}
+
+async function shouldPreferNativeForRapidrameStream(streamUrl: string, referer: string): Promise<boolean> {
+  try {
+    const response = await axios.get<string>(streamUrl, {
+      timeout: 8000,
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/vnd.apple.mpegurl,application/x-mpegURL,text/plain,*/*",
+        Referer: referer
+      },
+      transformResponse: [(data) => (typeof data === "string" ? data : String(data ?? ""))]
+    });
+
+    const playlist = response.data;
+    if (!playlist || !playlist.includes("#EXTM3U")) return false;
+
+    const hasVariantPlaylist = /#EXT-X-STREAM-INF/i.test(playlist);
+    const hasMediaSegments = /#EXTINF/i.test(playlist);
+    const usesDisguisedImageSegments = /https?:\/\/[^\s#]+\/image\d*[^/\s#]*\.jpg(?:[?#][^\s#]*)?/i.test(playlist);
+
+    // Normal HDFilm titles first expose a master playlist with CODECS/variant metadata.
+    // Some newer uploads expose the media playlist directly with TS bytes hidden behind
+    // .jpg segment URLs. JWPlayer can mark those as ready while Android WebView shows
+    // a black video surface, so route that narrow shape through the native HLS player.
+    return !hasVariantPlaylist && hasMediaSegments && usesDisguisedImageSegments;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveHdFilmNativeFallback(pageUrl: string, pageHtml: string): Promise<DizipalStreamInfo | null> {
+  const embedUrl = extractHdFilmEmbedUrl(pageHtml, pageUrl);
+  if (!embedUrl) return null;
+
+  try {
+    const response = await axios.get<string>(embedUrl, {
+      timeout: 8000,
+      headers: {
+        "User-Agent": UA,
+        Accept: "text/html",
+        Referer: pageUrl
+      }
+    });
+
+    const streamUrl = extractRapidrameStreamUrl(response.data);
+    if (!streamUrl) return null;
+    const preferNative = await shouldPreferNativeForRapidrameStream(streamUrl, embedUrl);
+
+    return {
+      streamUrl,
+      streamType: "m3u8",
+      poster: "",
+      referer: embedUrl,
+      subtitles: extractRapidrameSubtitles(response.data),
+      preferNative
+    };
+  } catch {
+    return null;
+  }
+}
 
 function extractM3u8FromEmbedHtml(html: string): string | null {
   const sourcesMatch = html.match(/sources\s*:\s*\[\s*\{[^}]*file\s*:\s*"([^"]+\.m3u8[^"]*)"/i);
@@ -1034,7 +1296,9 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
       }
     } else {
       const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
-      if (videoCheck.available) return { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: videoCheck.qualityWarning };
+      if (videoCheck.available) {
+        return buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+      }
     }
   }
 
@@ -1085,7 +1349,9 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
             }
           } else {
             const videoCheck = await checkVideoAvailability(hdRetry.url);
-            if (videoCheck.available) return { url: hdRetry.url, source: "hdfilm", qualityWarning: videoCheck.qualityWarning };
+            if (videoCheck.available) {
+              return buildHdFilmResult(hdRetry.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+            }
           }
         }
 
