@@ -73,7 +73,12 @@ module.exports = () => {
   );
   const iosUrlScheme = process.env.GOOGLE_AUTH_IOS_URL_SCHEME?.trim();
   const iosBundleIdentifier = process.env.STREAMBOX_IOS_BUNDLE_IDENTIFIER?.trim();
-  const androidPackage = process.env.STREAMBOX_ANDROID_PACKAGE?.trim();
+  const isTvBuild =
+    process.env.STREAMBOX_TV_BUILD === "1" ||
+    process.env.EXPO_PUBLIC_STREAMBOX_TV_BUILD === "1";
+  const androidPackage = isTvBuild
+    ? process.env.STREAMBOX_TV_ANDROID_PACKAGE?.trim()
+    : process.env.STREAMBOX_ANDROID_PACKAGE?.trim();
 
   if (iosUrlScheme) {
     plugins.push([
@@ -86,9 +91,16 @@ module.exports = () => {
     plugins.push("@react-native-google-signin/google-signin");
   }
 
+  if (isTvBuild && !hasPlugin(plugins, "./plugins/withAndroidTv")) {
+    plugins.push("./plugins/withAndroidTv");
+  }
+
   return {
     expo: {
       ...baseConfig,
+      name: isTvBuild ? "StreamBox TV" : baseConfig.name,
+      slug: isTvBuild ? "streambox-tv" : baseConfig.slug,
+      orientation: isTvBuild ? "landscape" : baseConfig.orientation,
       plugins,
       ios: {
         ...(baseConfig.ios ?? {}),
@@ -97,6 +109,11 @@ module.exports = () => {
       android: {
         ...(baseConfig.android ?? {}),
         ...(androidPackage ? { package: androidPackage } : {}),
+        ...(isTvBuild && !androidPackage ? { package: "com.streambox.tv" } : {}),
+      },
+      extra: {
+        ...(baseConfig.extra ?? {}),
+        isTvBuild,
       },
     },
   };

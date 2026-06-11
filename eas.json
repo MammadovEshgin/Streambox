@@ -19,6 +19,17 @@
         "buildType": "apk"
       }
     },
+    "tv-preview": {
+      "channel": "tv-preview",
+      "distribution": "internal",
+      "env": {
+        "STREAMBOX_TV_BUILD": "1",
+        "EXPO_PUBLIC_STREAMBOX_TV_BUILD": "1"
+      },
+      "android": {
+        "buildType": "apk"
+      }
+    },
     "production": {
       "channel": "production",
       "android": {

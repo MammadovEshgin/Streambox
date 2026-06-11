@@ -22,18 +22,21 @@ import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
 import { Navigation } from "./src/navigation/Navigation";
+import { TVNavigation } from "./src/navigation/TVNavigation";
 import i18n from "./src/localization/i18n";
 import { ForgotPasswordScreen } from "./src/screens/auth/ForgotPasswordScreen";
 import { AuthScreen } from "./src/screens/auth/AuthScreen";
 import { OtpVerificationScreen } from "./src/screens/auth/OtpVerificationScreen";
 import { ResetPasswordScreen } from "./src/screens/auth/ResetPasswordScreen";
 import { WelcomeScreen } from "./src/screens/WelcomeScreen";
+import { TVWelcomeScreen } from "./src/screens/tv/TVWelcomeScreen";
 import { initialiseProviderConfigs } from "./src/services/providerConfigService";
 import { flushTelemetry, initialiseTelemetry, trackAppError, trackEvent, trackPerformance } from "./src/services/telemetryService";
 import { AppSettingsProvider, useAppSettings } from "./src/settings/AppSettingsContext";
 import { migrateLegacyContentImageCaches } from "./src/services/remoteImageCache";
 import { clearPersistedRuntimeCaches } from "./src/services/runtimeCache";
 import { runStorageMigrationsIfNeeded } from "./src/services/storageMigrations";
+import { isTvBuild } from "./src/utils/tv";
 
 const FIRST_OPEN_KEY = "@streambox/first-open-complete-v6";
 const SIGN_OUT_WELCOME_KEY = "@streambox/sign-out-welcome-v1";
@@ -304,6 +307,7 @@ function AppShell() {
   const previousSessionUserIdRef = useRef<string | null>(null);
   const appStartedAtRef = useRef(Date.now());
   const hasTrackedAppReadyRef = useRef(false);
+  const tvBuild = isTvBuild();
 
   useEffect(() => {
     const timeout = setTimeout(() => {
@@ -377,6 +381,8 @@ function AppShell() {
 
         if (session && !isResettingPasswordRef.current) {
           setLaunchPhase("app");
+        } else if (tvBuild && isComplete === "1") {
+          setLaunchPhase("app");
         } else if (shouldShowSignOutWelcome === "1" || isComplete !== "1") {
           setLaunchPhase("welcome");
         } else {
@@ -394,7 +400,7 @@ function AppShell() {
     return () => {
       active = false;
     };
-  }, [authLoading, migrationsReady]);
+  }, [authLoading, migrationsReady, tvBuild]);
 
   useEffect(() => {
     if (authLoading || launchPhase === "loading") {
@@ -452,6 +458,8 @@ function AppShell() {
     } finally {
       if (session && !isResettingPasswordRef.current) {
         setLaunchPhase("app");
+      } else if (tvBuild) {
+        setLaunchPhase("app");
       } else {
         setAuthFlow("main");
         setPendingEmail("");
@@ -459,7 +467,7 @@ function AppShell() {
         setLaunchPhase("auth");
       }
     }
-  }, [session]);
+  }, [session, tvBuild]);
 
   const handleSignUpSuccess = useCallback((email: string, displayName: string) => {
     setPendingEmail(email);
@@ -561,7 +569,9 @@ function AppShell() {
           <MovieLoader size={42} />
         </LoaderScreen>
       ) : null}
-      {!shouldShowAppLoader && launchPhase === "welcome" ? <WelcomeScreen onContinue={handleContinueFromWelcome} /> : null}
+      {!shouldShowAppLoader && launchPhase === "welcome" ? (
+        tvBuild ? <TVWelcomeScreen onContinue={handleContinueFromWelcome} /> : <WelcomeScreen onContinue={handleContinueFromWelcome} />
+      ) : null}
       {!shouldShowAppLoader && launchPhase === "auth" ? (
         <>
           {authFlow === "main" ? (
@@ -606,7 +616,7 @@ function AppShell() {
           onError={handleStartupError}
         >
           <NavigationContainer theme={navigationTheme}>
-            <Navigation />
+            {tvBuild ? <TVNavigation /> : <Navigation />}
           </NavigationContainer>
           <LiveOpsHost enabled={isUserDataReady} />
         </StartupErrorBoundary>
