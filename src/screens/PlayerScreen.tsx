@@ -1427,6 +1427,8 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
   var providerControlsLastPrimaryTapAt = 0;
   var providerControlsLastToggleAt = 0;
   var providerControlsAutoHideMs = 4400;
+  var visualFrameSeen = false;
+  var visualFrameWarningTimer = null;
 
   function postToApp(type, payload) {
     try {
@@ -1450,6 +1452,24 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
     postToApp('player_ready', { reason: reason });
   }
 
+  function markVisualFrame(reason) {
+    visualFrameSeen = true;
+    if (visualFrameWarningTimer) {
+      clearTimeout(visualFrameWarningTimer);
+      visualFrameWarningTimer = null;
+    }
+    postToApp('player_visual_ready', { reason: reason });
+  }
+
+  function scheduleVisualFrameProbe(reason, delay) {
+    if (visualFrameSeen || visualFrameWarningTimer) return;
+    visualFrameWarningTimer = setTimeout(function() {
+      if (!visualFrameSeen) {
+        postToApp('player_black_screen_suspected', { reason: reason });
+      }
+    }, delay);
+  }
+
   function scheduleReadyFallback(reason, delay) {
     if (readySent) return;
     if (readyFallbackTimer) clearTimeout(readyFallbackTimer);
@@ -1464,6 +1484,9 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
 
     ['loadeddata', 'canplay', 'playing'].forEach(function(eventName) {
       video.addEventListener(eventName, function() {
+        if (eventName === 'loadeddata' || eventName === 'canplay' || (video.videoWidth > 0 && video.videoHeight > 0)) {
+          markVisualFrame('video-' + eventName);
+        }
         if (eventName === 'playing' || video.readyState >= 2) {
           markPlaybackReady('video-' + eventName);
         }
@@ -1471,8 +1494,10 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
     });
 
     if (video.readyState >= 2 && !video.paused) {
+      if (video.videoWidth > 0 && video.videoHeight > 0) markVisualFrame('video-ready');
       markPlaybackReady('video-ready');
     } else if (video.readyState >= 2) {
+      if (video.videoWidth > 0 && video.videoHeight > 0) markVisualFrame('video-buffered');
       scheduleReadyFallback('video-buffered', 900);
     }
   }
@@ -1483,14 +1508,29 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
         var jw = window.jwplayer();
         if (jw && !jw.__streamboxBound && typeof jw.on === 'function') {
           jw.__streamboxBound = true;
-          jw.on('play', function() { markPlaybackReady('jwplayer-play'); });
-          jw.on('buffer', function() { scheduleReadyFallback('jwplayer-buffer', 1200); });
-          jw.on('firstFrame', function() { markPlaybackReady('jwplayer-first-frame'); });
+          jw.on('play', function() {
+            markPlaybackReady('jwplayer-play');
+            scheduleVisualFrameProbe('jwplayer-play-without-first-frame', 8500);
+          });
+          jw.on('buffer', function() {
+            scheduleReadyFallback('jwplayer-buffer', 1200);
+            scheduleVisualFrameProbe('jwplayer-buffer-without-first-frame', 10500);
+          });
+          jw.on('firstFrame', function() {
+            markVisualFrame('jwplayer-first-frame');
+            markPlaybackReady('jwplayer-first-frame');
+          });
         }
         if (jw && typeof jw.getState === 'function') {
           var state = jw.getState();
-          if (state === 'playing') markPlaybackReady('jwplayer-state-playing');
-          if (state === 'buffering') scheduleReadyFallback('jwplayer-state-buffering', 1200);
+          if (state === 'playing') {
+            markPlaybackReady('jwplayer-state-playing');
+            scheduleVisualFrameProbe('jwplayer-state-playing-without-first-frame', 8500);
+          }
+          if (state === 'buffering') {
+            scheduleReadyFallback('jwplayer-state-buffering', 1200);
+            scheduleVisualFrameProbe('jwplayer-state-buffering-without-first-frame', 10500);
+          }
         }
       }
     } catch (e) {}
@@ -2834,6 +2874,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   // â”€â”€ Track recent playback entry only â”€â”€
   const { addToRecentlyWatched } = useRecentlyWatched();
   const hasTrackedRef = useRef(false);
+  const hdfilmNativeFallbackTriggeredRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -3000,6 +3041,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setSelectedExternalSubtitle(null);
     setExternalSubtitleCues([]);
     setActiveSubtitleText(null);
+    hdfilmNativeFallbackTriggeredRef.current = false;
 
     if (route.params.trailerUrl) {
       // Show trailer directly
@@ -3109,6 +3151,42 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const handlePlaybackReady = useCallback(() => {
     setIsPlaybackReady(true);
   }, []);
+
+  const switchToHdFilmNativeFallback = useCallback((reason: string) => {
+    setPlayerResult((current) => {
+      if (
+        !current ||
+        current.source !== "hdfilm" ||
+        !current.streamUrl ||
+        hdfilmNativeFallbackTriggeredRef.current
+      ) {
+        return current;
+      }
+
+      hdfilmNativeFallbackTriggeredRef.current = true;
+      debugLog("[Player] Switching HDFilm to native fallback:", reason, current.streamUrl);
+      webViewRef.current?.injectJavaScript(PLAYER_STOP_MEDIA_SCRIPT);
+      webViewRef.current?.stopLoading();
+      setLoadError(null);
+      setIsPlaybackReady(false);
+      setCurrentStreamUrl(current.streamUrl);
+      setSelectedSubtitleTrack(null);
+      setSelectedExternalSubtitle(null);
+      setExternalSubtitleCues([]);
+      setActiveSubtitleText(null);
+
+      return {
+        ...current,
+        url: current.streamUrl,
+        source: "direct",
+        streamUrl: current.streamUrl,
+        streamType: current.streamType ?? "m3u8",
+        referer: current.referer || current.embedUrl || current.url,
+        embedUrl: current.embedUrl || current.referer || current.url
+      };
+    });
+  }, []);
+
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
       const payload = JSON.parse(event.nativeEvent.data);
@@ -3121,6 +3199,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         showControls();
         return;
       }
+      if (payload?.type === "player_black_screen_suspected") {
+        switchToHdFilmNativeFallback(String(payload.reason ?? "visual-frame-timeout"));
+        return;
+      }
       if (payload?.type === "player_controls_hidden") return;
       if (payload?.type === "player_not_found") {
         setLoadError(null);
@@ -3130,7 +3212,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     } catch {
       // Ignore unrelated WebView messages.
     }
-  }, [showControls]);
+  }, [showControls, switchToHdFilmNativeFallback]);
   const handleError = useCallback(() => {
     setIsPlaybackReady(false);
     setLoadError("Failed to load. Please check your connection.");
@@ -3198,10 +3280,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       }
       if (ev.status === "error") {
         debugLog("[Player] Video error:", ev.error?.message);
+        setIsPlaybackReady(false);
         setPlayerResult((prev) => {
           if (prev?.source === "dizipal_direct") {
+            setLoadError(null);
             return { url: prev.url, source: "dizipal" };
           }
+          setLoadError("Failed to load this stream. Please try again later.");
           return prev;
         });
       }
