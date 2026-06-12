@@ -92,8 +92,12 @@ const SectionHeader = styled.View`
   justify-content: space-between;
 `;
 
-const SectionLinkButton = styled.Pressable`
-  padding: 4px 2px;
+const SectionLinkButton = styled.Pressable<{ $focused?: boolean }>`
+  padding: 6px 10px;
+  border-radius: 10px;
+  border-width: 2px;
+  border-color: ${({ $focused, theme }) => ($focused ? theme.colors.primary : "transparent")};
+  background-color: ${({ $focused, theme }) => ($focused ? theme.colors.primarySoft : "transparent")};
 `;
 
 const SectionTitle = styled.Text`
@@ -119,8 +123,11 @@ const RailCardWrap = styled.View`
   margin-right: 12px;
 `;
 
-const FranchiseCardRoot = styled.Pressable`
+const FranchiseCardRoot = styled.Pressable<{ $focused?: boolean }>`
   width: 132px;
+  border-radius: 16px;
+  border-width: 3px;
+  border-color: ${({ $focused, theme }) => ($focused ? theme.colors.primary : "transparent")};
 `;
 
 const FranchiseArtworkFrame = styled.View`
@@ -156,6 +163,37 @@ const FranchiseCardMeta = styled.Text`
   letter-spacing: 0.8px;
   text-transform: uppercase;
 `;
+
+type FranchiseRailCardProps = {
+  item: {
+    title: string;
+    year: string;
+  };
+  onPress: () => void;
+  onPrefetch: () => void;
+};
+
+function FranchiseRailCard({ item, onPress, onPrefetch }: FranchiseRailCardProps) {
+  const [isFocused, setIsFocused] = useState(false);
+
+  return (
+    <FranchiseCardRoot
+      focusable
+      $focused={isFocused}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => setIsFocused(false)}
+      onPress={onPress}
+      onPressIn={onPrefetch}
+      style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}
+    >
+      <FranchiseArtworkFrame>
+        <FranchisePosterImage source={franchiseCardBackgroundImage} resizeMode="cover" />
+      </FranchiseArtworkFrame>
+      <FranchiseCardTitle numberOfLines={1}>{item.title}</FranchiseCardTitle>
+      <FranchiseCardMeta>{item.year}</FranchiseCardMeta>
+    </FranchiseCardRoot>
+  );
+}
 
 const EmptyRail = styled.View`
   height: 220px;
@@ -199,6 +237,7 @@ type RailProps = {
 
 const DiscoveryRail = memo(function DiscoveryRail({ title, data, onPressItem, onPressSeeAll }: RailProps) {
   const { t } = useTranslation();
+  const [isSeeAllFocused, setIsSeeAllFocused] = useState(false);
   const renderItem = useCallback(({ item }: ListRenderItemInfo<MediaItem>) => {
     return (
       <RailCardWrap>
@@ -215,6 +254,10 @@ const DiscoveryRail = memo(function DiscoveryRail({ title, data, onPressItem, on
       <SectionHeader>
         <SectionTitle>{title}</SectionTitle>
         <SectionLinkButton 
+          focusable
+          $focused={isSeeAllFocused}
+          onFocus={() => setIsSeeAllFocused(true)}
+          onBlur={() => setIsSeeAllFocused(false)}
           onPress={onPressSeeAll}
           style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
         >
@@ -264,6 +307,7 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const [isFranchiseSeeAllFocused, setIsFranchiseSeeAllFocused] = useState(false);
   const idlePrefetchedFranchiseIdsRef = useRef<Set<string>>(new Set());
 
   const hasDiscoveryData = popularMovies.length > 0 || trendingMovies.length > 0 || trendingSeries.length > 0;
@@ -485,7 +529,8 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
   const renderFranchiseRailItem = useCallback(
     ({ item }: { item: (typeof franchiseRailItems)[number] }) => (
       <RailCardWrap>
-        <FranchiseCardRoot
+        <FranchiseRailCard
+          item={item}
           onPress={() => {
             navigation.navigate("FranchiseTimeline", {
               franchiseId: String(item.id),
@@ -493,18 +538,11 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
               accentColor: item.accentColor ?? undefined,
             });
           }}
-          onPressIn={() => prefetchFranchiseEntries(String(item.id), user?.id)}
-          style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}
-        >
-          <FranchiseArtworkFrame>
-            <FranchisePosterImage source={franchiseCardBackgroundImage} resizeMode="cover" />
-          </FranchiseArtworkFrame>
-          <FranchiseCardTitle numberOfLines={1}>{item.title}</FranchiseCardTitle>
-          <FranchiseCardMeta>{item.year}</FranchiseCardMeta>
-        </FranchiseCardRoot>
+          onPrefetch={() => prefetchFranchiseEntries(String(item.id), user?.id)}
+        />
       </RailCardWrap>
     ),
-    [navigation]
+    [navigation, user?.id]
   );
 
   const handleSearchSubmit = useCallback(
@@ -601,6 +639,10 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
               <SectionHeader>
                 <SectionTitle>{t("home.cinematicJourneys")}</SectionTitle>
                 <SectionLinkButton
+                  focusable
+                  $focused={isFranchiseSeeAllFocused}
+                  onFocus={() => setIsFranchiseSeeAllFocused(true)}
+                  onBlur={() => setIsFranchiseSeeAllFocused(false)}
                   onPress={() => navigation.navigate("FranchiseCatalog")}
                   style={({ pressed }: { pressed: boolean }) => [{ opacity: pressed ? 0.6 : 1 }]}
                 >

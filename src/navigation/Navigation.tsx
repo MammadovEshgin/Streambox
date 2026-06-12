@@ -1,8 +1,11 @@
 import { Feather, Ionicons } from "@expo/vector-icons";
 import { getFocusedRouteNameFromRoute } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import type { BottomTabBarButtonProps } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "styled-components/native";
 
@@ -110,6 +113,38 @@ function StatsStackScreen() {
 const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline"]);
 const STACK_TABS = new Set<keyof RootTabParamList>(["Discover", "Movies", "Series", "Stats", "Profile"]);
 
+function FocusableTabButton({ children, style, onFocus, onBlur, ...props }: BottomTabBarButtonProps) {
+  const currentTheme = useTheme();
+  const [isFocused, setIsFocused] = useState(false);
+
+  return (
+    <Pressable
+      {...props}
+      focusable
+      onFocus={(event) => {
+        setIsFocused(true);
+        onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        setIsFocused(false);
+        onBlur?.(event);
+      }}
+      style={[
+        style,
+        isFocused && {
+          borderWidth: 2,
+          borderColor: currentTheme.colors.primary,
+          borderRadius: 14,
+          backgroundColor: currentTheme.colors.primarySoft,
+          transform: [{ scale: 1.04 }]
+        }
+      ]}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
 export function Navigation() {
   const currentTheme = useTheme();
   const { t } = useTranslation();
@@ -144,6 +179,7 @@ export function Navigation() {
           letterSpacing: 0.2
         },
         tabBarLabel: t(`nav.${route.name.toLowerCase()}`),
+        tabBarButton: (props) => <FocusableTabButton {...props} />,
         tabBarIcon: ({ color, focused }) => {
           const ioniconsMap: Partial<Record<keyof RootTabParamList, [keyof typeof Ionicons.glyphMap, keyof typeof Ionicons.glyphMap]>> = {
             Movies: ["film-outline", "film"],

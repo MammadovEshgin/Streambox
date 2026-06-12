@@ -262,14 +262,14 @@ const SeasonSelector = styled.ScrollView.attrs({
   showsHorizontalScrollIndicator: false
 })``;
 
-const SeasonChip = styled.Pressable<{ $active: boolean }>`
+const SeasonChip = styled.Pressable<{ $active: boolean; $focused?: boolean }>`
   margin-right: 8px;
   min-height: 36px;
   padding: 8px 14px;
   border-radius: 4px;
-  border-width: 1px;
-  border-color: ${({ $active, theme }) => ($active ? theme.colors.primaryMuted : theme.colors.glassBorder)};
-  background-color: ${({ $active, theme }) => ($active ? theme.colors.primarySoft : theme.colors.glassFill)};
+  border-width: 2px;
+  border-color: ${({ $active, $focused, theme }) => ($active || $focused ? theme.colors.primary : theme.colors.glassBorder)};
+  background-color: ${({ $active, $focused, theme }) => ($active || $focused ? theme.colors.primarySoft : theme.colors.glassFill)};
   justify-content: center;
 `;
 
@@ -285,14 +285,14 @@ const EpisodesWrap = styled.View`
   margin-top: 10px;
 `;
 
-const EpisodeCard = styled.View`
+const EpisodeCard = styled.View<{ $focused?: boolean }>`
   height: 112px;
   border-radius: 14px;
   padding: 0;
   margin-bottom: 10px;
   background-color: ${({ theme }) => theme.colors.glassFill};
-  border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.glassBorder};
+  border-width: 3px;
+  border-color: ${({ $focused, theme }) => ($focused ? theme.colors.primary : theme.colors.glassBorder)};
   overflow: hidden;
 `;
 
@@ -442,6 +442,7 @@ function SwipeableEpisodeCard({
   const { t } = useTranslation();
   const translateX = useSharedValue(0);
   const isSwiping = useSharedValue(false);
+  const [isFocused, setIsFocused] = useState(false);
 
   const SWIPE_THRESHOLD = 60;
   const MAX_SWIPE = 100;
@@ -512,8 +513,11 @@ function SwipeableEpisodeCard({
 
       <GestureDetector gesture={panGesture}>
         <Animated.View style={[rStyle]}>
-          <EpisodeCard style={{ marginBottom: 0 }}>
+          <EpisodeCard $focused={isFocused} style={{ marginBottom: 0 }}>
             <EpisodeWatchButton
+              focusable
+              onFocus={() => setIsFocused(true)}
+              onBlur={() => setIsFocused(false)}
               style={{ height: 112, borderRadius: 10, backgroundColor: "transparent" }}
               onPress={onPress}
             >
@@ -613,6 +617,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const [similarSeries, setSimilarSeries] = useState<MediaItem[]>([]);
   const [episodeFallbackImages, setEpisodeFallbackImages] = useState<Record<string, string>>({});
   const [selectedSeasonNumber, setSelectedSeasonNumber] = useState<number | null>(null);
+  const [focusedSeasonNumber, setFocusedSeasonNumber] = useState<number | null>(null);
   const [episodes, setEpisodes] = useState<SeriesEpisode[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRelatedLoading, setIsRelatedLoading] = useState(true);
@@ -1308,8 +1313,12 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                 const isActive = season.seasonNumber === selectedSeasonNumber;
                 return (
                   <SeasonChip
+                    focusable
                     key={season.id}
                     $active={isActive}
+                    $focused={focusedSeasonNumber === season.seasonNumber}
+                    onFocus={() => setFocusedSeasonNumber(season.seasonNumber)}
+                    onBlur={() => setFocusedSeasonNumber(null)}
                     onPress={() => {
                       setSelectedSeasonNumber(season.seasonNumber);
                     }}

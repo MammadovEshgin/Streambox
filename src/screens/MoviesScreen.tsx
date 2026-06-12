@@ -244,8 +244,12 @@ const SectionTitle = styled.Text`
   letter-spacing: -0.6px;
 `;
 
-const SectionLink = styled.Pressable`
-  padding: 4px 2px;
+const SectionLink = styled.Pressable<{ $focused?: boolean }>`
+  padding: 6px 10px;
+  border-radius: 10px;
+  border-width: 2px;
+  border-color: ${({ $focused, theme }) => ($focused ? theme.colors.primary : "transparent")};
+  background-color: ${({ $focused, theme }) => ($focused ? theme.colors.primarySoft : "transparent")};
 `;
 
 const SectionLinkText = styled.Text`
@@ -359,6 +363,7 @@ async function seedImdbTopMovies(minimumCount: number, initialPage?: SeedPageRes
 
 const RailSection = memo(function RailSection({ title, items, isLoading = false, onPressItem, onPressSeeAll }: RailSectionProps) {
   const { t } = useTranslation();
+  const [isSeeAllFocused, setIsSeeAllFocused] = useState(false);
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<MediaItem>) => {
       return (
@@ -374,7 +379,13 @@ const RailSection = memo(function RailSection({ title, items, isLoading = false,
     <>
       <SectionHeader>
         <SectionTitle>{title}</SectionTitle>
-        <SectionLink onPress={onPressSeeAll}>
+        <SectionLink
+          focusable
+          $focused={isSeeAllFocused}
+          onFocus={() => setIsSeeAllFocused(true)}
+          onBlur={() => setIsSeeAllFocused(false)}
+          onPress={onPressSeeAll}
+        >
           <SectionLinkText>{t("common.seeAll")}</SectionLinkText>
         </SectionLink>
       </SectionHeader>

@@ -14,6 +14,7 @@ import axios from "axios";
 import { resolveDirectLink } from "./DirectLinkService";
 import { getProviderConfig } from "./providerConfigService";
 import { getTurkishAlternativeTitle } from "../api/tmdb";
+import { isTvBuild } from "../utils/tv";
 
 export type WebPlayerRequest = {
   mediaType: "movie" | "tv";
@@ -516,7 +517,7 @@ function matchesSeriesEpisodeUrl(url: string, seasonNumber: number, episodeNumbe
 }
 
 function buildHdFilmResult(pageUrl: string, qualityWarning?: string, nativeFallback?: DizipalStreamInfo | null): WebPlayerResult {
-  if (nativeFallback?.preferNative) {
+  if (nativeFallback && (nativeFallback.preferNative || isTvBuild())) {
     return {
       url: nativeFallback.streamUrl,
       source: "direct",
@@ -593,7 +594,7 @@ async function resolvePlayableSeriesEpisodeUrl(
   seriesPageUrl: string,
   seasonNumber: number,
   episodeNumber: number
-): Promise<{ url: string; qualityWarning?: string } | null> {
+): Promise<{ url: string; qualityWarning?: string; nativeFallback?: DizipalStreamInfo | null } | null> {
   try {
     const episodeUrl = await findSeriesEpisodeUrl(seriesPageUrl, seasonNumber, episodeNumber);
     if (!episodeUrl) return null;
@@ -601,7 +602,7 @@ async function resolvePlayableSeriesEpisodeUrl(
     const check = await checkVideoAvailability(episodeUrl);
     if (!check.available) return null;
 
-    return { url: episodeUrl, qualityWarning: check.qualityWarning };
+    return { url: episodeUrl, qualityWarning: check.qualityWarning, nativeFallback: check.nativeFallback };
   } catch {
     return null;
   }
@@ -1280,6 +1281,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
 
   // 1. HDFilm — find the single best match, check if video is available
   const isSeries = request.mediaType !== "movie";
+  const tvBuild = isTvBuild();
   const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year, request.originalTitle);
 
   if (hdfilmMatch) {
@@ -1290,14 +1292,18 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           request.seasonNumber,
           request.episodeNumber
         );
-        if (episodeResult) return { url: episodeResult.url, source: "hdfilm", qualityWarning: episodeResult.qualityWarning };
+        if (episodeResult) {
+          const result = buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
+          if (!tvBuild || result.source === "direct") return result;
+        }
       } else {
-        return { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: hdfilmMatch.qualityWarning };
+        if (!tvBuild) return { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: hdfilmMatch.qualityWarning };
       }
     } else {
       const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
       if (videoCheck.available) {
-        return buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+        const result = buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+        if (!tvBuild || result.source === "direct") return result;
       }
     }
   }
@@ -1345,12 +1351,16 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
               const episodeResult = await resolvePlayableSeriesEpisodeUrl(
                 hdRetry.url, request.seasonNumber, request.episodeNumber
               );
-              if (episodeResult) return { url: episodeResult.url, source: "hdfilm", qualityWarning: episodeResult.qualityWarning };
+              if (episodeResult) {
+                const result = buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
+                if (!tvBuild || result.source === "direct") return result;
+              }
             }
           } else {
             const videoCheck = await checkVideoAvailability(hdRetry.url);
             if (videoCheck.available) {
-              return buildHdFilmResult(hdRetry.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+              const result = buildHdFilmResult(hdRetry.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+              if (!tvBuild || result.source === "direct") return result;
             }
           }
         }
@@ -1382,7 +1392,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
     const directResult = await resolveDirectLink({
       title: request.title,
       mediaType: request.mediaType,
-      tmdbId: request.imdbId?.startsWith("tt") ? undefined : request.imdbId ? String(request.imdbId) : undefined,
+      tmdbId: request.tmdbId,
       imdbId: request.imdbId?.startsWith("tt") ? request.imdbId : undefined,
       seasonNumber: request.seasonNumber,
       episodeNumber: request.episodeNumber
