@@ -129,6 +129,7 @@ export function DetailHeader({
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const [isHighResLoaded, setIsHighResLoaded] = useState(false);
+  const [focusedAction, setFocusedAction] = useState<"back" | "watchlist" | "like" | "trailer" | null>(null);
   const watchlistProgress = useSharedValue(isInWatchlist ? 1 : 0);
   const loveProgress = useSharedValue(isLiked ? 1 : 0);
 
@@ -205,12 +206,26 @@ export function DetailHeader({
         colors={["rgba(11,11,14,0.00)", "rgba(11,11,14,0.40)", "rgba(11,11,14,0.92)", theme.colors.background]}
         locations={[0, 0.45, 0.82, 1]}
       />
-      <BackButton onPress={onBack} $topOffset={insets.top + 8}>
-        <Feather name="arrow-left" size={18} color={theme.colors.textPrimary} />
+      <BackButton
+        focusable
+        onFocus={() => setFocusedAction("back")}
+        onBlur={() => setFocusedAction(null)}
+        onPress={onBack}
+        $topOffset={insets.top + 8}
+        style={focusedAction === "back" ? { borderColor: theme.colors.primary, borderWidth: 3 } : undefined}
+      >
+        <Feather name="arrow-left" size={18} color={focusedAction === "back" ? theme.colors.primary : theme.colors.textPrimary} />
       </BackButton>
 
       {showWatchlistAction ? (
-        <ActionButton onPress={onToggleWatchlist} $topOffset={watchlistTopOffset}>
+        <ActionButton
+          focusable
+          onFocus={() => setFocusedAction("watchlist")}
+          onBlur={() => setFocusedAction(null)}
+          onPress={onToggleWatchlist}
+          $topOffset={watchlistTopOffset}
+          style={focusedAction === "watchlist" ? { borderColor: theme.colors.primary, borderWidth: 3 } : undefined}
+        >
           <ActionButtonBody>
             <Animated.View style={watchlistOutlineStyle}>
               <MaterialCommunityIcons name="bookmark-outline" size={22} color={theme.colors.textPrimary} />
@@ -223,7 +238,14 @@ export function DetailHeader({
       ) : null}
 
       {showLikeAction ? (
-        <ActionButton onPress={onToggleLike} $topOffset={likeTopOffset}>
+        <ActionButton
+          focusable
+          onFocus={() => setFocusedAction("like")}
+          onBlur={() => setFocusedAction(null)}
+          onPress={onToggleLike}
+          $topOffset={likeTopOffset}
+          style={focusedAction === "like" ? { borderColor: theme.colors.primary, borderWidth: 3 } : undefined}
+        >
           <ActionButtonBody>
             <Animated.View style={loveOutlineStyle}>
               <MaterialCommunityIcons name="heart-outline" size={22} color={theme.colors.textPrimary} />
@@ -236,8 +258,15 @@ export function DetailHeader({
       ) : null}
 
       {showTrailerAction && onTrailer ? (
-        <TrailerButton onPress={onTrailer} $topOffset={trailerTopOffset}>
-          <MaterialCommunityIcons name="movie-open-outline" size={22} color={theme.colors.textPrimary} />
+        <TrailerButton
+          focusable
+          onFocus={() => setFocusedAction("trailer")}
+          onBlur={() => setFocusedAction(null)}
+          onPress={onTrailer}
+          $topOffset={trailerTopOffset}
+          style={focusedAction === "trailer" ? { borderColor: theme.colors.primary, borderWidth: 3 } : undefined}
+        >
+          <MaterialCommunityIcons name="movie-open-outline" size={22} color={focusedAction === "trailer" ? theme.colors.primary : theme.colors.textPrimary} />
         </TrailerButton>
       ) : null}
     </HeaderRoot>

@@ -622,6 +622,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const [isWatchedDateModalVisible, setIsWatchedDateModalVisible] = useState(false);
   const [trailerUrl, setTrailerUrl] = useState<string | null>(null);
   const [isTrailerLoading, setIsTrailerLoading] = useState(true);
+  const [focusedAction, setFocusedAction] = useState<"watch" | "watched" | "like" | null>(null);
   const loveProgress = useSharedValue(0);
   const trailerRequestRef = useRef<Promise<string | null> | null>(null);
   const detailRequestRef = useRef(0);
@@ -1189,6 +1190,17 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                   </RatingEntry>
                 </RatingsStrip>
                 <LoveButtonPress
+                  focusable
+                  onFocus={() => setFocusedAction("like")}
+                  onBlur={() => setFocusedAction(null)}
+                  style={[
+                    { borderRadius: 14, padding: 4 },
+                    focusedAction === "like" && {
+                      borderWidth: 2,
+                      borderColor: currentTheme.colors.primary,
+                      backgroundColor: currentTheme.colors.primarySoft,
+                    }
+                  ]}
                   onPress={() => {
                     if (Number.isFinite(currentSeriesId)) {
                       void toggleLikedSeries(currentSeriesId, details ? {
@@ -1216,6 +1228,13 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                   <ActionRow>
                     <PrimaryActionWrap>
                       <TopWatchButton
+                        focusable
+                        onFocus={() => setFocusedAction("watch")}
+                        onBlur={() => setFocusedAction(null)}
+                        style={focusedAction === "watch" ? {
+                          borderWidth: 3,
+                          borderColor: "#FFFFFF",
+                        } : undefined}
                         onPress={() => {
                           navigation.navigate("Player", {
                             mediaType: "tv",
@@ -1235,7 +1254,17 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                         </TopWatchButtonText>
                       </TopWatchButton>
                     </PrimaryActionWrap>
-                    <WatchedButton $active={isCurrentSeriesWatched} onPress={handleOpenWatchedDateModal}>
+                    <WatchedButton
+                      focusable
+                      onFocus={() => setFocusedAction("watched")}
+                      onBlur={() => setFocusedAction(null)}
+                      $active={isCurrentSeriesWatched}
+                      style={focusedAction === "watched" ? {
+                        borderWidth: 3,
+                        borderColor: currentTheme.colors.primary,
+                      } : undefined}
+                      onPress={handleOpenWatchedDateModal}
+                    >
                       <MaterialCommunityIcons
                         name={isCurrentSeriesWatched ? "eye-check" : "eye-plus-outline"}
                         size={22}

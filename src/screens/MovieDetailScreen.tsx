@@ -300,6 +300,7 @@ export function MovieDetailScreen({ route, navigation }: MovieDetailProps) {
   const [isWatchedDateModalVisible, setIsWatchedDateModalVisible] = useState(false);
   const [selectedWatchedDate, setSelectedWatchedDate] = useState(() => new Date());
   const [selectedWatchedMode, setSelectedWatchedMode] = useState<WatchedSelectionMode>("dated");
+  const [focusedAction, setFocusedAction] = useState<"watch" | "watched" | "like" | null>(null);
   const watchButtonScale = useSharedValue(1);
   const loveProgress = useSharedValue(0);
   const trailerRequestRef = useRef<Promise<string | null> | null>(null);
@@ -658,6 +659,17 @@ if (!details) {
                   </RatingEntry>
                 </RatingsStrip>
                 <LoveButtonPress
+                  focusable
+                  onFocus={() => setFocusedAction("like")}
+                  onBlur={() => setFocusedAction(null)}
+                  style={[
+                    { borderRadius: 14, padding: 4 },
+                    focusedAction === "like" && {
+                      borderWidth: 2,
+                      borderColor: currentTheme.colors.primary,
+                      backgroundColor: currentTheme.colors.primarySoft,
+                    }
+                  ]}
                   onPress={() => {
                     if (Number.isFinite(currentMovieId)) {
                       void toggleLikedMovie(currentMovieId, details ? {
@@ -686,6 +698,13 @@ if (!details) {
                     <PrimaryActionWrap>
                       <Animated.View style={watchButtonAnimatedStyle}>
                         <TopWatchButton
+                          focusable
+                          onFocus={() => setFocusedAction("watch")}
+                          onBlur={() => setFocusedAction(null)}
+                          style={focusedAction === "watch" ? {
+                            borderWidth: 3,
+                            borderColor: "#FFFFFF",
+                          } : undefined}
                           onPressIn={() => {
                             watchButtonScale.value = withSpring(0.97, { damping: 14, stiffness: 200 });
                           }}
@@ -709,7 +728,17 @@ if (!details) {
                         </TopWatchButton>
                       </Animated.View>
                     </PrimaryActionWrap>
-                    <WatchedButton $active={isCurrentMovieWatched} onPress={handleOpenWatchedDateModal}>
+                    <WatchedButton
+                      focusable
+                      onFocus={() => setFocusedAction("watched")}
+                      onBlur={() => setFocusedAction(null)}
+                      $active={isCurrentMovieWatched}
+                      style={focusedAction === "watched" ? {
+                        borderWidth: 3,
+                        borderColor: currentTheme.colors.primary,
+                      } : undefined}
+                      onPress={handleOpenWatchedDateModal}
+                    >
                       <MaterialCommunityIcons
                         name={isCurrentMovieWatched ? "eye-check" : "eye-plus-outline"}
                         size={22}

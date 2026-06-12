@@ -33,6 +33,7 @@ import Reanimated, {
 import { resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
 import { getProviderConfig } from "../services/providerConfigService";
 import { useAppSettings } from "../settings/AppSettingsContext";
+import { isTvBuild } from "../utils/tv";
 
 function debugLog(...args: unknown[]) {
   if (__DEV__) {
@@ -478,11 +479,22 @@ const styles = StyleSheet.create({
   closeButtonInner: {
     width: 36,
     height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center"
   },
+  playerControlFocused: {
+    borderWidth: 2,
+    borderColor: "#22C55E",
+    backgroundColor: "rgba(34,197,94,0.18)"
+  },
   controlButtonDisabled: {
     opacity: 0.45
+  },
+  tvControlWakeLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+    backgroundColor: "transparent"
   },
   subtitleMenuBackdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -2870,6 +2882,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   const [currentStreamUrl, setCurrentStreamUrl] = useState<string | null>(null);
   const [isQualityMenuOpen, setIsQualityMenuOpen] = useState(false);
+  const [focusedPlayerControl, setFocusedPlayerControl] = useState<"close" | "fit" | "cc" | "quality" | null>(null);
 
   // â”€â”€ Track recent playback entry only â”€â”€
   const { addToRecentlyWatched } = useRecentlyWatched();
@@ -2936,14 +2949,28 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     hideTimerRef.current = setTimeout(hideControlsNow, AUTO_HIDE_MS);
   }, [clearHideTimer, hideControlsNow]);
 
-  const showControls = useCallback(() => {
+  const showControls = useCallback((autoHide = true) => {
     clearHideTimer();
     controlsVisibleRef.current = true;
     controlsOpacity.stopAnimation();
     setControlsVisible(true);
     controlsOpacity.setValue(1);
-    scheduleHideControls();
+    if (autoHide) {
+      scheduleHideControls();
+    }
   }, [controlsOpacity, clearHideTimer, scheduleHideControls]);
+
+  const handlePlayerControlFocus = useCallback((control: "close" | "fit" | "cc" | "quality") => {
+    setFocusedPlayerControl(control);
+    showControls(false);
+  }, [showControls]);
+
+  const handlePlayerControlBlur = useCallback(() => {
+    setFocusedPlayerControl(null);
+    if (controlsVisibleRef.current) {
+      scheduleHideControls();
+    }
+  }, [scheduleHideControls]);
 
   const toggleControls = useCallback(() => {
     if (isSubtitleMenuOpen || isQualityMenuOpen) return;
@@ -3103,7 +3130,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
     StatusBar.setHidden(true, "fade");
 
-    if (playerResult.source !== "youtube_embed") {
+    if (playerResult.source !== "youtube_embed" || isTvBuild()) {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
     } else {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
@@ -3111,7 +3138,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
     return () => {
       StatusBar.setHidden(false, "fade");
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+      void ScreenOrientation.lockAsync(
+        isTvBuild()
+          ? ScreenOrientation.OrientationLock.LANDSCAPE
+          : ScreenOrientation.OrientationLock.PORTRAIT_UP
+      );
     };
   }, [playerResult]);
 
@@ -3119,7 +3150,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     if (isFullScreen) {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
     } else {
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+      void ScreenOrientation.lockAsync(
+        isTvBuild()
+          ? ScreenOrientation.OrientationLock.LANDSCAPE
+          : ScreenOrientation.OrientationLock.PORTRAIT_UP
+      );
     }
   }, []);
 
@@ -3136,7 +3171,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const handleClose = useCallback(() => {
     webViewRef.current?.injectJavaScript(PLAYER_STOP_MEDIA_SCRIPT);
     webViewRef.current?.stopLoading();
-    void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    void ScreenOrientation.lockAsync(
+      isTvBuild()
+        ? ScreenOrientation.OrientationLock.LANDSCAPE
+        : ScreenOrientation.OrientationLock.PORTRAIT_UP
+    );
     navigation.goBack();
   }, [navigation]);
 
@@ -3501,29 +3540,55 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             onTouchEnd={toggleCloseBtn}
           />
         )}
+        {!isLoading && isTvBuild() && (
+          <Pressable
+            focusable
+            hasTVPreferredFocus
+            style={styles.tvControlWakeLayer}
+            onPress={() => showControls()}
+          />
+        )}
         {!isLoading && isSubtitleMenuOpen && (
           <Pressable style={styles.subtitleMenuBackdrop} onPress={() => setIsSubtitleMenuOpen(false)} />
         )}
         {!isLoading && showCloseBtn && (
           <>
             <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner}>
+              <TouchableOpacity
+                focusable
+                onFocus={() => handlePlayerControlFocus("close")}
+                onBlur={handlePlayerControlBlur}
+                onPress={handleClose}
+                activeOpacity={0.8}
+                style={[styles.closeButtonInner, focusedPlayerControl === "close" && styles.playerControlFocused]}
+              >
                 <Feather name="x" size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
 
             <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner}>
+              <TouchableOpacity
+                focusable
+                onFocus={() => handlePlayerControlFocus("fit")}
+                onBlur={handlePlayerControlBlur}
+                onPress={toggleVideoFit}
+                activeOpacity={0.8}
+                style={[styles.closeButtonInner, focusedPlayerControl === "fit" && styles.playerControlFocused]}
+              >
                 <Feather name={videoFit === "contain" ? "maximize" : "minimize"} size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
 
             <Animated.View style={[styles.ccButton, { opacity: closeBtnOpacity }]}>
               <TouchableOpacity
+                focusable
+                onFocus={() => handlePlayerControlFocus("cc")}
+                onBlur={handlePlayerControlBlur}
                 onPress={toggleDirectSubtitleMenu}
                 activeOpacity={directSubtitleOptions.length > 0 || availableSubtitleTracks.length > 0 ? 0.8 : 1}
                 style={[
                   styles.closeButtonInner,
+                  focusedPlayerControl === "cc" && styles.playerControlFocused,
                   directSubtitleOptions.length === 0 &&
                   availableSubtitleTracks.length === 0 &&
                   styles.controlButtonDisabled
@@ -3536,9 +3601,12 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             {playerResult?.qualityOptions && playerResult.qualityOptions.length > 1 && (
               <Animated.View style={[styles.ccButton, { right: 154, opacity: closeBtnOpacity }]}>
                 <TouchableOpacity
+                  focusable
+                  onFocus={() => handlePlayerControlFocus("quality")}
+                  onBlur={handlePlayerControlBlur}
                   onPress={toggleQualityMenu}
                   activeOpacity={0.8}
-                  style={styles.closeButtonInner}
+                  style={[styles.closeButtonInner, focusedPlayerControl === "quality" && styles.playerControlFocused]}
                 >
                   <MaterialIcons name="settings" size={20} color="#FFFFFF" />
                 </TouchableOpacity>
@@ -3656,14 +3724,28 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       {showCloseBtn && (
         <>
           <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
-            <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner}>
+            <TouchableOpacity
+              focusable
+              onFocus={() => handlePlayerControlFocus("close")}
+              onBlur={handlePlayerControlBlur}
+              onPress={handleClose}
+              activeOpacity={0.8}
+              style={[styles.closeButtonInner, focusedPlayerControl === "close" && styles.playerControlFocused]}
+            >
               <Feather name="x" size={18} color="#FFFFFF" />
             </TouchableOpacity>
           </Animated.View>
 
           {(playerResult?.source === 'hdfilm' || playerResult?.source === 'dizipal' || playerResult?.source === 'dizipal_embed') && (
             <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner}>
+              <TouchableOpacity
+                focusable
+                onFocus={() => handlePlayerControlFocus("fit")}
+                onBlur={handlePlayerControlBlur}
+                onPress={toggleVideoFit}
+                activeOpacity={0.8}
+                style={[styles.closeButtonInner, focusedPlayerControl === "fit" && styles.playerControlFocused]}
+              >
                 <Feather name={videoFit === 'contain' ? 'maximize' : 'minimize'} size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
@@ -3804,12 +3886,24 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           onShouldStartLoadWithRequest={(req) => shouldAllowPlayerWebViewRequest(req, playerResult.url)}
         />
       )}
+      {!isLoading && isTvBuild() && playerResult && playerResult.source !== "not_found" && (
+        <Pressable
+          focusable
+          hasTVPreferredFocus
+          style={styles.tvControlWakeLayer}
+          onPress={() => showControls()}
+        />
+      )}
       <QualityWarningModal
         visible={qualityWarning !== null}
         qualityLabel={qualityWarning?.label ?? ""}
         onGoBack={() => {
           setQualityWarning(null);
-          void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+          void ScreenOrientation.lockAsync(
+            isTvBuild()
+              ? ScreenOrientation.OrientationLock.LANDSCAPE
+              : ScreenOrientation.OrientationLock.PORTRAIT_UP
+          );
           navigation.goBack();
         }}
         onContinue={() => {

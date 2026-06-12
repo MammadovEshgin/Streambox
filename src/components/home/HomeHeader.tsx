@@ -245,6 +245,7 @@ export function HomeHeader({
   const { t } = useTranslation();
   const inputRef = useRef<RNTextInput>(null);
   const [isFocused, setIsFocused] = useState(false);
+  const [isFilterFocused, setIsFilterFocused] = useState(false);
   const [results, setResults] = useState<MediaItem[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
@@ -420,11 +421,17 @@ export function HomeHeader({
             </ClearButton>
           )}
         </SearchField>
-        <FilterButton $active={hasActiveFilters} onPress={handleFilterPress}>
+        <FilterButton
+          focusable
+          $active={hasActiveFilters || isFilterFocused}
+          onFocus={() => setIsFilterFocused(true)}
+          onBlur={() => setIsFilterFocused(false)}
+          onPress={handleFilterPress}
+        >
           <Feather
             name="sliders"
             size={20}
-            color={hasActiveFilters ? currentTheme.colors.primary : currentTheme.colors.textSecondary}
+            color={hasActiveFilters || isFilterFocused ? currentTheme.colors.primary : currentTheme.colors.textSecondary}
           />
         </FilterButton>
       </SearchRow>
