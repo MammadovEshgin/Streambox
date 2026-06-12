@@ -22,14 +22,12 @@ import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
 import { Navigation } from "./src/navigation/Navigation";
-import { TVNavigation } from "./src/navigation/TVNavigation";
 import i18n from "./src/localization/i18n";
 import { ForgotPasswordScreen } from "./src/screens/auth/ForgotPasswordScreen";
 import { AuthScreen } from "./src/screens/auth/AuthScreen";
 import { OtpVerificationScreen } from "./src/screens/auth/OtpVerificationScreen";
 import { ResetPasswordScreen } from "./src/screens/auth/ResetPasswordScreen";
 import { WelcomeScreen } from "./src/screens/WelcomeScreen";
-import { TVWelcomeScreen } from "./src/screens/tv/TVWelcomeScreen";
 import { initialiseProviderConfigs } from "./src/services/providerConfigService";
 import { flushTelemetry, initialiseTelemetry, trackAppError, trackEvent, trackPerformance } from "./src/services/telemetryService";
 import { AppSettingsProvider, useAppSettings } from "./src/settings/AppSettingsContext";
@@ -569,9 +567,7 @@ function AppShell() {
           <MovieLoader size={42} />
         </LoaderScreen>
       ) : null}
-      {!shouldShowAppLoader && launchPhase === "welcome" ? (
-        tvBuild ? <TVWelcomeScreen onContinue={handleContinueFromWelcome} /> : <WelcomeScreen onContinue={handleContinueFromWelcome} />
-      ) : null}
+      {!shouldShowAppLoader && launchPhase === "welcome" ? <WelcomeScreen onContinue={handleContinueFromWelcome} /> : null}
       {!shouldShowAppLoader && launchPhase === "auth" ? (
         <>
           {authFlow === "main" ? (
@@ -616,7 +612,7 @@ function AppShell() {
           onError={handleStartupError}
         >
           <NavigationContainer theme={navigationTheme}>
-            {tvBuild ? <TVNavigation /> : <Navigation />}
+            <Navigation />
           </NavigationContainer>
           <LiveOpsHost enabled={isUserDataReady} />
         </StartupErrorBoundary>

@@ -1,5 +1,5 @@
 import { Feather } from "@expo/vector-icons";
-import { memo } from "react";
+import { memo, useState } from "react";
 import { PressableProps } from "react-native";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components/native";
@@ -12,15 +12,15 @@ const CardRoot = styled.Pressable`
   width: 132px;
 `;
 
-const PosterFrame = styled.View`
+const PosterFrame = styled.View<{ $focused?: boolean }>`
   position: relative;
   width: 132px;
   height: 198px;
   border-radius: 14px;
   overflow: hidden;
   background-color: ${({ theme }) => theme.colors.surfaceRaised};
-  border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.glassBorder};
+  border-width: ${({ $focused }) => ($focused ? 3 : 1)}px;
+  border-color: ${({ $focused, theme }) => ($focused ? theme.colors.primary : theme.colors.glassBorder)};
 `;
 
 const PosterImage = styled(CachedRemoteImage)`
@@ -94,16 +94,20 @@ type MediaCardProps = {
 
 function MediaCardComponent({ item, onPress, onPressIn, posterUri: customPosterUri, hideRating }: MediaCardProps) {
   const { t } = useTranslation();
+  const [focused, setFocused] = useState(false);
   const posterUri = customPosterUri ?? getTmdbImageUrl(item.posterPath, "w342");
   const ratingText = formatRating(item.rating);
 
   return (
     <CardRoot
+      focusable
       onPress={onPress}
       onPressIn={onPressIn}
-      style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }], opacity: pressed ? 0.96 : 1 }]}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      style={({ pressed }) => [{ transform: [{ scale: focused ? 1.045 : pressed ? 0.97 : 1 }], opacity: pressed ? 0.96 : 1 }]}
     >
-      <PosterFrame>
+      <PosterFrame $focused={focused}>
         {posterUri ? (
           <PosterImage uri={posterUri} contentFit="cover" />
         ) : (
