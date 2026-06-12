@@ -99,7 +99,7 @@ module.exports = () => {
     expo: {
       ...baseConfig,
       name: isTvBuild ? "StreamBox TV" : baseConfig.name,
-      slug: isTvBuild ? "streambox-tv" : baseConfig.slug,
+      slug: baseConfig.slug,
       orientation: isTvBuild ? "landscape" : baseConfig.orientation,
       plugins,
       ios: {
