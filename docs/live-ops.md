@@ -10,7 +10,7 @@ This project now supports two post-release live-ops layers:
 Configured pieces:
 
 - `expo-updates`
-- `runtimeVersion.policy = appVersion`
+- `runtimeVersion = 1.1.0` in `app.config.js`
 - EAS update URL in `app.config.js`
 - channels in `eas.json`
   - `development`
@@ -53,6 +53,10 @@ npx eas-cli update --branch preview --message "Preview update"
 ```
 
 By default, EAS channels map to branches with the same name.
+
+The runtime version must match the APK line that users installed. If a GitHub
+release is distributed as a new native APK line, publish OTA updates with the
+same runtime version, or those APKs will not receive the update.
 
 ## Announcements
 

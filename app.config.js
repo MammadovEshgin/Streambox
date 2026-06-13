@@ -2,10 +2,8 @@ const baseConfig = {
   name: "StreamBox",
   slug: "streambox",
   scheme: "streambox",
-  version: "1.0.2",
-  runtimeVersion: {
-    policy: "appVersion",
-  },
+  version: "1.1.0",
+  runtimeVersion: "1.1.0",
   orientation: "portrait",
   userInterfaceStyle: "dark",
   icon: "./assets/app-icons/app-icon-1024.png",
