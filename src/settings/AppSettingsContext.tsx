@@ -10,6 +10,10 @@ import {
   type PropsWithChildren,
 } from "react";
 
+import {
+  cacheBannerImageFromRemoteUri,
+  cacheProfileImageFromRemoteUri,
+} from "../services/profileImageService";
 import { enqueueProfileAssetSync, enqueueProfileSettingsSync } from "../services/userDataSync";
 import type { AppLanguage } from "../localization/types";
 import { createTheme, DEFAULT_THEME_ID, type AppTheme, type ThemeId } from "../theme/Theme";
@@ -61,6 +65,10 @@ type ProfileSettingsUpdate = Partial<
 >;
 
 const AppSettingsContext = createContext<AppSettingsContextValue | null>(null);
+
+function isRemoteImageUri(uri: string | null | undefined) {
+  return typeof uri === "string" && /^https?:\/\//i.test(uri);
+}
 
 export function AppSettingsProvider({ children }: PropsWithChildren) {
   const [settings, setSettings] = useState<PersistedSettings>(() => createDefaultSettings(DEFAULT_THEME_ID));
@@ -263,6 +271,48 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
     await hydrateSettings();
     notifyStorageChanged();
   }, [hydrateSettings, notifyStorageChanged]);
+
+  useEffect(() => {
+    if (!isReady) {
+      return;
+    }
+
+    if (!isRemoteImageUri(settings.profileImageUri) && !isRemoteImageUri(settings.bannerImageUri)) {
+      return;
+    }
+
+    let active = true;
+
+    async function localizeRemoteProfileAssets() {
+      const updates: Partial<PersistedSettings> = {};
+
+      if (isRemoteImageUri(settings.profileImageUri)) {
+        const localProfileUri = await cacheProfileImageFromRemoteUri(settings.profileImageUri)
+          .catch(() => settings.profileImageUri);
+        if (localProfileUri && localProfileUri !== settings.profileImageUri) {
+          updates.profileImageUri = localProfileUri;
+        }
+      }
+
+      if (isRemoteImageUri(settings.bannerImageUri)) {
+        const localBannerUri = await cacheBannerImageFromRemoteUri(settings.bannerImageUri)
+          .catch(() => settings.bannerImageUri);
+        if (localBannerUri && localBannerUri !== settings.bannerImageUri) {
+          updates.bannerImageUri = localBannerUri;
+        }
+      }
+
+      if (active && Object.keys(updates).length > 0) {
+        await persist(updates, { syncRemote: false });
+      }
+    }
+
+    void localizeRemoteProfileAssets();
+
+    return () => {
+      active = false;
+    };
+  }, [isReady, persist, settings.bannerImageUri, settings.profileImageUri]);
 
   const value = useMemo<AppSettingsContextValue>(() => ({
     activeTheme: createTheme(settings.themeId),

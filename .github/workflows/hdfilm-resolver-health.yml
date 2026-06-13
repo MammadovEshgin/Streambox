@@ -1,0 +1,36 @@
+name: HDFilm Resolver Health
+
+on:
+  schedule:
+    # Runs daily at 10:00 Asia/Baku. GitHub schedules use UTC.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfilm-resolver-health
+  cancel-in-progress: false
+
+jobs:
+  check-hdfilm-resolver:
+    name: Check HDFilm resolver
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run HDFilm resolver health check
+        run: npm run check:hdfilm

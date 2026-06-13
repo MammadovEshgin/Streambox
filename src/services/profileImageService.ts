@@ -59,21 +59,37 @@ async function removeExistingProfileImages() {
   await removeExistingImages(resolveProfileImageUri);
 }
 
-export async function storeProfileImageFromUri(sourceUri: string) {
+function isRemoteUri(uri: string) {
+  return /^https?:\/\//i.test(uri);
+}
+
+async function storeImageFromUri(
+  sourceUri: string,
+  resolveDestinationUri: (extension: string) => string,
+  removeExisting: () => Promise<void>
+) {
   const extension = inferFileExtension(sourceUri);
-  const destinationUri = resolveProfileImageUri(extension);
+  const destinationUri = resolveDestinationUri(extension);
 
   await ensureProfileImageDirectory();
-  await removeExistingProfileImages();
+  await removeExisting();
 
   if (sourceUri !== destinationUri) {
-    await FileSystem.copyAsync({
-      from: sourceUri,
-      to: destinationUri,
-    });
+    if (isRemoteUri(sourceUri)) {
+      await FileSystem.downloadAsync(sourceUri, destinationUri);
+    } else {
+      await FileSystem.copyAsync({
+        from: sourceUri,
+        to: destinationUri,
+      });
+    }
   }
 
   return destinationUri;
+}
+
+export async function storeProfileImageFromUri(sourceUri: string) {
+  return storeImageFromUri(sourceUri, resolveProfileImageUri, removeExistingProfileImages);
 }
 
 export async function createProfileImageBackup(profileImageUri: string): Promise<ProfileImageBackupPayload | null> {
@@ -97,20 +113,23 @@ export async function createProfileImageBackup(profileImageUri: string): Promise
 }
 
 export async function storeBannerImageFromUri(sourceUri: string) {
-  const extension = inferFileExtension(sourceUri);
-  const destinationUri = resolveBannerImageUri(extension);
+  return storeImageFromUri(sourceUri, resolveBannerImageUri, () => removeExistingImages(resolveBannerImageUri));
+}
 
-  await ensureProfileImageDirectory();
-  await removeExistingImages(resolveBannerImageUri);
-
-  if (sourceUri !== destinationUri) {
-    await FileSystem.copyAsync({
-      from: sourceUri,
-      to: destinationUri,
-    });
+export async function cacheProfileImageFromRemoteUri(sourceUri: string | null) {
+  if (!sourceUri || !isRemoteUri(sourceUri)) {
+    return sourceUri;
   }
 
-  return destinationUri;
+  return storeProfileImageFromUri(sourceUri);
+}
+
+export async function cacheBannerImageFromRemoteUri(sourceUri: string | null) {
+  if (!sourceUri || !isRemoteUri(sourceUri)) {
+    return sourceUri;
+  }
+
+  return storeBannerImageFromUri(sourceUri);
 }
 
 export async function restoreProfileImageFromBackup(payload: ProfileImageBackupPayload) {

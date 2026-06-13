@@ -462,8 +462,6 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
 
     void readPersistedRuntimeCache<SeriesHubCache>(localizedCacheKey, {
       validate: isValidSeriesHubCache,
-      expectedVersion: getSeriesHubFreshnessVersion(),
-      maxAgeMs: SERIES_HUB_CACHE_TTL_MS,
     })
       .then((entry) => {
         if (!active) {

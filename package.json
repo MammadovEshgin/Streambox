@@ -12,7 +12,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/**/*.test.ts"
+    "test": "tsx --test tests/**/*.test.ts",
+    "check:hdfilm": "tsx scripts/check-hdfilm-resolver.ts"
   },
   "dependencies": {
     "@expo-google-fonts/outfit": "^0.4.3",

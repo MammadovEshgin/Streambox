@@ -14,3 +14,12 @@ test("player screen keeps direct playback native and cleans provider web fallbac
   assert.equal(playerScreenSource.includes("nativeControls"), true);
   assert.equal(playerScreenSource.includes("clearCache?.(true)"), true);
 });
+
+test("HDFilm runtime stream discovery is wired to native playback handoff", () => {
+  const playerScreenSource = fs.readFileSync(playerScreenPath, "utf8");
+  assert.equal(playerScreenSource.includes("HDFILM_RUNTIME_DISCOVERY_SCRIPT"), true);
+  assert.equal(playerScreenSource.includes("hdfilm_stream_discovered"), true);
+  assert.equal(playerScreenSource.includes("hdfilm_embed_discovered"), true);
+  assert.equal(playerScreenSource.includes("shouldAcceptDiscoveredHdFilmStream"), true);
+  assert.equal(playerScreenSource.includes("switchToDiscoveredHdFilmStream"), true);
+});
