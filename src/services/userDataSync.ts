@@ -13,6 +13,10 @@ import {
   type PersistedSettings,
 } from "../settings/settingsStorage";
 import { DEFAULT_THEME_ID, THEME_OPTIONS, type ThemeId } from "../theme/Theme";
+import {
+  cacheBannerImageFromRemoteUri,
+  cacheProfileImageFromRemoteUri,
+} from "./profileImageService";
 import { supabase } from "./supabase";
 import { trackNetworkFailure } from "./telemetryService";
 import {
@@ -530,7 +534,11 @@ async function fetchProfileAssetsFromDB() {
 async function resolveProfileAssetUris(overrides?: any) {
   let { avatarPath, bannerPath, avatarVersion, bannerVersion } = overrides || {};
   if (!avatarPath && !bannerPath) { const db = await fetchProfileAssetsFromDB(); if (db) { avatarPath = db.avatarPath; bannerPath = db.bannerPath; avatarVersion = db.avatarVersion; bannerVersion = db.bannerVersion; } }
-  const [profileImageUri, bannerImageUri] = await Promise.all([avatarPath ? resolveStorageUrl(avatarPath) : null, bannerPath ? resolveStorageUrl(bannerPath) : null]);
+  const [remoteProfileImageUri, remoteBannerImageUri] = await Promise.all([avatarPath ? resolveStorageUrl(avatarPath) : null, bannerPath ? resolveStorageUrl(bannerPath) : null]);
+  const [profileImageUri, bannerImageUri] = await Promise.all([
+    cacheProfileImageFromRemoteUri(remoteProfileImageUri).catch(() => remoteProfileImageUri),
+    cacheBannerImageFromRemoteUri(remoteBannerImageUri).catch(() => remoteBannerImageUri),
+  ]);
   return { profileImageUri, bannerImageUri, profileImageStoragePath: avatarPath, bannerImageStoragePath: bannerPath, profileImageVersion: avatarVersion || 0, bannerImageVersion: bannerVersion || 0 };
 }
 

@@ -30,7 +30,7 @@ import { useTheme } from "styled-components/native";
 import Reanimated, {
   FadeIn
 } from "react-native-reanimated";
-import { resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
+import { resolveHdFilmRuntimeStream, resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
 import { getProviderConfig } from "../services/providerConfigService";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
@@ -381,7 +381,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#000000"
   },
   nativePlayer: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "#000000"
   },
   loaderOverlay: {
@@ -814,6 +814,35 @@ function isTrustedPlayerFrameUrl(url: string) {
   return TRUSTED_PLAYER_FRAME_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
+function isTrustedHdFilmRuntimeContext(url: string) {
+  return /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape/i.test(url);
+}
+
+function isLikelyHdFilmRuntimeStreamUrl(url: string) {
+  const normalized = url.toLowerCase();
+  return (
+    /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape/i.test(normalized) ||
+    /\/hls2?\//i.test(normalized) ||
+    /\.urlset\//i.test(normalized) ||
+    /\/(?:master|index|playlist|manifest)\.m3u8(?:[?#]|$)/i.test(normalized)
+  );
+}
+
+function shouldAcceptDiscoveredHdFilmStream(streamUrl: string, referer = "", embedUrl = "") {
+  if (!streamUrl || isBlockedPlayerNavigation(streamUrl)) return false;
+  if (referer && isBlockedPlayerNavigation(referer)) return false;
+  if (embedUrl && isBlockedPlayerNavigation(embedUrl)) return false;
+  if (!/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(streamUrl) && !streamUrl.toLowerCase().includes(".m3u8")) {
+    return false;
+  }
+
+  return (
+    isTrustedHdFilmRuntimeContext(referer) ||
+    isTrustedHdFilmRuntimeContext(embedUrl) ||
+    isLikelyHdFilmRuntimeStreamUrl(streamUrl)
+  );
+}
+
 function isLikelyPassivePlayerAsset(url: string) {
   return PLAYER_PASSIVE_ASSET_PATTERN.test(url);
 }
@@ -1117,6 +1146,218 @@ const PLAYER_STOP_MEDIA_SCRIPT = `
 })();
 `;
 
+const HDFILM_RUNTIME_DISCOVERY_SCRIPT = `
+(function() {
+  'use strict';
+  if (window.__streamboxHdfilmDiscoveryInstalled) return;
+  window.__streamboxHdfilmDiscoveryInstalled = true;
+
+  var seen = {};
+  var blockedPatterns = ${JSON.stringify(BLOCKED_PLAYER_NAVIGATION_PATTERNS)};
+  var trustedEmbedPattern = /(rapidrame|hdfilmcehennemi\\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape)/i;
+
+  function postToApp(type, payload) {
+    try {
+      if (!window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) return;
+      var message = { type: type };
+      if (payload) {
+        for (var key in payload) {
+          if (Object.prototype.hasOwnProperty.call(payload, key)) {
+            message[key] = payload[key];
+          }
+        }
+      }
+      window.ReactNativeWebView.postMessage(JSON.stringify(message));
+    } catch (e) {}
+  }
+
+  function cleanUrl(value) {
+    if (!value) return '';
+    return String(value)
+      .replace(/\\\\\\//g, '/')
+      .replace(/&amp;/g, '&')
+      .replace(/["'<>\\s]+$/g, '')
+      .trim();
+  }
+
+  function absoluteUrl(value) {
+    var cleaned = cleanUrl(value);
+    if (!cleaned) return '';
+    try {
+      return new URL(cleaned, window.location.href).href;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function isDirectMediaUrl(url) {
+    return /\\.(m3u8|mp4)(?:[?#].*)?$/i.test(url) || url.toLowerCase().indexOf('.m3u8') !== -1 || url.toLowerCase().indexOf('.mp4') !== -1;
+  }
+
+  function isBlockedPlaybackUrl(url) {
+    var normalized = String(url || '').toLowerCase();
+    return blockedPatterns.some(function(pattern) {
+      return normalized.indexOf(pattern) !== -1;
+    });
+  }
+
+  function isTrustedRuntimeContext() {
+    return trustedEmbedPattern.test(window.location.href);
+  }
+
+  function isLikelyMovieStreamUrl(url) {
+    var normalized = String(url || '').toLowerCase();
+    if (isBlockedPlaybackUrl(normalized)) return false;
+    if (trustedEmbedPattern.test(normalized) || isTrustedRuntimeContext()) return true;
+    return /\\/hls2?\\//i.test(normalized) ||
+      /\\.urlset\\//i.test(normalized) ||
+      /\\/(?:master|index|playlist|manifest)\\.m3u8(?:[?#]|$)/i.test(normalized);
+  }
+
+  function inspectPlaybackUrl(value, source) {
+    var url = absoluteUrl(value);
+    if (!url) return;
+
+    var key = source + ':' + url;
+    if (seen[key]) return;
+
+    if (isDirectMediaUrl(url) && isLikelyMovieStreamUrl(url)) {
+      seen[key] = true;
+      postToApp('hdfilm_stream_discovered', {
+        streamUrl: url,
+        streamType: url.toLowerCase().indexOf('.m3u8') !== -1 ? 'm3u8' : 'mp4',
+        referer: window.location.href,
+        embedUrl: window.location.href,
+        source: source
+      });
+      return;
+    }
+
+    if (!isBlockedPlaybackUrl(url) && trustedEmbedPattern.test(url)) {
+      seen[key] = true;
+      postToApp('hdfilm_embed_discovered', {
+        embedUrl: url,
+        pageUrl: window.location.href,
+        source: source
+      });
+    }
+  }
+
+  function scanTextForMediaUrls(text, source) {
+    if (!text || typeof text !== 'string') return;
+    var normalized = text.replace(/\\\\\\//g, '/').replace(/&amp;/g, '&');
+    var directRegex = /https?:\\/\\/[^\\s"'<>]+?(?:\\.m3u8|\\.mp4)(?:[^\\s"'<>]*)?/gi;
+    var match;
+    while ((match = directRegex.exec(normalized)) !== null) {
+      inspectPlaybackUrl(match[0], source);
+    }
+
+    var embedRegex = /https?:\\/\\/[^\\s"'<>]+?(?:rapidrame|hdfilmcehennemi\\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape)[^\\s"'<>]*/gi;
+    while ((match = embedRegex.exec(normalized)) !== null) {
+      inspectPlaybackUrl(match[0], source);
+    }
+  }
+
+  function scanNode(node) {
+    try {
+      if (!node || node.nodeType !== 1) return;
+      var attrs = ['src', 'currentSrc', 'href', 'data-link', 'data-video', 'data-url', 'data-href', 'data-src', 'data-file'];
+      attrs.forEach(function(attr) {
+        var value = attr === 'currentSrc' ? node.currentSrc : node.getAttribute && node.getAttribute(attr);
+        if (value) inspectPlaybackUrl(value, 'dom-' + attr);
+      });
+      if (node.querySelectorAll) {
+        node.querySelectorAll('iframe, video, source, a, button, [data-link], [data-video], [data-url], [data-href], [data-src], [data-file]').forEach(scanNode);
+      }
+    } catch (e) {}
+  }
+
+  function scanDocument() {
+    try {
+      scanNode(document.documentElement);
+      scanTextForMediaUrls(document.documentElement ? document.documentElement.innerHTML : '', 'dom-html');
+    } catch (e) {}
+  }
+
+  try {
+    var originalSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function(name, value) {
+      if (/src|href|link|url|video|file/i.test(String(name || ''))) {
+        inspectPlaybackUrl(value, 'setAttribute-' + name);
+      }
+      return originalSetAttribute.apply(this, arguments);
+    };
+  } catch (e) {}
+
+  try {
+    var originalFetch = window.fetch;
+    if (typeof originalFetch === 'function') {
+      window.fetch = function(input, init) {
+        try {
+          inspectPlaybackUrl(typeof input === 'string' ? input : (input && input.url), 'fetch-request');
+        } catch (e) {}
+        return originalFetch.apply(this, arguments).then(function(response) {
+          try {
+            var clone = response.clone();
+            var contentType = clone.headers && clone.headers.get ? String(clone.headers.get('content-type') || '') : '';
+            var requestUrl = response.url || (typeof input === 'string' ? input : (input && input.url)) || '';
+            if (/json|text|html|javascript|mpegurl|mpeg/i.test(contentType) || isDirectMediaUrl(requestUrl)) {
+              clone.text().then(function(text) {
+                scanTextForMediaUrls(text, 'fetch-response');
+              }).catch(function() {});
+            }
+          } catch (e) {}
+          return response;
+        });
+      };
+    }
+  } catch (e) {}
+
+  try {
+    var originalOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+      try {
+        this.__streamboxUrl = url;
+        inspectPlaybackUrl(url, 'xhr-request');
+        this.addEventListener('load', function() {
+          try {
+            inspectPlaybackUrl(this.responseURL || this.__streamboxUrl, 'xhr-response-url');
+            if (typeof this.responseText === 'string') {
+              scanTextForMediaUrls(this.responseText, 'xhr-response');
+            }
+          } catch (e) {}
+        });
+      } catch (e) {}
+      return originalOpen.apply(this, arguments);
+    };
+  } catch (e) {}
+
+  function startDomWatch() {
+    scanDocument();
+    try {
+      new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+          mutation.addedNodes && Array.prototype.forEach.call(mutation.addedNodes, scanNode);
+          if (mutation.target) scanNode(mutation.target);
+        });
+      }).observe(document.documentElement || document, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src', 'href', 'data-link', 'data-video', 'data-url', 'data-href', 'data-src', 'data-file']
+      });
+    } catch (e) {}
+    setInterval(scanDocument, 1200);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startDomWatch, { once: true });
+  } else {
+    startDomWatch();
+  }
+})();
+`;
+
 const DIZIPAL_INJECT_BEFORE = `
 (function() {
   'use strict';
@@ -1156,6 +1397,7 @@ function getEmbedInjectBefore(fit: 'contain' | 'cover' = 'contain') {
 (function() {
   'use strict';
   ${PLAYER_AD_GUARD_SCRIPT}
+  ${HDFILM_RUNTIME_DISCOVERY_SCRIPT}
   window.open = function() { return null; };
   var baseStyle = document.getElementById('app-fit-style');
   if (!baseStyle) {
@@ -1367,6 +1609,7 @@ function getInjectBefore(source: WebViewProviderSource, fit: 'contain' | 'cover'
 (function() {
   'use strict';
   ${PLAYER_AD_GUARD_SCRIPT}
+  ${HDFILM_RUNTIME_DISCOVERY_SCRIPT}
   window.open = function() { return null; };
   var adDomains = ${JSON.stringify(BLOCKED_PLAYER_NAVIGATION_PATTERNS)};
   var _xhrOpen = XMLHttpRequest.prototype.open;
@@ -1416,6 +1659,7 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
   return `
 (function() {
   'use strict';
+  ${HDFILM_RUNTIME_DISCOVERY_SCRIPT}
 
   var isTv = ${mediaType === "tv"};
   var targetSeason = ${seasonNumber || 1};
@@ -1478,27 +1722,54 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
     }, delay);
   }
 
+  function probePresentedVideoFrame(video, reason) {
+    if (!video) return;
+
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      if (video.__streamboxFrameProbeBound) return;
+      video.__streamboxFrameProbeBound = true;
+      try {
+        video.requestVideoFrameCallback(function() {
+          markVisualFrame(reason + '-frame-callback');
+        });
+        return;
+      } catch (e) {}
+    }
+
+    setTimeout(function() {
+      try {
+        if (!video.paused && video.currentTime > 0 && video.readyState >= 3) {
+          markVisualFrame(reason + '-playing-frame');
+        }
+      } catch (e) {}
+    }, 1600);
+  }
+
   function bindVideo(video) {
     if (!video || video.__streamboxBound) return;
     video.__streamboxBound = true;
 
     ['loadeddata', 'canplay', 'playing'].forEach(function(eventName) {
       video.addEventListener(eventName, function() {
-        if (eventName === 'loadeddata' || eventName === 'canplay' || (video.videoWidth > 0 && video.videoHeight > 0)) {
-          markVisualFrame('video-' + eventName);
+        if (eventName === 'loadeddata' || eventName === 'canplay') {
+          probePresentedVideoFrame(video, 'video-' + eventName);
         }
         if (eventName === 'playing' || video.readyState >= 2) {
+          probePresentedVideoFrame(video, 'video-' + eventName);
           markPlaybackReady('video-' + eventName);
+          scheduleVisualFrameProbe('video-' + eventName + '-without-presented-frame', 6500);
         }
       });
     });
 
     if (video.readyState >= 2 && !video.paused) {
-      if (video.videoWidth > 0 && video.videoHeight > 0) markVisualFrame('video-ready');
+      probePresentedVideoFrame(video, 'video-ready');
       markPlaybackReady('video-ready');
+      scheduleVisualFrameProbe('video-ready-without-presented-frame', 6500);
     } else if (video.readyState >= 2) {
-      if (video.videoWidth > 0 && video.videoHeight > 0) markVisualFrame('video-buffered');
+      probePresentedVideoFrame(video, 'video-buffered');
       scheduleReadyFallback('video-buffered', 900);
+      scheduleVisualFrameProbe('video-buffered-without-presented-frame', 7500);
     }
   }
 
@@ -2875,6 +3146,12 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const { addToRecentlyWatched } = useRecentlyWatched();
   const hasTrackedRef = useRef(false);
   const hdfilmNativeFallbackTriggeredRef = useRef(false);
+  const hdfilmRuntimeDiscoveryKeysRef = useRef(new Set<string>());
+  const playerResultRef = useRef<WebPlayerResult | null>(null);
+
+  useEffect(() => {
+    playerResultRef.current = playerResult;
+  }, [playerResult]);
 
   useEffect(() => {
     return () => {
@@ -3042,6 +3319,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setExternalSubtitleCues([]);
     setActiveSubtitleText(null);
     hdfilmNativeFallbackTriggeredRef.current = false;
+    hdfilmRuntimeDiscoveryKeysRef.current.clear();
 
     if (route.params.trailerUrl) {
       // Show trailer directly
@@ -3187,9 +3465,114 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     });
   }, []);
 
+  const switchToDiscoveredHdFilmStream = useCallback((result: WebPlayerResult, reason: string) => {
+    setPlayerResult((current) => {
+      if (
+        !current ||
+        current.source !== "hdfilm" ||
+        !result.streamUrl ||
+        hdfilmNativeFallbackTriggeredRef.current
+      ) {
+        return current;
+      }
+
+      hdfilmNativeFallbackTriggeredRef.current = true;
+      debugLog("[Player] Switching HDFilm runtime stream to native:", reason, result.streamUrl);
+      webViewRef.current?.injectJavaScript(PLAYER_STOP_MEDIA_SCRIPT);
+      webViewRef.current?.stopLoading();
+      setLoadError(null);
+      setIsPlaybackReady(false);
+      setCurrentStreamUrl(result.streamUrl);
+      setSelectedSubtitleTrack(null);
+      setSelectedExternalSubtitle(null);
+      setExternalSubtitleCues([]);
+      setActiveSubtitleText(null);
+
+      return {
+        ...current,
+        ...result,
+        url: result.streamUrl,
+        source: "direct",
+        streamUrl: result.streamUrl,
+        streamType: result.streamType ?? (result.streamUrl.toLowerCase().includes(".m3u8") ? "m3u8" : "mp4"),
+        referer: result.referer || result.embedUrl || current.url,
+        embedUrl: result.embedUrl || result.referer || current.url,
+        subtitles: result.subtitles ?? []
+      };
+    });
+  }, []);
+
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
       const payload = JSON.parse(event.nativeEvent.data);
+      if (payload?.type === "hdfilm_stream_discovered") {
+        if (playerResultRef.current?.source !== "hdfilm") return;
+
+        const streamUrl = typeof payload.streamUrl === "string" ? payload.streamUrl : "";
+        if (!streamUrl) return;
+        const referer =
+          typeof payload.referer === "string"
+            ? payload.referer
+            : playerResultRef.current?.url ?? "";
+        const embedUrl =
+          typeof payload.embedUrl === "string"
+            ? payload.embedUrl
+            : referer || (playerResultRef.current?.url ?? "");
+
+        if (!shouldAcceptDiscoveredHdFilmStream(streamUrl, referer, embedUrl)) {
+          return;
+        }
+
+        const key = `stream:${streamUrl}`;
+        if (hdfilmRuntimeDiscoveryKeysRef.current.has(key)) return;
+        hdfilmRuntimeDiscoveryKeysRef.current.add(key);
+
+        switchToDiscoveredHdFilmStream({
+          url: streamUrl,
+          source: "direct",
+          streamUrl,
+          streamType:
+            typeof payload.streamType === "string"
+              ? payload.streamType
+              : streamUrl.toLowerCase().includes(".m3u8")
+                ? "m3u8"
+                : "mp4",
+          referer,
+          embedUrl,
+          subtitles: []
+        }, String(payload.source ?? "runtime-stream"));
+        return;
+      }
+
+      if (payload?.type === "hdfilm_embed_discovered") {
+        if (playerResultRef.current?.source !== "hdfilm") return;
+
+        const embedUrl = typeof payload.embedUrl === "string" ? payload.embedUrl : "";
+        if (!embedUrl) return;
+
+        const key = `embed:${embedUrl}`;
+        if (hdfilmRuntimeDiscoveryKeysRef.current.has(key)) return;
+        hdfilmRuntimeDiscoveryKeysRef.current.add(key);
+
+        const currentPageUrl =
+          playerResultRef.current?.url ??
+          (typeof payload.pageUrl === "string" ? payload.pageUrl : "");
+
+        void resolveHdFilmRuntimeStream(embedUrl, currentPageUrl)
+          .then((result) => {
+            if (
+              result?.streamUrl &&
+              shouldAcceptDiscoveredHdFilmStream(result.streamUrl, result.referer, result.embedUrl)
+            ) {
+              switchToDiscoveredHdFilmStream(result, String(payload.source ?? "runtime-embed"));
+            }
+          })
+          .catch(() => {
+            // Runtime discovery is best-effort; keep the provider player alive if embed resolution fails.
+          });
+        return;
+      }
+
       if (payload?.type === "player_ready") {
         setLoadError(null);
         setIsPlaybackReady(true);
@@ -3212,7 +3595,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     } catch {
       // Ignore unrelated WebView messages.
     }
-  }, [showControls, switchToHdFilmNativeFallback]);
+  }, [showControls, switchToDiscoveredHdFilmStream, switchToHdFilmNativeFallback]);
   const handleError = useCallback(() => {
     setIsPlaybackReady(false);
     setLoadError("Failed to load. Please check your connection.");
@@ -3484,21 +3867,19 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   if (isDirectStream && directStreamUrl) {
     return (
       <View style={styles.root}>
+        <VideoView
+          player={videoPlayer}
+          style={styles.nativePlayer}
+          contentFit={videoFit}
+          nativeControls
+          surfaceType="textureView"
+          onTouchEnd={toggleCloseBtn}
+        />
         {isLoading && (
           <PlayerLoadingOverlay
             title={route.params.title}
             seasonNumber={route.params.seasonNumber}
             episodeNumber={route.params.episodeNumber}
-          />
-        )}
-        {!isLoading && (
-          <VideoView
-            player={videoPlayer}
-            style={styles.nativePlayer}
-            contentFit={videoFit}
-            nativeControls
-            surfaceType="textureView"
-            onTouchEnd={toggleCloseBtn}
           />
         )}
         {!isLoading && isSubtitleMenuOpen && (

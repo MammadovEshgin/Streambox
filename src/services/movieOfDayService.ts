@@ -30,6 +30,11 @@ const SERIES_CANDIDATE_PAGES = 2;
 const TOP_SCORING_SLICE = 6;
 const IMDB_TOP_FALLBACK_LIMIT = 100;
 const DAILY_PICK_PROFILE_CONCURRENCY = 4;
+const DAILY_PICK_ALGORITHM_VERSION = "quality-v2";
+const DAILY_PICK_MIN_RATING = 7.5;
+const DAILY_PICK_MIN_POPULARITY = 8;
+const DAILY_PICK_MIN_OVERVIEW_LENGTH = 40;
+const DAILY_PICK_RELEASE_AGE_MONTHS = 6;
 
 type StoredDailyPick = {
   dateKey: string;
@@ -160,7 +165,7 @@ function createPersonalizationKey(
 ): string {
   const normalizedUserId = userId?.trim() || "anonymous";
   const normalizedIds = [...sourceIds].sort((left, right) => left - right);
-  return `${mediaType}:${normalizedUserId}:${normalizedIds.join(",")}`;
+  return `${DAILY_PICK_ALGORITHM_VERSION}:${mediaType}:${normalizedUserId}:${normalizedIds.join(",")}`;
 }
 
 function pickSeededIndex(length: number, seed: string): number {
@@ -181,6 +186,64 @@ function pickFromScoredCandidates(
 
   const shortlist = scored.slice(0, Math.min(TOP_SCORING_SLICE, scored.length));
   return shortlist[pickSeededIndex(shortlist.length, seed)]?.candidate ?? scored[0]?.candidate ?? null;
+}
+
+function getDailyReleaseCutoffDate(now = new Date()) {
+  const cutoff = new Date(now);
+  cutoff.setMonth(cutoff.getMonth() - DAILY_PICK_RELEASE_AGE_MONTHS);
+  cutoff.setHours(23, 59, 59, 999);
+  return cutoff;
+}
+
+function isDateOlderThanDailyCutoff(value: string | null | undefined, now = new Date()) {
+  if (!value) {
+    return false;
+  }
+
+  const timestamp = Date.parse(`${value}T00:00:00`);
+  return Number.isFinite(timestamp) && timestamp <= getDailyReleaseCutoffDate(now).getTime();
+}
+
+function isYearOlderThanDailyCutoff(year: number | null | undefined, now = new Date()) {
+  if (!year || !Number.isFinite(year)) {
+    return false;
+  }
+
+  return year <= getDailyReleaseCutoffDate(now).getFullYear();
+}
+
+function getMediaItemYear(item: MediaItem) {
+  const parsed = Number.parseInt(item.year, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function hasDailyPresentationQuality(item: MediaItem) {
+  return Boolean(
+    item.title.trim()
+    && (item.posterPath || item.backdropPath)
+    && item.overview.trim().length >= DAILY_PICK_MIN_OVERVIEW_LENGTH
+  );
+}
+
+function isDailyMediaItemEligible(item: MediaItem, now = new Date()) {
+  return (
+    item.rating >= DAILY_PICK_MIN_RATING
+    && isYearOlderThanDailyCutoff(getMediaItemYear(item), now)
+    && hasDailyPresentationQuality(item)
+  );
+}
+
+function isMovieTasteProfileEligible(profile: MovieTasteProfile, now = new Date()) {
+  return (
+    profile.rating >= DAILY_PICK_MIN_RATING
+    && profile.popularity >= DAILY_PICK_MIN_POPULARITY
+    && isYearOlderThanDailyCutoff(profile.releaseYear, now)
+    && Boolean(
+      profile.title.trim()
+      && (profile.posterPath || profile.backdropPath)
+      && profile.overview.trim().length >= DAILY_PICK_MIN_OVERVIEW_LENGTH
+    )
+  );
 }
 
 async function persistCurrentPick(
@@ -412,7 +475,10 @@ async function pickPersonalizedMovie(
 
   const sourceSet = new Set(sourceMovieIds);
   const filteredCandidates = candidates.filter(
-    (candidate) => typeof candidate.id === "number" && !sourceSet.has(candidate.id)
+    (candidate) =>
+      typeof candidate.id === "number"
+      && !sourceSet.has(candidate.id)
+      && isDailyMediaItemEligible(candidate)
   );
 
   if (filteredCandidates.length === 0) {
@@ -425,7 +491,7 @@ async function pickPersonalizedMovie(
       DAILY_PICK_PROFILE_CONCURRENCY,
       async (candidate) => getMovieTasteProfile(candidate.id as number)
     )
-  ).filter((profile): profile is MovieTasteProfile => profile !== null);
+  ).filter((profile): profile is MovieTasteProfile => profile !== null && isMovieTasteProfileEligible(profile));
 
   if (candidateProfiles.length === 0) {
     return filteredCandidates[0] ?? null;
@@ -552,7 +618,10 @@ async function pickPersonalizedSeries(
 
   const sourceSet = new Set(sourceSeriesIds);
   const candidates = (await buildSeriesCandidatePool()).filter(
-    (candidate) => typeof candidate.id === "number" && !sourceSet.has(candidate.id)
+    (candidate) =>
+      typeof candidate.id === "number"
+      && !sourceSet.has(candidate.id)
+      && isDailyMediaItemEligible(candidate)
   );
 
   if (candidates.length === 0) {
@@ -612,10 +681,23 @@ async function resolveImdbFallback(
           ? await getMovieSummary(numericId)
           : await getSeriesSummary(numericId);
 
+      const releaseDate =
+        mediaType === "movie"
+          ? (await getMovieDetails(String(numericId)).catch(() => null))?.releaseDate
+          : (await getSeriesDetails(String(numericId)).catch(() => null))?.firstAirDate;
+
+      const isOldEnough = releaseDate
+        ? isDateOlderThanDailyCutoff(releaseDate)
+        : isYearOlderThanDailyCutoff(getMediaItemYear(media));
+
+      if (!isOldEnough || !hasDailyPresentationQuality(media)) {
+        continue;
+      }
+
       return {
         ...media,
         imdbId: media.imdbId ?? entry.imdbId,
-        rating: media.rating > 0 ? media.rating : entry.imdbRating,
+        rating: Math.max(media.rating, entry.imdbRating),
       };
     } catch {
       // Try the next IMDb fallback item.
@@ -642,7 +724,14 @@ export async function getPersonalizedMovieOfTheDay({
     personalizationKey
   );
   if (stored) {
-    return stored;
+    const storedId = typeof stored.id === "number" ? stored.id : null;
+    if (
+      storedId !== null
+      && !sourceMovieIds.includes(storedId)
+      && isDailyMediaItemEligible(stored)
+    ) {
+      return stored;
+    }
   }
 
   const personalized = await pickPersonalizedMovie(sourceMovieIds, userId, dateKey);
@@ -681,7 +770,14 @@ export async function getPersonalizedSeriesOfTheDay({
     personalizationKey
   );
   if (stored) {
-    return stored;
+    const storedId = typeof stored.id === "number" ? stored.id : null;
+    if (
+      storedId !== null
+      && !sourceSeriesIds.includes(storedId)
+      && isDailyMediaItemEligible(stored)
+    ) {
+      return stored;
+    }
   }
 
   const personalized = await pickPersonalizedSeries(sourceSeriesIds, userId, dateKey);

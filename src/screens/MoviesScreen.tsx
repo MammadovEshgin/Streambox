@@ -462,8 +462,6 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
 
     void readPersistedRuntimeCache<MoviesHubCache>(localizedCacheKey, {
       validate: isValidMoviesHubCache,
-      expectedVersion: getMoviesHubFreshnessVersion(),
-      maxAgeMs: MOVIES_HUB_CACHE_TTL_MS,
     })
       .then((entry) => {
         if (!active) {
