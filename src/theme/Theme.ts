@@ -3,9 +3,7 @@ import { Typography } from "./Typography";
 export type ThemeId =
   | "cinema-ember"
   | "velvet-crimson"
-  | "aurora-cyan"
   | "emerald-noir"
-  | "luxe-gold"
   | "glacier-blue";
 
 type ThemeOption = {
@@ -15,9 +13,15 @@ type ThemeOption = {
   primary: string;
 };
 
-export const DEFAULT_THEME_ID: ThemeId = "cinema-ember";
+export const DEFAULT_THEME_ID: ThemeId = "emerald-noir";
 
 export const THEME_OPTIONS: ThemeOption[] = [
+  {
+    id: "emerald-noir",
+    name: "Emerald Noir",
+    description: "Dark screen, rich green highlights, understated and premium.",
+    primary: "#22C55E"
+  },
   {
     id: "cinema-ember",
     name: "Cinema Ember",
@@ -31,30 +35,22 @@ export const THEME_OPTIONS: ThemeOption[] = [
     primary: "#E50914"
   },
   {
-    id: "aurora-cyan",
-    name: "Prime Video Blue",
-    description: "Prime Video-inspired blue with a bright streaming accent and familiar dark-mode contrast.",
-    primary: "#00A8E1"
-  },
-  {
-    id: "emerald-noir",
-    name: "Emerald Noir",
-    description: "Dark screen, rich green highlights, understated and premium.",
-    primary: "#22C55E"
-  },
-  {
-    id: "luxe-gold",
-    name: "Luxe Gold",
-    description: "Soft brushed gold with warm editorial character and less visual fatigue.",
-    primary: "#B9974F"
-  },
-  {
     id: "glacier-blue",
     name: "Glacier Blue",
     description: "Refined slate-blue accent with a cool premium tone instead of harsh brightness.",
     primary: "#7B97C9"
   }
 ];
+
+const THEME_IDS = new Set<ThemeId>(THEME_OPTIONS.map((option) => option.id));
+
+export function isThemeId(value: unknown): value is ThemeId {
+  return typeof value === "string" && THEME_IDS.has(value as ThemeId);
+}
+
+export function resolveThemeId(value: unknown, fallback: ThemeId = DEFAULT_THEME_ID): ThemeId {
+  return isThemeId(value) ? value : fallback;
+}
 
 export function withAlpha(hex: string, alpha: number): string {
   const sanitized = hex.replace("#", "");
@@ -84,33 +80,74 @@ export function createTheme(themeId: ThemeId = DEFAULT_THEME_ID) {
     id: option.id,
     displayName: option.name,
     colors: {
-      background: "#080808", // Off-black base
-      surface: "#101012",    // Subtle tint lifted surface
-      surfaceRaised: "#18181B", // Slightly higher elevation
+      background: "#0D100F",
+      surface: "#151917",
+      surfaceRaised: "#1B211E",
+      surfaceHigh: "#232A26",
       primary: option.primary,
-      primarySoft: withAlpha(option.primary, 0.14),
-      primarySoftStrong: withAlpha(option.primary, 0.2),
-      primaryMuted: withAlpha(option.primary, 0.4),
-      primaryGlow: withAlpha(option.primary, 0.35),
+      primarySoft: withAlpha(option.primary, 0.12),
+      primarySoftStrong: withAlpha(option.primary, 0.18),
+      primaryMuted: withAlpha(option.primary, 0.36),
+      primaryGlow: withAlpha(option.primary, 0.28),
       primaryTransparent: withAlpha(option.primary, 0),
-      textPrimary: "#F4F4F5", // Softer white to reduce eye strain
-      textSecondary: "#A1A1AA", // Muted gray for subtle contrast
-      border: "#27272A" // Low-contrast border
+      textPrimary: "#F6F7F4",
+      textSecondary: "#B2B8B1",
+      textTertiary: "#858D86",
+      /** Text/icon color rendered on top of a `primary`-filled surface. */
+      textOnPrimary: "#FFFFFF",
+      border: "#2A312D",
+      borderSoft: "#202722",
+      overlayScrim: "rgba(13, 16, 15, 0.70)",
+      /** Full-bleed dim behind modals/sheets. */
+      scrim: "rgba(0, 0, 0, 0.72)",
+      /** Rating / star accent — was hardcoded as #FFD700 / #FFD27A in places. */
+      gold: "#FFD700",
+      glassFill: "rgba(255, 255, 255, 0.065)",
+      glassBorder: "rgba(255, 255, 255, 0.11)"
     },
     typography: Typography,
     spacing: {
+      xxs: 2,
       xs: 4,
       sm: 8,
       md: 12,
       lg: 16,
-      xl: 24
+      xl: 24,
+      xxl: 40,
+      huge: 64
     },
     radius: {
       sm: 8,
       md: 12,
       lg: 16,
-      xl: 24, // Rounder for cards layout
+      xl: 24,
+      pill: 999,
       full: 9999
+    },
+    motion: {
+      pressScale: 0.97,
+      durationFast: 120,
+      durationBase: 200,
+      durationSlow: 280,
+      durationCommitted: 600
+    },
+    shadows: {
+      // Elevation presets so shadows aren't hand-rolled per component.
+      // Spread into a styled View / RN style object.
+      card: {
+        shadowColor: "#000000",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 6
+      },
+      raised: {
+        shadowColor: "#000000",
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.4,
+        shadowRadius: 16,
+        elevation: 12
+      }
     }
   };
 }

@@ -1,6 +1,7 @@
 import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useEffect } from "react";
 import { Pressable } from "react-native";
+import { useTranslation } from "react-i18next";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -61,7 +62,7 @@ const DecadeLabel = styled.Text<{ $isTop?: boolean }>`
 
 type Props = {
   history: WatchHistoryEntry[];
-  itemLabelPlural: string;
+  isMovieMode: boolean;
   onDecadePress?: (min: number, max: number, label: string) => void;
 };
 
@@ -88,8 +89,9 @@ function AnimatedBar({ ratio, delay, isTop }: { ratio: number; delay: number; is
   return <BarFill style={style} $isTop={isTop} />;
 }
 
-export function DecadeBreakdown({ history, itemLabelPlural, onDecadePress }: Props) {
+export function DecadeBreakdown({ history, isMovieMode, onDecadePress }: Props) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const decadeCounts = DECADES.map((decade) => {
     const count = history.filter((entry) => {
       const year = Number.parseInt(entry.year, 10);
@@ -100,10 +102,8 @@ export function DecadeBreakdown({ history, itemLabelPlural, onDecadePress }: Pro
 
   const maxCount = Math.max(...decadeCounts.map((decade) => decade.count), 1);
   const hasData = decadeCounts.some((decade) => decade.count > 0);
-  const isMovieMode = itemLabelPlural === "movies";
-
   return (
-    <StatsSection title="Decade Spread" subtitle="Which eras your picks come from.">
+    <StatsSection title={t("stats.decadeSpreadTitle")} subtitle={t("stats.decadeSpreadSubtitle")}>
       {hasData ? (
         <Rows>
           {decadeCounts.map((decade, index) => {
@@ -134,7 +134,7 @@ export function DecadeBreakdown({ history, itemLabelPlural, onDecadePress }: Pro
           })}
         </Rows>
       ) : (
-        <EmptyText>No decade distribution yet.</EmptyText>
+        <EmptyText>{t("stats.noDecadeDistribution")}</EmptyText>
       )}
     </StatsSection>
   );

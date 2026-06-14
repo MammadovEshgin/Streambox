@@ -44,12 +44,16 @@ StreamBox is a high-performance streaming application built with React Native an
 3. Set up environment variables:
    Create a `.env` file in the root directory and add your keys (see `.env.example`):
    ```env
-   EXPO_PUBLIC_TMDB_API_KEY=your_tmdb_key
+   EXPO_PUBLIC_TMDB_PROXY_BASE_URL=https://your-tmdb-proxy.example.com/3
    EXPO_PUBLIC_SUPABASE_URL=your_supabase_url
    EXPO_PUBLIC_SUPABASE_ANON_KEY=your_supabase_key
+   EXPO_PUBLIC_ENABLE_TELEMETRY=1
    ```
+   Keep TMDB API keys in the Cloudflare Worker secret store. Direct `EXPO_PUBLIC_TMDB_API_KEY` and `EXPO_PUBLIC_TMDB_ACCESS_TOKEN` values are local-development fallbacks only and must not be present in production/EAS env.
 
-4. Start the project:
+4. Before production launch, run the Supabase migrations and review [docs/production-readiness.md](docs/production-readiness.md).
+
+5. Start the project:
    ```bash
    npm start
    ```

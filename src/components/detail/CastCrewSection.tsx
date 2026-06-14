@@ -1,9 +1,11 @@
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
 import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import styled from "styled-components/native";
 
 import { CastMember, CrewMember, getTmdbImageUrl } from "../../api/tmdb";
+import { CachedRemoteImage } from "../common/CachedRemoteImage";
 import { withAlpha } from "../../theme/Theme";
 
 const Root = styled.View``;
@@ -22,16 +24,16 @@ const TabButton = styled.Pressable<{ isActive: boolean }>`
   justify-content: center;
   border-width: 1px;
   border-color: ${({ isActive, theme }) =>
-    isActive ? withAlpha(theme.colors.primary, 0.32) : withAlpha(theme.colors.textPrimary, 0.06)};
+    isActive ? theme.colors.primaryMuted : theme.colors.glassBorder};
   background-color: ${({ isActive, theme }) =>
-    isActive ? withAlpha(theme.colors.primary, 0.14) : "transparent"};
+    isActive ? theme.colors.primarySoft : theme.colors.glassFill};
 `;
 
 const TabLabel = styled.Text<{ isActive: boolean }>`
+  font-family: Outfit_600SemiBold;
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
+  line-height: 15px;
+  letter-spacing: 0.2px;
   color: ${({ isActive, theme }) => (isActive ? theme.colors.textPrimary : withAlpha(theme.colors.textPrimary, 0.45))};
 `;
 
@@ -57,7 +59,7 @@ const AvatarWrap = styled.View`
   justify-content: center;
 `;
 
-const Avatar = styled.Image`
+const Avatar = styled(CachedRemoteImage)`
   width: 100%;
   height: 100%;
 `;
@@ -73,6 +75,7 @@ const PlaceholderIcon = styled.View`
 const CastActorName = styled.Text`
   margin-top: 7px;
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
   font-size: 11px;
   line-height: 14px;
 `;
@@ -80,6 +83,7 @@ const CastActorName = styled.Text`
 const CharacterName = styled.Text`
   margin-top: 2px;
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 10px;
   line-height: 13px;
 `;
@@ -93,14 +97,15 @@ const CrewItemRoot = styled.Pressable`
 const CrewActorName = styled.Text`
   margin-top: 7px;
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
   font-size: 11px;
   line-height: 14px;
-  font-weight: 600;
 `;
 
 const JobTitle = styled.Text`
   margin-top: 2px;
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 9px;
   line-height: 12px;
 `;
@@ -157,13 +162,14 @@ function sortCrewByImportance(crew: CrewMember[]): CrewMember[] {
 }
 
 function CastItem({ item, onPressItem }: { item: CastMember; onPressItem?: (item: CastMember) => void }) {
+  const { t } = useTranslation();
   const avatarUri = getTmdbImageUrl(item.profilePath, "w185");
 
   return (
     <CastItemRoot onPress={() => onPressItem?.(item)}>
       <AvatarWrap>
         {avatarUri ? (
-          <Avatar source={{ uri: avatarUri }} resizeMode="cover" />
+          <Avatar uri={avatarUri} contentFit="cover" recyclingKey={String(item.id)} />
         ) : (
           <PlaceholderIcon>
             <MaterialCommunityIcons name="account-outline" size={32} color="#666666" />
@@ -171,7 +177,7 @@ function CastItem({ item, onPressItem }: { item: CastMember; onPressItem?: (item
         )}
       </AvatarWrap>
       <CastActorName numberOfLines={1}>{item.name}</CastActorName>
-      <CharacterName numberOfLines={1}>{item.character || "Unknown"}</CharacterName>
+      <CharacterName numberOfLines={1}>{item.character || t("common.unknown")}</CharacterName>
     </CastItemRoot>
   );
 }
@@ -183,7 +189,7 @@ function CrewItem({ item, onPressItem }: { item: CrewMember; onPressItem?: (item
     <CrewItemRoot onPress={() => onPressItem?.(item)}>
       <AvatarWrap>
         {avatarUri ? (
-          <Avatar source={{ uri: avatarUri }} resizeMode="cover" />
+          <Avatar uri={avatarUri} contentFit="cover" recyclingKey={String(item.id)} />
         ) : (
           <PlaceholderIcon>
             <MaterialCommunityIcons name="account-outline" size={32} color="#666666" />
@@ -197,6 +203,7 @@ function CrewItem({ item, onPressItem }: { item: CrewMember; onPressItem?: (item
 }
 
 export function CastCrewSection({ cast, crew, onPressCastItem, onPressCrewItem }: CastCrewSectionProps) {
+  const { t } = useTranslation();
   const isCrewEmpty = crew.length === 0;
   const [activeTabIndex, setActiveTabIndex] = useState(0);
   const sortedCast = sortCastByImage(cast);
@@ -221,10 +228,10 @@ export function CastCrewSection({ cast, crew, onPressCastItem, onPressCrewItem }
       {!isCrewEmpty && (
         <ButtonsContainer>
           <TabButton isActive={activeTabIndex === 0} onPress={() => setActiveTabIndex(0)}>
-            <TabLabel isActive={activeTabIndex === 0}>Cast</TabLabel>
+            <TabLabel isActive={activeTabIndex === 0}>{t("detail.cast")}</TabLabel>
           </TabButton>
           <TabButton isActive={activeTabIndex === 1} onPress={() => setActiveTabIndex(1)}>
-            <TabLabel isActive={activeTabIndex === 1}>Crew</TabLabel>
+            <TabLabel isActive={activeTabIndex === 1}>{t("detail.crew")}</TabLabel>
           </TabButton>
         </ButtonsContainer>
       )}

@@ -1,14 +1,15 @@
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import styled, { useTheme } from "styled-components/native";
 import { Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import ViewShot from "react-native-view-shot";
 
-import { personaCardImages } from "../../assets/images";
+import { getPersonaCardImage } from "../../constants/imageAssets";
 import type { WatchHistoryEntry } from "../../hooks/useWatchHistory";
+import { normalizeAppLanguage } from "../../localization/types";
 import { useAppSettings } from "../../settings/AppSettingsContext";
 import { withAlpha } from "../../theme/Theme";
 import { StatsSection } from "./StatsSection";
@@ -47,13 +48,6 @@ const FullscreenBackdrop = styled.View`
 const FullscreenImage = styled.Image`
   width: 90%;
   height: 90%;
-`;
-
-/* ── Divider between image and text ── */
-const Divider = styled.View`
-  height: 1px;
-  margin: 0 20px;
-  background-color: ${({ theme }) => withAlpha(theme.colors.primary, 0.08)};
 `;
 
 /* ── Traits row ── */
@@ -98,6 +92,35 @@ const Description = styled.Text`
   text-align: center;
   color: ${({ theme }) => withAlpha(theme.colors.textPrimary, 0.34)};
   margin-top: 10px;
+`;
+
+const PersonaVariantRow = styled.View`
+  flex-direction: row;
+  align-self: center;
+  gap: 10px;
+  margin-bottom: 14px;
+`;
+
+const PersonaVariantButton = styled.Pressable<{ $selected: boolean }>`
+  min-width: 92px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${({ $selected, theme }) =>
+    $selected ? withAlpha(theme.colors.primary, 0.14) : withAlpha(theme.colors.surface, 0.85)};
+  border-width: 1px;
+  border-color: ${({ $selected, theme }) =>
+    $selected ? withAlpha(theme.colors.primary, 0.35) : withAlpha(theme.colors.textPrimary, 0.08)};
+`;
+
+const PersonaVariantLabel = styled.Text<{ $selected: boolean }>`
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: ${({ $selected, theme }) =>
+    $selected ? theme.colors.primary : withAlpha(theme.colors.textPrimary, 0.58)};
 `;
 
 /* ── Locked state ── */
@@ -306,6 +329,30 @@ const PERSONA_RULES: { genres: string[]; persona: Persona }[] = [
   { genres: ["Horror"], persona: PERSONAS.horrorFanatic },
 ];
 
+const LOCALIZED_PERSONA_COPY: Record<"tr", Record<PersonaId, Pick<Persona, "name" | "description" | "motto" | "traits">>> = {
+  tr: {
+    thrillSeeker: { name: "Heyecan avcısı", description: "Hızın, riskin ve keskin dönüşlerin peşindesin. İzlediğin her şeyde hareket ve gerilim arıyorsun.", motto: "Hız pusulan, gerilim ise nefesindir.", traits: ["adrenalin", "gerilim", "etki"] },
+    dreamer: { name: "Hayalperest", description: "Seni imkansız gelecekler, mitik dünyalar ve gerçekliği genişleten hikayeler çekiyor. Sıradan olandan uzaklaşmak için izliyorsun.", motto: "Var olmayan ufukları biriktiriyorsun.", traits: ["merak", "mit", "kaçış"] },
+    romantic: { name: "Romantik", description: "Duygusal ağırlığı, özlemi ve jenerikten sonra bile kalan yumuşak anları seviyorsun. Bağ kurmak senin için gösteriden daha önemli.", motto: "İnsanın içine işleyen hikayelere güveniyorsun.", traits: ["duygu", "yakınlık", "özlem"] },
+    laughHunter: { name: "Kahkaha avcısı", description: "Ritmi, cazibeyi ve rahatlamayı seviyorsun. Dünya ağırlaştığında bile zevkin mizaha ve parlaklığa dönüyor.", motto: "Zamanlamanın da bir zeka biçimi olduğunu biliyorsun.", traits: ["mizah", "ışık", "kıvılcım"] },
+    detective: { name: "Dedektif", description: "Gölgelerle sabırlısın ve saklı düzeni arıyorsun. Şüphe, ipuçları ve gri alanlar dikkatini keskinleştiriyor.", motto: "Cevaplar için değil, eksik parçayı bulmak için izliyorsun.", traits: ["ipuçları", "belirsizlik", "keskinlik"] },
+    cultureBuff: { name: "Kültür meraklısı", description: "Film ve dizileri birer hafıza taşıyıcısı gibi görüyorsun. Gerçek hayatlar ve tarihsel izler seni daha uzun süre tutuyor.", motto: "Zamanın geride bıraktığını anlamak için izliyorsun.", traits: ["hafıza", "bağlam", "içgörü"] },
+    horrorFanatic: { name: "Korku tutkunu", description: "Korkudan kaçmıyor, onu inceliyorsun. Atmosfer, tehdit ve güven duygusunun yavaşça bozulması seni çekiyor.", motto: "Dehşetin de tamamen uyanık hissetmenin bir yolu olduğunu biliyorsun.", traits: ["dehşet", "gece", "ritüel"] },
+    blockbusterFan: { name: "Blockbuster hayranı", description: "Ölçeğe, hakkı verildiğinde güveniyorsun. Büyük duygu, geniş etki ve cilalı işçilik sende karşılık buluyor.", motto: "Herkese ulaşan iyi kurgulanmış hikayenin mühendisliğine saygı duyuyorsun.", traits: ["gösteri", "kalabalık", "işçilik"] },
+    eclecticExplorer: { name: "Eklektik kaşif", description: "Zevkin sınır tanımıyor. Ruh halleri, dönemler ve türler arasında rahatça dolaşıyorsun.", motto: "Çeşitlilik savrulmak değil, senin yöntemindir.", traits: ["çeşitlilik", "merak", "akış"] },
+  },
+};
+
+function localizePersona(persona: Persona, language: string): Persona {
+  const normalized = normalizeAppLanguage(language);
+  if (normalized === "en") {
+    return persona;
+  }
+
+  const localized = LOCALIZED_PERSONA_COPY[normalized]?.[persona.id];
+  return localized ? { ...persona, ...localized } : persona;
+}
+
 function classifyPersona(history: WatchHistoryEntry[]): Persona {
   const genreCounts: Record<string, number> = {};
   let totalGenreHits = 0;
@@ -355,11 +402,32 @@ function classifyPersona(history: WatchHistoryEntry[]): Persona {
 }
 
 export function ViewerPersona({ history, itemLabelPlural }: Props) {
+  const { t, i18n } = useTranslation();
+  const { personaPresentation, setPersonaPresentation } = useAppSettings();
   const threshold = 5;
   const isLocked = history.length < threshold;
+  const personaVariantOptions = [
+    { id: "male" as const, label: t("stats.personaMale") },
+    { id: "female" as const, label: t("stats.personaFemale") },
+  ];
 
   return (
-    <StatsSection title="Your Persona Card" subtitle="A personality card based on your viewing habits.">
+    <StatsSection title={t("stats.personaCardTitle")} subtitle={t("stats.personaCardSubtitle")}>
+      <PersonaVariantRow>
+        {personaVariantOptions.map((option) => (
+          <PersonaVariantButton
+            key={option.id}
+            $selected={personaPresentation === option.id}
+            onPress={() => {
+              void setPersonaPresentation(option.id);
+            }}
+          >
+            <PersonaVariantLabel $selected={personaPresentation === option.id}>
+              {option.label}
+            </PersonaVariantLabel>
+          </PersonaVariantButton>
+        ))}
+      </PersonaVariantRow>
       {isLocked ? (
         <LockedPersonaCard
           progress={Math.min(100, (history.length / threshold) * 100)}
@@ -368,7 +436,7 @@ export function ViewerPersona({ history, itemLabelPlural }: Props) {
           itemLabelPlural={itemLabelPlural}
         />
       ) : (
-        <PersonaCard persona={classifyPersona(history)} />
+        <PersonaCard persona={localizePersona(classifyPersona(history), i18n.resolvedLanguage ?? i18n.language)} />
       )}
     </StatsSection>
   );
@@ -385,15 +453,16 @@ function LockedPersonaCard({
   threshold: number;
   itemLabelPlural: string;
 }) {
+  const { t } = useTranslation();
   return (
     <Card>
       <LockedInner>
         <LockIcon>
           <LockSymbol>?</LockSymbol>
         </LockIcon>
-        <LockedTitle>Persona Locked</LockedTitle>
+        <LockedTitle>{t("stats.personaLocked")}</LockedTitle>
         <LockedSub>
-          Watch {threshold - count} more {itemLabelPlural} to reveal{"\n"}your viewer identity.
+          {t("stats.watchMoreToReveal", { count: threshold - count, label: itemLabelPlural })}
         </LockedSub>
         <ProgressWrap>
           <ProgressTrack>
@@ -408,9 +477,10 @@ function LockedPersonaCard({
 
 function ShareCard({ persona, viewShotRef }: { persona: Persona; viewShotRef: React.RefObject<ViewShot | null> }) {
   const theme = useTheme();
-  const { profileName, profileImageUri } = useAppSettings();
-  const personaCardImage = personaCardImages[persona.id];
-  const displayName = profileName || "Viewer";
+  const { t } = useTranslation();
+  const { profileName, profileImageUri, personaPresentation } = useAppSettings();
+  const personaCardImage = getPersonaCardImage(persona.id, personaPresentation);
+  const displayName = profileName || t("profile.profileNameFallback", { defaultValue: "Viewer" });
 
   return (
     <ViewShot ref={viewShotRef} options={{ format: "png", quality: 1 }} style={styles.shareCard}>
@@ -442,7 +512,7 @@ function ShareCard({ persona, viewShotRef }: { persona: Persona; viewShotRef: Re
           )}
           <View style={styles.shareUserInfo}>
             <Text style={[styles.shareUserName, { color: theme.colors.textPrimary }]}>{displayName}</Text>
-            <Text style={[styles.shareUserLabel, { color: withAlpha(theme.colors.textPrimary, 0.35) }]}>My persona card</Text>
+            <Text style={[styles.shareUserLabel, { color: withAlpha(theme.colors.textPrimary, 0.35) }]}>{t("stats.myPersonaCard")}</Text>
           </View>
         </View>
 
@@ -661,7 +731,9 @@ const styles = StyleSheet.create({
 
 function PersonaCard({ persona }: { persona: Persona }) {
   const theme = useTheme();
-  const personaCardImage = personaCardImages[persona.id];
+  const { t } = useTranslation();
+  const { personaPresentation } = useAppSettings();
+  const personaCardImage = getPersonaCardImage(persona.id, personaPresentation);
   const [fullscreen, setFullscreen] = useState(false);
   const [shareModal, setShareModal] = useState(false);
   const [sharing, setSharing] = useState(false);
@@ -700,7 +772,7 @@ function PersonaCard({ persona }: { persona: Persona }) {
             <Pressable onPress={() => setShareModal(false)} hitSlop={12} style={styles.shareBackBtn}>
               <Feather name="arrow-left" size={22} color={theme.colors.textPrimary} />
             </Pressable>
-            <Text style={[styles.shareModalTitle, { color: theme.colors.textPrimary }]}>Share Your Persona</Text>
+            <Text style={[styles.shareModalTitle, { color: theme.colors.textPrimary }]}>{t("stats.shareYourPersona")}</Text>
             <View style={{ width: 22 }} />
           </View>
 

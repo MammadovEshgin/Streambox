@@ -1,50 +1,66 @@
 export const Typography = {
   Display: {
     fontFamily: "Outfit_700Bold",
-    fontSize: 40,
-    lineHeight: 48,
-    letterSpacing: -1.2
+    fontSize: 34,
+    lineHeight: 40,
+    letterSpacing: -1.5
   },
   TitleLarge: {
     fontFamily: "Outfit_700Bold",
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 22,
+    lineHeight: 28,
     letterSpacing: -0.6
   },
   TitleMedium: {
     fontFamily: "Outfit_600SemiBold",
-    fontSize: 20,
-    lineHeight: 26,
-    letterSpacing: -0.4
+    fontSize: 18,
+    lineHeight: 24,
+    letterSpacing: -0.3
   },
   BodyLarge: {
-    fontFamily: "Outfit_500Medium",
-    fontSize: 18,
-    lineHeight: 28,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 16,
+    lineHeight: 24,
     letterSpacing: 0
   },
   BodyMedium: {
     fontFamily: "Outfit_400Regular",
-    fontSize: 16,
-    lineHeight: 24,
-    letterSpacing: 0.1
+    fontSize: 15,
+    lineHeight: 22,
+    letterSpacing: 0
   },
   BodySmall: {
     fontFamily: "Outfit_400Regular",
-    fontSize: 14,
-    lineHeight: 20,
-    letterSpacing: 0.15
+    fontSize: 13,
+    lineHeight: 18,
+    letterSpacing: 0.1
+  },
+  Label: {
+    fontFamily: "Outfit_600SemiBold",
+    fontSize: 13,
+    lineHeight: 18,
+    letterSpacing: 0.2
   },
   MetaSmall: {
     fontFamily: "Outfit_500Medium",
-    fontSize: 12,
-    lineHeight: 16,
-    letterSpacing: 0.4
+    fontSize: 11,
+    lineHeight: 14,
+    letterSpacing: 0.6
+  },
+  Meta: {
+    fontFamily: "Outfit_500Medium",
+    fontSize: 11,
+    lineHeight: 14,
+    letterSpacing: 0.6
   },
   Button: {
     fontFamily: "Outfit_600SemiBold",
     fontSize: 15,
     lineHeight: 20,
-    letterSpacing: 0.3
+    letterSpacing: 0.2
   }
 } as const;
+
+export const TabularNums = {
+  fontVariant: ["tabular-nums"] as const
+};

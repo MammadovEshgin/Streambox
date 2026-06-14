@@ -1,11 +1,14 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { getCachedFranchiseImageUri, warmFranchiseImageCache } from "../services/franchisePosterCache";
+import { getMovieSummary, getSeriesSummary, getTmdbImageUrl } from "./tmdb";
+import { prefetchRemoteImages } from "../services/remoteImageCache";
 import { supabase } from "../services/supabase";
 
-export const FRANCHISE_CATALOG_CACHE_KEY = "@streambox/franchise-catalog-v10";
-export const FRANCHISE_ENTRIES_CACHE_PREFIX = "@streambox/franchise-entries-v10-";
+export const FRANCHISE_CATALOG_CACHE_KEY = "@streambox/franchise-catalog-v13";
+export const FRANCHISE_ENTRIES_CACHE_PREFIX = "@streambox/franchise-entries-v13-";
 export const FRANCHISE_PROGRESS_CACHE_PREFIX = "@streambox/franchise-progress-v10-";
+const ENTRY_IMAGE_WARM_LIMIT = 12;
+const ENTRY_POSTER_ENRICH_BATCH_SIZE = 6;
 
 export type FranchiseCollection = {
   id: string;
@@ -46,6 +49,8 @@ export type UserFranchiseProgress = {
 let collectionsRequest: Promise<FranchiseCollection[]> | null = null;
 const entriesRequests = new Map<string, Promise<FranchiseEntry[]>>();
 const progressRequests = new Map<string, Promise<UserFranchiseProgress[]>>();
+const prefetchedEntryFranchises = new Set<string>();
+const prefetchedProgressFranchises = new Set<string>();
 
 function normalizeCachedCollections(rawValue: string | null): FranchiseCollection[] {
   if (!rawValue) {
@@ -100,7 +105,10 @@ function normalizeCachedEntries(rawValue: string | null): FranchiseEntry[] {
         year: typeof item.year === "number" ? item.year : null,
         watchOrder: typeof item.watchOrder === "number" ? item.watchOrder : 0,
         phase: typeof item.phase === "string" ? item.phase : null,
-        posterUrl: typeof item.posterUrl === "string" ? item.posterUrl : null,
+        posterUrl:
+          typeof item.posterUrl === "string" && item.posterUrl.includes("image.tmdb.org")
+            ? item.posterUrl
+            : null,
         cachedPosterUrl: null,
         tagline: typeof item.tagline === "string" ? item.tagline : null,
         note: typeof item.note === "string" ? item.note : null,
@@ -137,36 +145,75 @@ function normalizeCachedProgress(rawValue: string | null): UserFranchiseProgress
   }
 }
 
-async function hydrateCollectionsWithCachedImages(collections: FranchiseCollection[]) {
-  return Promise.all(
-    collections.map(async (collection) => ({
-      ...collection,
-      cachedLogoUrl: await getCachedFranchiseImageUri(collection.logoUrl),
-    }))
-  );
+function hydrateCollectionsWithCachedImages(collections: FranchiseCollection[]) {
+  return collections.map((collection) => ({
+    ...collection,
+    cachedLogoUrl: null,
+  }));
 }
 
-async function hydrateEntriesWithCachedImages(entries: FranchiseEntry[]) {
-  return Promise.all(
-    entries.map(async (entry) => ({
-      ...entry,
-      cachedPosterUrl: await getCachedFranchiseImageUri(entry.posterUrl),
-    }))
-  );
+function hydrateEntriesWithCachedImages(entries: FranchiseEntry[]) {
+  return entries.map((entry) => ({
+    ...entry,
+    cachedPosterUrl: null,
+  }));
 }
 
-function warmCollectionImages(collections: FranchiseCollection[]) {
-  void warmFranchiseImageCache(collections.map((collection) => collection.logoUrl)).catch(() => undefined);
-}
+function warmCollectionImages(_collections: FranchiseCollection[]) {}
 
 function warmEntryImages(entries: FranchiseEntry[]) {
-  void warmFranchiseImageCache(entries.map((entry) => entry.posterUrl)).catch(() => undefined);
+  void prefetchRemoteImages(
+    entries
+      .filter((entry) => entry.isReleased)
+      .slice(0, ENTRY_IMAGE_WARM_LIMIT)
+      .map((entry) => entry.posterUrl),
+    ENTRY_IMAGE_WARM_LIMIT,
+    3
+  ).catch(() => undefined);
+}
+
+async function resolveEntryPosterUrl(entry: FranchiseEntry): Promise<string | null> {
+  if (!entry.tmdbId) {
+    return null;
+  }
+
+  try {
+    const summary =
+      entry.mediaType === "tv"
+        ? await getSeriesSummary(entry.tmdbId)
+        : await getMovieSummary(entry.tmdbId);
+
+    return getTmdbImageUrl(summary.posterPath, "w342");
+  } catch {
+    return null;
+  }
+}
+
+async function enrichEntriesWithTmdbPosters(entries: FranchiseEntry[]): Promise<FranchiseEntry[]> {
+  const resolvedEntries: FranchiseEntry[] = [];
+
+  for (let index = 0; index < entries.length; index += ENTRY_POSTER_ENRICH_BATCH_SIZE) {
+    const batch = entries.slice(index, index + ENTRY_POSTER_ENRICH_BATCH_SIZE);
+    const resolvedBatch = await Promise.all(
+      batch.map(async (entry) => {
+        const posterUrl = await resolveEntryPosterUrl(entry);
+        return {
+          ...entry,
+          posterUrl,
+        };
+      })
+    );
+
+    resolvedEntries.push(...resolvedBatch);
+  }
+
+  return resolvedEntries;
 }
 
 async function fetchFranchisesFromSupabase(): Promise<FranchiseCollection[]> {
   const { data, error } = await supabase
     .from("franchise_collections")
-    .select("id, slug, title, description, logo_url, backdrop_url, accent_color, total_entries, sort_order")
+    .select("id, slug, title, description, backdrop_url, accent_color, total_entries, sort_order")
     .eq("is_active", true)
     .order("sort_order", { ascending: true });
 
@@ -179,7 +226,7 @@ async function fetchFranchisesFromSupabase(): Promise<FranchiseCollection[]> {
     slug: row.slug,
     title: row.title,
     description: row.description,
-    logoUrl: row.logo_url,
+    logoUrl: null,
     cachedLogoUrl: null,
     backdropUrl: row.backdrop_url,
     accentColor: row.accent_color,
@@ -201,7 +248,7 @@ function fetchFreshFranchises() {
 async function fetchFranchiseEntriesFromSupabase(franchiseId: string): Promise<FranchiseEntry[]> {
   const { data, error } = await supabase
     .from("franchise_entries")
-    .select("id, franchise_id, tmdb_id, media_type, title, year, watch_order, phase, poster_url, tagline, note, runtime_minutes, episode_count, is_released")
+    .select("id, franchise_id, tmdb_id, media_type, title, year, watch_order, phase, tagline, note, runtime_minutes, episode_count, is_released")
     .eq("franchise_id", franchiseId)
     .order("watch_order", { ascending: true });
 
@@ -209,7 +256,7 @@ async function fetchFranchiseEntriesFromSupabase(franchiseId: string): Promise<F
     throw new Error(`Failed to fetch franchise entries: ${error.message}`);
   }
 
-  return (data || []).map((row) => ({
+  const rows = (data || []).map((row) => ({
     id: row.id,
     franchiseId: row.franchise_id,
     tmdbId: row.tmdb_id,
@@ -218,7 +265,7 @@ async function fetchFranchiseEntriesFromSupabase(franchiseId: string): Promise<F
     year: row.year,
     watchOrder: row.watch_order,
     phase: row.phase,
-    posterUrl: row.poster_url,
+    posterUrl: null,
     cachedPosterUrl: null,
     tagline: row.tagline,
     note: row.note,
@@ -226,6 +273,8 @@ async function fetchFranchiseEntriesFromSupabase(franchiseId: string): Promise<F
     episodeCount: row.episode_count,
     isReleased: row.is_released,
   }));
+
+  return enrichEntriesWithTmdbPosters(rows);
 }
 
 function fetchFreshFranchiseEntries(franchiseId: string) {
@@ -421,14 +470,36 @@ export async function toggleFranchiseEntryWatched(
   await AsyncStorage.setItem(cacheKey, JSON.stringify(freshProgress));
 }
 
-export function prefetchFranchiseEntries(franchiseId: string) {
+export function prefetchFranchiseEntries(franchiseId: string, userId?: string | null) {
   const cacheKey = `${FRANCHISE_ENTRIES_CACHE_PREFIX}${franchiseId}`;
-  void fetchFreshFranchiseEntries(franchiseId)
-    .then(async (entries) => {
-      await AsyncStorage.setItem(cacheKey, JSON.stringify(entries));
-      warmEntryImages(entries);
-    })
-    .catch(() => undefined);
+  if (!prefetchedEntryFranchises.has(franchiseId)) {
+    prefetchedEntryFranchises.add(franchiseId);
+
+    void fetchFreshFranchiseEntries(franchiseId)
+      .then(async (entries) => {
+        await AsyncStorage.setItem(cacheKey, JSON.stringify(entries));
+        warmEntryImages(entries);
+      })
+      .catch(() => {
+        prefetchedEntryFranchises.delete(franchiseId);
+      });
+  }
+
+  if (userId) {
+    const progressPrefetchKey = `${userId}:${franchiseId}`;
+    const progressCacheKey = `${FRANCHISE_PROGRESS_CACHE_PREFIX}${franchiseId}`;
+    if (!prefetchedProgressFranchises.has(progressPrefetchKey)) {
+      prefetchedProgressFranchises.add(progressPrefetchKey);
+
+      void fetchFreshUserProgress(userId, franchiseId)
+        .then(async (progress) => {
+          await AsyncStorage.setItem(progressCacheKey, JSON.stringify(progress));
+        })
+        .catch(() => {
+          prefetchedProgressFranchises.delete(progressPrefetchKey);
+        });
+    }
+  }
 }
 
 export async function clearFranchiseCache(): Promise<void> {
@@ -443,4 +514,7 @@ export async function clearFranchiseCache(): Promise<void> {
   if (franchiseKeys.length > 0) {
     await AsyncStorage.multiRemove(franchiseKeys);
   }
+
+  prefetchedEntryFranchises.clear();
+  prefetchedProgressFranchises.clear();
 }

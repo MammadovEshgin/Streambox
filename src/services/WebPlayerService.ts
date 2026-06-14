@@ -26,7 +26,6 @@ export type WebPlayerRequest = {
   episodeNumber?: number;
   castNames?: string[];
   videoId?: string | null;
-  isAzClassic?: boolean;
 };
 
 export type WebPlayerResult = {
@@ -41,10 +40,23 @@ export type WebPlayerResult = {
   qualityOptions?: Array<{ label: string; height: number; url: string }>;
   /** If set, the stream is low quality (e.g. "CAM", "TS") — UI should warn the user before playback */
   qualityWarning?: string;
+  /**
+   * Set only on HDFilm-derived `direct` results: the original HDFilm page URL.
+   * If the native stream fails (broken segment, geo block, expired token, etc.)
+   * PlayerScreen can drop back to loading this page in a WebView so the user
+   * still has a chance to watch via the provider's on-page JWPlayer.
+   */
+  webViewFallbackUrl?: string;
 };
 
 const UA =
   "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+
+function debugLog(...args: unknown[]) {
+  if (__DEV__) {
+    console.log(...args);
+  }
+}
 
 function getHdfilmBaseUrl(): string {
   return getProviderConfig("hdfilm").baseUrl;
@@ -74,6 +86,9 @@ type SearchResult = {
 type MatchResult = {
   url: string;
   qualityWarning?: string;
+  title?: string;
+  resultYear?: string;
+  score?: number;
 };
 
 const LOW_QUALITY_MARKERS = ["cam", "hdcam", "ts", "telesync", "screener"];
@@ -153,6 +168,70 @@ function splitDualTitle(title: string): string[] {
   return [title, ...parts];
 }
 
+type NormalizedTitle = {
+  text: string;
+  compact: string;
+  tokens: string[];
+};
+
+const TITLE_INITIAL_STOP_WORDS = new Set(["a", "an", "and", "at", "by", "for", "in", "of", "on", "the", "to", "with"]);
+
+function normalizeTitle(value: string): NormalizedTitle {
+  const text = value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokens = text.split(/\s+/).filter(Boolean);
+
+  return {
+    text,
+    compact: tokens.join(""),
+    tokens
+  };
+}
+
+function getSignificantInitials(tokens: string[]): string {
+  return tokens
+    .filter((token) => token.length > 0 && !TITLE_INITIAL_STOP_WORDS.has(token))
+    .map((token) => token[0])
+    .join("");
+}
+
+function isShortOrAcronymTitle(value: string): boolean {
+  const normalized = normalizeTitle(value);
+  if (!normalized.compact) return false;
+  if (normalized.compact.length <= 3) return true;
+  return normalized.tokens.length > 1 && normalized.tokens.every((token) => token.length === 1);
+}
+
+function hasStrictTitleIdentity(candidate: string, target: string): boolean {
+  const candidateTitle = normalizeTitle(candidate);
+  const targetTitle = normalizeTitle(target);
+
+  if (!candidateTitle.compact || !targetTitle.compact) return false;
+  if (candidateTitle.text === targetTitle.text) return true;
+  if (candidateTitle.compact === targetTitle.compact) return true;
+
+  if (!isShortOrAcronymTitle(target)) return false;
+
+  const targetCompact = targetTitle.compact;
+  const candidateInitials = getSignificantInitials(candidateTitle.tokens);
+  const allCandidateInitials = candidateTitle.tokens.map((token) => token[0]).join("");
+
+  return candidateInitials === targetCompact || allCandidateInitials === targetCompact;
+}
+
+function isAlternateTitleSafeForDizipal(title: string, alternateTitle?: string): boolean {
+  if (!alternateTitle) return false;
+  if (!isShortOrAcronymTitle(title)) return true;
+
+  return hasStrictTitleIdentity(alternateTitle, title);
+}
+
 export function scoreMatch(resultText: string, target: string, year?: string | number | null): number {
   if (!resultText || !target) return 0;
   const normalizedResult = resultText.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
@@ -211,6 +290,25 @@ export function scoreMatch(resultText: string, target: string, year?: string | n
   // Boost for year match
   if (yearStr && resultText.includes(yearStr)) {
     score += 20;
+  }
+
+  return score;
+}
+
+function scoreStrictDizipalTitle(variant: string, target: string): number {
+  if (!variant || !target) return 0;
+
+  if (isShortOrAcronymTitle(target)) {
+    return hasStrictTitleIdentity(variant, target) ? 100 : 0;
+  }
+
+  const score = scoreMatch(variant, target);
+  const normalizedTarget = normalizeTitle(target);
+  const normalizedVariant = normalizeTitle(variant);
+  const targetWordCount = normalizedTarget.tokens.length;
+
+  if (targetWordCount <= 2 && score < 90 && normalizedVariant.compact !== normalizedTarget.compact) {
+    return 0;
   }
 
   return score;
@@ -317,7 +415,7 @@ async function queryHdFilm(query: string): Promise<SearchResult[]> {
       }))
       .filter((result) => result.href.length > 0);
   } catch (error: any) {
-    console.log(`[WebPlayer] HdFilm search error for "${query}":`, error?.message);
+    debugLog(`[WebPlayer] HdFilm search error for "${query}":`, error?.message);
     return [];
   }
 }
@@ -391,6 +489,34 @@ function scoreHdFilmResult(result: SearchResult, target: string, targetYear?: st
   return bestScore;
 }
 
+function scoreDizipalResult(result: SearchResult, target: string, targetYear?: string | null): number {
+  const titleVariants = splitDualTitle(result.title);
+
+  let bestScore = 0;
+  for (const variant of titleVariants) {
+    const score = scoreStrictDizipalTitle(variant, target);
+    if (score > bestScore) bestScore = score;
+  }
+
+  if (bestScore === 0 && !isShortOrAcronymTitle(target)) {
+    bestScore = scoreStrictDizipalTitle(result.text, target);
+  }
+
+  if (bestScore === 0) return 0;
+
+  if (targetYear && result.resultYear) {
+    if (result.resultYear === targetYear) {
+      bestScore += 50;
+    } else if (bestScore >= 80) {
+      bestScore -= 55;
+    } else if (bestScore >= 50) {
+      bestScore -= 30;
+    }
+  }
+
+  return Math.max(0, bestScore);
+}
+
 /**
  * Find the single best HDFilm match for the given title + year.
  * Returns the URL of the best match, or null if nothing relevant is found.
@@ -453,7 +579,11 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
   return { url: scored[0].href, qualityWarning: scored[0].qualityWarning };
 }
 
-type VideoCheck = { available: boolean; qualityWarning?: string };
+type VideoCheck = {
+  available: boolean;
+  qualityWarning?: string;
+  nativeFallback?: DizipalStreamInfo | null;
+};
 
 async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
   try {
@@ -474,6 +604,8 @@ async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
     const available = hasRapidrame || hasAlternativeLink || hasPlayerIframe || html.includes('kePlayerTitle');
     if (!available) return { available: false };
 
+    const nativeFallback = hasRapidrame ? await getCachedHdFilmNativeFallback(pageUrl, html) : null;
+
     // Check server/source buttons for low-quality markers (CAM Sürüm, TS, etc.)
     const linkButtons = html.match(/<button[^>]*class=["'][^"']*alternative-link[^"']*["'][^>]*>[\s\S]*?<\/button>/gi) || [];
     if (linkButtons.length > 0) {
@@ -485,11 +617,11 @@ async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
         // Extract the specific marker from the first button for the warning message
         const firstText = (linkButtons[0] ?? "").replace(/<[^>]+>/g, " ").toLowerCase();
         const markerMatch = firstText.match(/\b(cam|hdcam|ts|telesync|screener)\b/);
-        return { available: true, qualityWarning: markerMatch ? markerMatch[1].toUpperCase() : "CAM" };
+        return { available: true, qualityWarning: markerMatch ? markerMatch[1].toUpperCase() : "CAM", nativeFallback };
       }
     }
 
-    return { available: true };
+    return { available: true, nativeFallback };
   } catch {
     return { available: false };
   }
@@ -502,6 +634,49 @@ function matchesSeriesEpisodeUrl(url: string, seasonNumber: number, episodeNumbe
   const episodeRegex = new RegExp(`(bolum[/-]?${episodeNumber}\\b|\\b${episodeNumber}[/-]?bolum|\\be${episodeNumber}\\b|ep[/-]?${episodeNumber}\\b)`, 'i');
 
   return seasonRegex.test(normalized) && episodeRegex.test(normalized);
+}
+
+function buildHdFilmResult(pageUrl: string, qualityWarning?: string, nativeFallback?: DizipalStreamInfo | null): WebPlayerResult {
+  // If the decoder produced a real stream URL, ALWAYS go native.
+  //
+  // Why: the WebView path is structurally fragile across Android skins. It
+  // requires our injected JS to win a race against the provider's pre-roll ad
+  // overlay — heuristic click-through that's been observed to fail on HyperOS
+  // (POCO F7) and similar non-stock Androids, leaving the user with a black
+  // screen and an unclickable "Skip in 10s" prompt. Native expo-video has no
+  // pre-rolls, no overlays, and no per-OS DOM/JS timing quirks, so this is the
+  // only way to get deterministic playback on every device.
+  //
+  // The previous `preferNative` heuristic (disguised-.jpg HLS segments only) is
+  // kept on `DizipalStreamInfo` for telemetry/diagnostics but no longer gates
+  // playback. expo-video plays both proper master playlists AND the disguised
+  // shape correctly.
+  if (nativeFallback?.streamUrl) {
+    return {
+      url: nativeFallback.streamUrl,
+      source: "direct",
+      streamUrl: nativeFallback.streamUrl,
+      streamType: nativeFallback.streamType,
+      poster: nativeFallback.poster,
+      referer: nativeFallback.referer,
+      embedUrl: nativeFallback.referer,
+      subtitles: nativeFallback.subtitles,
+      // Safety net: if the native stream fails at runtime (broken segment,
+      // expired token, regional block), PlayerScreen drops back to loading
+      // this page in a WebView so playback can still be attempted.
+      webViewFallbackUrl: pageUrl,
+      qualityWarning
+    };
+  }
+
+  // Decoder couldn't extract a stream — fall back to the on-page JWPlayer via
+  // WebView. This is the only remaining reason to enter the WebView path; over
+  // time we should reduce how often this happens by improving extraction.
+  return {
+    url: pageUrl,
+    source: "hdfilm",
+    qualityWarning
+  };
 }
 
 async function findSeriesEpisodeUrl(
@@ -541,7 +716,7 @@ async function findSeriesEpisodeUrl(
     }) ?? null;
 
   } catch (e: any) {
-    console.log(`[WebPlayer] Error fetching series page: ${seriesPageUrl}`, e?.message || String(e));
+    debugLog(`[WebPlayer] Error fetching series page: ${seriesPageUrl}`, e?.message || String(e));
     return null;
   }
 }
@@ -550,7 +725,7 @@ async function resolvePlayableSeriesEpisodeUrl(
   seriesPageUrl: string,
   seasonNumber: number,
   episodeNumber: number
-): Promise<{ url: string; qualityWarning?: string } | null> {
+): Promise<{ url: string; qualityWarning?: string; nativeFallback?: DizipalStreamInfo | null } | null> {
   try {
     const episodeUrl = await findSeriesEpisodeUrl(seriesPageUrl, seasonNumber, episodeNumber);
     if (!episodeUrl) return null;
@@ -558,7 +733,7 @@ async function resolvePlayableSeriesEpisodeUrl(
     const check = await checkVideoAvailability(episodeUrl);
     if (!check.available) return null;
 
-    return { url: episodeUrl, qualityWarning: check.qualityWarning };
+    return { url: episodeUrl, qualityWarning: check.qualityWarning, nativeFallback: check.nativeFallback };
   } catch {
     return null;
   }
@@ -600,7 +775,8 @@ async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<S
 }
 
 async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: string | null, originalTitle?: string): Promise<MatchResult | null> {
-  const queries = generateSearchQueries(title, year, originalTitle);
+  const safeOriginalTitle = isAlternateTitleSafeForDizipal(title, originalTitle) ? originalTitle : undefined;
+  const queries = generateSearchQueries(title, year, safeOriginalTitle);
   const allResults = new Map<string, SearchResult>();
 
   for (let qi = 0; qi < queries.length; qi++) {
@@ -613,8 +789,8 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
 
     // Early exit if we already have a strong match
     const bestSoFar = Math.max(0, ...[...allResults.values()].map(r => {
-      const s1 = scoreHdFilmResult(r, title, year);
-      const s2 = originalTitle ? scoreHdFilmResult(r, originalTitle, year) : 0;
+      const s1 = scoreDizipalResult(r, title, year);
+      const s2 = safeOriginalTitle ? scoreDizipalResult(r, safeOriginalTitle, year) : 0;
       return Math.max(s1, s2);
     }));
     if (bestSoFar >= 120) break;
@@ -627,16 +803,24 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
     .map(([href, result]) => ({
       href,
       score: Math.max(
-        scoreHdFilmResult(result, title, year),
-        originalTitle ? scoreHdFilmResult(result, originalTitle, year) : 0
+        scoreDizipalResult(result, title, year),
+        safeOriginalTitle ? scoreDizipalResult(result, safeOriginalTitle, year) : 0
       ),
+      title: result.title,
+      resultYear: result.resultYear,
       qualityWarning: detectQualityWarning(result)
     }))
-    .filter((entry) => entry.score >= 50)
+    .filter((entry) => entry.score >= 80 && isDizipalUrlTitleCompatible(entry.href, title, safeOriginalTitle))
     .sort((a, b) => b.score - a.score);
 
   if (scored.length === 0) return null;
-  return { url: scored[0].href, qualityWarning: scored[0].qualityWarning };
+  return {
+    url: scored[0].href,
+    qualityWarning: scored[0].qualityWarning,
+    title: scored[0].title,
+    resultYear: scored[0].resultYear,
+    score: scored[0].score
+  };
 }
 
 function extractDizipalCfg(html: string): string | null {
@@ -655,6 +839,47 @@ function normalizeDizipalEmbedUrl(embedUrl: string, pageUrl: string, baseUrl: st
     toAbsoluteUrl(baseUrl, trimmed) ??
     toAbsoluteUrl(getDizipalBaseUrl(), trimmed)
   );
+}
+
+function extractDizipalTitleFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url, getDizipalBaseUrl());
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const rawSlug = segments[segments.length - 1] ?? "";
+    const cleanedSlug = decodeURIComponent(rawSlug)
+      .replace(/-\d+-sezon-\d+-bolum$/i, "")
+      .replace(/-\d{4}$/i, "")
+      .replace(/-(?:turkce-dublaj|turkce-altyazili|altyazili|dublaj|izle)$/i, "")
+      .replace(/-/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return cleanedSlug;
+  } catch {
+    return "";
+  }
+}
+
+function isDizipalUrlTitleCompatible(
+  url: string,
+  title: string,
+  originalTitle?: string,
+): boolean {
+  const slugTitle = extractDizipalTitleFromUrl(url);
+  if (!slugTitle) return false;
+
+  if (hasStrictTitleIdentity(slugTitle, title)) return true;
+
+  if (isAlternateTitleSafeForDizipal(title, originalTitle)) {
+    return hasStrictTitleIdentity(slugTitle, originalTitle ?? "");
+  }
+
+  if (isShortOrAcronymTitle(title)) return false;
+
+  const titleScore = scoreStrictDizipalTitle(slugTitle, title);
+  const originalScore = originalTitle ? scoreStrictDizipalTitle(slugTitle, originalTitle) : 0;
+
+  return Math.max(titleScore, originalScore) >= 80;
 }
 
 async function fetchDizipalPageHtml(pageUrl: string): Promise<string | null> {
@@ -686,7 +911,448 @@ type DizipalStreamInfo = {
   poster: string;
   referer: string;
   subtitles: SubtitleTrack[];
+  preferNative?: boolean;
 };
+
+const HDFILM_NATIVE_FALLBACK_CACHE_LIMIT = 80;
+const hdfilmNativeFallbackCache = new Map<string, Promise<DizipalStreamInfo | null>>();
+
+function getStreamTypeFromUrl(url: string): string {
+  return /\.m3u8(?:[?#].*)?$/i.test(url) ? "m3u8" : "mp4";
+}
+
+function isDirectStreamUrl(url: string): boolean {
+  return /\.(?:m3u8|mp4)(?:[?#].*)?$/i.test(url);
+}
+
+function isTrustedHdFilmEmbedUrl(url: string): boolean {
+  return /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape/i.test(url);
+}
+
+function getCachedHdFilmNativeFallback(pageUrl: string, pageHtml: string) {
+  const cacheKey = pageUrl;
+  const cached = hdfilmNativeFallbackCache.get(cacheKey);
+  if (cached) return cached;
+
+  const task = resolveHdFilmNativeFallback(pageUrl, pageHtml);
+  hdfilmNativeFallbackCache.set(cacheKey, task);
+
+  if (hdfilmNativeFallbackCache.size > HDFILM_NATIVE_FALLBACK_CACHE_LIMIT) {
+    const oldestKey = hdfilmNativeFallbackCache.keys().next().value;
+    if (oldestKey) hdfilmNativeFallbackCache.delete(oldestKey);
+  }
+
+  return task;
+}
+
+const BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function decodeBase64Binary(value: string): string {
+  const cleaned = value.replace(/[^A-Za-z0-9+/=]/g, "");
+  let output = "";
+  let buffer = 0;
+  let bits = 0;
+
+  for (const char of cleaned) {
+    if (char === "=") break;
+    const index = BASE64_CHARS.indexOf(char);
+    if (index === -1) continue;
+
+    buffer = (buffer << 6) | index;
+    bits += 6;
+
+    if (bits >= 8) {
+      bits -= 8;
+      output += String.fromCharCode((buffer >> bits) & 0xff);
+    }
+  }
+
+  return output;
+}
+
+function rot13(value: string): string {
+  return value.replace(/[a-zA-Z]/g, (char) => {
+    const code = char.charCodeAt(0);
+    const base = code <= 90 ? 65 : 97;
+    return String.fromCharCode(((code - base + 13) % 26) + base);
+  });
+}
+
+function reverseString(value: string): string {
+  return value.split("").reverse().join("");
+}
+
+/**
+ * Final byte de-scramble shared by every Rapidrame obfuscation scheme:
+ * each char is shifted back by `399756995 % (i + 5)`.
+ */
+function unmixRapidrameBytes(value: string): string {
+  let unmix = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const nextCode = (value.charCodeAt(index) - (399756995 % (index + 5)) + 256) % 256;
+    unmix += String.fromCharCode(nextCode);
+  }
+  return unmix;
+}
+
+/**
+ * Pre-`unmix` transforms for the Rapidrame `s_*` source array, newest first.
+ *
+ * Rapidrame periodically rotates the obfuscation that wraps the stream URL
+ * (the inline `dc_*()` helper on the embed page). We don't control that page,
+ * so instead of hardcoding a single scheme we try each KNOWN scheme and let
+ * the caller keep the first candidate that decodes to a real http(s) URL.
+ *
+ *  - "double-base64" (current): join → reverse → base64 → base64 → unmix
+ *  - "rot13-legacy"  (older):   join → base64 → rot13 → reverse → unmix
+ *
+ * If the provider flips between these, playback keeps working with no release.
+ */
+const RAPIDRAME_PRE_UNMIX_TRANSFORMS: Array<(joined: string) => string> = [
+  (joined) => decodeBase64Binary(rot13(reverseString(joined))), // auto-derived by check-hdfilm-resolver
+  // Current scheme — reverse the joined parts, then base64-decode twice.
+  (joined) => decodeBase64Binary(decodeBase64Binary(reverseString(joined))),
+  // Legacy scheme — base64-decode once, rot13, then reverse.
+  (joined) => reverseString(rot13(decodeBase64Binary(joined)))
+];
+
+/**
+ * Decode the Rapidrame `s_*` parts array into the underlying stream URL.
+ * Returns every scheme's candidate so the caller can pick the valid URL;
+ * an unrecognised/garbage decode simply fails the http(s) check upstream.
+ */
+function decodeRapidrameValueCandidates(valueParts: string[]): string[] {
+  const joined = valueParts.join("");
+  return RAPIDRAME_PRE_UNMIX_TRANSFORMS.map((transform) => {
+    try {
+      return unmixRapidrameBytes(transform(joined));
+    } catch {
+      return "";
+    }
+  });
+}
+
+function extractJsonArrayLiteral(value: string): string | null {
+  const start = value.indexOf("[");
+  if (start === -1) return null;
+
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === "[") {
+      depth += 1;
+    } else if (char === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return value.slice(start, index + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function normalizeExtractedMediaUrl(value: string | null): string | null {
+  const normalized = value
+    ?.replace(/\\\//g, "/")
+    .replace(/&amp;/g, "&")
+    .trim();
+
+  return normalized && /^https?:\/\//i.test(normalized) ? normalized : null;
+}
+
+function isRapidrameNativeSafeStream(streamUrl: string): boolean {
+  return isDirectStreamUrl(streamUrl);
+}
+
+function extractRapidrameStreamUrl(embedHtml: string): string | null {
+  const sourceVariable = embedHtml.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*(s_[A-Za-z0-9_]+)/)?.[1];
+  if (!sourceVariable) {
+    return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
+  }
+
+  const variableIndex = embedHtml.indexOf(`var ${sourceVariable}`);
+  if (variableIndex === -1) {
+    return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
+  }
+
+  const variableSnippet = embedHtml.slice(variableIndex, variableIndex + 2200);
+  const arrayLiteral = extractJsonArrayLiteral(variableSnippet);
+  if (!arrayLiteral) return null;
+
+  try {
+    const parts = JSON.parse(arrayLiteral);
+    if (!Array.isArray(parts) || parts.some((part) => typeof part !== "string")) {
+      return null;
+    }
+
+    // Try every known Rapidrame obfuscation scheme and keep the first candidate
+    // that normalizes to a real http(s) URL (the provider rotates the scheme).
+    for (const candidate of decodeRapidrameValueCandidates(parts)) {
+      const normalized = normalizeExtractedMediaUrl(candidate);
+      if (normalized) return normalized;
+    }
+
+    // No scheme produced a usable URL — fall back to scraping a plain m3u8.
+    return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
+  } catch {
+    return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
+  }
+}
+
+function extractHdFilmEmbedUrl(pageHtml: string, pageUrl: string): string | null {
+  const iframeMatch = pageHtml.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+  if (iframeMatch?.[1] && /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer/i.test(iframeMatch[1])) {
+    return toAbsoluteUrl(pageUrl, iframeMatch[1]);
+  }
+
+  const dataVideoMatch = pageHtml.match(/data-(?:video|link|url)=["']([^"']+)["']/i);
+  if (dataVideoMatch?.[1] && /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer/i.test(dataVideoMatch[1])) {
+    return toAbsoluteUrl(pageUrl, dataVideoMatch[1]);
+  }
+
+  return null;
+}
+
+function extractRapidrameSubtitles(embedHtml: string): SubtitleTrack[] {
+  const subtitles: SubtitleTrack[] = [];
+  const trackBlock = embedHtml.match(/tracks\s*:\s*(\[[\s\S]*?\])\s*,\s*captions\s*:/i)?.[1];
+  if (!trackBlock) return subtitles;
+
+  const regex = /"file"\s*:\s*"([^"]+)"[\s\S]*?"kind"\s*:\s*"captions"[\s\S]*?"label"\s*:\s*"([^"]*)"/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(trackBlock)) !== null) {
+    const url = match[1].replace(/\\\//g, "/");
+    const label = match[2] || "Subtitle";
+    const langMatch = url.match(/[-_/]([a-z]{2,3})(?:[-_.][^/?#]*)?\.vtt/i);
+    subtitles.push({ url, label, lang: langMatch?.[1] ?? label.toLowerCase().slice(0, 3) });
+  }
+
+  return subtitles;
+}
+
+type RapidramePlaylistInspection = {
+  preferNative: boolean;
+  childPlaylistUrls: string[];
+};
+
+const HDFILM_NATIVE_PLAYLIST_PROBE_LIMIT = 3;
+
+function getPlaylistMediaLines(playlist: string): string[] {
+  return playlist
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+}
+
+function resolvePlaylistUrl(baseUrl: string, value: string): string | null {
+  const cleaned = value.trim().replace(/^["']|["']$/g, "");
+  if (!cleaned) return null;
+  return toAbsoluteUrl(baseUrl, cleaned);
+}
+
+function inspectRapidramePlaylist(playlist: string, playlistUrl: string): RapidramePlaylistInspection {
+  if (!playlist || !playlist.includes("#EXTM3U")) {
+    return { preferNative: false, childPlaylistUrls: [] };
+  }
+
+  const lines = playlist.split(/\r?\n/).map((line) => line.trim());
+  const mediaLines = getPlaylistMediaLines(playlist);
+  const hasVariantPlaylist = /#EXT-X-STREAM-INF/i.test(playlist);
+  const hasMediaSegments = /#EXTINF/i.test(playlist);
+  const usesDisguisedImageSegments = mediaLines.some((line) =>
+    /\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$/i.test(line)
+  );
+
+  const childPlaylistUrls: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/#EXT-X-STREAM-INF/i.test(lines[index])) continue;
+    const nextLine = lines.slice(index + 1).find((line) => line && !line.startsWith("#"));
+    if (!nextLine) continue;
+    const childUrl = resolvePlaylistUrl(playlistUrl, nextLine);
+    if (childUrl && !childPlaylistUrls.includes(childUrl)) {
+      childPlaylistUrls.push(childUrl);
+    }
+  }
+
+  for (const mediaLine of mediaLines) {
+    if (!/\.m3u8(?:[?#].*)?$/i.test(mediaLine)) continue;
+    const childUrl = resolvePlaylistUrl(playlistUrl, mediaLine);
+    if (childUrl && childUrl !== playlistUrl && !childPlaylistUrls.includes(childUrl)) {
+      childPlaylistUrls.push(childUrl);
+    }
+  }
+
+  // Rapidrame sometimes serves real transport-stream bytes through .jpg segment URLs.
+  // Android WebView/JWPlayer can play audio for those uploads while the video surface
+  // stays black, but expo-video handles the same HLS stream reliably.
+  const preferNative = hasMediaSegments && !hasVariantPlaylist && usesDisguisedImageSegments;
+
+  return { preferNative, childPlaylistUrls };
+}
+
+async function fetchHlsPlaylist(url: string, referer: string): Promise<string | null> {
+  try {
+    const response = await axios.get<string>(url, {
+      timeout: 8000,
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/vnd.apple.mpegurl,application/x-mpegURL,text/plain,*/*",
+        Referer: referer
+      },
+      transformResponse: [(data) => (typeof data === "string" ? data : String(data ?? ""))]
+    });
+
+    return response.data;
+  } catch {
+    return null;
+  }
+}
+
+async function shouldPreferNativeForRapidrameStream(streamUrl: string, referer: string): Promise<boolean> {
+  const playlist = await fetchHlsPlaylist(streamUrl, referer);
+  if (!playlist) return false;
+
+  const rootInspection = inspectRapidramePlaylist(playlist, streamUrl);
+  if (rootInspection.preferNative) return true;
+
+  const childUrls = rootInspection.childPlaylistUrls.slice(0, HDFILM_NATIVE_PLAYLIST_PROBE_LIMIT);
+  if (childUrls.length === 0) return false;
+
+  const childPlaylists = await Promise.all(
+    childUrls.map((childUrl) => fetchHlsPlaylist(childUrl, referer).then((childPlaylist) => ({
+      childUrl,
+      childPlaylist
+    })))
+  );
+
+  for (const { childUrl, childPlaylist } of childPlaylists) {
+    if (!childPlaylist) continue;
+    if (inspectRapidramePlaylist(childPlaylist, childUrl).preferNative) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function resolveHdFilmNativeFallback(pageUrl: string, pageHtml: string): Promise<DizipalStreamInfo | null> {
+  const embedUrl = extractHdFilmEmbedUrl(pageHtml, pageUrl);
+  if (!embedUrl) return null;
+
+  try {
+    const response = await axios.get<string>(embedUrl, {
+      timeout: 8000,
+      headers: {
+        "User-Agent": UA,
+        Accept: "text/html",
+        Referer: pageUrl
+      }
+    });
+
+    const streamUrl = extractRapidrameStreamUrl(response.data);
+    if (!streamUrl) return null;
+    const preferNative = isRapidrameNativeSafeStream(streamUrl)
+      ? true
+      : await shouldPreferNativeForRapidrameStream(streamUrl, embedUrl);
+
+    return {
+      streamUrl,
+      streamType: "m3u8",
+      poster: "",
+      referer: embedUrl,
+      subtitles: extractRapidrameSubtitles(response.data),
+      preferNative
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveHdFilmRuntimeStream(discoveredUrl: string, pageUrl: string): Promise<WebPlayerResult | null> {
+  const absoluteUrl = toAbsoluteUrl(pageUrl, discoveredUrl);
+  if (!absoluteUrl) return null;
+
+  if (isDirectStreamUrl(absoluteUrl)) {
+    return {
+      url: absoluteUrl,
+      source: "direct",
+      streamUrl: absoluteUrl,
+      streamType: getStreamTypeFromUrl(absoluteUrl),
+      referer: pageUrl,
+      embedUrl: pageUrl,
+      subtitles: []
+    };
+  }
+
+  if (!isTrustedHdFilmEmbedUrl(absoluteUrl)) return null;
+
+  try {
+    const response = await axios.get<string>(absoluteUrl, {
+      timeout: 8000,
+      headers: {
+        "User-Agent": UA,
+        Accept: "text/html",
+        Referer: pageUrl
+      }
+    });
+
+    const streamUrl = extractRapidrameStreamUrl(response.data);
+    if (streamUrl) {
+      return {
+        url: streamUrl,
+        source: "direct",
+        streamUrl,
+        streamType: getStreamTypeFromUrl(streamUrl),
+        poster: "",
+        referer: absoluteUrl,
+        embedUrl: absoluteUrl,
+        subtitles: [
+          ...extractRapidrameSubtitles(response.data),
+          ...extractSubtitlesFromEmbedHtml(response.data)
+        ]
+      };
+    }
+
+    const embedStream = await resolveEmbedToM3u8(absoluteUrl, pageUrl);
+    if (!embedStream) return null;
+
+    return {
+      url: embedStream.streamUrl,
+      source: "direct",
+      streamUrl: embedStream.streamUrl,
+      streamType: embedStream.streamType,
+      poster: embedStream.poster,
+      referer: embedStream.referer || absoluteUrl,
+      embedUrl: absoluteUrl,
+      subtitles: embedStream.subtitles
+    };
+  } catch {
+    return null;
+  }
+}
 
 function extractM3u8FromEmbedHtml(html: string): string | null {
   const sourcesMatch = html.match(/sources\s*:\s*\[\s*\{[^}]*file\s*:\s*"([^"]+\.m3u8[^"]*)"/i);
@@ -970,32 +1636,6 @@ async function findDizipalEpisodeUrl(
   return episodeUrls.find((href) => matchesDizipalEpisodeUrl(href, seasonNumber, episodeNumber)) ?? null;
 }
 
-async function findAzClassicYoutubeVideoId(title: string, year?: string | null): Promise<string | null> {
-  try {
-    const query = encodeURIComponent(`${title} ${year || ""}`);
-    const searchUrl = `https://www.youtube.com/@AzerbaijanfilmStudio/search?query=${query}`;
-    
-    const response = await axios.get(searchUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "az,en;q=0.9"
-      },
-      timeout: 8000
-    });
-
-    const html = response.data;
-    const videoIdMatch = html.match(/"videoId":"([^"]+)"/);
-    if (videoIdMatch) return videoIdMatch[1];
-
-    const watchMatch = html.match(/\/watch\?v=([a-zA-Z0-9_-]{11})/);
-    if (watchMatch) return watchMatch[1];
-
-    return null;
-  } catch (e) {
-    return null;
-  }
-}
-
 type DizipalResolveResult = {
   pageUrl: string;
   stream: DizipalStreamInfo | null;
@@ -1020,6 +1660,11 @@ async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<Diz
     targetUrl = episodeUrl;
   } else if (request.mediaType === "tv") return null;
 
+  if (!isDizipalUrlTitleCompatible(targetUrl, request.title, request.originalTitle)) {
+    debugLog("[WebPlayer] Dizipal rejected mismatched page:", targetUrl, "for", request.title);
+    return null;
+  }
+
   const result = await fetchDizipalStreamUrl(targetUrl);
   if (result) return { pageUrl: targetUrl, stream: result.stream, embedUrl: result.embedUrl, qualityWarning };
 
@@ -1037,16 +1682,6 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
     };
   }
 
-  if (request.isAzClassic) {
-    const youtubeId = await findAzClassicYoutubeVideoId(request.title, request.year);
-    if (youtubeId) {
-      return {
-        url: youtubeId,
-        source: "youtube_embed"
-      };
-    }
-  }
-
   // 1. HDFilm — find the single best match, check if video is available
   const isSeries = request.mediaType !== "movie";
   const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year, request.originalTitle);
@@ -1059,13 +1694,21 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           request.seasonNumber,
           request.episodeNumber
         );
-        if (episodeResult) return { url: episodeResult.url, source: "hdfilm", qualityWarning: episodeResult.qualityWarning };
+        if (episodeResult) {
+          return buildHdFilmResult(
+            episodeResult.url,
+            episodeResult.qualityWarning,
+            episodeResult.nativeFallback
+          );
+        }
       } else {
         return { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: hdfilmMatch.qualityWarning };
       }
     } else {
       const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
-      if (videoCheck.available) return { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: videoCheck.qualityWarning };
+      if (videoCheck.available) {
+        return buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+      }
     }
   }
 
@@ -1112,11 +1755,19 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
               const episodeResult = await resolvePlayableSeriesEpisodeUrl(
                 hdRetry.url, request.seasonNumber, request.episodeNumber
               );
-              if (episodeResult) return { url: episodeResult.url, source: "hdfilm", qualityWarning: episodeResult.qualityWarning };
+              if (episodeResult) {
+                return buildHdFilmResult(
+                  episodeResult.url,
+                  episodeResult.qualityWarning,
+                  episodeResult.nativeFallback
+                );
+              }
             }
           } else {
             const videoCheck = await checkVideoAvailability(hdRetry.url);
-            if (videoCheck.available) return { url: hdRetry.url, source: "hdfilm", qualityWarning: videoCheck.qualityWarning };
+            if (videoCheck.available) {
+              return buildHdFilmResult(hdRetry.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+            }
           }
         }
 
@@ -1173,8 +1824,20 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
       };
     }
   } catch (error) {
-    console.error("[WebPlayerService] Direct resolution failed:", error);
+    debugLog("[WebPlayerService] Direct resolution skipped:", error);
   }
 
   return { url: "", source: "not_found" };
 }
+
+export const __internal = {
+  buildHdFilmResult,
+  decodeRapidrameValueCandidates,
+  extractRapidrameStreamUrl,
+  hasStrictTitleIdentity,
+  inspectRapidramePlaylist,
+  isAlternateTitleSafeForDizipal,
+  isDizipalUrlTitleCompatible,
+  scoreDizipalResult,
+  scoreStrictDizipalTitle
+};

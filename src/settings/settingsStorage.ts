@@ -1,7 +1,12 @@
-﻿import type { ThemeId } from "../theme/Theme";
+import { DEFAULT_LANGUAGE, normalizeAppLanguage, type AppLanguage } from "../localization/types";
+import { resolveThemeId, type ThemeId } from "../theme/Theme";
+
+export type PersonaPresentation = "male" | "female";
 
 export type PersistedSettings = {
   themeId: ThemeId;
+  language: AppLanguage;
+  personaPresentation: PersonaPresentation;
   profileName: string;
   profileBio: string;
   profileLocation: string;
@@ -17,10 +22,17 @@ export type PersistedSettings = {
 
 export const APP_SETTINGS_STORAGE_KEY = "@streambox/app-settings-v1";
 export const DEFAULT_PROFILE_NAME = "My Profile";
+export const DEFAULT_PERSONA_PRESENTATION: PersonaPresentation = "male";
+
+export function normalizePersonaPresentation(value: unknown): PersonaPresentation {
+  return value === "female" ? "female" : "male";
+}
 
 export function createDefaultSettings(defaultThemeId: ThemeId): PersistedSettings {
   return {
     themeId: defaultThemeId,
+    language: DEFAULT_LANGUAGE,
+    personaPresentation: DEFAULT_PERSONA_PRESENTATION,
     profileName: DEFAULT_PROFILE_NAME,
     profileBio: "",
     profileLocation: "",
@@ -40,7 +52,9 @@ export function normalizeSettings(
   defaultThemeId: ThemeId
 ): PersistedSettings {
   return {
-    themeId: parsed?.themeId ?? defaultThemeId,
+    themeId: resolveThemeId(parsed?.themeId, defaultThemeId),
+    language: normalizeAppLanguage(parsed?.language),
+    personaPresentation: normalizePersonaPresentation(parsed?.personaPresentation),
     profileName: parsed?.profileName?.trim() || DEFAULT_PROFILE_NAME,
     profileBio: parsed?.profileBio ?? "",
     profileLocation: parsed?.profileLocation ?? "",

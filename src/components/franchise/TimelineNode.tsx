@@ -1,10 +1,16 @@
 import { memo, useCallback, useEffect, useState } from "react";
 import { Dimensions } from "react-native";
+import { useTranslation } from "react-i18next";
 import styled, { useTheme } from "styled-components/native";
 import { Feather } from "@expo/vector-icons";
 
 import type { FranchiseEntry } from "../../api/franchises";
-import { resolveFranchiseImageUriBlocking } from "../../services/franchisePosterCache";
+import { CachedRemoteImage } from "../common/CachedRemoteImage";
+import {
+  getCachedLocalizedFranchiseCopy,
+  getLocalizedFranchiseCopy,
+} from "../../services/franchiseLocalization";
+import { useAppSettings } from "../../settings/AppSettingsContext";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
@@ -33,12 +39,12 @@ const NodeRow = styled.View<{ $isLeft: boolean }>`
 const PosterPressable = styled.Pressable`
   width: ${POSTER_WIDTH}px;
   height: ${POSTER_HEIGHT}px;
-  border-radius: 11px;
+  border-radius: 5px;
   overflow: hidden;
   background-color: ${({ theme }) => theme.colors.surface};
 `;
 
-const PosterImage = styled.Image`
+const PosterImage = styled(CachedRemoteImage)`
   width: 100%;
   height: 100%;
 `;
@@ -83,7 +89,7 @@ const UpcomingPill = styled.View`
   top: 6px;
   right: 6px;
   padding: 2px 6px;
-  border-radius: 5px;
+  border-radius: 3px;
   background-color: rgba(255, 255, 255, 0.15);
 `;
 
@@ -103,9 +109,9 @@ const InfoPanel = styled.View<{ $isLeft: boolean }>`
 `;
 
 const OrderBadge = styled.View<{ $color: string; $isLeft: boolean }>`
-  align-self: ${({ $isLeft }) => ($isLeft ? "flex-start" : "flex-end")};
+  align-self: flex-start;
   padding: 2px 8px;
-  border-radius: 6px;
+  border-radius: 3px;
   background-color: ${({ $color }) => `${$color}18`};
   margin-bottom: 6px;
 `;
@@ -124,14 +130,14 @@ const EntryTitle = styled.Text<{ $isLeft: boolean }>`
   font-size: 14px;
   line-height: 18px;
   letter-spacing: -0.15px;
-  text-align: ${({ $isLeft }) => ($isLeft ? "left" : "right")};
+  text-align: left;
 `;
 
 const MetaRow = styled.View<{ $isLeft: boolean }>`
   flex-direction: row;
   align-items: center;
   margin-top: 8px;
-  justify-content: ${({ $isLeft }) => ($isLeft ? "flex-start" : "flex-end")};
+  justify-content: flex-start;
 `;
 
 const MetaDot = styled.View`
@@ -157,7 +163,7 @@ const DescriptionText = styled.Text<{ $isLeft: boolean }>`
   line-height: 15px;
   letter-spacing: 0.05px;
   margin-top: 4px;
-  text-align: ${({ $isLeft }) => ($isLeft ? "left" : "right")};
+  text-align: left;
   font-style: italic;
   opacity: 0.7;
 `;
@@ -180,61 +186,52 @@ function TimelineNodeComponent({
   onLongPress,
 }: TimelineNodeProps) {
   const theme = useTheme();
+  const { t } = useTranslation();
+  const { language } = useAppSettings();
   const handlePress = useCallback(() => onPress(entry), [entry, onPress]);
   const handleLongPress = useCallback(() => onLongPress(entry), [entry, onLongPress]);
-  const [posterUri, setPosterUri] = useState<string | null>(entry.cachedPosterUrl ?? entry.posterUrl ?? null);
+  const [localizedCopy, setLocalizedCopy] = useState(() => getCachedLocalizedFranchiseCopy(entry, language));
 
   const yearText = entry.year ? String(entry.year) : null;
   let durationText: string | null = null;
   if (entry.mediaType === "tv") {
-    durationText = entry.episodeCount ? `${entry.episodeCount} eps` : "Series";
+    durationText = entry.episodeCount ? t("detail.episodesCount", { count: entry.episodeCount }) : t("common.series");
   } else if (entry.runtimeMinutes) {
     const h = Math.floor(entry.runtimeMinutes / 60);
     const m = entry.runtimeMinutes % 60;
     durationText = h > 0 ? `${h}h ${m}m` : `${m}m`;
   }
 
-  const descriptionText = entry.tagline || entry.note || null;
+  const displayTitle = localizedCopy?.title ?? entry.title;
+  const descriptionText = localizedCopy?.tagline ?? entry.tagline ?? entry.note ?? null;
 
   useEffect(() => {
     let active = true;
-    const nextUri = entry.cachedPosterUrl ?? entry.posterUrl ?? null;
-    setPosterUri(nextUri);
 
-    if (!entry.posterUrl || entry.cachedPosterUrl) {
+    if (language !== "tr" || !entry.tmdbId) {
+      setLocalizedCopy(null);
       return () => {
         active = false;
       };
     }
 
-    void resolveFranchiseImageUriBlocking(entry.posterUrl)
-      .then((resolvedUri) => {
-        if (!active || !resolvedUri || resolvedUri === nextUri) {
+    const cachedCopy = getCachedLocalizedFranchiseCopy(entry, language);
+    setLocalizedCopy(cachedCopy);
+
+    void getLocalizedFranchiseCopy(entry, language)
+      .then((copy) => {
+        if (!active) {
           return;
         }
-        setPosterUri(resolvedUri);
+
+        setLocalizedCopy(copy);
       })
       .catch(() => undefined);
 
     return () => {
       active = false;
     };
-  }, [entry.cachedPosterUrl, entry.posterUrl]);
-
-  const handlePosterError = useCallback(() => {
-    if (!entry.posterUrl) {
-      return;
-    }
-
-    void resolveFranchiseImageUriBlocking(entry.posterUrl)
-      .then((resolvedUri) => {
-        if (!resolvedUri) {
-          return;
-        }
-        setPosterUri(resolvedUri);
-      })
-      .catch(() => undefined);
-  }, [entry.posterUrl]);
+  }, [entry, language]);
 
   return (
     <NodeRow $isLeft={isLeft}>
@@ -249,21 +246,21 @@ function TimelineNodeComponent({
           },
         ]}
       >
-        {posterUri ? (
+        {entry.posterUrl ? (
           <PosterImage
-            source={{ uri: posterUri }}
-            resizeMode="cover"
-            onError={handlePosterError}
+            uri={entry.cachedPosterUrl ?? entry.posterUrl}
+            contentFit="cover"
+            recyclingKey={entry.id}
           />
         ) : (
           <NoPoster>
-            <NoPosterText>TBA</NoPosterText>
+            <NoPosterText>{t("common.noPoster")}</NoPosterText>
           </NoPoster>
         )}
 
         {!entry.isReleased && (
           <UpcomingPill>
-            <UpcomingText>Soon</UpcomingText>
+            <UpcomingText>{t("common.soon")}</UpcomingText>
           </UpcomingPill>
         )}
 
@@ -280,12 +277,12 @@ function TimelineNodeComponent({
       <InfoPanel $isLeft={isLeft}>
         <OrderBadge $color={theme.colors.primary} $isLeft={isLeft}>
           <OrderBadgeText $color={theme.colors.primary}>
-            #{entry.watchOrder} {entry.mediaType === "tv" ? "Series" : "Film"}
+            #{entry.watchOrder} {entry.mediaType === "tv" ? t("common.series") : t("common.movie")}
           </OrderBadgeText>
         </OrderBadge>
 
         <EntryTitle $isLeft={isLeft} numberOfLines={2}>
-          {entry.title}
+          {displayTitle}
         </EntryTitle>
 
         {descriptionText && (

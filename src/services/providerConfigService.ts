@@ -13,6 +13,7 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
+import { trackNetworkFailure } from "./telemetryService";
 
 // ─── Types ──────────────────────────────────────────────────────────
 export type ProviderEntry = {
@@ -38,6 +39,12 @@ const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "";
 const FUNCTION_URL = SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/provider-configs` : "";
 const FETCH_TIMEOUT_MS = 6_000;
 
+function debugLog(...args: unknown[]) {
+  if (__DEV__) {
+    console.log(...args);
+  }
+}
+
 /**
  * Hard-coded fallbacks — these are the URLs at the time of writing.
  * They are ONLY used if both the remote fetch AND the local cache miss.
@@ -48,8 +55,14 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     referer: "https://www.hdfilmcehennemi.nl/",
   },
   dizipal: {
-    baseUrl: "https://dizipal2031.com",
-    referer: "https://dizipal2031.com/",
+    baseUrl: "https://dizipal2070.com",
+    referer: "https://dizipal2070.com/",
+  },
+};
+
+const STALE_PROVIDER_BASE_URLS: Partial<Record<keyof ProviderConfigMap, Record<string, ProviderEntry>>> = {
+  dizipal: {
+    "https://dizipal2031.com": HARDCODED_FALLBACK.dizipal,
   },
 };
 
@@ -70,7 +83,7 @@ export async function initialiseProviderConfigs(): Promise<void> {
     _configs = remote;
     _initialised = true;
     await persistToStorage(remote);
-    console.log("[ProviderConfig] Loaded from remote", summarise(remote));
+    debugLog("[ProviderConfig] Loaded from remote", summarise(remote));
     return;
   }
 
@@ -79,13 +92,13 @@ export async function initialiseProviderConfigs(): Promise<void> {
   if (cached) {
     _configs = cached;
     _initialised = true;
-    console.log("[ProviderConfig] Loaded from local cache", summarise(cached));
+    debugLog("[ProviderConfig] Loaded from local cache", summarise(cached));
     return;
   }
 
   // 3. Hardcoded fallback (already set)
   _initialised = true;
-  console.log("[ProviderConfig] Using hardcoded fallback", summarise(_configs));
+  debugLog("[ProviderConfig] Using hardcoded fallback", summarise(_configs));
 }
 
 /** Synchronous getter — safe to call anywhere after init. */
@@ -112,7 +125,7 @@ export async function refreshProviderConfigs(): Promise<boolean> {
   if (remote) {
     _configs = remote;
     await persistToStorage(remote);
-    console.log("[ProviderConfig] Refreshed from remote", summarise(remote));
+    debugLog("[ProviderConfig] Refreshed from remote", summarise(remote));
     return true;
   }
   return false;
@@ -137,6 +150,9 @@ async function fetchRemoteConfigs(): Promise<ProviderConfigMap | null> {
     return mergeWithFallback(data.providers);
   } catch (e) {
     console.warn("[ProviderConfig] Remote fetch failed:", e);
+    trackNetworkFailure("provider-configs", {
+      message: e instanceof Error ? e.message : String(e),
+    });
     return null;
   }
 }
@@ -152,9 +168,12 @@ function mergeWithFallback(
 
   for (const key of Object.keys(result) as Array<keyof ProviderConfigMap>) {
     if (remote[key]?.baseUrl) {
+      const baseUrl = remote[key].baseUrl.replace(/\/+$/, "");
+      const replacement = STALE_PROVIDER_BASE_URLS[key]?.[baseUrl];
+
       result[key] = {
-        baseUrl: remote[key].baseUrl.replace(/\/+$/, ""),
-        referer: remote[key].referer || `${remote[key].baseUrl.replace(/\/+$/, "")}/`,
+        baseUrl: replacement?.baseUrl ?? baseUrl,
+        referer: replacement?.referer ?? (remote[key].referer || `${baseUrl}/`),
       };
     }
   }
@@ -175,7 +194,7 @@ async function loadFromStorage(): Promise<ProviderConfigMap | null> {
 
     const parsed = JSON.parse(raw);
     if (parsed?.hdfilm?.baseUrl && parsed?.dizipal?.baseUrl) {
-      return parsed as ProviderConfigMap;
+      return mergeWithFallback(parsed);
     }
     return null;
   } catch {

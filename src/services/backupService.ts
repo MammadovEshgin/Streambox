@@ -2,6 +2,7 @@
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 
+import { DEFAULT_LANGUAGE, normalizeAppLanguage } from "../localization/types";
 import {
   createProfileImageBackup,
   restoreProfileImageFromBackup,
@@ -20,6 +21,7 @@ const RECENTLY_WATCHED_STORAGE_KEY = "streambox/recently-watched";
 const WATCHED_EPISODES_STORAGE_KEY = "@watched_episodes";
 const MOVIE_OF_DAY_CURRENT_STORAGE_KEY = "streambox/movie-of-day/current";
 const MOVIE_OF_DAY_HISTORY_STORAGE_KEY = "streambox/movie-of-day/history";
+const SERIES_OF_DAY_CURRENT_STORAGE_KEY = "streambox/series-of-day/current";
 
 const STREAMBOX_BACKUP_STORAGE_KEYS = [
   FIRST_OPEN_STORAGE_KEY,
@@ -33,6 +35,7 @@ const STREAMBOX_BACKUP_STORAGE_KEYS = [
   WATCHED_EPISODES_STORAGE_KEY,
   MOVIE_OF_DAY_CURRENT_STORAGE_KEY,
   MOVIE_OF_DAY_HISTORY_STORAGE_KEY,
+  SERIES_OF_DAY_CURRENT_STORAGE_KEY,
 ] as const;
 
 type StreamBoxStorageKey = (typeof STREAMBOX_BACKUP_STORAGE_KEYS)[number];
@@ -58,6 +61,8 @@ function parsePersistedSettings(raw: string | undefined): PersistedSettings | nu
     const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
     return {
       themeId: parsed.themeId ?? DEFAULT_THEME_ID,
+      language: normalizeAppLanguage(parsed.language ?? DEFAULT_LANGUAGE),
+      personaPresentation: parsed.personaPresentation === "female" ? "female" : "male",
       profileName: typeof parsed.profileName === "string" ? parsed.profileName : DEFAULT_PROFILE_NAME,
       profileBio: typeof parsed.profileBio === "string" ? parsed.profileBio : "",
       profileLocation: typeof parsed.profileLocation === "string" ? parsed.profileLocation : "",

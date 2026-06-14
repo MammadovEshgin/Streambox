@@ -1,5 +1,6 @@
 import { Fragment, useEffect } from "react";
 import { Pressable, View } from "react-native";
+import { useTranslation } from "react-i18next";
 import Animated, {
   useAnimatedProps,
   useSharedValue,
@@ -70,6 +71,7 @@ function AnimatedBar({
 
 export function RatingDistribution({ history, onBucketPress }: Props) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const counts = [0, 0, 0, 0, 0];
   for (const entry of history) {
     counts[getBucketIndex(entry.voteAverage)]++;
@@ -84,7 +86,7 @@ export function RatingDistribution({ history, onBucketPress }: Props) {
   const maxBarHeight = chartHeight - 22;
 
   return (
-    <StatsSection title="Rating Distribution" subtitle="How your ratings spread across the scale.">
+    <StatsSection title={t("stats.ratingDistributionTitle")} subtitle={t("stats.ratingDistributionSubtitle")}>
       <ChartFrame>
         <View style={{ width: "100%", position: "relative" }}>
           <Svg width="100%" height={chartHeight + 26} viewBox={`0 0 ${chartWidth} ${chartHeight + 26}`}>

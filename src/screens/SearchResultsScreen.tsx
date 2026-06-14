@@ -2,6 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ActivityIndicator, Image, Pressable, View } from "react-native";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
@@ -15,8 +16,10 @@ import {
   getTmdbImageUrl,
   searchMulti
 } from "../api/tmdb";
+import { formatRating } from "../api/mediaFormatting";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { HomeStackParamList } from "../navigation/types";
+import { useAppSettings } from "../settings/AppSettingsContext";
 
 /* ------------------------------------------------------------------ */
 /*  Styled Components                                                 */
@@ -237,6 +240,8 @@ type SearchResultsScreenProps = NativeStackScreenProps<HomeStackParamList, "Sear
 export function SearchResultsScreen({ navigation, route }: SearchResultsScreenProps) {
   const { query, filters } = route.params;
   const currentTheme = useTheme();
+  const { t } = useTranslation();
+  const { language } = useAppSettings();
 
   const [results, setResults] = useState<MediaItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -285,7 +290,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
         setIsLoading(false);
       }
     })();
-  }, [fetchResults]);
+  }, [fetchResults, language]);
 
   const loadMore = useCallback(async () => {
     if (isLoadingMore || currentPage >= totalPages) return;
@@ -329,16 +334,16 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
             )}
             <CardContent>
               <CardTitle numberOfLines={2}>{item.title}</CardTitle>
-              <CardYear>{item.year !== "----" ? item.year : "Unknown year"}</CardYear>
+              <CardYear>{item.year !== "----" ? item.year : t("common.unknownYear")}</CardYear>
               <CardMeta>
-                {item.rating > 0 && (
+                {typeof item.rating === "number" && item.rating > 0 && (
                   <RatingBadge>
                     <Feather name="star" size={12} color={currentTheme.colors.primary} />
-                    <RatingText>{item.rating.toFixed(1)}</RatingText>
+                    <RatingText>{formatRating(item.rating)}</RatingText>
                   </RatingBadge>
                 )}
                 <TypeBadge>
-                  <TypeText>{item.mediaType === "movie" ? "Movie" : "Series"}</TypeText>
+                  <TypeText>{item.mediaType === "movie" ? t("common.movie") : t("common.series")}</TypeText>
                 </TypeBadge>
               </CardMeta>
               {item.overview ? (
@@ -354,7 +359,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
 
   const displayTitle = query
     ? `"${query}"`
-    : "Filtered Results";
+    : t("search.filteredResults");
 
   if (isLoading) {
     return (
@@ -363,7 +368,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
           <BackButton onPress={() => navigation.goBack()}>
             <Feather name="arrow-left" size={20} color={currentTheme.colors.textPrimary} />
           </BackButton>
-          <HeaderTitle>Searching...</HeaderTitle>
+          <HeaderTitle>{t("common.searching")}</HeaderTitle>
         </Header>
         <LoadingContainer>
           <ActivityIndicator color={currentTheme.colors.primary} size="large" />
@@ -380,7 +385,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
         </BackButton>
         <HeaderTitle numberOfLines={1}>{displayTitle}</HeaderTitle>
         <ResultCount>
-          {results.length > 0 ? `${results.length} result${results.length === 1 ? "" : "s"}` : ""}
+          {results.length > 0 ? t("search.resultsCount", { count: results.length }) : ""}
         </ResultCount>
       </Header>
 
@@ -389,23 +394,23 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
           <EmptyIconCircle>
             <Feather name="film" size={32} color={currentTheme.colors.textSecondary} />
           </EmptyIconCircle>
-          <EmptyTitle>No Results Found</EmptyTitle>
+          <EmptyTitle>{t("search.noResultsFound")}</EmptyTitle>
           <EmptySubtitle>
-            We couldn't find anything matching{"\n"}
-            {query ? `"${query}"` : "your filters"}
+            {t("search.couldNotFindMatch")}{"\n"}
+            {query ? `"${query}"` : t("search.yourFilters")}
           </EmptySubtitle>
           <SuggestionWrap>
             <SuggestionRow>
               <Feather name="check-circle" size={16} color={currentTheme.colors.primary} />
-              <SuggestionText>Check spelling or try different keywords</SuggestionText>
+              <SuggestionText>{t("search.suggestionCheckSpelling")}</SuggestionText>
             </SuggestionRow>
             <SuggestionRow>
               <Feather name="check-circle" size={16} color={currentTheme.colors.primary} />
-              <SuggestionText>Use shorter or more general terms</SuggestionText>
+              <SuggestionText>{t("search.suggestionUseShorterTerms")}</SuggestionText>
             </SuggestionRow>
             <SuggestionRow>
               <Feather name="check-circle" size={16} color={currentTheme.colors.primary} />
-              <SuggestionText>Try adjusting the filters</SuggestionText>
+              <SuggestionText>{t("search.suggestionAdjustFilters")}</SuggestionText>
             </SuggestionRow>
           </SuggestionWrap>
         </EmptyContainer>
@@ -413,9 +418,9 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
         <ListContainer>
           {query && (
             <FoundHeader entering={FadeIn.duration(300)}>
-              <FoundTitle>Results for "{query}"</FoundTitle>
+              <FoundTitle>{t("search.resultsFor", { query })}</FoundTitle>
               <FoundSubtitle>
-                Found {results.length}+ titles matching your search
+                {t("search.foundMatchingTitles", { count: results.length })}
               </FoundSubtitle>
             </FoundHeader>
           )}

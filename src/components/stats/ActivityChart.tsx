@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Animated, {
   useAnimatedProps,
   useSharedValue,
@@ -11,8 +12,6 @@ import styled, { useTheme } from "styled-components/native";
 import type { WatchHistoryEntry } from "../../hooks/useWatchHistory";
 import { withAlpha } from "../../theme/Theme";
 import {
-  DataLabel,
-  DataMeta,
   FilterChip,
   FilterLabel,
   PillRow,
@@ -133,6 +132,7 @@ function AnimatedBar({
 
 export function ActivityChart({ history }: Props) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const [period, setPeriod] = useState<Period>("3m");
   const config = PERIOD_CONFIG[period];
   const weeks = getWeeklyData(history, config.weeks);
@@ -157,8 +157,8 @@ export function ActivityChart({ history }: Props) {
 
   return (
     <StatsSection
-      title="Watch Activity"
-      subtitle="How often you've been watching week by week."
+      title={t("stats.watchActivityTitle")}
+      subtitle={t("stats.watchActivitySubtitle")}
       accentGlow
       action={
         <PillRow>
@@ -197,7 +197,7 @@ export function ActivityChart({ history }: Props) {
           ))}
           {labelIndices.map((index) => {
             const weeksAgo = config.weeks - 1 - index;
-            const label = weeksAgo === 0 ? "Now" : `${weeksAgo}w`;
+            const label = weeksAgo === 0 ? t("stats.now") : `${weeksAgo}${t("stats.weekShort")}`;
             return (
               <SvgText
                 key={index}
@@ -217,15 +217,15 @@ export function ActivityChart({ history }: Props) {
       <SummaryWrap>
         <SummaryTile>
           <SummaryValue>{totalInPeriod}</SummaryValue>
-          <SummaryLabel>total</SummaryLabel>
+          <SummaryLabel>{t("stats.chartTotal")}</SummaryLabel>
         </SummaryTile>
         <SummaryTile>
           <SummaryValue>{peakWeek}</SummaryValue>
-          <SummaryLabel>peak week</SummaryLabel>
+          <SummaryLabel>{t("stats.chartPeakWeek")}</SummaryLabel>
         </SummaryTile>
         <SummaryTile>
           <SummaryValue>{activeWeeks}</SummaryValue>
-          <SummaryLabel>active</SummaryLabel>
+          <SummaryLabel>{t("stats.chartActive")}</SummaryLabel>
         </SummaryTile>
       </SummaryWrap>
     </StatsSection>
