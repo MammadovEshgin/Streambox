@@ -33,6 +33,18 @@ import Reanimated, {
 import { resolveHdFilmRuntimeStream, resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
 import { getProviderConfig } from "../services/providerConfigService";
 import { useAppSettings } from "../settings/AppSettingsContext";
+import {
+  normalizeSubtitleUrl,
+  parseSubtitleDocument,
+  type ParsedSubtitleCue
+} from "../utils/subtitles";
+import {
+  BLOCKED_PLAYER_NAVIGATION_PATTERNS,
+  PLAYER_PASSIVE_ASSET_PATTERN,
+  TRUSTED_PLAYER_FRAME_PATTERNS,
+  shouldAcceptDiscoveredHdFilmStream,
+  shouldAllowPlayerWebViewRequest
+} from "./player/playerWebViewPolicy";
 
 function debugLog(...args: unknown[]) {
   if (__DEV__) {
@@ -160,12 +172,6 @@ type DirectSubtitleOption = {
   lang: string;
 };
 
-type ParsedSubtitleCue = {
-  start: number;
-  end: number;
-  text: string;
-};
-
 function getSubtitleTrackLabel(track: SubtitleTrack): string {
   const label = track.label?.trim();
   if (label) return label;
@@ -176,197 +182,8 @@ function getSubtitleTrackLabel(track: SubtitleTrack): string {
   return "Subtitle";
 }
 
-function decodeSubtitleText(value: string): string {
-  return value
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'");
-}
+// Subtitle parsing helpers moved to src/utils/subtitles.ts.
 
-function parseVttTimestamp(value: string): number | null {
-  const trimmed = value.trim().replace(",", ".");
-  const parts = trimmed.split(":").map((part) => Number(part));
-
-  if (parts.some((part) => Number.isNaN(part))) return null;
-
-  if (parts.length === 3) {
-    return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  }
-
-  if (parts.length === 2) {
-    return parts[0] * 60 + parts[1];
-  }
-
-  return null;
-}
-
-/**
- * Extract the timestamp portion from the end-part of a VTT/SRT timing line.
- * After splitting "00:10.000 --> 00:13.083 align:start" by "-->",
- * endRaw is " 00:13.083 align:start". We need just "00:13.083".
- * Using `.split(" ")[0]` fails when there's a leading space (produces "").
- */
-function extractTimestampFromEndPart(endRaw: string): string {
-  const trimmed = endRaw.trim();
-  // Take everything up to the first space (cue settings come after)
-  const spaceIdx = trimmed.indexOf(" ");
-  return spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
-}
-
-function parseWebVtt(content: string): ParsedSubtitleCue[] {
-  // Normalize all line ending variants: \r\n, \r (old Mac), \n
-  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-
-  // First try splitting by double newlines (standard VTT)
-  let blocks = normalized.split(/\n{2,}/);
-
-  // If we only get 1-2 blocks but there are multiple --> timestamps,
-  // the file uses single-newline separation — parse line-by-line instead
-  const arrowCount = (normalized.match(/-->/g) || []).length;
-  if (blocks.length <= 2 && arrowCount > 1) {
-    return parseWebVttLineByLine(normalized);
-  }
-
-  const cues: ParsedSubtitleCue[] = [];
-
-  for (const block of blocks) {
-    const lines = block
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (lines.length === 0) continue;
-    if (lines[0].toUpperCase().startsWith("WEBVTT")) continue;
-    if (lines[0].startsWith("NOTE")) continue;
-
-    const timeLineIndex = lines.findIndex((line) => line.includes("-->"));
-    if (timeLineIndex === -1) continue;
-
-    const [startRaw, endRaw] = lines[timeLineIndex].split("-->");
-    const start = parseVttTimestamp(startRaw);
-    const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
-    if (start == null || end == null) continue;
-
-    const text = decodeSubtitleText(lines.slice(timeLineIndex + 1).join("\n")).trim();
-    if (!text) continue;
-
-    cues.push({ start, end, text });
-  }
-
-  return cues;
-}
-
-/** Fallback parser for VTT files that use single-newline separation between cues */
-function parseWebVttLineByLine(normalized: string): ParsedSubtitleCue[] {
-  const lines = normalized.split("\n");
-  const cues: ParsedSubtitleCue[] = [];
-  let i = 0;
-
-  // Skip WEBVTT header
-  while (i < lines.length) {
-    const trimmed = lines[i].trim();
-    if (trimmed.toUpperCase().startsWith("WEBVTT") || trimmed === "" || trimmed.startsWith("NOTE")) {
-      i++;
-      continue;
-    }
-    break;
-  }
-
-  while (i < lines.length) {
-    const trimmed = lines[i].trim();
-
-    // Skip empty lines and numeric cue IDs
-    if (!trimmed || /^\d+$/.test(trimmed)) {
-      i++;
-      continue;
-    }
-
-    // Look for a timestamp line
-    if (trimmed.includes("-->")) {
-      const [startRaw, endRaw] = trimmed.split("-->");
-      const start = parseVttTimestamp(startRaw);
-      const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
-      i++;
-
-      if (start == null || end == null) continue;
-
-      // Collect text lines until next timestamp or empty line
-      const textLines: string[] = [];
-      while (i < lines.length) {
-        const nextTrimmed = lines[i].trim();
-        if (!nextTrimmed || nextTrimmed.includes("-->") || /^\d+$/.test(nextTrimmed)) break;
-        textLines.push(nextTrimmed);
-        i++;
-      }
-
-      const text = decodeSubtitleText(textLines.join("\n")).trim();
-      if (text) {
-        cues.push({ start, end, text });
-      }
-    } else {
-      i++;
-    }
-  }
-
-  return cues;
-}
-
-function parseSubRip(content: string): ParsedSubtitleCue[] {
-  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const blocks = normalized.split(/\n{2,}/);
-  const cues: ParsedSubtitleCue[] = [];
-
-  for (const block of blocks) {
-    const lines = block
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (lines.length === 0) continue;
-
-    const timeLineIndex = lines.findIndex((line) => line.includes("-->"));
-    if (timeLineIndex === -1) continue;
-
-    const [startRaw, endRaw] = lines[timeLineIndex].split("-->");
-    const start = parseVttTimestamp(startRaw);
-    const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
-    if (start == null || end == null) continue;
-
-    const text = decodeSubtitleText(lines.slice(timeLineIndex + 1).join("\n")).trim();
-    if (!text) continue;
-
-    cues.push({ start, end, text });
-  }
-
-  return cues;
-}
-
-function parseSubtitleDocument(content: string): ParsedSubtitleCue[] {
-  const vttCues = parseWebVtt(content);
-  if (vttCues.length > 0) return vttCues;
-  return parseSubRip(content);
-}
-
-function normalizeSubtitleUrl(url: string, ...bases: Array<string | null | undefined>): string {
-  const trimmed = (url ?? "").trim();
-  if (!trimmed) return "";
-
-  for (const base of bases) {
-    if (!base) continue;
-    try {
-      return new URL(trimmed, base).toString();
-    } catch {
-      // Try next base.
-    }
-  }
-
-  return trimmed;
-}
 
 // ---------------------------------------------------------------------------
 // Loading overlay with cinema facts
@@ -705,192 +522,7 @@ type WebViewProviderSource = "hdfilm" | "dizipal";
 const PLAYER_WEBVIEW_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
 
-const BLOCKED_PLAYER_NAVIGATION_PATTERNS = [
-  "://ad.",
-  ".ad.",
-  "/ad/",
-  "/ads/",
-  "/advert",
-  "/banner",
-  "/popunder",
-  "/popup",
-  "/preroll",
-  "/vast",
-  "/vpaid",
-  "/ima3",
-  "doubleclick",
-  "googlesyndication",
-  "googletagservices",
-  "googletagmanager",
-  "googleadservices",
-  "googleads",
-  "google-analytics",
-  "adservice",
-  "adserver",
-  "adsystem",
-  "adnxs",
-  "adsterra",
-  "ad-maven",
-  "adcash",
-  "clickadu",
-  "hilltopads",
-  "onclickads",
-  "yllix",
-  "adform",
-  "aniview",
-  "popads",
-  "popcash",
-  "propellerads",
-  "exoclick",
-  "trafficjunky",
-  "juicyads",
-  "onclick",
-  "revcontent",
-  "taboola",
-  "outbrain",
-  "mgid",
-  "aj2204",
-  "market://",
-  "intent://",
-  "play.google.com",
-];
-
-const TRUSTED_PLAYER_FRAME_PATTERNS = [
-  "hdfilmcehennemi",
-  "dizipal",
-  "rplayer",
-  "rapidrame",
-  "vidmoly",
-  "closeload",
-  "fastplayer",
-  "filemoon",
-  "voe.",
-  "voe.sx",
-  "streamwish",
-  "dood",
-  "doodstream",
-  "d000d",
-  "mixdrop",
-  "streamtape",
-  "ok.ru",
-  "uqload",
-  "vidoza",
-  "streamsb",
-  "sbembed",
-  "filelions",
-  "luluvdo",
-  "sendvid",
-  "streamruby",
-  "upstream",
-  "mcloud",
-  "vidcloud",
-  "govid",
-  "hls",
-  "m3u8",
-];
-
-const PLAYER_PASSIVE_ASSET_PATTERN =
-  /\.(m3u8|mp4|m4v|webm|mov|ts|m4s|vtt|srt|png|jpe?g|gif|webp|svg|css|js|woff2?|ttf|otf)(?:[?#].*)?$/i;
-
-function isHttpUrl(url: string) {
-  return /^https?:\/\//i.test(url);
-}
-
-function getUrlHost(url: string) {
-  try {
-    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-function isBlockedPlayerNavigation(url: string) {
-  const normalized = url.toLowerCase();
-  return BLOCKED_PLAYER_NAVIGATION_PATTERNS.some((pattern) => normalized.includes(pattern));
-}
-
-function isTrustedPlayerFrameUrl(url: string) {
-  const normalized = url.toLowerCase();
-  return TRUSTED_PLAYER_FRAME_PATTERNS.some((pattern) => normalized.includes(pattern));
-}
-
-function isTrustedHdFilmRuntimeContext(url: string) {
-  return /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape/i.test(url);
-}
-
-function isLikelyHdFilmRuntimeStreamUrl(url: string) {
-  const normalized = url.toLowerCase();
-  return (
-    /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape/i.test(normalized) ||
-    /\/hls2?\//i.test(normalized) ||
-    /\.urlset\//i.test(normalized) ||
-    /\/(?:master|index|playlist|manifest)\.m3u8(?:[?#]|$)/i.test(normalized)
-  );
-}
-
-function shouldAcceptDiscoveredHdFilmStream(streamUrl: string, referer = "", embedUrl = "") {
-  if (!streamUrl || isBlockedPlayerNavigation(streamUrl)) return false;
-  if (referer && isBlockedPlayerNavigation(referer)) return false;
-  if (embedUrl && isBlockedPlayerNavigation(embedUrl)) return false;
-  if (!/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(streamUrl) && !streamUrl.toLowerCase().includes(".m3u8")) {
-    return false;
-  }
-
-  return (
-    isTrustedHdFilmRuntimeContext(referer) ||
-    isTrustedHdFilmRuntimeContext(embedUrl) ||
-    isLikelyHdFilmRuntimeStreamUrl(streamUrl)
-  );
-}
-
-function isLikelyPassivePlayerAsset(url: string) {
-  return PLAYER_PASSIVE_ASSET_PATTERN.test(url);
-}
-
-function isLikelyUnknownDocumentNavigation(url: string) {
-  try {
-    const parsed = new URL(url);
-    const path = parsed.pathname.toLowerCase();
-    if (isLikelyPassivePlayerAsset(url)) return false;
-    if (/\.(html?|php|aspx?)(?:$|[?#])/i.test(path)) return true;
-    if (!/\.[a-z0-9]{2,5}$/i.test(path)) return true;
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-function shouldAllowPlayerWebViewRequest(req: { url: string; isTopFrame?: boolean }, initialUrl: string) {
-  const url = req.url;
-
-  if (!url || url.includes("about:blank") || url.startsWith("blob:")) {
-    return true;
-  }
-
-  if (!isHttpUrl(url)) {
-    return false;
-  }
-
-  if (isBlockedPlayerNavigation(url)) {
-    return false;
-  }
-
-  const initialHost = getUrlHost(initialUrl);
-  const nextHost = getUrlHost(url);
-
-  if (!req.isTopFrame) {
-    if (initialHost && nextHost === initialHost) return true;
-    if (isTrustedPlayerFrameUrl(url)) return true;
-    if (isLikelyPassivePlayerAsset(url)) return true;
-    return !isLikelyUnknownDocumentNavigation(url);
-  }
-
-  return Boolean(
-    initialHost &&
-      nextHost &&
-      (nextHost === initialHost || isTrustedPlayerFrameUrl(url))
-  );
-}
+// Player WebView navigation policy + patterns moved to ./player/playerWebViewPolicy.ts.
 
 const PLAYER_AD_GUARD_SCRIPT = `
 (function() {
@@ -3123,6 +2755,7 @@ function getDizipalInjectAfter() {
 // ---------------------------------------------------------------------------
 export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const webViewRef = useRef<WebView>(null);
   const [playerResult, setPlayerResult] = useState<WebPlayerResult | null>(null);
@@ -3888,13 +3521,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         {!isLoading && showCloseBtn && (
           <>
             <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner}>
+              <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
                 <Feather name="x" size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
 
             <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner}>
+              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.toggleFit")}>
                 <Feather name={videoFit === "contain" ? "maximize" : "minimize"} size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
@@ -3903,6 +3536,9 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               <TouchableOpacity
                 onPress={toggleDirectSubtitleMenu}
                 activeOpacity={directSubtitleOptions.length > 0 || availableSubtitleTracks.length > 0 ? 0.8 : 1}
+                accessibilityRole="button"
+                accessibilityLabel={t("player.a11y.subtitles")}
+                accessibilityState={{ disabled: directSubtitleOptions.length === 0 && availableSubtitleTracks.length === 0 }}
                 style={[
                   styles.closeButtonInner,
                   directSubtitleOptions.length === 0 &&
@@ -3920,6 +3556,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
                   onPress={toggleQualityMenu}
                   activeOpacity={0.8}
                   style={styles.closeButtonInner}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("player.a11y.quality")}
                 >
                   <MaterialIcons name="settings" size={20} color="#FFFFFF" />
                 </TouchableOpacity>
@@ -4037,14 +3675,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       {showCloseBtn && (
         <>
           <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
-            <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner}>
+            <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
               <Feather name="x" size={18} color="#FFFFFF" />
             </TouchableOpacity>
           </Animated.View>
 
           {(playerResult?.source === 'hdfilm' || playerResult?.source === 'dizipal' || playerResult?.source === 'dizipal_embed') && (
             <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner}>
+              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.toggleFit")}>
                 <Feather name={videoFit === 'contain' ? 'maximize' : 'minimize'} size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
@@ -4066,7 +3704,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         <View style={styles.loaderOverlay}>
           <Text style={styles.errorTitle}>Playback Error</Text>
           <Text style={styles.errorText}>{loadError}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={() => {
+          <TouchableOpacity style={styles.retryButton} accessibilityRole="button" accessibilityLabel={t("player.a11y.retry")} onPress={() => {
             setLoadError(null);
             setIsPlaybackReady(false);
             webViewRef.current?.reload();
@@ -4087,7 +3725,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           <Text style={styles.notAvailableHint}>
             We're always adding new content. Please check back later!
           </Text>
-          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.8}>
+          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.8} accessibilityRole="button" accessibilityLabel={t("common.goBack")}>
             <Text style={styles.goBackText}>Go Back</Text>
           </TouchableOpacity>
         </View>
