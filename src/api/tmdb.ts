@@ -5,7 +5,8 @@ import i18n from "../localization/i18n";
 import { getLanguageLocale, normalizeAppLanguage, type AppLanguage } from "../localization/types";
 import { shouldFetchExternalRatings, type ExternalRatingsSurface } from "../services/externalRatingsPolicy";
 import { trackNetworkFailure } from "../services/telemetryService";
-import { mapWithConcurrency } from "../utils/concurrency";
+import { dedupeInFlight, mapWithConcurrency } from "../utils/concurrency";
+import { LruMap } from "../utils/LruMap";
 import {
   getImdbPopularMovies,
   getImdbTop250Movies,
@@ -462,24 +463,44 @@ const tmdbAccessToken = process.env.EXPO_PUBLIC_TMDB_ACCESS_TOKEN;
 const tmdbAuth = resolveTmdbAuth(tmdbApiKey, tmdbAccessToken);
 
 
-const imdbIdCache = new Map<string, string | null>();
-const omdbRatingsCache = new Map<string, Pick<ExternalRatings, "imdb" | "rottenTomatoes" | "metacritic">>();
-const letterboxdCache = new Map<string, string | null>();
-const imdbToTmdbMovieCache = new Map<string, TmdbFindMovieRecord | null>();
-const imdbToTmdbTvCache = new Map<string, TmdbFindTvRecord | null>();
-const tvMazeEpisodeImageCache = new Map<string, Record<string, string>>();
-const tmdbEpisodeImageCache = new Map<string, string | null>();
-const trailerUrlCache = new Map<string, string | null>();
-const movieSummaryCache = new Map<string, MediaItem>();
-const seriesSummaryCache = new Map<string, MediaItem>();
-const movieDetailsCache = new Map<string, MovieDetails>();
-const seriesDetailsCache = new Map<string, SeriesDetails>();
-const movieExternalRatingsCache = new Map<string, ExternalRatings>();
-const seriesExternalRatingsCache = new Map<string, SeriesExternalRatings>();
-const quickSimilarMoviesCache = new Map<string, MediaItem[]>();
-const quickSimilarSeriesCache = new Map<string, MediaItem[]>();
-const similarMoviesCache = new Map<string, MediaItem[]>();
-const similarSeriesCache = new Map<string, MediaItem[]>();
+// In-memory caches are bounded with LruMap so a long browsing session can't grow
+// memory without limit. Caps are sized to value weight: tiny string/id/rating
+// entries get large caps; heavy detail/summary/list objects get smaller caps.
+// LruMap is a Map subclass, so get/set/has/null-negative-caching all behave as before.
+const CACHE_MAX = {
+  /** Tiny string-or-null entries — cheap to keep many. */
+  id: 2000,
+  /** Small rating/find records. */
+  rating: 1500,
+  /** Episode image maps and misc medium entries. */
+  medium: 800,
+  /** Heavy MediaItem summaries and detail objects. */
+  detail: 500,
+  /** Arrays of MediaItem (similar/quick-similar lists). */
+  list: 300
+} as const;
+
+const imdbIdCache = new LruMap<string, string | null>(CACHE_MAX.id);
+const omdbRatingsCache = new LruMap<string, Pick<ExternalRatings, "imdb" | "rottenTomatoes" | "metacritic">>(CACHE_MAX.rating);
+const letterboxdCache = new LruMap<string, string | null>(CACHE_MAX.id);
+const imdbToTmdbMovieCache = new LruMap<string, TmdbFindMovieRecord | null>(CACHE_MAX.rating);
+const imdbToTmdbTvCache = new LruMap<string, TmdbFindTvRecord | null>(CACHE_MAX.rating);
+const tvMazeEpisodeImageCache = new LruMap<string, Record<string, string>>(CACHE_MAX.medium);
+const tmdbEpisodeImageCache = new LruMap<string, string | null>(CACHE_MAX.medium);
+const trailerUrlCache = new LruMap<string, string | null>(CACHE_MAX.id);
+const movieSummaryCache = new LruMap<string, MediaItem>(CACHE_MAX.detail);
+const seriesSummaryCache = new LruMap<string, MediaItem>(CACHE_MAX.detail);
+const movieDetailsCache = new LruMap<string, MovieDetails>(CACHE_MAX.detail);
+const seriesDetailsCache = new LruMap<string, SeriesDetails>(CACHE_MAX.detail);
+const movieExternalRatingsCache = new LruMap<string, ExternalRatings>(CACHE_MAX.rating);
+const seriesExternalRatingsCache = new LruMap<string, SeriesExternalRatings>(CACHE_MAX.rating);
+const quickSimilarMoviesCache = new LruMap<string, MediaItem[]>(CACHE_MAX.list);
+const quickSimilarSeriesCache = new LruMap<string, MediaItem[]>(CACHE_MAX.list);
+const similarMoviesCache = new LruMap<string, MediaItem[]>(CACHE_MAX.list);
+const similarSeriesCache = new LruMap<string, MediaItem[]>(CACHE_MAX.list);
+
+const inFlightMovieDetails = new Map<string, Promise<MovieDetails>>();
+const inFlightSeriesDetails = new Map<string, Promise<SeriesDetails>>();
 const LIST_ENRICHMENT_CONCURRENCY = 4;
 const IMDB_TOP250_RESOLVE_CONCURRENCY = 6;
 const IMDB_POPULAR_SPOTLIGHT_RESOLVE_LIMIT = 36;
@@ -552,6 +573,20 @@ tmdbClient.interceptors.request.use((config) => {
   return applyTmdbAuthToConfig(config, mode);
 });
 
+// Transient errors worth retrying with backoff: rate limits, server errors, and
+// network failures (no HTTP status — timeout / connection reset). Other 4xx are
+// deterministic and must NOT be retried.
+const TMDB_MAX_TRANSIENT_RETRIES = 2;
+const TMDB_RETRY_BACKOFF_MS = [200, 600];
+
+function isTransientTmdbError(status: number | undefined): boolean {
+  return status === 429 || status === undefined || (typeof status === "number" && status >= 500);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 tmdbClient.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -565,6 +600,17 @@ tmdbClient.interceptors.response.use(
         durationMs: config?._requestStartedAt ? Date.now() - config._requestStartedAt : null,
         rateLimitRemaining: error?.response?.headers?.["x-ratelimit-remaining"] ?? null,
       }, status === 429 ? "error" : "warning");
+    }
+
+    // Retry transient failures with bounded exponential-ish backoff. Applies to
+    // both proxy and direct modes; deterministic 4xx (except 429) fall through.
+    if (config && isTransientTmdbError(status)) {
+      const attempt = (config._tmdbTransientRetryCount as number | undefined) ?? 0;
+      if (attempt < TMDB_MAX_TRANSIENT_RETRIES) {
+        config._tmdbTransientRetryCount = attempt + 1;
+        await sleep(TMDB_RETRY_BACKOFF_MS[attempt] ?? TMDB_RETRY_BACKOFF_MS[TMDB_RETRY_BACKOFF_MS.length - 1]);
+        return tmdbClient.request(config);
+      }
     }
 
     if (usesTmdbProxy) {
@@ -1517,6 +1563,10 @@ export async function getMovieDetails(id: string): Promise<MovieDetails> {
     return cached;
   }
 
+  return dedupeInFlight(inFlightMovieDetails, cacheKey, () => fetchMovieDetails(id, cacheKey));
+}
+
+async function fetchMovieDetails(id: string, cacheKey: string): Promise<MovieDetails> {
   const { data } = await tmdbClient.get<TmdbMovieDetailsWithCreditsResponse>(`/movie/${id}`, {
     params: {
       append_to_response: "credits"
@@ -1572,6 +1622,10 @@ export async function getSeriesDetails(id: string): Promise<SeriesDetails> {
     return cached;
   }
 
+  return dedupeInFlight(inFlightSeriesDetails, cacheKey, () => fetchSeriesDetails(id, cacheKey));
+}
+
+async function fetchSeriesDetails(id: string, cacheKey: string): Promise<SeriesDetails> {
   const { data } = await tmdbClient.get<TmdbTvDetailsWithCreditsResponse>(`/tv/${id}`, {
     params: {
       append_to_response: "credits,external_ids"
