@@ -1,5 +1,7 @@
 import * as FileSystem from "expo-file-system/legacy";
 
+import { LruMap } from "../utils/LruMap";
+
 const FRANCHISE_IMAGE_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}streambox-franchises/`
   : null;
@@ -8,8 +10,13 @@ const DEFAULT_BATCH_SIZE = 4;
 const BLOCKING_RESOLVE_TIMEOUT_MS = 1500;
 const FRANCHISE_IMAGE_MAX_CACHE_BYTES = 24 * 1024 * 1024;
 const FRANCHISE_IMAGE_MAX_FILE_COUNT = 48;
+// The on-disk cache is pruned to FRANCHISE_IMAGE_MAX_FILE_COUNT files, so the
+// url→localUri memory index never needs to exceed a small multiple of that.
+// Bounding it prevents stale keys (for pruned files) from accumulating forever.
+const FRANCHISE_MEMORY_INDEX_MAX = FRANCHISE_IMAGE_MAX_FILE_COUNT * 4;
 
-const memoryCache = new Map<string, string>();
+const memoryCache = new LruMap<string, string>(FRANCHISE_MEMORY_INDEX_MAX);
+// Bounded by concurrency: each entry is removed in its own finally block.
 const inFlightDownloads = new Map<string, Promise<string | null>>();
 
 let directoryReady = false;

@@ -1,6 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
 
+import { LruMap } from "../utils/LruMap";
+
 type ImdbTop250MovieEntry = {
   Rank: string;
   "Movie Name": string;
@@ -76,7 +78,10 @@ let moviesLastFetch = 0;
 let showsLastFetch = 0;
 let popularMoviesLastFetch = 0;
 
-const imdbRatingCache = new Map<string, number | null>();
+// Bounded: individual IMDb ratings accumulate as the user browses. LruMap keeps
+// hot ratings and evicts the oldest. has()/get() negative-caching is preserved.
+const imdbRatingCache = new LruMap<string, number | null>(2000);
+// Bounded by concurrency: each entry is removed in its own finally block.
 const inFlightImdbRatingRequests = new Map<string, Promise<number | null>>();
 
 function extractImdbId(link: string): string | null {
