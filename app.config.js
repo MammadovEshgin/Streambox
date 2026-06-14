@@ -3,7 +3,13 @@ const baseConfig = {
   slug: "streambox",
   scheme: "streambox",
   version: "1.1.0",
-  runtimeVersion: "1.1.0",
+  // Pinned to "1.0.2" because that's the runtime baked into the APK that all
+  // installed users currently have. EAS Update only delivers a bundle to apps
+  // running the matching runtime, so every OTA we publish MUST target 1.0.2
+  // until a new APK with a bumped runtime ships from the website. Bump this
+  // (and rebuild + redistribute the APK) when you intentionally cut a new
+  // native release that drops compatibility with older installs.
+  runtimeVersion: "1.0.2",
   orientation: "portrait",
   userInterfaceStyle: "dark",
   icon: "./assets/app-icons/app-icon-1024.png",
