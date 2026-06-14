@@ -1,7 +1,14 @@
 import axios, { AxiosHeaders } from "axios";
 import { getAlternateTmdbAuthMode, resolveTmdbAuth, TmdbAuthMode } from "./tmdbAuth";
 import { getCachedOmdbRatings } from "./ratingsProxy";
+import i18n from "../localization/i18n";
+import { getLanguageLocale, normalizeAppLanguage, type AppLanguage } from "../localization/types";
+import { shouldFetchExternalRatings, type ExternalRatingsSurface } from "../services/externalRatingsPolicy";
+import { trackNetworkFailure } from "../services/telemetryService";
+import { dedupeInFlight, mapWithConcurrency } from "../utils/concurrency";
+import { LruMap } from "../utils/LruMap";
 import {
+  getImdbPopularMovies,
   getImdbTop250Movies,
   getImdbTop250Shows,
   getImdbRating,
@@ -27,6 +34,7 @@ type TmdbMediaRecord = {
   media_type?: MediaType;
   genre_ids?: number[];
   original_language?: string;
+  origin_country?: string[];
   popularity?: number;
 };
 
@@ -76,21 +84,31 @@ type TmdbCollectionResponse = {
   parts: TmdbMediaRecord[];
 };
 
+type TmdbLocalizedFranchiseMetadataResponse = {
+  title?: string;
+  name?: string;
+  tagline?: string | null;
+};
+
 type TmdbMovieDetailsWithCreditsResponse = {
   id: number;
   title: string;
+  original_title: string;
+  original_language: string;
   overview: string;
+  runtime: number | null;
   poster_path: string | null;
   backdrop_path: string | null;
   vote_average: number;
+  vote_count: number;
   popularity: number;
   release_date: string;
+  adult?: boolean;
+  imdb_id: string | null;
   genres: TmdbGenre[];
+  belongs_to_collection?: { id: number; name: string } | null;
   credits?: {
-    cast?: Array<{
-      id: number;
-      order?: number;
-    }>;
+    cast?: TmdbCastRecord[];
     crew?: TmdbCrewRecord[];
   };
   external_ids?: {
@@ -220,15 +238,25 @@ type TmdbPersonDetailsResponse = {
   profile_path: string | null;
 };
 
-type TmdbMovieCreditRecord = {
+type TmdbPersonCreditRecord = {
   id: number;
   title?: string;
+  name?: string;
+  original_title?: string;
+  original_name?: string;
   poster_path: string | null;
   backdrop_path: string | null;
   vote_average: number;
   overview: string;
   release_date?: string;
+  first_air_date?: string;
   popularity?: number;
+  vote_count?: number;
+  media_type?: MediaType;
+  genre_ids?: number[];
+  character?: string;
+  job?: string;
+  department?: string;
 };
 
 type TmdbCastRecord = {
@@ -253,20 +281,23 @@ type TmdbCreditsResponse = {
   crew: TmdbCrewRecord[];
 };
 
-type TmdbPersonMovieCreditsResponse = {
-  cast: TmdbMovieCreditRecord[];
-  crew?: Array<{
-    id: number;
-    title?: string;
-    poster_path: string | null;
-    backdrop_path: string | null;
-    vote_average: number;
-    overview: string;
-    release_date?: string;
-    popularity?: number;
-    job?: string;
-    department?: string;
-  }>;
+type TmdbPersonCombinedCreditsResponse = {
+  cast: TmdbPersonCreditRecord[];
+  crew?: TmdbPersonCreditRecord[];
+};
+
+type TmdbPersonSearchRecord = {
+  id: number;
+  name: string;
+  known_for_department?: string | null;
+  popularity?: number;
+};
+
+type TmdbPersonSearchResponse = {
+  page: number;
+  results: TmdbPersonSearchRecord[];
+  total_pages: number;
+  total_results: number;
 };
 
 export type MediaItem = {
@@ -418,31 +449,83 @@ export type DiscoverCollectionSource =
   | "top_new_movies"
   | "imdb_top_250"
   | "top_new_series"
-  | "imdb_top_250_series"
-  | "az_classics";
+  | "imdb_top_250_series";
 
 type TmdbImageSize = "w185" | "w300" | "w342" | "w500" | "w780" | "original";
 
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p";
 
+const tmdbProxyBaseUrl = process.env.EXPO_PUBLIC_TMDB_PROXY_BASE_URL?.trim() || null;
+const usesTmdbProxy = Boolean(tmdbProxyBaseUrl);
 const tmdbApiKey = process.env.EXPO_PUBLIC_TMDB_API_KEY;
 const tmdbAccessToken = process.env.EXPO_PUBLIC_TMDB_ACCESS_TOKEN;
 const tmdbAuth = resolveTmdbAuth(tmdbApiKey, tmdbAccessToken);
 
 
-const imdbIdCache = new Map<string, string | null>();
-const omdbRatingsCache = new Map<string, Pick<ExternalRatings, "imdb" | "rottenTomatoes" | "metacritic">>();
-const letterboxdCache = new Map<string, string | null>();
-const imdbToTmdbMovieCache = new Map<string, TmdbFindMovieRecord | null>();
-const imdbToTmdbTvCache = new Map<string, TmdbFindTvRecord | null>();
-const tvMazeEpisodeImageCache = new Map<string, Record<string, string>>();
-const tmdbEpisodeImageCache = new Map<string, string | null>();
+// In-memory caches are bounded with LruMap so a long browsing session can't grow
+// memory without limit. Caps are sized to value weight: tiny string/id/rating
+// entries get large caps; heavy detail/summary/list objects get smaller caps.
+// LruMap is a Map subclass, so get/set/has/null-negative-caching all behave as before.
+const CACHE_MAX = {
+  /** Tiny string-or-null entries — cheap to keep many. */
+  id: 2000,
+  /** Small rating/find records. */
+  rating: 1500,
+  /** Episode image maps and misc medium entries. */
+  medium: 800,
+  /** Heavy MediaItem summaries and detail objects. */
+  detail: 500,
+  /** Arrays of MediaItem (similar/quick-similar lists). */
+  list: 300
+} as const;
+
+const imdbIdCache = new LruMap<string, string | null>(CACHE_MAX.id);
+const omdbRatingsCache = new LruMap<string, Pick<ExternalRatings, "imdb" | "rottenTomatoes" | "metacritic">>(CACHE_MAX.rating);
+const letterboxdCache = new LruMap<string, string | null>(CACHE_MAX.id);
+const imdbToTmdbMovieCache = new LruMap<string, TmdbFindMovieRecord | null>(CACHE_MAX.rating);
+const imdbToTmdbTvCache = new LruMap<string, TmdbFindTvRecord | null>(CACHE_MAX.rating);
+const tvMazeEpisodeImageCache = new LruMap<string, Record<string, string>>(CACHE_MAX.medium);
+const tmdbEpisodeImageCache = new LruMap<string, string | null>(CACHE_MAX.medium);
+const trailerUrlCache = new LruMap<string, string | null>(CACHE_MAX.id);
+const movieSummaryCache = new LruMap<string, MediaItem>(CACHE_MAX.detail);
+const seriesSummaryCache = new LruMap<string, MediaItem>(CACHE_MAX.detail);
+const movieDetailsCache = new LruMap<string, MovieDetails>(CACHE_MAX.detail);
+const seriesDetailsCache = new LruMap<string, SeriesDetails>(CACHE_MAX.detail);
+const movieExternalRatingsCache = new LruMap<string, ExternalRatings>(CACHE_MAX.rating);
+const seriesExternalRatingsCache = new LruMap<string, SeriesExternalRatings>(CACHE_MAX.rating);
+const quickSimilarMoviesCache = new LruMap<string, MediaItem[]>(CACHE_MAX.list);
+const quickSimilarSeriesCache = new LruMap<string, MediaItem[]>(CACHE_MAX.list);
+const similarMoviesCache = new LruMap<string, MediaItem[]>(CACHE_MAX.list);
+const similarSeriesCache = new LruMap<string, MediaItem[]>(CACHE_MAX.list);
+
+const inFlightMovieDetails = new Map<string, Promise<MovieDetails>>();
+const inFlightSeriesDetails = new Map<string, Promise<SeriesDetails>>();
+const LIST_ENRICHMENT_CONCURRENCY = 4;
+const IMDB_TOP250_RESOLVE_CONCURRENCY = 6;
+const IMDB_POPULAR_SPOTLIGHT_RESOLVE_LIMIT = 36;
+const MIN_IMDB_POPULAR_SPOTLIGHT_ITEMS = 6;
+
+function getLocalizedTmdbCacheKey(scope: string, id: string | number) {
+  return `${getTmdbRequestLanguage()}:${scope}:${id}`;
+}
 
 const tmdbClient = axios.create({
-  baseURL: TMDB_BASE_URL,
+  baseURL: tmdbProxyBaseUrl ?? TMDB_BASE_URL,
   timeout: 12000
 });
+
+function getTmdbRequestLanguage() {
+  return getLanguageLocale(normalizeAppLanguage(i18n.resolvedLanguage ?? i18n.language));
+}
+
+function shouldAttachTmdbLanguage(url?: string | null) {
+  if (!url) {
+    return true;
+  }
+
+  return !url.includes("/images") && !url.includes("/external_ids") && !url.includes("/videos");
+}
 
 function applyTmdbAuthToConfig(config: any, mode: TmdbAuthMode) {
   const nextConfig = { ...config };
@@ -452,15 +535,36 @@ function applyTmdbAuthToConfig(config: any, mode: TmdbAuthMode) {
   headers.delete("Authorization");
   delete nextConfig.params.api_key;
 
-  if (mode === "api_key" && tmdbAuth.apiKeyParam) {
+  if (usesTmdbProxy) {
+    headers.set("X-StreamBox-Proxy-Target", "tmdb");
+  } else if (mode === "api_key" && tmdbAuth.apiKeyParam) {
     nextConfig.params.api_key = tmdbAuth.apiKeyParam;
   } else if (mode === "bearer" && tmdbAuth.bearerToken) {
     headers.set("Authorization", `Bearer ${tmdbAuth.bearerToken}`);
   }
 
+  if (!nextConfig.params.language && shouldAttachTmdbLanguage(config.url)) {
+    nextConfig.params.language = getTmdbRequestLanguage();
+  }
+
   nextConfig.headers = headers;
   nextConfig._tmdbAuthMode = mode;
+  nextConfig._requestStartedAt = config._requestStartedAt ?? Date.now();
   return nextConfig;
+}
+
+function getTelemetryEndpoint(config: any) {
+  const rawUrl = String(config?.url ?? "");
+  if (!rawUrl) {
+    return "unknown";
+  }
+
+  try {
+    const parsed = rawUrl.startsWith("http") ? new URL(rawUrl) : new URL(rawUrl, "https://streambox.local");
+    return parsed.pathname;
+  } catch {
+    return rawUrl.split("?")[0].slice(0, 120);
+  }
 }
 
 tmdbClient.interceptors.request.use((config) => {
@@ -469,11 +573,49 @@ tmdbClient.interceptors.request.use((config) => {
   return applyTmdbAuthToConfig(config, mode);
 });
 
+// Transient errors worth retrying with backoff: rate limits, server errors, and
+// network failures (no HTTP status — timeout / connection reset). Other 4xx are
+// deterministic and must NOT be retried.
+const TMDB_MAX_TRANSIENT_RETRIES = 2;
+const TMDB_RETRY_BACKOFF_MS = [200, 600];
+
+function isTransientTmdbError(status: number | undefined): boolean {
+  return status === 429 || status === undefined || (typeof status === "number" && status >= 500);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 tmdbClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const status = error?.response?.status;
     const config = error?.config as any;
+    if (status === 429 || status >= 500 || !status) {
+      trackNetworkFailure("tmdb", {
+        status: status ?? null,
+        endpoint: getTelemetryEndpoint(config),
+        usesProxy: usesTmdbProxy,
+        durationMs: config?._requestStartedAt ? Date.now() - config._requestStartedAt : null,
+        rateLimitRemaining: error?.response?.headers?.["x-ratelimit-remaining"] ?? null,
+      }, status === 429 ? "error" : "warning");
+    }
+
+    // Retry transient failures with bounded exponential-ish backoff. Applies to
+    // both proxy and direct modes; deterministic 4xx (except 429) fall through.
+    if (config && isTransientTmdbError(status)) {
+      const attempt = (config._tmdbTransientRetryCount as number | undefined) ?? 0;
+      if (attempt < TMDB_MAX_TRANSIENT_RETRIES) {
+        config._tmdbTransientRetryCount = attempt + 1;
+        await sleep(TMDB_RETRY_BACKOFF_MS[attempt] ?? TMDB_RETRY_BACKOFF_MS[TMDB_RETRY_BACKOFF_MS.length - 1]);
+        return tmdbClient.request(config);
+      }
+    }
+
+    if (usesTmdbProxy) {
+      return Promise.reject(error);
+    }
 
     if (status !== 401 || !config || config._tmdbRetried) {
       return Promise.reject(error);
@@ -492,9 +634,9 @@ tmdbClient.interceptors.response.use(
 );
 
 function assertCredentials() {
-  if (tmdbAuth.mode === "none") {
+  if (!usesTmdbProxy && tmdbAuth.mode === "none") {
     throw new Error(
-      "Missing TMDB credentials. Set EXPO_PUBLIC_TMDB_API_KEY or EXPO_PUBLIC_TMDB_ACCESS_TOKEN."
+      "Missing TMDB credentials. Set EXPO_PUBLIC_TMDB_PROXY_BASE_URL, EXPO_PUBLIC_TMDB_API_KEY, or EXPO_PUBLIC_TMDB_ACCESS_TOKEN."
     );
   }
 }
@@ -535,6 +677,37 @@ function isQualityItem(item: MediaItem): boolean {
   if (!item.posterPath) return false;
   if (item.rating <= 0) return false;
   if (item.title === "Untitled") return false;
+  return true;
+}
+
+const ALLOWED_TRENDING_LANGUAGES = new Set([
+  "en", "fr", "de", "it", "es", "pt", "nl", "sv", "no", "da", "fi", "is",
+  "pl", "cs", "sk", "hu", "ro", "bg", "hr", "sr", "sl", "et", "lv", "lt",
+  "el", "uk"
+]);
+
+const ALLOWED_TRENDING_TV_COUNTRIES = new Set([
+  "US", "GB", "IE", "FR", "DE", "IT", "ES", "PT", "NL", "BE", "LU", "CH", "AT",
+  "DK", "SE", "NO", "FI", "IS", "PL", "CZ", "SK", "HU", "RO", "BG", "HR", "RS",
+  "SI", "EE", "LV", "LT", "GR", "UA", "MT", "CY"
+]);
+
+function isAllowedForTrendingFeedRecord(record: TmdbMediaRecord, fallbackType: MediaType): boolean {
+  const mediaType = record.media_type ?? fallbackType;
+
+  if (mediaType === "tv" && record.genre_ids?.includes(16)) {
+    return false;
+  }
+
+  const originalLanguage = (record.original_language ?? "").toLowerCase();
+  if (!ALLOWED_TRENDING_LANGUAGES.has(originalLanguage)) {
+    return false;
+  }
+
+  if (mediaType === "tv" && Array.isArray(record.origin_country) && record.origin_country.length > 0) {
+    return record.origin_country.some((country) => ALLOWED_TRENDING_TV_COUNTRIES.has(country));
+  }
+
   return true;
 }
 
@@ -628,17 +801,107 @@ function toEpisodeImageKey(seasonNumber: number, episodeNumber: number): string 
   return `${seasonNumber}:${episodeNumber}`;
 }
 
-function normalizeMovieCredit(item: TmdbMovieCreditRecord): MediaItem {
+function normalizePersonCredit(item: TmdbPersonCreditRecord): MediaItem | null {
+  const mediaType = item.media_type === "tv" ? "tv" : "movie";
+  const title = item.title ?? item.name ?? "Untitled";
+
+  if (!item.id || title === "Untitled") {
+    return null;
+  }
+
+  const releaseDate = item.release_date ?? item.first_air_date;
+  const rawOriginal = item.original_title ?? item.original_name;
+
   return {
     id: item.id,
-    title: item.title ?? "Untitled",
+    title,
+    originalTitle: rawOriginal && rawOriginal !== title ? rawOriginal : undefined,
     posterPath: item.poster_path,
     backdropPath: item.backdrop_path,
     rating: Number.isFinite(item.vote_average) ? item.vote_average : 0,
     overview: item.overview ?? "",
-    year: item.release_date ? item.release_date.split("-")[0] ?? "----" : "----",
-    mediaType: "movie"
+    year: releaseDate ? releaseDate.split("-")[0] ?? "----" : "----",
+    mediaType,
+    genreIds: item.genre_ids ?? []
   };
+}
+
+const DOCUMENTARY_GENRE_ID = 99;
+const TV_NEWS_GENRE_ID = 10763;
+const TV_REALITY_GENRE_ID = 10764;
+const TV_TALK_GENRE_ID = 10767;
+
+function isSelfPersonCredit(record: TmdbPersonCreditRecord) {
+  return /\bself\b|himself|herself|themselves|as self/i.test(record.character ?? "");
+}
+
+function isVoicePersonCredit(record: TmdbPersonCreditRecord) {
+  return /\bvoice\b|voice role|voix/i.test(record.character ?? "");
+}
+
+function isLowValuePersonCredit(record: TmdbPersonCreditRecord) {
+  const genreIds = record.genre_ids ?? [];
+  return (
+    genreIds.includes(DOCUMENTARY_GENRE_ID) ||
+    genreIds.includes(TV_NEWS_GENRE_ID) ||
+    genreIds.includes(TV_REALITY_GENRE_ID) ||
+    genreIds.includes(TV_TALK_GENRE_ID)
+  );
+}
+
+function scorePersonCreditForSearch(record: TmdbPersonCreditRecord, item: MediaItem) {
+  const popularity = Math.min(record.popularity ?? 0, 120);
+  const rating = Number.isFinite(item.rating) ? item.rating : 0;
+  const voteCount = Math.max(record.vote_count ?? 0, 0);
+  const voteSignal = Math.min(Math.log10(voteCount + 1) * 18, 70);
+  const year = Number.parseInt(item.year, 10);
+  const recencySignal = Number.isFinite(year) ? Math.max(Math.min((year - 1980) / 4, 12), -8) : 0;
+
+  let score = popularity + rating * 10 + voteSignal + recencySignal;
+
+  if (item.mediaType === "movie") score += 90;
+  if (item.mediaType === "tv") score -= 30;
+  if (isVoicePersonCredit(record)) score -= 70;
+  if (isLowValuePersonCredit(record)) score -= 180;
+  if (isSelfPersonCredit(record)) score -= 260;
+
+  return score;
+}
+
+function normalizePersonCredits(records: TmdbPersonCreditRecord[], options: { requirePoster?: boolean } = {}): MediaItem[] {
+  const byKey = new Map<string, MediaItem & { popularity?: number; relevanceScore?: number }>();
+
+  records.forEach((record) => {
+    const item = normalizePersonCredit(record);
+    if (!item) {
+      return;
+    }
+
+    if (options.requirePoster && !item.posterPath) {
+      return;
+    }
+
+    const key = `${item.mediaType}-${item.id}`;
+    const existing = byKey.get(key);
+    const relevanceScore = scorePersonCreditForSearch(record, item);
+    if (!existing || relevanceScore > (existing.relevanceScore ?? Number.NEGATIVE_INFINITY)) {
+      byKey.set(key, { ...item, popularity: record.popularity ?? 0, relevanceScore });
+    }
+  });
+
+  return Array.from(byKey.values())
+    .sort((left, right) => {
+      if ((left.relevanceScore ?? 0) !== (right.relevanceScore ?? 0)) {
+        return (right.relevanceScore ?? 0) - (left.relevanceScore ?? 0);
+      }
+      const leftYear = Number.parseInt(left.year, 10);
+      const rightYear = Number.parseInt(right.year, 10);
+      if (Number.isFinite(leftYear) && Number.isFinite(rightYear) && leftYear !== rightYear) {
+        return rightYear - leftYear;
+      }
+      return (right.popularity ?? 0) - (left.popularity ?? 0);
+    })
+    .map(({ popularity: _popularity, relevanceScore: _relevanceScore, ...item }) => item);
 }
 
 function parseReleaseYear(value: string | undefined): number | null {
@@ -678,6 +941,12 @@ function parseScaledRating(value: string | null, scale: 10 | 5): number | null {
 
 function toTmdbDateValue(value: Date): string {
   return value.toISOString().slice(0, 10);
+}
+
+function getTopNewWindowStart(now: Date = new Date()): Date {
+  const value = new Date(now);
+  value.setMonth(now.getMonth() - 9);
+  return value;
 }
 
 function parseLetterboxdScore(html: string): string | null {
@@ -780,16 +1049,23 @@ export async function resolveTmdbTvIdFromImdbId(imdbId: string): Promise<string 
   return String(found.id);
 }
 
-async function getOmdbRatings(imdbId: string): Promise<Pick<ExternalRatings, "imdb" | "rottenTomatoes" | "metacritic">> {
-  if (omdbRatingsCache.has(imdbId)) {
-    return omdbRatingsCache.get(imdbId)!;
-  }
-
+async function getOmdbRatings(
+  imdbId: string,
+  surface: ExternalRatingsSurface = "detail"
+): Promise<Pick<ExternalRatings, "imdb" | "rottenTomatoes" | "metacritic">> {
   const empty = {
     imdb: null,
     rottenTomatoes: null,
     metacritic: null
   };
+
+  if (!shouldFetchExternalRatings(surface)) {
+    return empty;
+  }
+
+  if (omdbRatingsCache.has(imdbId)) {
+    return omdbRatingsCache.get(imdbId)!;
+  }
 
   const cachedRatings = await getCachedOmdbRatings(imdbId);
   if (cachedRatings) {
@@ -870,26 +1146,26 @@ export async function getSeriesLogos(id: number): Promise<string | null> {
 }
 
 async function enrichItemsWithImdbRatings(items: MediaItem[]): Promise<MediaItem[]> {
-  const enriched = await Promise.all(
-    items.map(async (item) => {
-      try {
-        const mediaType = item.mediaType;
-        const imdbId = await getImdbIdForMedia(mediaType, String(item.id));
-        if (!imdbId) return item;
+  if (!shouldFetchExternalRatings("list")) {
+    return items;
+  }
 
-        const imdbRating = await getImdbRating(imdbId);
-        if (imdbRating !== null && imdbRating > 0) {
-          return { ...item, rating: imdbRating, imdbId };
-        }
+  return mapWithConcurrency(items, LIST_ENRICHMENT_CONCURRENCY, async (item) => {
+    try {
+      const mediaType = item.mediaType;
+      const imdbId = await getImdbIdForMedia(mediaType, String(item.id));
+      if (!imdbId) return item;
 
-        return { ...item, imdbId };
-      } catch {
-        return item;
+      const imdbRating = await getImdbRating(imdbId);
+      if (imdbRating !== null && imdbRating > 0) {
+        return { ...item, rating: imdbRating, imdbId };
       }
-    }),
-  );
 
-  return enriched;
+      return { ...item, imdbId };
+    } catch {
+      return item;
+    }
+  });
 }
 
 export async function getTrending(type: MediaType): Promise<MediaItem[]> {
@@ -904,7 +1180,12 @@ export async function getTrendingPage(type: MediaType, page: number): Promise<Pa
       page
     }
   });
-  const items = await enrichItemsWithImdbRatings(mapList(data, type));
+  const items = await enrichItemsWithImdbRatings(
+    data.results
+      .filter((record) => isAllowedForTrendingFeedRecord(record, type))
+      .map((record) => normalizeMedia(record, type))
+      .filter(isQualityItem)
+  );
   return {
     items,
     page: data.page,
@@ -982,13 +1263,18 @@ export async function getMovieTasteProfile(id: number | string): Promise<MovieTa
 }
 
 async function passesTopNewThreshold(movieId: string, tmdbRating?: number): Promise<boolean> {
+  const passesTmdbBaseline = tmdbRating !== undefined && tmdbRating > 6.5;
+  if (!shouldFetchExternalRatings("list")) {
+    return passesTmdbBaseline;
+  }
+
   try {
     const imdbId = await getImdbId(movieId);
     if (!imdbId) {
-      return tmdbRating !== undefined && tmdbRating > 6.5;
+      return passesTmdbBaseline;
     }
 
-    const omdbRatings = await getOmdbRatings(imdbId);
+    const omdbRatings = await getOmdbRatings(imdbId, "list");
     const imdbScore = parseScaledRating(omdbRatings.imdb, 10);
     if (imdbScore !== null && imdbScore > 6.5) {
       return true;
@@ -1000,54 +1286,63 @@ async function passesTopNewThreshold(movieId: string, tmdbRating?: number): Prom
       return true;
     }
 
-    return tmdbRating !== undefined && tmdbRating > 6.5;
+    return passesTmdbBaseline;
   } catch {
-    return tmdbRating !== undefined && tmdbRating > 6.5;
+    return passesTmdbBaseline;
   }
 }
 
 async function passesTopNewSeriesThreshold(seriesId: string, tmdbRating?: number): Promise<boolean> {
+  const passesTmdbBaseline = tmdbRating !== undefined && tmdbRating >= 7;
+  if (!shouldFetchExternalRatings("list")) {
+    return passesTmdbBaseline;
+  }
+
   try {
     const imdbId = await getImdbIdForMedia("tv", seriesId);
     if (!imdbId) {
-      return tmdbRating !== undefined && tmdbRating >= 7;
+      return passesTmdbBaseline;
     }
 
-    const omdbRatings = await getOmdbRatings(imdbId);
+    const omdbRatings = await getOmdbRatings(imdbId, "list");
     const imdbScore = parseScaledRating(omdbRatings.imdb, 10);
     if (imdbScore !== null) {
       return imdbScore >= 7;
     }
 
-    return tmdbRating !== undefined && tmdbRating >= 7;
+    return passesTmdbBaseline;
   } catch {
-    return tmdbRating !== undefined && tmdbRating >= 7;
+    return passesTmdbBaseline;
   }
 }
 
 export async function getTopNewMoviesPage(page: number): Promise<PaginatedMediaResponse> {
   assertCredentials();
   const now = new Date();
-  const threeMonthsAgo = new Date();
-  threeMonthsAgo.setMonth(now.getMonth() - 3);
+  const windowStart = getTopNewWindowStart(now);
 
   const { data } = await tmdbClient.get<TmdbListResponse>("/discover/movie", {
     params: {
       page,
       include_adult: false,
       sort_by: "primary_release_date.desc",
-      "primary_release_date.gte": toTmdbDateValue(threeMonthsAgo),
+      "primary_release_date.gte": toTmdbDateValue(windowStart),
       "primary_release_date.lte": toTmdbDateValue(now),
       "vote_count.gte": 50
     }
   });
 
-  const candidates = mapList(data, "movie");
-  const verdicts = await Promise.all(
-    candidates.map(async (item) => {
+  const candidates = data.results
+    .filter((record) => isAllowedForTrendingFeedRecord(record, "movie"))
+    .map((record) => normalizeMedia(record, "movie"))
+    .filter(isQualityItem);
+  const verdicts = await mapWithConcurrency(
+    candidates,
+    LIST_ENRICHMENT_CONCURRENCY,
+    async (item) => {
       const isQualified = await passesTopNewThreshold(String(item.id), item.rating);
       return isQualified ? item : null;
-    })
+    }
   );
 
   const filtered = verdicts.filter((item): item is MediaItem => item !== null);
@@ -1062,26 +1357,30 @@ export async function getTopNewMoviesPage(page: number): Promise<PaginatedMediaR
 export async function getTopNewSeriesPage(page: number): Promise<PaginatedMediaResponse> {
   assertCredentials();
   const now = new Date();
-  const twelveMonthsAgo = new Date();
-  twelveMonthsAgo.setMonth(now.getMonth() - 12);
+  const windowStart = getTopNewWindowStart(now);
 
   const { data } = await tmdbClient.get<TmdbListResponse>("/discover/tv", {
     params: {
       page,
       include_adult: false,
       sort_by: "first_air_date.desc",
-      "first_air_date.gte": toTmdbDateValue(twelveMonthsAgo),
+      "first_air_date.gte": toTmdbDateValue(windowStart),
       "first_air_date.lte": toTmdbDateValue(now),
       "vote_count.gte": 50
     }
   });
 
-  const candidates = mapList(data, "tv");
-  const verdicts = await Promise.all(
-    candidates.map(async (item) => {
+  const candidates = data.results
+    .filter((record) => isAllowedForTrendingFeedRecord(record, "tv"))
+    .map((record) => normalizeMedia(record, "tv"))
+    .filter(isQualityItem);
+  const verdicts = await mapWithConcurrency(
+    candidates,
+    LIST_ENRICHMENT_CONCURRENCY,
+    async (item) => {
       const isQualified = await passesTopNewSeriesThreshold(String(item.id), item.rating);
       return isQualified ? item : null;
-    })
+    }
   );
 
   const filtered = verdicts.filter((item): item is MediaItem => item !== null);
@@ -1111,7 +1410,7 @@ async function resolveImdbEntryToMediaItem(
         title: found.title ?? entry.title,
         posterPath: found.poster_path,
         backdropPath: found.backdrop_path,
-        rating: entry.imdbRating,
+        rating: entry.imdbRating > 0 ? entry.imdbRating : found.vote_average,
         overview: found.overview ?? "",
         year: found.release_date ? found.release_date.split("-")[0] ?? "----" : "----",
         mediaType: "movie",
@@ -1130,7 +1429,7 @@ async function resolveImdbEntryToMediaItem(
       title: found.name ?? entry.title,
       posterPath: found.poster_path,
       backdropPath: found.backdrop_path,
-      rating: entry.imdbRating,
+      rating: entry.imdbRating > 0 ? entry.imdbRating : found.vote_average,
       overview: found.overview ?? "",
       year: found.first_air_date ? found.first_air_date.split("-")[0] ?? "----" : "----",
       mediaType: "tv",
@@ -1155,8 +1454,10 @@ export async function getImdbTop250Page(page: number): Promise<PaginatedMediaRes
   const start = (page - 1) * pageSize;
   const slice = allItems.slice(start, start + pageSize);
 
-  const resolved = await Promise.all(
-    slice.map(async (entry) => resolveImdbEntryToMediaItem(entry, "movie")),
+  const resolved = await mapWithConcurrency(
+    slice,
+    IMDB_TOP250_RESOLVE_CONCURRENCY,
+    async (entry) => resolveImdbEntryToMediaItem(entry, "movie"),
   );
 
   return {
@@ -1179,8 +1480,10 @@ export async function getImdbTop250SeriesPage(page: number): Promise<PaginatedMe
   const start = (page - 1) * pageSize;
   const slice = allItems.slice(start, start + pageSize);
 
-  const resolved = await Promise.all(
-    slice.map(async (entry) => resolveImdbEntryToMediaItem(entry, "tv")),
+  const resolved = await mapWithConcurrency(
+    slice,
+    IMDB_TOP250_RESOLVE_CONCURRENCY,
+    async (entry) => resolveImdbEntryToMediaItem(entry, "tv"),
   );
 
   return {
@@ -1197,7 +1500,7 @@ export async function getSeriesOfTheDay(): Promise<MediaItem | null> {
   }
 
   const now = new Date();
-  const seed = now.getUTCFullYear() * 10000 + (now.getUTCMonth() + 1) * 100 + now.getUTCDate();
+  const seed = now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
   return trending.items[seed % trending.items.length] ?? trending.items[0] ?? null;
 }
 
@@ -1225,26 +1528,58 @@ export async function getDiscoverCollectionPage(
 
 export async function getPopular(): Promise<MediaItem[]> {
   assertCredentials();
+  try {
+    const imdbPopular = await getImdbPopularMovies();
+    const resolved = await mapWithConcurrency(
+      imdbPopular.slice(0, IMDB_POPULAR_SPOTLIGHT_RESOLVE_LIMIT),
+      IMDB_TOP250_RESOLVE_CONCURRENCY,
+      async (entry) => resolveImdbEntryToMediaItem(entry, "movie"),
+    );
+    const imdbItems = resolved
+      .filter((item): item is MediaItem => item !== null)
+      .filter(isQualityItem)
+      .filter((item) => item.backdropPath);
+
+    if (imdbItems.length >= MIN_IMDB_POPULAR_SPOTLIGHT_ITEMS) {
+      return imdbItems;
+    }
+  } catch {
+    // Keep the hero resilient if IMDb blocks or changes its chart markup.
+  }
+
   const { data } = await tmdbClient.get<TmdbListResponse>("/movie/popular");
-  return enrichItemsWithImdbRatings(mapList(data, "movie"));
+  const fallbackItems = data.results
+    .filter((record) => isAllowedForTrendingFeedRecord(record, "movie"))
+    .map((record) => normalizeMedia(record, "movie"))
+    .filter(isQualityItem);
+  return enrichItemsWithImdbRatings(fallbackItems);
 }
 
 export async function getMovieDetails(id: string): Promise<MovieDetails> {
   assertCredentials();
+  const cacheKey = getLocalizedTmdbCacheKey("movie-details", id);
+  const cached = movieDetailsCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
-  const [detailsResponse, creditsResponse] = await Promise.all([
-    tmdbClient.get<TmdbMovieDetailsResponse>(`/movie/${id}`),
-    tmdbClient.get<TmdbCreditsResponse>(`/movie/${id}/credits`)
-  ]);
+  return dedupeInFlight(inFlightMovieDetails, cacheKey, () => fetchMovieDetails(id, cacheKey));
+}
 
-  const details = detailsResponse.data;
-  const cast = creditsResponse.data.cast
-    .sort((left, right) => left.order - right.order)
+async function fetchMovieDetails(id: string, cacheKey: string): Promise<MovieDetails> {
+  const { data } = await tmdbClient.get<TmdbMovieDetailsWithCreditsResponse>(`/movie/${id}`, {
+    params: {
+      append_to_response: "credits"
+    }
+  });
+
+  const cast = (data.credits?.cast ?? [])
+    .sort((left, right) => (left.order ?? 999) - (right.order ?? 999))
     .slice(0, 12)
     .map(normalizeCastMember);
 
-  const imdbId = details.imdb_id ?? null;
-  let voteAverage = Number.isFinite(details.vote_average) ? details.vote_average : 0;
+  const imdbId = data.imdb_id ?? null;
+  let voteAverage = Number.isFinite(data.vote_average) ? data.vote_average : 0;
 
   if (imdbId) {
     const imdbRating = await getImdbRating(imdbId);
@@ -1253,32 +1588,44 @@ export async function getMovieDetails(id: string): Promise<MovieDetails> {
     }
   }
 
-  return {
-    id: details.id,
-    title: details.title,
-    originalTitle: (details.original_language !== "en" && details.original_title !== details.title)
-      ? details.original_title : undefined,
-    overview: details.overview ?? "",
-    runtimeMinutes: details.runtime,
-    genres: details.genres.map((entry) => entry.name),
-    genreIds: details.genres.map((entry) => entry.id),
-    ageRating: details.adult ? "18+" : "6+",
-    posterPath: details.poster_path,
-    backdropPath: details.backdrop_path,
+  const result: MovieDetails = {
+    id: data.id,
+    title: data.title,
+    originalTitle: (data.original_language !== "en" && data.original_title !== data.title)
+      ? data.original_title : undefined,
+    overview: data.overview ?? "",
+    runtimeMinutes: data.runtime,
+    genres: data.genres.map((entry) => entry.name),
+    genreIds: data.genres.map((entry) => entry.id),
+    ageRating: data.adult ? "18+" : "6+",
+    posterPath: data.poster_path,
+    backdropPath: data.backdrop_path,
     voteAverage,
-    voteCount: details.vote_count ?? 0,
-    releaseDate: details.release_date ?? "",
+    voteCount: data.vote_count ?? 0,
+    releaseDate: data.release_date ?? "",
     imdbId,
-    collectionId: details.belongs_to_collection?.id ?? null,
+    collectionId: data.belongs_to_collection?.id ?? null,
     cast,
-    directors: pickDirectorMembers(creditsResponse.data.crew ?? []),
-    crew: pickKeyCrewMembers(creditsResponse.data.crew ?? [])
+    directors: pickDirectorMembers(data.credits?.crew ?? []),
+    crew: pickKeyCrewMembers(data.credits?.crew ?? [])
   };
+
+  movieDetailsCache.set(cacheKey, result);
+  return result;
 }
 
 export async function getSeriesDetails(id: string): Promise<SeriesDetails> {
   assertCredentials();
+  const cacheKey = getLocalizedTmdbCacheKey("series-details", id);
+  const cached = seriesDetailsCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
+  return dedupeInFlight(inFlightSeriesDetails, cacheKey, () => fetchSeriesDetails(id, cacheKey));
+}
+
+async function fetchSeriesDetails(id: string, cacheKey: string): Promise<SeriesDetails> {
   const { data } = await tmdbClient.get<TmdbTvDetailsWithCreditsResponse>(`/tv/${id}`, {
     params: {
       append_to_response: "credits,external_ids"
@@ -1315,7 +1662,7 @@ export async function getSeriesDetails(id: string): Promise<SeriesDetails> {
     }
   }
 
-  return {
+  const result: SeriesDetails = {
     id: data.id,
     title: data.name,
     originalTitle: (data.original_language !== "en" && data.original_name !== data.name)
@@ -1337,6 +1684,9 @@ export async function getSeriesDetails(id: string): Promise<SeriesDetails> {
     directors,
     crew: pickKeyCrewMembers(data.credits?.crew ?? [])
   };
+
+  seriesDetailsCache.set(cacheKey, result);
+  return result;
 }
 
 export async function getSeriesSeasonEpisodes(seriesId: string, seasonNumber: number): Promise<SeriesEpisode[]> {
@@ -1350,6 +1700,11 @@ export async function getMovieExternalRatings(
   seededImdbId?: string | null
 ): Promise<ExternalRatings> {
   assertCredentials();
+  const cacheKey = getLocalizedTmdbCacheKey("movie-ratings", movieId);
+  const cached = movieExternalRatingsCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
   const emptyRatings: ExternalRatings = {
     imdb: null,
@@ -1361,6 +1716,7 @@ export async function getMovieExternalRatings(
   try {
     const imdbId = await getImdbId(movieId, seededImdbId);
     if (!imdbId) {
+      movieExternalRatingsCache.set(cacheKey, emptyRatings);
       return emptyRatings;
     }
 
@@ -1375,13 +1731,16 @@ export async function getMovieExternalRatings(
       imdbDisplay = `${imdbApiRating}/10`;
     }
 
-    return {
+    const result = {
       imdb: imdbDisplay,
       rottenTomatoes: omdbRatings.rottenTomatoes,
       metacritic: omdbRatings.metacritic,
       letterboxd
     };
+    movieExternalRatingsCache.set(cacheKey, result);
+    return result;
   } catch {
+    movieExternalRatingsCache.set(cacheKey, emptyRatings);
     return emptyRatings;
   }
 }
@@ -1391,6 +1750,11 @@ export async function getSeriesExternalRatings(
   seededImdbId?: string | null
 ): Promise<SeriesExternalRatings> {
   assertCredentials();
+  const cacheKey = getLocalizedTmdbCacheKey("series-ratings", seriesId);
+  const cached = seriesExternalRatingsCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
   const emptyRatings: SeriesExternalRatings = {
     imdb: null,
@@ -1401,6 +1765,7 @@ export async function getSeriesExternalRatings(
   try {
     const imdbId = await getImdbIdForMedia("tv", seriesId, seededImdbId);
     if (!imdbId) {
+      seriesExternalRatingsCache.set(cacheKey, emptyRatings);
       return emptyRatings;
     }
 
@@ -1414,29 +1779,56 @@ export async function getSeriesExternalRatings(
       imdbDisplay = `${imdbApiRating}/10`;
     }
 
-    return {
+    const result = {
       imdb: imdbDisplay,
       rottenTomatoes: omdbRatings.rottenTomatoes,
       metacritic: omdbRatings.metacritic
     };
+    seriesExternalRatingsCache.set(cacheKey, result);
+    return result;
   } catch {
+    seriesExternalRatingsCache.set(cacheKey, emptyRatings);
     return emptyRatings;
   }
 }
 
 export async function getMovieSummary(id: number): Promise<MediaItem> {
   assertCredentials();
-  const { data } = await tmdbClient.get<TmdbMediaRecord>(`/movie/${id}`);
-  const item = normalizeMedia(data, "movie");
+  const cacheKey = getLocalizedTmdbCacheKey("movie-summary", id);
+  const cached = movieSummaryCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const { data } = await tmdbClient.get<TmdbMediaRecord & { genres?: TmdbGenre[] }>(`/movie/${id}`);
+  const item = normalizeMedia(
+    {
+      ...data,
+      genre_ids: data.genre_ids ?? data.genres?.map((entry) => entry.id) ?? [],
+    },
+    "movie"
+  );
   const [enriched] = await enrichItemsWithImdbRatings([item]);
+  movieSummaryCache.set(cacheKey, enriched);
   return enriched;
 }
 
 export async function getSeriesSummary(id: number): Promise<MediaItem> {
   assertCredentials();
-  const { data } = await tmdbClient.get<TmdbMediaRecord>(`/tv/${id}`);
-  const item = normalizeMedia(data, "tv");
+  const cacheKey = getLocalizedTmdbCacheKey("series-summary", id);
+  const cached = seriesSummaryCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const { data } = await tmdbClient.get<TmdbMediaRecord & { genres?: TmdbGenre[] }>(`/tv/${id}`);
+  const item = normalizeMedia(
+    {
+      ...data,
+      genre_ids: data.genre_ids ?? data.genres?.map((entry) => entry.id) ?? [],
+    },
+    "tv"
+  );
   const [enriched] = await enrichItemsWithImdbRatings([item]);
+  seriesSummaryCache.set(cacheKey, enriched);
   return enriched;
 }
 
@@ -1613,8 +2005,91 @@ function buildGenreFallbackParams(genreIds: number[]) {
   };
 }
 
+function mergeQuickSimilarResults(
+  responses: Array<TmdbListResponse | null | undefined>,
+  fallbackType: MediaType,
+  excludedId: number,
+  maxResults = 14
+): MediaItem[] {
+  const selected = new Map<number | string, MediaItem>();
+
+  for (const response of responses) {
+    if (!response) {
+      continue;
+    }
+
+    for (const item of mapList(response, fallbackType)) {
+      if (Number(item.id) === excludedId || selected.has(item.id)) {
+        continue;
+      }
+
+      selected.set(item.id, item);
+      if (selected.size >= maxResults) {
+        return [...selected.values()];
+      }
+    }
+  }
+
+  return [...selected.values()];
+}
+
+export async function getQuickSimilarMovies(movieId: string, details: MovieDetails): Promise<MediaItem[]> {
+  assertCredentials();
+  const cacheKey = getLocalizedTmdbCacheKey("quick-similar-movies", movieId);
+  const cached = quickSimilarMoviesCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const [recommendationsResult, similarResult, genreFallbackResult] = await Promise.all([
+    tmdbClient.get<TmdbListResponse>(`/movie/${movieId}/recommendations`).then((response) => response.data).catch(() => null),
+    tmdbClient.get<TmdbListResponse>(`/movie/${movieId}/similar`).then((response) => response.data).catch(() => null),
+    tmdbClient.get<TmdbListResponse>("/discover/movie", {
+      params: buildGenreFallbackParams(details.genreIds),
+    }).then((response) => response.data).catch(() => null),
+  ]);
+
+  const result = mergeQuickSimilarResults(
+    [recommendationsResult, similarResult, genreFallbackResult],
+    "movie",
+    Number(movieId)
+  );
+  quickSimilarMoviesCache.set(cacheKey, result);
+  return result;
+}
+
+export async function getQuickSimilarSeries(seriesId: string, details: SeriesDetails): Promise<MediaItem[]> {
+  assertCredentials();
+  const cacheKey = getLocalizedTmdbCacheKey("quick-similar-series", seriesId);
+  const cached = quickSimilarSeriesCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const [recommendationsResult, similarResult, genreFallbackResult] = await Promise.all([
+    tmdbClient.get<TmdbListResponse>(`/tv/${seriesId}/recommendations`).then((response) => response.data).catch(() => null),
+    tmdbClient.get<TmdbListResponse>(`/tv/${seriesId}/similar`).then((response) => response.data).catch(() => null),
+    tmdbClient.get<TmdbListResponse>("/discover/tv", {
+      params: buildGenreFallbackParams(details.genreIds),
+    }).then((response) => response.data).catch(() => null),
+  ]);
+
+  const result = mergeQuickSimilarResults(
+    [recommendationsResult, similarResult, genreFallbackResult],
+    "tv",
+    Number(seriesId)
+  );
+  quickSimilarSeriesCache.set(cacheKey, result);
+  return result;
+}
+
 export async function getSmartSimilarMovies(movieId: string, details: MovieDetails): Promise<MediaItem[]> {
   assertCredentials();
+  const cacheKey = getLocalizedTmdbCacheKey("similar-movies", movieId);
+  const cached = similarMoviesCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
   const numericId = Number(movieId);
   const leadActor = details.cast[0] ?? null;
@@ -1734,11 +2209,18 @@ export async function getSmartSimilarMovies(movieId: string, details: MovieDetai
     return (b.candidate.record.popularity ?? 0) - (a.candidate.record.popularity ?? 0);
   });
 
-  return finalizeSmartSimilarResults(scored, "movie");
+  const result = await finalizeSmartSimilarResults(scored, "movie");
+  similarMoviesCache.set(cacheKey, result);
+  return result;
 }
 
 export async function getSmartSimilarSeries(seriesId: string, details: SeriesDetails): Promise<MediaItem[]> {
   assertCredentials();
+  const cacheKey = getLocalizedTmdbCacheKey("similar-series", seriesId);
+  const cached = similarSeriesCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
   const numericId = Number(seriesId);
   const leadActor = details.cast[0] ?? null;
@@ -1853,7 +2335,9 @@ export async function getSmartSimilarSeries(seriesId: string, details: SeriesDet
     return (b.candidate.record.popularity ?? 0) - (a.candidate.record.popularity ?? 0);
   });
 
-  return finalizeSmartSimilarResults(scored, "tv");
+  const result = await finalizeSmartSimilarResults(scored, "tv");
+  similarSeriesCache.set(cacheKey, result);
+  return result;
 }
 
 export async function getSeriesEpisodeFallbackImagesWithImdb(
@@ -1972,30 +2456,11 @@ export async function getPersonDetails(id: string): Promise<PersonDetails> {
 
   const [personResponse, creditsResponse] = await Promise.all([
     tmdbClient.get<TmdbPersonDetailsResponse>(`/person/${id}`),
-    tmdbClient.get<TmdbPersonMovieCreditsResponse>(`/person/${id}/movie_credits`)
+    tmdbClient.get<TmdbPersonCombinedCreditsResponse>(`/person/${id}/combined_credits`)
   ]);
 
   const person = personResponse.data;
-
-  // Combine cast and crew works
-  const allWorks = [
-    ...creditsResponse.data.cast,
-    ...(creditsResponse.data.crew ?? [])
-  ];
-
-  // Deduplicate by ID and sort by popularity
-  const seenIds = new Set<number>();
-  const uniqueWorks = allWorks.filter(item => {
-    if (seenIds.has(item.id)) return false;
-    seenIds.add(item.id);
-    return true;
-  });
-
-  const knownForMovies = uniqueWorks
-    .slice()
-    .sort((left, right) => (right.popularity ?? 0) - (left.popularity ?? 0))
-    .slice(0, 12)
-    .map(normalizeMovieCredit);
+  const knownForMovies = normalizePersonCredits(creditsResponse.data.cast, { requirePoster: true });
 
   return {
     id: person.id,
@@ -2006,7 +2471,7 @@ export async function getPersonDetails(id: string): Promise<PersonDetails> {
     knownForDepartment: person.known_for_department,
     popularity: person.popularity,
     profilePath: person.profile_path,
-    knownForMovies: knownForMovies.filter(isQualityItem)
+    knownForMovies
   };
 }
 
@@ -2026,6 +2491,27 @@ type TmdbVideosResponse = {
   results: TmdbVideoRecord[];
 };
 
+function resolveTrailerUrl(videos: TmdbVideoRecord[]): string | null {
+  const youtubeVideos = videos.filter((video) => video.site === "YouTube" && video.key);
+
+  const officialTrailer = youtubeVideos.find((video) => video.type === "Trailer" && video.official);
+  if (officialTrailer) {
+    return `https://www.youtube.com/watch?v=${officialTrailer.key}`;
+  }
+
+  const anyTrailer = youtubeVideos.find((video) => video.type === "Trailer");
+  if (anyTrailer) {
+    return `https://www.youtube.com/watch?v=${anyTrailer.key}`;
+  }
+
+  const teaser = youtubeVideos.find((video) => video.type === "Teaser");
+  if (teaser) {
+    return `https://www.youtube.com/watch?v=${teaser.key}`;
+  }
+
+  return null;
+}
+
 /**
  * Fetches the official YouTube trailer URL for a movie from TMDB.
  * Prioritizes: Official Trailer > any Trailer > Teaser.
@@ -2033,23 +2519,16 @@ type TmdbVideosResponse = {
  */
 export async function getMovieTrailerUrl(movieId: string): Promise<string | null> {
   assertCredentials();
+  const cacheKey = `movie:${movieId}`;
+  if (trailerUrlCache.has(cacheKey)) {
+    return trailerUrlCache.get(cacheKey) ?? null;
+  }
+
   try {
     const { data } = await tmdbClient.get<TmdbVideosResponse>(`/movie/${movieId}/videos`);
-    const videos = (data.results ?? []).filter((v) => v.site === "YouTube" && v.key);
-
-    // Priority 1: Official Trailer
-    const officialTrailer = videos.find((v) => v.type === "Trailer" && v.official);
-    if (officialTrailer) return `https://www.youtube.com/watch?v=${officialTrailer.key}`;
-
-    // Priority 2: Any Trailer
-    const anyTrailer = videos.find((v) => v.type === "Trailer");
-    if (anyTrailer) return `https://www.youtube.com/watch?v=${anyTrailer.key}`;
-
-    // Priority 3: Teaser
-    const teaser = videos.find((v) => v.type === "Teaser");
-    if (teaser) return `https://www.youtube.com/watch?v=${teaser.key}`;
-
-    return null;
+    const trailerUrl = resolveTrailerUrl(data.results ?? []);
+    trailerUrlCache.set(cacheKey, trailerUrl);
+    return trailerUrl;
   } catch {
     return null;
   }
@@ -2062,23 +2541,16 @@ export async function getMovieTrailerUrl(movieId: string): Promise<string | null
  */
 export async function getSeriesTrailerUrl(seriesId: string): Promise<string | null> {
   assertCredentials();
+  const cacheKey = `tv:${seriesId}`;
+  if (trailerUrlCache.has(cacheKey)) {
+    return trailerUrlCache.get(cacheKey) ?? null;
+  }
+
   try {
     const { data } = await tmdbClient.get<TmdbVideosResponse>(`/tv/${seriesId}/videos`);
-    const videos = (data.results ?? []).filter((v) => v.site === "YouTube" && v.key);
-
-    // Priority 1: Official Trailer
-    const officialTrailer = videos.find((v) => v.type === "Trailer" && v.official);
-    if (officialTrailer) return `https://www.youtube.com/watch?v=${officialTrailer.key}`;
-
-    // Priority 2: Any Trailer
-    const anyTrailer = videos.find((v) => v.type === "Trailer");
-    if (anyTrailer) return `https://www.youtube.com/watch?v=${anyTrailer.key}`;
-
-    // Priority 3: Teaser
-    const teaser = videos.find((v) => v.type === "Teaser");
-    if (teaser) return `https://www.youtube.com/watch?v=${teaser.key}`;
-
-    return null;
+    const trailerUrl = resolveTrailerUrl(data.results ?? []);
+    trailerUrlCache.set(cacheKey, trailerUrl);
+    return trailerUrl;
   } catch {
     return null;
   }
@@ -2088,6 +2560,142 @@ export async function getSeriesTrailerUrl(seriesId: string): Promise<string | nu
 /*  Multi-Search (movies + TV)                                        */
 /* ------------------------------------------------------------------ */
 
+function normalizeSearchTerm(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function isConfidentActorSearchMatch(query: string, person: TmdbPersonSearchRecord | undefined): person is TmdbPersonSearchRecord {
+  if (!person || person.known_for_department !== "Acting") {
+    return false;
+  }
+
+  const normalizedQuery = normalizeSearchTerm(query);
+  const normalizedName = normalizeSearchTerm(person.name);
+  if (normalizedQuery.length < 3 || normalizedName.length === 0) {
+    return false;
+  }
+
+  return (
+    normalizedName === normalizedQuery ||
+    normalizedName.startsWith(normalizedQuery) ||
+    normalizedQuery.startsWith(normalizedName)
+  );
+}
+
+type ActorCreditSearchResponse = PaginatedMediaResponse & {
+  actorName: string;
+  confidence: number;
+};
+
+function getActorSearchConfidence(query: string, person: TmdbPersonSearchRecord | undefined) {
+  if (!isConfidentActorSearchMatch(query, person)) {
+    return 0;
+  }
+
+  const normalizedQuery = normalizeSearchTerm(query);
+  const normalizedName = normalizeSearchTerm(person.name);
+  const queryTokenCount = normalizedQuery.split(" ").filter(Boolean).length;
+  const nameTokenCount = normalizedName.split(" ").filter(Boolean).length;
+
+  if (normalizedName === normalizedQuery) {
+    return nameTokenCount >= 2 ? 1000 : 880;
+  }
+
+  if (normalizedQuery.startsWith(normalizedName) && nameTokenCount >= 2) {
+    return 940;
+  }
+
+  if (normalizedName.startsWith(normalizedQuery) && normalizedQuery.length >= 4) {
+    return queryTokenCount >= 2 ? 900 : 760;
+  }
+
+  return 0;
+}
+
+function getSearchTitleScore(query: string, item: MediaItem) {
+  const normalizedQuery = normalizeSearchTerm(query);
+  if (!normalizedQuery) return 0;
+
+  const normalizedTitle = normalizeSearchTerm(item.title);
+  const normalizedOriginalTitle = normalizeSearchTerm(item.originalTitle ?? "");
+  const titleCandidates = [normalizedTitle, normalizedOriginalTitle].filter(Boolean);
+
+  if (titleCandidates.some((title) => title === normalizedQuery)) {
+    return 1000;
+  }
+
+  if (titleCandidates.some((title) => title.startsWith(`${normalizedQuery} `))) {
+    return 820;
+  }
+
+  if (titleCandidates.some((title) => title.includes(` ${normalizedQuery} `))) {
+    return 620;
+  }
+
+  if (titleCandidates.some((title) => title.startsWith(normalizedQuery))) {
+    return 520;
+  }
+
+  return 0;
+}
+
+function hasConfidentTitleSearchMatch(query: string, items: MediaItem[]) {
+  return items.some((item) => getSearchTitleScore(query, item) >= 820);
+}
+
+function getBestTitleSearchScore(query: string, items: MediaItem[]) {
+  return items.reduce((best, item) => Math.max(best, getSearchTitleScore(query, item)), 0);
+}
+
+function rankTitleSearchResults(query: string, items: MediaItem[]) {
+  return items
+    .map((item, index) => ({ item, index, titleScore: getSearchTitleScore(query, item) }))
+    .sort((left, right) => {
+      if (left.titleScore !== right.titleScore) {
+        return right.titleScore - left.titleScore;
+      }
+      return left.index - right.index;
+    })
+    .map(({ item }) => item);
+}
+
+async function searchActorCredits(query: string, page: number): Promise<ActorCreditSearchResponse | null> {
+  const { data: peopleData } = await tmdbClient.get<TmdbPersonSearchResponse>("/search/person", {
+    params: { query: query.trim(), page: 1, include_adult: false }
+  });
+
+  const actor = peopleData.results
+    .filter((person) => person.known_for_department === "Acting")
+    .sort((left, right) => (right.popularity ?? 0) - (left.popularity ?? 0))[0];
+
+  const confidence = getActorSearchConfidence(query, actor);
+  if (confidence <= 0) {
+    return null;
+  }
+
+  const { data: creditsData } = await tmdbClient.get<TmdbPersonCombinedCreditsResponse>(
+    `/person/${actor.id}/combined_credits`
+  );
+  const allCredits = normalizePersonCredits(creditsData.cast, { requirePoster: true });
+  const pageSize = 20;
+  const totalPages = Math.max(1, Math.ceil(allCredits.length / pageSize));
+  const safePage = Math.min(Math.max(page, 1), totalPages);
+
+  return {
+    actorName: actor.name,
+    confidence,
+    items: allCredits.slice((safePage - 1) * pageSize, safePage * pageSize),
+    page: safePage,
+    totalPages
+  };
+}
+
 export async function searchMulti(
   query: string,
   page: number = 1
@@ -2096,16 +2704,36 @@ export async function searchMulti(
     return { items: [], page: 1, totalPages: 0 };
   }
 
-  const { data } = await tmdbClient.get<TmdbListResponse>("/search/multi", {
+  const multiSearchRequest = tmdbClient.get<TmdbListResponse>("/search/multi", {
     params: { query: query.trim(), page, include_adult: false }
   });
+
+  const actorCreditsRequest = searchActorCredits(query, page).catch(() => null);
+  const [{ data }, actorCredits] = await Promise.all([multiSearchRequest, actorCreditsRequest]);
 
   const filtered = data.results
     .filter((r) => r.media_type === "movie" || r.media_type === "tv")
     .map((entry) => normalizeMedia(entry, entry.media_type ?? "movie"))
     .filter((item) => item.title !== "Untitled" && item.rating >= 6);
 
-  const items = await enrichItemsWithImdbRatings(filtered);
+  const rankedTitleResults = rankTitleSearchResults(query, filtered);
+  const bestTitleScore = getBestTitleSearchScore(query, rankedTitleResults);
+
+  const shouldUseActorCredits =
+    actorCredits &&
+    actorCredits.items.length > 0 &&
+    (
+      filtered.length === 0 ||
+      actorCredits.confidence >= 1000 ||
+      (page === 1 && actorCredits.confidence >= 880 && bestTitleScore < 1000) ||
+      (page === 1 && !hasConfidentTitleSearchMatch(query, rankedTitleResults))
+    );
+
+  if (shouldUseActorCredits) {
+    return actorCredits;
+  }
+
+  const items = await enrichItemsWithImdbRatings(rankedTitleResults);
 
   return {
     items,
@@ -2123,20 +2751,24 @@ export type Genre = {
   name: string;
 };
 
-let cachedMovieGenres: Genre[] | null = null;
-let cachedTvGenres: Genre[] | null = null;
+const cachedMovieGenres = new Map<string, Genre[]>();
+const cachedTvGenres = new Map<string, Genre[]>();
 
 export async function getMovieGenres(): Promise<Genre[]> {
-  if (cachedMovieGenres) return cachedMovieGenres;
+  const language = getTmdbRequestLanguage();
+  const cached = cachedMovieGenres.get(language);
+  if (cached) return cached;
   const { data } = await tmdbClient.get<{ genres: Genre[] }>("/genre/movie/list");
-  cachedMovieGenres = data.genres;
+  cachedMovieGenres.set(language, data.genres);
   return data.genres;
 }
 
 export async function getTvGenres(): Promise<Genre[]> {
-  if (cachedTvGenres) return cachedTvGenres;
+  const language = getTmdbRequestLanguage();
+  const cached = cachedTvGenres.get(language);
+  if (cached) return cached;
   const { data } = await tmdbClient.get<{ genres: Genre[] }>("/genre/tv/list");
-  cachedTvGenres = data.genres;
+  cachedTvGenres.set(language, data.genres);
   return data.genres;
 }
 
@@ -2194,6 +2826,8 @@ export async function discoverWithFilters(
 }
 
 const altTitleCache = new Map<string, string | null>();
+const localizedFranchiseMetadataCache = new Map<string, { title: string | null; tagline: string | null } | null>();
+const localizedFranchiseMetadataRequests = new Map<string, Promise<{ title: string | null; tagline: string | null } | null>>();
 
 export async function getTurkishAlternativeTitle(
   tmdbId: string,
@@ -2217,6 +2851,69 @@ export async function getTurkishAlternativeTitle(
     altTitleCache.set(key, null);
     return null;
   }
+}
+
+export async function getLocalizedFranchiseMetadata(
+  tmdbId: string,
+  mediaType: MediaType,
+  language: AppLanguage
+): Promise<{ title: string | null; tagline: string | null } | null> {
+  if (language === "en") {
+    return null;
+  }
+
+  const key = `${language}:${mediaType}:${tmdbId}`;
+  if (localizedFranchiseMetadataCache.has(key)) {
+    return localizedFranchiseMetadataCache.get(key) ?? null;
+  }
+
+  const existingRequest = localizedFranchiseMetadataRequests.get(key);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = (async () => {
+    try {
+      const endpoint = mediaType === "movie" ? `/movie/${tmdbId}` : `/tv/${tmdbId}`;
+      const { data } = await tmdbClient.get<TmdbLocalizedFranchiseMetadataResponse>(endpoint, {
+        params: {
+          language: getLanguageLocale(language),
+        },
+      });
+
+      const localizedTitle =
+        mediaType === "movie"
+          ? typeof data.title === "string" && data.title.trim().length > 0
+            ? data.title.trim()
+            : null
+          : typeof data.name === "string" && data.name.trim().length > 0
+            ? data.name.trim()
+            : null;
+
+      const alternativeTitle =
+        language === "tr" ? await getTurkishAlternativeTitle(tmdbId, mediaType) : null;
+
+      const title = alternativeTitle?.trim().length
+        ? alternativeTitle.trim()
+        : localizedTitle;
+
+      const tagline = typeof data.tagline === "string" && data.tagline.trim().length > 0
+        ? data.tagline.trim()
+        : null;
+
+      const result = title || tagline ? { title, tagline } : null;
+      localizedFranchiseMetadataCache.set(key, result);
+      return result;
+    } catch {
+      localizedFranchiseMetadataCache.set(key, null);
+      return null;
+    }
+  })().finally(() => {
+    localizedFranchiseMetadataRequests.delete(key);
+  });
+
+  localizedFranchiseMetadataRequests.set(key, request);
+  return request;
 }
 
 

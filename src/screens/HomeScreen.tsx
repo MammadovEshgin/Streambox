@@ -1,11 +1,12 @@
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { FlatList, ScrollView } from "react-native";
 import styled from "styled-components/native";
 
 import { MediaItem, getPopular, getTrending } from "../api/tmdb";
-import { getAzClassicMovies, AzClassicMovie } from "../api/azClassics";
+import { isValidMediaItemArray } from "../api/mediaFormatting";
 import {
   FranchiseCollection,
   getFranchiseCollections,
@@ -23,18 +24,49 @@ import {
 import { SpotlightCarousel } from "../components/home/SpotlightCarousel";
 import { HomeHeader } from "../components/home/HomeHeader";
 import { MediaCard } from "../components/home/MediaCard";
+import { franchiseCardBackgroundImage } from "../constants/imageAssets";
+import { useAuth } from "../context/AuthContext";
+import { useUserDataSync } from "../context/UserDataSyncContext";
+import { useRuntimeCacheAutoRefresh } from "../hooks/useRuntimeCacheAutoRefresh";
 import { HomeStackParamList } from "../navigation/types";
-import { isRuntimeCacheFresh, readRuntimeCache, writeRuntimeCache } from "../services/runtimeCache";
+import { formatFranchiseCollectionTitle } from "../services/franchiseLocalization";
+import { getTimeBucketFreshnessKey } from "../services/contentFreshness";
+import {
+  readPersistedRuntimeCache,
+  readRuntimeCache,
+  writePersistedRuntimeCache,
+  writeRuntimeCache,
+} from "../services/runtimeCache";
+import { useAppSettings } from "../settings/AppSettingsContext";
 
 const HOME_DISCOVERY_CACHE_KEY = "home-discovery-v1";
 const HOME_DISCOVERY_CACHE_TTL_MS = 1000 * 60 * 10;
+const HOME_DISCOVERY_FIRST_LOAD_RETRY_DELAYS_MS = [1_500, 4_000, 8_000];
 
 type HomeDiscoveryCache = {
   popularMovies: MediaItem[];
   trendingMovies: MediaItem[];
   trendingSeries: MediaItem[];
-  azClassics?: AzClassicMovie[];
 };
+
+function isValidHomeDiscoveryCache(value: unknown): value is HomeDiscoveryCache {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const cache = value as Partial<HomeDiscoveryCache>;
+  return (
+    isValidMediaItemArray(cache.popularMovies)
+    && isValidMediaItemArray(cache.trendingMovies)
+    && isValidMediaItemArray(cache.trendingSeries)
+  );
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 const Layout = styled(ScrollView).attrs({
   showsVerticalScrollIndicator: false,
@@ -47,25 +79,16 @@ const Content = styled.View`
   padding: 0 16px 24px;
 `;
 
-const ScreenTitle = styled.Text`
-  margin-top: 2px;
-  margin-bottom: 10px;
-  color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 23px;
-  line-height: 28px;
-  font-weight: 700;
-  letter-spacing: -0.35px;
-`;
-
 const HeroWrap = styled.View`
   margin-top: 8px;
   margin-bottom: 22px;
 `;
 
 const SectionHeader = styled.View`
-  margin-bottom: 12px;
+  margin-top: 8px;
+  margin-bottom: 14px;
   flex-direction: row;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
 `;
 
@@ -75,18 +98,17 @@ const SectionLinkButton = styled.Pressable`
 
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: ${({ theme }) => theme.typography.TitleMedium.fontFamily};
-  font-size: 20px;
-  line-height: 26px;
-  font-weight: 700;
-  letter-spacing: -0.4px;
+  font-family: Outfit_700Bold;
+  font-size: 22px;
+  line-height: 28px;
+  letter-spacing: -0.6px;
 `;
 
 const SectionLink = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
-  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
-  font-size: 14px;
-  letter-spacing: 0.25px;
+  color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_600SemiBold;
+  font-size: 13px;
+  letter-spacing: 0;
 `;
 
 const RailWrap = styled.View`
@@ -95,6 +117,44 @@ const RailWrap = styled.View`
 
 const RailCardWrap = styled.View`
   margin-right: 12px;
+`;
+
+const FranchiseCardRoot = styled.Pressable`
+  width: 132px;
+`;
+
+const FranchiseArtworkFrame = styled.View`
+  width: 132px;
+  height: 198px;
+  border-radius: 14px;
+  overflow: hidden;
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
+`;
+
+const FranchisePosterImage = styled.Image`
+  width: 100%;
+  height: 100%;
+`;
+
+const FranchiseCardTitle = styled.Text`
+  margin-top: 10px;
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
+  font-size: 14px;
+  line-height: 18px;
+  letter-spacing: -0.15px;
+`;
+
+const FranchiseCardMeta = styled.Text`
+  margin-top: 4px;
+  color: ${({ theme }) => theme.colors.textTertiary};
+  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
 `;
 
 const EmptyRail = styled.View`
@@ -132,34 +192,19 @@ const ErrorText = styled.Text`
 
 type RailProps = {
   title: string;
-  data: (MediaItem | AzClassicMovie)[];
-  onPressItem?: (item: MediaItem | AzClassicMovie) => void;
+  data: MediaItem[];
+  onPressItem?: (item: MediaItem) => void;
   onPressSeeAll?: () => void;
 };
 
-function DiscoveryRail({ title, data, onPressItem, onPressSeeAll }: RailProps) {
-  const renderItem = useCallback(({ item }: ListRenderItemInfo<MediaItem | AzClassicMovie>) => {
-    const isAzClassic = "posterUrl" in item && !("mediaType" in item);
-    const displayItem: MediaItem = isAzClassic
-      ? {
-          id: (item as AzClassicMovie).id as unknown as number,
-          title: (item as AzClassicMovie).title,
-          posterPath: "",
-          backdropPath: null,
-          mediaType: "movie" as const,
-          rating: 0,
-          overview: (item as AzClassicMovie).synopsis || "",
-          year: String((item as AzClassicMovie).year)
-        }
-      : (item as MediaItem);
-
+const DiscoveryRail = memo(function DiscoveryRail({ title, data, onPressItem, onPressSeeAll }: RailProps) {
+  const { t } = useTranslation();
+  const renderItem = useCallback(({ item }: ListRenderItemInfo<MediaItem>) => {
     return (
       <RailCardWrap>
         <MediaCard
-          item={displayItem}
+          item={item}
           onPress={() => onPressItem?.(item)}
-          posterUri={isAzClassic ? ((item as AzClassicMovie).cachedPosterUrl ?? (item as AzClassicMovie).posterUrl ?? undefined) : undefined}
-          hideRating={isAzClassic}
         />
       </RailCardWrap>
     );
@@ -173,12 +218,12 @@ function DiscoveryRail({ title, data, onPressItem, onPressSeeAll }: RailProps) {
           onPress={onPressSeeAll}
           style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
         >
-          <SectionLink>See all</SectionLink>
+          <SectionLink>{t("common.seeAll")}</SectionLink>
         </SectionLinkButton>
       </SectionHeader>
       {data.length === 0 ? (
         <EmptyRail>
-          <EmptyRailText>No results in this rail</EmptyRailText>
+          <EmptyRailText>{t("search.noResultsFound")}</EmptyRailText>
         </EmptyRail>
       ) : (
         <RailWrap>
@@ -186,85 +231,168 @@ function DiscoveryRail({ title, data, onPressItem, onPressSeeAll }: RailProps) {
             data={data}
             horizontal
             keyExtractor={(item) => {
-              const isAzClassic = "posterUrl" in item && !("mediaType" in item);
-              return isAzClassic ? `az-${item.id}` : `${(item as MediaItem).mediaType}-${item.id}`;
+              return `${item.mediaType}-${item.id}`;
             }}
             renderItem={renderItem}
             showsHorizontalScrollIndicator={false}
+            removeClippedSubviews
           />
         </RailWrap>
       )}
     </>
   );
-}
+});
 
 type HomeScreenProps = NativeStackScreenProps<HomeStackParamList, "HomeFeed">;
 
 export function HomeScreen({ navigation }: HomeScreenProps) {
-  const cacheRef = useRef(readRuntimeCache<HomeDiscoveryCache>(HOME_DISCOVERY_CACHE_KEY));
-  const cachedDiscovery = cacheRef.current?.value;
+  const { t } = useTranslation();
+  const { language } = useAppSettings();
+  const { user } = useAuth();
+  const { isReady: isUserDataReady } = useUserDataSync();
+  const localizedCacheKey = `${HOME_DISCOVERY_CACHE_KEY}:${language}`;
+  const discoveryCacheEntry = readRuntimeCache<HomeDiscoveryCache>(localizedCacheKey);
+  const cachedDiscovery = discoveryCacheEntry?.value;
+  const getDiscoveryFreshnessVersion = useCallback(() => getTimeBucketFreshnessKey(6), []);
   const [query, setQuery] = useState("");
   const [popularMovies, setPopularMovies] = useState<MediaItem[]>(cachedDiscovery?.popularMovies ?? []);
   const [trendingMovies, setTrendingMovies] = useState<MediaItem[]>(cachedDiscovery?.trendingMovies ?? []);
   const [trendingSeries, setTrendingSeries] = useState<MediaItem[]>(cachedDiscovery?.trendingSeries ?? []);
-  const [azClassics, setAzClassics] = useState<AzClassicMovie[]>(cachedDiscovery?.azClassics ?? []);
   const [franchises, setFranchises] = useState<FranchiseCollection[]>([]);
   const [isLoading, setIsLoading] = useState(!cachedDiscovery);
+  const [hasHydratedPersistentCache, setHasHydratedPersistentCache] = useState(Boolean(cachedDiscovery));
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [filterVisible, setFilterVisible] = useState(false);
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const idlePrefetchedFranchiseIdsRef = useRef<Set<string>>(new Set());
 
-  const hasDiscoveryData = popularMovies.length > 0 || trendingMovies.length > 0 || trendingSeries.length > 0 || azClassics.length > 0;
+  const hasDiscoveryData = popularMovies.length > 0 || trendingMovies.length > 0 || trendingSeries.length > 0;
+
+  useEffect(() => {
+    setPopularMovies(cachedDiscovery?.popularMovies ?? []);
+    setTrendingMovies(cachedDiscovery?.trendingMovies ?? []);
+    setTrendingSeries(cachedDiscovery?.trendingSeries ?? []);
+    setErrorMessage(null);
+    setIsLoading(!cachedDiscovery);
+  }, [cachedDiscovery, language]);
+
+  useEffect(() => {
+    let active = true;
+
+    if (cachedDiscovery) {
+      setHasHydratedPersistentCache(true);
+      return () => {
+        active = false;
+      };
+    }
+
+    void readPersistedRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, {
+      validate: isValidHomeDiscoveryCache,
+      expectedVersion: getDiscoveryFreshnessVersion(),
+      maxAgeMs: HOME_DISCOVERY_CACHE_TTL_MS,
+    })
+      .then((entry) => {
+        if (!active) {
+          return;
+        }
+
+        if (entry?.value) {
+          setPopularMovies(entry.value.popularMovies ?? []);
+          setTrendingMovies(entry.value.trendingMovies ?? []);
+          setTrendingSeries(entry.value.trendingSeries ?? []);
+          setIsLoading(false);
+        }
+
+        setHasHydratedPersistentCache(true);
+      })
+      .catch(() => {
+        if (active) {
+          setHasHydratedPersistentCache(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [cachedDiscovery, getDiscoveryFreshnessVersion, localizedCacheKey]);
 
   const loadDiscovery = useCallback(async (background = false) => {
     if (!background && !hasDiscoveryData) {
       setIsLoading(true);
     }
 
+    const retryDelays = !background && !hasDiscoveryData ? HOME_DISCOVERY_FIRST_LOAD_RETRY_DELAYS_MS : [];
+    let lastError: unknown = null;
+
     try {
-      const [popular, movies, series, classics, franchiseData] = await Promise.all([
-        getPopular(),
-        getTrending("movie"),
-        getTrending("tv"),
-        getAzClassicMovies(),
-        getFranchiseCollections().catch(() => [] as FranchiseCollection[])
-      ]);
+      for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+        try {
+          const [popular, movies, series] = await Promise.all([
+            getPopular(),
+            getTrending("movie"),
+            getTrending("tv"),
+          ]);
 
-      writeRuntimeCache<HomeDiscoveryCache>(HOME_DISCOVERY_CACHE_KEY, {
-        popularMovies: popular,
-        trendingMovies: movies,
-        trendingSeries: series,
-        azClassics: classics
-      });
+          const coreState: HomeDiscoveryCache = {
+            popularMovies: popular,
+            trendingMovies: movies,
+            trendingSeries: series,
+          };
 
-      startTransition(() => {
-        setPopularMovies(popular);
-        setTrendingMovies(movies);
-        setTrendingSeries(series);
-        setAzClassics(classics);
-        setFranchises(franchiseData);
-        setErrorMessage(null);
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to load discovery feed.";
+          const freshnessVersion = getDiscoveryFreshnessVersion();
+          writeRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, coreState, { version: freshnessVersion });
+          void writePersistedRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, coreState, { version: freshnessVersion });
+
+          startTransition(() => {
+            setPopularMovies(popular);
+            setTrendingMovies(movies);
+            setTrendingSeries(series);
+            setErrorMessage(null);
+          });
+          return;
+        } catch (error) {
+          lastError = error;
+          const retryDelay = retryDelays[attempt];
+          if (retryDelay) {
+            await wait(retryDelay);
+          }
+        }
+      }
+
+      const message = lastError instanceof Error ? lastError.message : "Unable to load discovery feed.";
       if (!hasDiscoveryData) {
         setErrorMessage(message);
       }
-      // Still set az classics to empty array if they fail to load
-      setAzClassics([]);
     } finally {
       setIsLoading(false);
     }
-  }, [hasDiscoveryData]);
+  }, [getDiscoveryFreshnessVersion, hasDiscoveryData, localizedCacheKey]);
 
   useEffect(() => {
-    const isFresh = isRuntimeCacheFresh(cacheRef.current, HOME_DISCOVERY_CACHE_TTL_MS);
-    if (isFresh) {
-      return;
-    }
+    let active = true;
 
-    void loadDiscovery(Boolean(cachedDiscovery));
-  }, [cachedDiscovery, loadDiscovery]);
+    void getFranchiseCollections()
+      .then((cachedCollections) => {
+        if (!active || cachedCollections.length === 0) {
+          return;
+        }
+
+        setFranchises(cachedCollections);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useRuntimeCacheAutoRefresh({
+    entry: discoveryCacheEntry,
+    maxAgeMs: HOME_DISCOVERY_CACHE_TTL_MS,
+    getExpectedVersion: getDiscoveryFreshnessVersion,
+    enabled: hasHydratedPersistentCache,
+    onRefresh: (hasCachedValue) => loadDiscovery(hasCachedValue),
+  });
 
   useEffect(() => {
     let active = true;
@@ -279,8 +407,7 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
               item.title,
               item.sortOrder,
               item.totalEntries,
-              item.logoUrl,
-              item.cachedLogoUrl,
+              item.accentColor,
             ])
           );
           const freshSignature = JSON.stringify(
@@ -289,8 +416,7 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
               item.title,
               item.sortOrder,
               item.totalEntries,
-              item.logoUrl,
-              item.cachedLogoUrl,
+              item.accentColor,
             ])
           );
           return currentSignature === freshSignature ? currentCollections : freshCollections;
@@ -303,10 +429,83 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isUserDataReady || franchises.length === 0) {
+      return;
+    }
+
+    const prefetchScope = user?.id ?? "anon";
+    const idsToPrefetch = franchises
+      .slice(0, 5)
+      .map((franchise) => franchise.id)
+      .filter((id) => !idlePrefetchedFranchiseIdsRef.current.has(`${prefetchScope}:${id}`));
+
+    if (idsToPrefetch.length === 0) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      idsToPrefetch.forEach((id) => {
+        idlePrefetchedFranchiseIdsRef.current.add(`${prefetchScope}:${id}`);
+        prefetchFranchiseEntries(id, user?.id);
+      });
+    }, 1500);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [franchises, isUserDataReady, user?.id]);
+
   const spotlightItems = useMemo(() => {
     const pool = popularMovies.length > 0 ? popularMovies : [...trendingMovies, ...trendingSeries];
     return pool.filter((i) => i.backdropPath).slice(0, 10);
   }, [popularMovies, trendingMovies, trendingSeries]);
+  const handleOpenTrendingMovie = useCallback((item: MediaItem) => {
+    navigation.navigate("MovieDetail", { movieId: String(item.id) });
+  }, [navigation]);
+  const handleOpenTrendingSeries = useCallback((item: MediaItem) => {
+    navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
+  }, [navigation]);
+  const franchiseRailItems = useMemo(
+    () =>
+      franchises.map((item) => ({
+        id: item.id as unknown as number,
+        title: formatFranchiseCollectionTitle(item.title, language),
+        posterPath: "",
+        backdropPath: null,
+        mediaType: "movie" as const,
+        rating: 0,
+        overview: item.description || "",
+        year: t("franchise.titleCount", { count: item.totalEntries }),
+        originalTitle: item.title,
+        accentColor: item.accentColor,
+      })),
+    [franchises, language, t]
+  );
+  const renderFranchiseRailItem = useCallback(
+    ({ item }: { item: (typeof franchiseRailItems)[number] }) => (
+      <RailCardWrap>
+        <FranchiseCardRoot
+          onPress={() => {
+            navigation.navigate("FranchiseTimeline", {
+              franchiseId: String(item.id),
+              franchiseTitle: item.originalTitle,
+              accentColor: item.accentColor ?? undefined,
+            });
+          }}
+          onPressIn={() => prefetchFranchiseEntries(String(item.id), user?.id)}
+          style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}
+        >
+          <FranchiseArtworkFrame>
+            <FranchisePosterImage source={franchiseCardBackgroundImage} resizeMode="cover" />
+          </FranchiseArtworkFrame>
+          <FranchiseCardTitle numberOfLines={1}>{item.title}</FranchiseCardTitle>
+          <FranchiseCardMeta>{item.year}</FranchiseCardMeta>
+        </FranchiseCardRoot>
+      </RailCardWrap>
+    ),
+    [navigation]
+  );
 
   const handleSearchSubmit = useCallback(
     (searchQuery: string) => {
@@ -347,7 +546,7 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     return (
       <SafeContainer>
         <LoadingWrap>
-          <MovieLoader label="Loading reels" />
+          <MovieLoader label={t("loaders.loadingReels")} />
         </LoadingWrap>
       </SafeContainer>
     );
@@ -357,7 +556,6 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     <SafeContainer>
       <Layout keyboardShouldPersistTaps="handled">
         <Content>
-          <ScreenTitle>Discover</ScreenTitle>
           <HomeHeader
             query={query}
             onChangeQuery={setQuery}
@@ -376,89 +574,49 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
           </HeroWrap>
 
           <DiscoveryRail
-            title="Trending Movies"
+            title={t("home.trendingMovies")}
             data={trendingMovies}
-            onPressItem={(item) => {
-              navigation.navigate("MovieDetail", { movieId: String(item.id) });
-            }}
+            onPressItem={handleOpenTrendingMovie}
             onPressSeeAll={() => {
               navigation.navigate("DiscoverGrid", {
                 source: "trending_movies",
-                title: "Trending Movies"
+                title: t("home.trendingMovies")
               });
             }}
           />
           <DiscoveryRail
-            title="Trending Series"
+            title={t("home.trendingSeries")}
             data={trendingSeries}
-            onPressItem={(item) => {
-              navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
-            }}
+            onPressItem={handleOpenTrendingSeries}
             onPressSeeAll={() => {
               navigation.navigate("DiscoverGrid", {
                 source: "trending_series",
-                title: "Trending Series"
+                title: t("home.trendingSeries")
               });
             }}
           />
-          <DiscoveryRail
-            title="Azerbaijan Classics"
-            data={azClassics}
-            onPressItem={(item) => {
-              if ("posterUrl" in item) {
-                navigation.navigate("AzClassicDetail", { movieId: item.id });
-              }
-            }}
-            onPressSeeAll={() => {
-              navigation.navigate("DiscoverGrid", {
-                source: "az_classics" as any,
-                title: "Azerbaijan Classics"
-              });
-            }}
-          />
-
           {/* Cinematic Journeys - Franchise Roadmaps */}
           {franchises.length > 0 && (
             <>
               <SectionHeader>
-                <SectionTitle>Cinematic Journeys</SectionTitle>
+                <SectionTitle>{t("home.cinematicJourneys")}</SectionTitle>
                 <SectionLinkButton
                   onPress={() => navigation.navigate("FranchiseCatalog")}
                   style={({ pressed }: { pressed: boolean }) => [{ opacity: pressed ? 0.6 : 1 }]}
                 >
-                  <SectionLink>See all</SectionLink>
+                  <SectionLink>{t("common.seeAll")}</SectionLink>
                 </SectionLinkButton>
               </SectionHeader>
               <RailWrap>
                 <FlatList
-                  data={franchises}
+                  data={franchiseRailItems}
                   horizontal
-                  keyExtractor={(item) => item.id}
-                  renderItem={({ item }) => (
-                    <RailCardWrap>
-                      <MediaCard
-                        item={{
-                          id: item.id as unknown as number,
-                          title: item.title,
-                          posterPath: "",
-                          backdropPath: null,
-                          mediaType: "movie" as const,
-                          rating: 0,
-                          overview: item.description || "",
-                          year: `${item.totalEntries} titles`,
-                        }}
-                        onPress={() => {
-                          navigation.navigate("FranchiseTimeline", {
-                            franchiseId: item.id,
-                            franchiseTitle: item.title,
-                          });
-                        }}
-                        onPressIn={() => prefetchFranchiseEntries(item.id)}
-                        posterUri={item.cachedLogoUrl ?? item.logoUrl ?? undefined}
-                        hideRating
-                      />
-                    </RailCardWrap>
-                  )}
+                  initialNumToRender={4}
+                  maxToRenderPerBatch={4}
+                  windowSize={3}
+                  removeClippedSubviews
+                  keyExtractor={(item) => String(item.id)}
+                  renderItem={renderFranchiseRailItem}
                   showsHorizontalScrollIndicator={false}
                 />
               </RailWrap>

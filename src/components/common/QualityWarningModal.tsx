@@ -1,5 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Modal } from "react-native";
+import { useTranslation } from "react-i18next";
 import styled, { useTheme } from "styled-components/native";
 
 const Overlay = styled.Pressable`
@@ -100,6 +101,7 @@ type Props = {
 
 export function QualityWarningModal({ visible, qualityLabel, onGoBack, onContinue }: Props) {
   const theme = useTheme();
+  const { t } = useTranslation();
 
   return (
     <Modal visible={visible} transparent animationType="fade" statusBarTranslucent>
@@ -111,7 +113,7 @@ export function QualityWarningModal({ visible, qualityLabel, onGoBack, onContinu
             </Badge>
           </IconRow>
 
-          <Title>Low Quality Available</Title>
+          <Title>{t("detail.lowQualityAvailable")}</Title>
 
           <QualityTag>
             <QualityTagText>{qualityLabel}</QualityTagText>
@@ -124,10 +126,10 @@ export function QualityWarningModal({ visible, qualityLabel, onGoBack, onContinu
 
           <FooterRow>
             <FooterButton $primary={false} onPress={onGoBack}>
-              <FooterLabel $primary={false}>Go Back</FooterLabel>
+              <FooterLabel $primary={false}>{t("common.goBack")}</FooterLabel>
             </FooterButton>
             <FooterButton $primary={true} onPress={onContinue}>
-              <FooterLabel $primary={true}>Watch Anyway</FooterLabel>
+              <FooterLabel $primary={true}>{t("detail.watchAnyway")}</FooterLabel>
             </FooterButton>
           </FooterRow>
         </Sheet>

@@ -1,7 +1,10 @@
 import { Feather } from "@expo/vector-icons";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
+  BackHandler,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   View
@@ -17,64 +20,76 @@ import { Genre, MediaType, getMovieGenres, getTvGenres } from "../../api/tmdb";
 
 const AnimatedBackdrop = styled(Animated.View)`
   flex: 1;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: rgba(3, 5, 4, 0.72);
   justify-content: flex-end;
 `;
 
 const Sheet = styled(Animated.View)`
-  background-color: ${({ theme }) => theme.colors.surface};
-  border-top-left-radius: 24px;
-  border-top-right-radius: 24px;
-  max-height: 85%;
-  padding-bottom: 34px;
+  background-color: ${({ theme }) => theme.colors.surfaceHigh};
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  border-top-width: 1px;
+  border-top-color: ${({ theme }) => theme.colors.glassBorder};
+  max-height: 88%;
+  padding-bottom: 20px;
+`;
+
+const HandleTouchArea = styled.View`
+  height: 30px;
+  align-items: center;
+  justify-content: center;
 `;
 
 const Handle = styled.View`
-  width: 40px;
+  width: 42px;
   height: 4px;
-  border-radius: 2px;
-  background-color: ${({ theme }) => theme.colors.border};
-  align-self: center;
-  margin-top: 12px;
-  margin-bottom: 8px;
+  border-radius: 1px;
+  background-color: ${({ theme }) => theme.colors.textSecondary};
+  opacity: 0.34;
 `;
 
 const SheetHeader = styled.View`
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 20px 16px;
+  padding: 4px 18px 14px;
   border-bottom-width: 1px;
-  border-bottom-color: ${({ theme }) => theme.colors.border};
+  border-bottom-color: ${({ theme }) => theme.colors.borderSoft};
 `;
 
 const SheetTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 20px;
-  font-weight: 700;
+  letter-spacing: -0.3px;
 `;
 
 const ResetButton = styled(Pressable)`
-  padding: 6px 14px;
-  border-radius: 8px;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 7px;
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.border};
+  background-color: ${({ theme }) => theme.colors.surface};
+  align-items: center;
+  justify-content: center;
 `;
 
 const ResetText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_600SemiBold;
   font-size: 13px;
-  font-weight: 600;
 `;
 
 const Section = styled.View`
-  padding: 20px 20px 0;
+  padding: 20px 18px 0;
 `;
 
 const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 16px;
-  font-weight: 700;
+  letter-spacing: -0.15px;
   margin-bottom: 14px;
 `;
 
@@ -84,21 +99,47 @@ const ChipGrid = styled.View`
   gap: 8px;
 `;
 
+const GenreGrid = styled.View`
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  row-gap: 8px;
+`;
+
 const Chip = styled(Pressable)<{ $active: boolean }>`
-  padding: 8px 16px;
-  border-radius: 3px;
+  min-height: 42px;
+  padding: 0 15px;
+  border-radius: 7px;
   border-width: 1px;
   border-color: ${({ theme, $active }) =>
-    $active ? theme.colors.primary : theme.colors.border};
+    $active ? theme.colors.primaryMuted : theme.colors.border};
   background-color: ${({ theme, $active }) =>
-    $active ? theme.colors.primary + "20" : "transparent"};
+    $active ? theme.colors.primarySoft : theme.colors.surfaceRaised};
+  align-items: center;
+  justify-content: center;
+`;
+
+const TypeChip = styled(Chip)`
+  flex: 1;
+`;
+
+const GenreChip = styled(Chip)`
+  width: 23.5%;
+  min-height: 46px;
+  padding: 0 4px;
 `;
 
 const ChipText = styled.Text<{ $active: boolean }>`
   color: ${({ theme, $active }) =>
     $active ? theme.colors.primary : theme.colors.textSecondary};
+  font-family: ${({ $active }) => ($active ? "Outfit_600SemiBold" : "Outfit_400Regular")};
   font-size: 14px;
-  font-weight: ${({ $active }) => ($active ? "600" : "400")};
+`;
+
+const GenreChipText = styled(ChipText)`
+  font-size: 12px;
+  line-height: 15px;
+  text-align: center;
 `;
 
 /* Slider-like year / rating row */
@@ -110,12 +151,13 @@ const RangeRow = styled.View`
 
 const RangeInput = styled.TextInput`
   flex: 1;
-  height: 44px;
-  border-radius: 3px;
+  height: 46px;
+  border-radius: 7px;
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.border};
-  background-color: ${({ theme }) => theme.colors.background};
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_500Medium;
   font-size: 15px;
   text-align: center;
   padding: 0 12px;
@@ -123,6 +165,7 @@ const RangeInput = styled.TextInput`
 
 const RangeDash = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_500Medium;
   font-size: 16px;
 `;
 
@@ -133,13 +176,13 @@ const RatingRow = styled.View`
 
 const RatingChip = styled(Pressable)<{ $active: boolean }>`
   flex: 1;
-  height: 42px;
-  border-radius: 3px;
+  height: 44px;
+  border-radius: 7px;
   border-width: 1px;
   border-color: ${({ theme, $active }) =>
-    $active ? theme.colors.primary : theme.colors.border};
+    $active ? theme.colors.primaryMuted : theme.colors.border};
   background-color: ${({ theme, $active }) =>
-    $active ? theme.colors.primary + "20" : "transparent"};
+    $active ? theme.colors.primarySoft : theme.colors.surfaceRaised};
   align-items: center;
   justify-content: center;
   flex-direction: row;
@@ -149,8 +192,8 @@ const RatingChip = styled(Pressable)<{ $active: boolean }>`
 const RatingChipText = styled.Text<{ $active: boolean }>`
   color: ${({ theme, $active }) =>
     $active ? theme.colors.primary : theme.colors.textSecondary};
+  font-family: ${({ $active }) => ($active ? "Outfit_600SemiBold" : "Outfit_400Regular")};
   font-size: 14px;
-  font-weight: ${({ $active }) => ($active ? "600" : "400")};
 `;
 
 const SortRow = styled.View`
@@ -158,13 +201,13 @@ const SortRow = styled.View`
 `;
 
 const SortOption = styled(Pressable)<{ $active: boolean }>`
-  height: 46px;
-  border-radius: 3px;
+  min-height: 48px;
+  border-radius: 7px;
   border-width: 1px;
   border-color: ${({ theme, $active }) =>
-    $active ? theme.colors.primary : theme.colors.border};
+    $active ? theme.colors.primaryMuted : theme.colors.border};
   background-color: ${({ theme, $active }) =>
-    $active ? theme.colors.primary + "20" : "transparent"};
+    $active ? theme.colors.primarySoft : theme.colors.surfaceRaised};
   flex-direction: row;
   align-items: center;
   padding: 0 16px;
@@ -173,24 +216,26 @@ const SortOption = styled(Pressable)<{ $active: boolean }>`
 const SortOptionText = styled.Text<{ $active: boolean }>`
   color: ${({ theme, $active }) =>
     $active ? theme.colors.primary : theme.colors.textPrimary};
+  font-family: ${({ $active }) => ($active ? "Outfit_600SemiBold" : "Outfit_400Regular")};
   font-size: 14px;
-  font-weight: ${({ $active }) => ($active ? "600" : "400")};
   margin-left: 10px;
 `;
 
 const ApplyButton = styled(Pressable)`
   margin: 24px 20px 0;
   height: 52px;
-  border-radius: 3px;
+  border-radius: 8px;
   background-color: ${({ theme }) => theme.colors.primary};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.primaryMuted};
   align-items: center;
   justify-content: center;
 `;
 
 const ApplyButtonText = styled.Text`
-  color: #ffffff;
+  color: ${({ theme }) => theme.colors.textOnPrimary};
+  font-family: Outfit_700Bold;
   font-size: 16px;
-  font-weight: 700;
 `;
 
 /* ------------------------------------------------------------------ */
@@ -244,12 +289,14 @@ const RATING_OPTIONS = [
   { label: "9+", value: 9 }
 ];
 
-const SORT_OPTIONS: { label: string; value: SortByOption; icon: keyof typeof Feather.glyphMap }[] = [
-  { label: "Most Popular", value: "popularity.desc", icon: "trending-up" },
-  { label: "Highest Rated", value: "vote_average.desc", icon: "star" },
-  { label: "Newest First", value: "release_date.desc", icon: "calendar" },
-  { label: "Most Voted", value: "vote_count.desc", icon: "thumbs-up" }
+const SORT_OPTIONS: { labelKey: string; value: SortByOption; icon: keyof typeof Feather.glyphMap }[] = [
+  { labelKey: "filters.mostPopular", value: "popularity.desc", icon: "trending-up" },
+  { labelKey: "filters.highestRated", value: "vote_average.desc", icon: "star" },
+  { labelKey: "filters.newestFirst", value: "release_date.desc", icon: "calendar" },
+  { labelKey: "filters.mostVoted", value: "vote_count.desc", icon: "thumbs-up" }
 ];
+
+const GENRE_GRID_ITEM_COUNT = 20;
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                         */
@@ -257,8 +304,37 @@ const SORT_OPTIONS: { label: string; value: SortByOption; icon: keyof typeof Fea
 
 export function FilterModal({ visible, onClose, filters, onApply }: FilterModalProps) {
   const currentTheme = useTheme();
+  const { t } = useTranslation();
   const [local, setLocal] = useState<FilterState>(filters);
   const [genres, setGenres] = useState<Genre[]>([]);
+
+  useEffect(() => {
+    if (!visible) {
+      return undefined;
+    }
+
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      onClose();
+      return true;
+    });
+
+    return () => subscription.remove();
+  }, [onClose, visible]);
+
+  const handlePanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_event, gesture) =>
+          gesture.dy > 8 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+        onPanResponderRelease: (_event, gesture) => {
+          if (gesture.dy > 34 || gesture.vy > 0.45) {
+            onClose();
+          }
+        },
+      }),
+    [onClose]
+  );
 
   // Sync local state when modal opens
   useEffect(() => {
@@ -300,73 +376,92 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
     onClose();
   }, [local, onApply, onClose]);
 
+  const genreGridItems = useMemo(
+    () => [
+      { id: 0, name: t("common.all"), isAll: true },
+      ...genres.slice(0, GENRE_GRID_ITEM_COUNT - 1).map((genre) => ({ ...genre, isAll: false })),
+    ],
+    [genres, t]
+  );
+
   return (
-    <Modal visible={visible} transparent animationType="none" statusBarTranslucent>
+    <Modal visible={visible} transparent animationType="none" statusBarTranslucent onRequestClose={onClose}>
       <AnimatedBackdrop entering={FadeIn.duration(250)} exiting={FadeOut.duration(200)}>
         <Pressable style={{ flex: 1 }} onPress={onClose} />
         <Sheet
           entering={SlideInDown.duration(350).easing(Easing.out(Easing.cubic))}
           exiting={SlideOutDown.duration(280).easing(Easing.in(Easing.cubic))}
-          onStartShouldSetResponder={() => true}
-          onMoveShouldSetResponder={() => false}
         >
-          <Handle />
+          <HandleTouchArea {...handlePanResponder.panHandlers}>
+            <Handle />
+          </HandleTouchArea>
           <SheetHeader>
-            <SheetTitle>Filters</SheetTitle>
+            <SheetTitle>{t("filters.title")}</SheetTitle>
             <ResetButton onPress={handleReset}>
-              <ResetText>Reset</ResetText>
+              <ResetText>{t("filters.reset")}</ResetText>
             </ResetButton>
           </SheetHeader>
 
           <ScrollView
             showsVerticalScrollIndicator={false}
             bounces={false}
+            keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ paddingBottom: 16 }}
           >
             {/* Media Type */}
             <Section>
-              <SectionTitle>Type</SectionTitle>
+              <SectionTitle>{t("filters.type")}</SectionTitle>
               <ChipGrid>
-                <Chip
+                <TypeChip
                   $active={local.mediaType === "movie"}
                   onPress={() => setLocal((p) => ({ ...p, mediaType: "movie", genreIds: [] }))}
                 >
-                  <ChipText $active={local.mediaType === "movie"}>Movies</ChipText>
-                </Chip>
-                <Chip
+                  <ChipText $active={local.mediaType === "movie"}>{t("filters.movies")}</ChipText>
+                </TypeChip>
+                <TypeChip
                   $active={local.mediaType === "tv"}
                   onPress={() => setLocal((p) => ({ ...p, mediaType: "tv", genreIds: [] }))}
                 >
-                  <ChipText $active={local.mediaType === "tv"}>TV Series</ChipText>
-                </Chip>
+                  <ChipText $active={local.mediaType === "tv"}>{t("filters.tvSeries")}</ChipText>
+                </TypeChip>
               </ChipGrid>
             </Section>
 
             {/* Genres */}
             <Section>
-              <SectionTitle>Genres</SectionTitle>
-              <ChipGrid>
-                {genres.map((genre) => {
-                  const active = local.genreIds.includes(genre.id);
+              <SectionTitle>{t("filters.genres")}</SectionTitle>
+              <GenreGrid>
+                {genreGridItems.map((genre) => {
+                  const active = genre.isAll ? local.genreIds.length === 0 : local.genreIds.includes(genre.id);
                   return (
-                    <Chip key={genre.id} $active={active} onPress={() => toggleGenre(genre.id)}>
-                      <ChipText $active={active}>{genre.name}</ChipText>
-                    </Chip>
+                    <GenreChip
+                      key={genre.id}
+                      $active={active}
+                      onPress={() => {
+                        if (genre.isAll) {
+                          setLocal((prev) => ({ ...prev, genreIds: [] }));
+                          return;
+                        }
+                        toggleGenre(genre.id);
+                      }}
+                    >
+                      <GenreChipText $active={active} numberOfLines={2}>{genre.name}</GenreChipText>
+                    </GenreChip>
                   );
                 })}
-              </ChipGrid>
+              </GenreGrid>
             </Section>
 
             {/* Year Range */}
             <Section>
-              <SectionTitle>Release Year</SectionTitle>
+              <SectionTitle>{t("filters.releaseYear")}</SectionTitle>
               <RangeRow>
                 <RangeInput
                   value={local.yearFrom}
                   onChangeText={(v: string) =>
                     setLocal((p) => ({ ...p, yearFrom: v.replace(/[^0-9]/g, "").slice(0, 4) }))
                   }
-                  placeholder="From"
+                  placeholder={t("filters.from")}
                   placeholderTextColor={currentTheme.colors.textSecondary}
                   keyboardType="number-pad"
                   maxLength={4}
@@ -377,7 +472,7 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
                   onChangeText={(v: string) =>
                     setLocal((p) => ({ ...p, yearTo: v.replace(/[^0-9]/g, "").slice(0, 4) }))
                   }
-                  placeholder="To"
+                  placeholder={t("filters.to")}
                   placeholderTextColor={currentTheme.colors.textSecondary}
                   keyboardType="number-pad"
                   maxLength={4}
@@ -387,7 +482,7 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
 
             {/* Rating */}
             <Section>
-              <SectionTitle>Minimum Rating</SectionTitle>
+              <SectionTitle>{t("filters.minimumRating")}</SectionTitle>
               <RatingRow>
                 {RATING_OPTIONS.map((opt) => {
                   const active = local.ratingMin === opt.value;
@@ -418,7 +513,7 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
 
             {/* Sort By */}
             <Section>
-              <SectionTitle>Sort By</SectionTitle>
+              <SectionTitle>{t("filters.sortBy")}</SectionTitle>
               <SortRow>
                 {SORT_OPTIONS.map((opt) => {
                   const active = local.sortBy === opt.value;
@@ -435,7 +530,7 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
                           active ? currentTheme.colors.primary : currentTheme.colors.textSecondary
                         }
                       />
-                      <SortOptionText $active={active}>{opt.label}</SortOptionText>
+                      <SortOptionText $active={active}>{t(opt.labelKey)}</SortOptionText>
                       {active && (
                         <View style={{ marginLeft: "auto" }}>
                           <Feather name="check" size={16} color={currentTheme.colors.primary} />
@@ -449,7 +544,7 @@ export function FilterModal({ visible, onClose, filters, onApply }: FilterModalP
           </ScrollView>
 
           <ApplyButton onPress={handleApply}>
-            <ApplyButtonText>Apply Filters</ApplyButtonText>
+            <ApplyButtonText>{t("filters.apply")}</ApplyButtonText>
           </ApplyButton>
         </Sheet>
       </AnimatedBackdrop>

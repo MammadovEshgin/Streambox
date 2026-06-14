@@ -19,6 +19,12 @@ const MIN_VALID_HEIGHT = 720;
 const MAX_FRAME_RATE_SPREAD = 6;
 const ADDON_TIMEOUT_MS = 12000;
 
+function debugLog(...args: unknown[]) {
+  if (__DEV__) {
+    console.log(...args);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -152,13 +158,7 @@ type AddonInstance = {
   minAcceptableQuality: number;
 };
 
-const ADDON_INSTANCES: AddonInstance[] = [
-  {
-    id: "nuvio",
-    baseUrl: "https://nuviostreams.hayd.uk",
-    minAcceptableQuality: 720
-  }
-];
+const ADDON_INSTANCES: AddonInstance[] = [];
 
 // ---------------------------------------------------------------------------
 // Utility functions
@@ -619,6 +619,10 @@ export async function resolveDirectLink(
   const attemptedProviders: string[] = [];
   const allCandidates: StreamCandidate[] = [];
 
+  if (ADDON_INSTANCES.length === 0) {
+    throw new Error("No direct stream providers are currently configured.");
+  }
+
   // Query all addon instances in parallel
   const results = await Promise.allSettled(
     ADDON_INSTANCES.map((addon) => fetchAddonStreams(addon, request))
@@ -640,12 +644,11 @@ export async function resolveDirectLink(
     );
   }
 
-  // DEBUG LOGGING
-  console.log("== RAW UNIQUE CANDIDATES ==");
+  debugLog("== RAW UNIQUE CANDIDATES ==");
   unique.slice(0, 3).forEach((c, idx) => {
-    console.log(`[Cand ${idx}] URL: ${c.url}`);
-    console.log(`      Format: ${c.format}`);
-    console.log(`      Subtitles: ${c.subtitles.length}`);
+    debugLog(`[Cand ${idx}] URL: ${c.url}`);
+    debugLog(`      Format: ${c.format}`);
+    debugLog(`      Subtitles: ${c.subtitles.length}`);
   });
 
   // Enrich HLS candidates with subtitle + quality data in parallel
@@ -654,11 +657,10 @@ export async function resolveDirectLink(
     unique.map((c) => (c.format === "hls" ? enrichHlsCandidate(c) : Promise.resolve(c)))
   );
 
-  // DEBUG LOGGING
-  console.log("== ENRICHED CANDIDATES ==");
+  debugLog("== ENRICHED CANDIDATES ==");
   enriched.slice(0, 3).forEach((c, idx) => {
-    console.log(`[Cand ${idx}] Options: ${(c.qualityOptions || []).length}`);
-    console.log(`      Subtitles: ${c.subtitles.length}`);
+    debugLog(`[Cand ${idx}] Options: ${(c.qualityOptions || []).length}`);
+    debugLog(`      Subtitles: ${c.subtitles.length}`);
   });
 
   // Keep all candidates — don't filter aggressively since we need fallbacks

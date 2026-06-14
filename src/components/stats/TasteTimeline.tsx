@@ -1,8 +1,10 @@
 import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { Pressable, ScrollView } from "react-native";
+import { useTranslation } from "react-i18next";
 import styled, { useTheme } from "styled-components/native";
 
 import type { WatchHistoryEntry } from "../../hooks/useWatchHistory";
+import { formatLocalizedDate } from "../../localization/format";
 import { withAlpha } from "../../theme/Theme";
 import { DataLabel, EmptyText, StatsSection } from "./StatsSection";
 
@@ -44,24 +46,9 @@ const GenreText = styled.Text`
 
 type Props = {
   history: WatchHistoryEntry[];
-  itemLabelPlural: string;
+  isMovieMode: boolean;
   onMonthPress?: (monthTimestamp: number, label: string) => void;
 };
-
-const MONTH_NAMES = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
 
 type MonthData = {
   month: string;
@@ -92,7 +79,7 @@ function getMonthlyData(history: WatchHistoryEntry[]): MonthData[] {
     }
 
     const topGenre = Object.entries(genreCounts).sort((a, b) => b[1] - a[1])[0];
-    const monthName = MONTH_NAMES[date.getMonth()];
+    const monthName = formatLocalizedDate(date, { month: "long" });
     const yearNum = date.getFullYear();
     const yearSuffix = yearNum !== now.getFullYear() ? ` '${String(yearNum).slice(2)}` : "";
 
@@ -110,15 +97,15 @@ function getMonthlyData(history: WatchHistoryEntry[]): MonthData[] {
   return results;
 }
 
-export function TasteTimeline({ history, itemLabelPlural, onMonthPress }: Props) {
+export function TasteTimeline({ history, isMovieMode, onMonthPress }: Props) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const months = getMonthlyData(history);
-  const isMovieMode = itemLabelPlural === "movies";
 
   return (
-    <StatsSection title="Taste Evolution" subtitle="How your genre preferences shift month to month.">
+    <StatsSection title={t("stats.tasteEvolutionTitle")} subtitle={t("stats.tasteEvolutionSubtitle")}>
       {history.length === 0 ? (
-        <EmptyText>No monthly taste data yet.</EmptyText>
+        <EmptyText>{t("stats.noMonthlyTasteData")}</EmptyText>
       ) : (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingRight: 4 }}>
           {months.map((month) => (

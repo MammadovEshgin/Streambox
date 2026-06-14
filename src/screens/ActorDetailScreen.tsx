@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ScrollView } from "react-native";
 import Animated, {
   Easing,
@@ -19,7 +20,9 @@ import styled from "styled-components/native";
 import { PersonDetails, getPersonDetails, getTmdbImageUrl } from "../api/tmdb";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { MediaCard } from "../components/home/MediaCard";
+import { formatLocalizedMonthDayYear } from "../localization/format";
 import { HomeStackParamList } from "../navigation/types";
+import { useAppSettings } from "../settings/AppSettingsContext";
 
 const Root = styled.View`
   flex: 1;
@@ -79,7 +82,7 @@ const Body = styled.View`
   margin-top: -26px;
   border-top-left-radius: 22px;
   border-top-right-radius: 22px;
-  background-color: #000000;
+  background-color: ${({ theme }) => theme.colors.background};
   padding: 16px 16px 28px;
 `;
 
@@ -135,7 +138,7 @@ const SectionHeader = styled.View`
   margin-bottom: 10px;
   flex-direction: row;
   align-items: baseline;
-  justify-content: flex-start;
+  justify-content: space-between;
 `;
 
 const SectionTitle = styled.Text`
@@ -144,6 +147,17 @@ const SectionTitle = styled.Text`
   line-height: 26px;
   font-weight: 700;
   letter-spacing: -0.25px;
+`;
+
+const SeeAllButton = styled.Pressable`
+  padding: 4px 0 4px 12px;
+`;
+
+const SeeAllText = styled.Text`
+  color: ${({ theme }) => theme.colors.primary};
+  font-size: 13px;
+  line-height: 16px;
+  font-family: Outfit_600SemiBold;
 `;
 
 const KnownForWrap = styled.View`
@@ -203,7 +217,7 @@ function formatActorMeta(details: PersonDetails): string {
   if (details.birthday) {
     const parsed = new Date(`${details.birthday}T00:00:00`);
     if (!Number.isNaN(parsed.getTime())) {
-      segments.push(parsed.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }));
+      segments.push(formatLocalizedMonthDayYear(parsed));
     }
   }
 
@@ -215,6 +229,8 @@ function formatActorMeta(details: PersonDetails): string {
 }
 
 export function ActorDetailScreen({ route, navigation }: ActorDetailProps) {
+  const { t } = useTranslation();
+  const { language } = useAppSettings();
   const insets = useSafeAreaInsets();
   const [details, setDetails] = useState<PersonDetails | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -235,12 +251,12 @@ export function ActorDetailScreen({ route, navigation }: ActorDetailProps) {
       const response = await getPersonDetails(route.params.actorId);
       setDetails(response);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to load actor profile.";
+      const message = error instanceof Error ? error.message : t("actor.unableToLoadProfile");
       setErrorMessage(message);
     } finally {
       setIsLoading(false);
     }
-  }, [route.params.actorId]);
+  }, [route.params.actorId, t, language]);
 
   useEffect(() => {
     void loadActor();
@@ -356,7 +372,7 @@ export function ActorDetailScreen({ route, navigation }: ActorDetailProps) {
     return (
       <Root>
         <LoaderWrap>
-          <MovieLoader label="Loading profile" />
+          <MovieLoader label={t("actor.loadingProfile")} />
         </LoaderWrap>
       </Root>
     );
@@ -371,7 +387,7 @@ export function ActorDetailScreen({ route, navigation }: ActorDetailProps) {
           </BackButton>
         </Header>
         <Body>
-          <ErrorText>{errorMessage ?? "No actor data available."}</ErrorText>
+          <ErrorText>{errorMessage ?? t("actor.noActorDataAvailable")}</ErrorText>
         </Body>
       </Root>
     );
@@ -380,7 +396,7 @@ export function ActorDetailScreen({ route, navigation }: ActorDetailProps) {
   const actorMeta = formatActorMeta(details);
   const fullBiography =
     details.biography ||
-    "Biography data is not available for this actor yet. This profile will be expanded in the next phase.";
+    t("actor.biographyFallback");
   const biographyPreview =
     isBiographyExpanded || fullBiography.length <= 230
       ? fullBiography
@@ -409,7 +425,7 @@ export function ActorDetailScreen({ route, navigation }: ActorDetailProps) {
 
             <Animated.View entering={FadeInDown.duration(380).delay(120)}>
               <BioBlock>
-                <BioLabel>Biography</BioLabel>
+                <BioLabel>{t("actor.biography")}</BioLabel>
                 <BioText>{biographyPreview}</BioText>
                 {canExpandBiography ? (
                   <ReadMoreButton
@@ -417,7 +433,7 @@ export function ActorDetailScreen({ route, navigation }: ActorDetailProps) {
                       setIsBiographyExpanded((previous) => !previous);
                     }}
                   >
-                    <ReadMoreText>{isBiographyExpanded ? "Read less" : "Read more"}</ReadMoreText>
+                    <ReadMoreText>{isBiographyExpanded ? t("common.readLess") : t("common.readMore")}</ReadMoreText>
                   </ReadMoreButton>
                 ) : null}
               </BioBlock>
@@ -425,16 +441,32 @@ export function ActorDetailScreen({ route, navigation }: ActorDetailProps) {
 
             <Animated.View entering={FadeInDown.duration(380).delay(160)}>
               <SectionHeader>
-                <SectionTitle>Known For</SectionTitle>
+                <SectionTitle>{t("actor.knownFor")}</SectionTitle>
+                {details.knownForMovies.length > 0 ? (
+                  <SeeAllButton
+                    onPress={() => {
+                      navigation.navigate("DiscoverGrid", {
+                        title: `${details.name} - ${t("actor.knownFor")}`,
+                        items: details.knownForMovies
+                      });
+                    }}
+                  >
+                    <SeeAllText>{t("common.seeAll")}</SeeAllText>
+                  </SeeAllButton>
+                ) : null}
               </SectionHeader>
               <KnownForWrap>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  {details.knownForMovies.map((item) => (
+                  {details.knownForMovies.slice(0, 12).map((item) => (
                     <CardWrap key={item.id}>
                       <MediaCard
                         item={item}
                         onPress={() => {
-                          navigation.push("MovieDetail", { movieId: String(item.id) });
+                          if (item.mediaType === "tv") {
+                            navigation.push("SeriesDetail", { seriesId: String(item.id) });
+                          } else {
+                            navigation.push("MovieDetail", { movieId: String(item.id) });
+                          }
                         }}
                       />
                     </CardWrap>

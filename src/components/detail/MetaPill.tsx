@@ -1,21 +1,21 @@
 import styled from "styled-components/native";
 
 const Pill = styled.View`
-  padding: 5px 10px;
-  border-radius: 3px;
-  background-color: rgba(35, 35, 35, 0.92);
+  padding: 5px 11px;
+  border-radius: 999px;
+  background-color: ${({ theme }) => theme.colors.glassFill};
   border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.08);
+  border-color: ${({ theme }) => theme.colors.glassBorder};
   margin-right: 6px;
   flex-shrink: 1;
 `;
 
 const Label = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 11px;
-  line-height: 15px;
-  font-weight: 600;
-  letter-spacing: 0.25px;
+  font-family: Outfit_600SemiBold;
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.8px;
   text-transform: uppercase;
 `;
 

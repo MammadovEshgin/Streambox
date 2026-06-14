@@ -1,5 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   Dimensions,
@@ -14,6 +15,7 @@ import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
 
 import { MediaItem, getTmdbImageUrl, searchMulti } from "../../api/tmdb";
+import { formatRating } from "../../api/mediaFormatting";
 
 /* ------------------------------------------------------------------ */
 /*  Styled Components                                                 */
@@ -32,15 +34,15 @@ const SearchRow = styled.View`
 
 const SearchField = styled.View<{ $focused: boolean }>`
   flex: 1;
-  height: 48px;
-  border-radius: 16px;
+  height: 50px;
+  border-radius: 999px;
   border-width: 1px;
   border-color: ${({ theme, $focused }) =>
     $focused ? theme.colors.primary : theme.colors.border};
   background-color: ${({ theme }) => theme.colors.surface};
   flex-direction: row;
   align-items: center;
-  padding: 0 14px;
+  padding: 0 18px;
 `;
 
 const SearchIcon = styled.View`
@@ -60,15 +62,15 @@ const ClearButton = styled(Pressable)`
 `;
 
 const FilterButton = styled(Pressable) <{ $active: boolean }>`
-  width: 46px;
-  height: 46px;
+  width: 50px;
+  height: 50px;
   margin-left: 10px;
-  border-radius: 12px;
+  border-radius: 999px;
   border-width: 1px;
   border-color: ${({ theme, $active }) =>
     $active ? theme.colors.primary : theme.colors.border};
   background-color: ${({ theme, $active }) =>
-    $active ? theme.colors.primary + "18" : theme.colors.surface};
+    $active ? theme.colors.primarySoft : theme.colors.surface};
   align-items: center;
   justify-content: center;
 `;
@@ -240,6 +242,7 @@ export function HomeHeader({
   hasActiveFilters = false,
 }: HomeHeaderProps) {
   const currentTheme = useTheme();
+  const { t } = useTranslation();
   const inputRef = useRef<RNTextInput>(null);
   const [isFocused, setIsFocused] = useState(false);
   const [results, setResults] = useState<MediaItem[]>([]);
@@ -354,17 +357,17 @@ export function HomeHeader({
           )}
           <ResultInfo>
             <ResultTitle numberOfLines={1}>{item.title}</ResultTitle>
-            <ResultMeta>{item.year !== "----" ? item.year : "Unknown year"}</ResultMeta>
+            <ResultMeta>{item.year !== "----" ? item.year : t("common.unknownYear")}</ResultMeta>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              {item.rating > 0 && (
+              {typeof item.rating === "number" && item.rating > 0 && (
                 <ResultRating>
                   <Feather name="star" size={11} color={currentTheme.colors.primary} />
-                  <RatingText>{item.rating.toFixed(1)}</RatingText>
+                  <RatingText>{formatRating(item.rating)}</RatingText>
                 </ResultRating>
               )}
               <MediaTypeBadge>
                 <MediaTypeBadgeText>
-                  {item.mediaType === "movie" ? "Movie" : "Series"}
+                  {item.mediaType === "movie" ? t("common.movie") : t("common.series")}
                 </MediaTypeBadgeText>
               </MediaTypeBadge>
             </View>
@@ -391,7 +394,7 @@ export function HomeHeader({
             ref={inputRef}
             value={query}
             onChangeText={onChangeQuery}
-            placeholder="Search movies & series..."
+            placeholder={t("search.placeholder")}
             placeholderTextColor={currentTheme.colors.textSecondary}
             autoCapitalize="none"
             autoCorrect={false}
@@ -440,10 +443,10 @@ export function HomeHeader({
             <EmptyRow>
               <Feather name="search" size={24} color={currentTheme.colors.textSecondary} />
               <EmptyText style={{ marginTop: 8 }}>
-                No results for "{query.trim()}"
+                {t("search.noResultsForQuery", { query: query.trim() })}
               </EmptyText>
               <EmptyText style={{ fontSize: 12, marginTop: 4 }}>
-                Try different keywords or check spelling
+                {t("search.tryDifferentKeywords")}
               </EmptyText>
             </EmptyRow>
           ) : results.length > 0 ? (
@@ -469,14 +472,14 @@ export function HomeHeader({
               {query.trim().length >= 2 && (
                 <SearchHintRow>
                   <Feather name="corner-down-left" size={14} color={currentTheme.colors.textSecondary} />
-                  <SearchHintText>Press enter for full results</SearchHintText>
+                  <SearchHintText>{t("search.pressEnterForFullResults")}</SearchHintText>
                 </SearchHintRow>
               )}
             </ResultsScroll>
           ) : (
             <SearchHintRow>
               <Feather name="search" size={14} color={currentTheme.colors.textSecondary} />
-              <SearchHintText>Type at least 2 characters to search</SearchHintText>
+              <SearchHintText>{t("search.typeAtLeastTwoChars")}</SearchHintText>
             </SearchHintRow>
           )}
         </ResultsContainer>

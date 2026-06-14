@@ -1,4 +1,4 @@
-import type { DiscoverCollectionSource, MediaType } from "../api/tmdb";
+import type { DiscoverCollectionSource, MediaItem, MediaType } from "../api/tmdb";
 import type { NavigatorScreenParams } from "@react-navigation/native";
 
 export type SearchResultsParams = {
@@ -18,8 +18,9 @@ export type HomeStackParamList = {
   MoviesFeed: undefined;
   SeriesFeed: undefined;
   DiscoverGrid: {
-    source: DiscoverCollectionSource;
+    source?: DiscoverCollectionSource;
     title: string;
+    items?: MediaItem[];
   };
   FranchiseCatalog: undefined;
   FranchiseTimeline: {
@@ -37,9 +38,6 @@ export type HomeStackParamList = {
   ActorDetail: {
     actorId: string;
   };
-  AzClassicDetail: {
-    movieId: string;
-  };
   Player: {
     mediaType: MediaType,
     tmdbId: string,
@@ -52,7 +50,6 @@ export type HomeStackParamList = {
     trailerUrl?: string,
     year?: string | null;
     videoId?: string | null;
-    isAzClassic?: boolean;
   };
 };
 
@@ -60,14 +57,16 @@ export type ProfileSeeAllSection = "watchlist" | "liked" | "watched";
 
 export type ProfileStackParamList = {
   ProfileFeed: undefined;
+  DiscoverGrid: {
+    source?: DiscoverCollectionSource;
+    title: string;
+    items?: MediaItem[];
+  };
   ProfileSeeAll: {
     section: ProfileSeeAllSection;
     filter: "movie" | "tv";
   };
   ProfileSettings: undefined;
-  AzClassicDetail: {
-    movieId: string;
-  };
   MovieDetail: {
     movieId: string;
   };
@@ -89,12 +88,16 @@ export type ProfileStackParamList = {
     trailerUrl?: string;
     year?: string | null;
     videoId?: string | null;
-    isAzClassic?: boolean;
   };
 };
 
 export type StatsStackParamList = {
   StatsFeed: undefined;
+  DiscoverGrid: {
+    source?: DiscoverCollectionSource;
+    title: string;
+    items?: MediaItem[];
+  };
   WatchedGrid: {
     filter: "movie" | "tv";
     title?: string;
@@ -112,9 +115,6 @@ export type StatsStackParamList = {
     watchedAtMax?: number;
     ids?: (number | string)[];
   };
-  AzClassicDetail: {
-    movieId: string;
-  };
   MovieDetail: {
     movieId: string;
   };
@@ -136,7 +136,6 @@ export type StatsStackParamList = {
     trailerUrl?: string;
     year?: string | null;
     videoId?: string | null;
-    isAzClassic?: boolean;
   };
 };
 

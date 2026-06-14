@@ -1,7 +1,8 @@
 import { Feather } from "@expo/vector-icons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import styled from "styled-components/native";
 
 import {
@@ -12,7 +13,12 @@ import {
 } from "../api/franchises";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
+import { franchiseCardBackgroundImage } from "../constants/imageAssets";
+import { useAuth } from "../context/AuthContext";
+import { useUserDataSync } from "../context/UserDataSyncContext";
 import { HomeStackParamList } from "../navigation/types";
+import { formatFranchiseCollectionTitle } from "../services/franchiseLocalization";
+import { useAppSettings } from "../settings/AppSettingsContext";
 
 const GRID_COLUMNS = 3;
 const GRID_GAP = 10;
@@ -67,39 +73,25 @@ const CardPressable = styled.Pressable`
 const PosterFrame = styled.View`
   width: 100%;
   aspect-ratio: 0.6667;
-  border-radius: 8px;
+  border-radius: 14px;
   overflow: hidden;
-  background-color: ${({ theme }) => theme.colors.surface};
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
   border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.border};
+  border-color: ${({ theme }) => theme.colors.glassBorder};
 `;
 
-const PosterImage = styled.Image`
+const FranchisePosterImage = styled.Image`
   width: 100%;
   height: 100%;
 `;
 
-const NoImage = styled.View`
-  flex: 1;
-  align-items: center;
-  justify-content: center;
-  background-color: ${({ theme }) => theme.colors.surface};
-`;
-
-const NoImageText = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 11px;
-  letter-spacing: 0.2px;
-  text-transform: uppercase;
-`;
-
 const CardTitle = styled.Text`
-  margin-top: 8px;
+  margin-top: 10px;
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 13px;
-  line-height: 16px;
+  font-size: 14px;
+  line-height: 18px;
   font-family: Outfit_600SemiBold;
-  letter-spacing: -0.2px;
+  letter-spacing: -0.15px;
 `;
 
 const LoadingWrap = styled.View`
@@ -165,9 +157,14 @@ const RetryText = styled.Text`
 type FranchiseCatalogProps = NativeStackScreenProps<HomeStackParamList, "FranchiseCatalog">;
 
 export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
+  const { t } = useTranslation();
+  const { language } = useAppSettings();
+  const { user } = useAuth();
+  const { isReady: isUserDataReady } = useUserDataSync();
   const [franchises, setFranchises] = useState<FranchiseCollection[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const idlePrefetchedFranchiseIdsRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -199,8 +196,7 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
               item.title,
               item.sortOrder,
               item.totalEntries,
-              item.logoUrl,
-              item.cachedLogoUrl,
+              item.accentColor,
             ])
           );
           const freshSignature = JSON.stringify(
@@ -209,8 +205,7 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
               item.title,
               item.sortOrder,
               item.totalEntries,
-              item.logoUrl,
-              item.cachedLogoUrl,
+              item.accentColor,
             ])
           );
           return currentSignature === freshSignature ? currentCollections : freshCollections;
@@ -222,6 +217,33 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isUserDataReady || franchises.length === 0) {
+      return;
+    }
+
+    const prefetchScope = user?.id ?? "anon";
+    const idsToPrefetch = franchises
+      .slice(0, GRID_COLUMNS * 3)
+      .map((franchise) => franchise.id)
+      .filter((id) => !idlePrefetchedFranchiseIdsRef.current.has(`${prefetchScope}:${id}`));
+
+    if (idsToPrefetch.length === 0) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      idsToPrefetch.forEach((id) => {
+        idlePrefetchedFranchiseIdsRef.current.add(`${prefetchScope}:${id}`);
+        prefetchFranchiseEntries(id, user?.id);
+      });
+    }, 900);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [franchises, isUserDataReady, user?.id]);
 
   const handlePressCard = useCallback(
     (franchise: FranchiseCollection) => {
@@ -235,8 +257,8 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
   );
 
   const handlePressInCard = useCallback((franchiseId: string) => {
-    prefetchFranchiseEntries(franchiseId);
-  }, []);
+    prefetchFranchiseEntries(franchiseId, user?.id);
+  }, [user?.id]);
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<FranchiseCollection>) => {
@@ -246,26 +268,20 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
           onPressIn={() => handlePressInCard(item.id)}
         >
           <PosterFrame>
-            {item.logoUrl ? (
-              <PosterImage source={{ uri: item.cachedLogoUrl ?? item.logoUrl }} resizeMode="cover" />
-            ) : (
-              <NoImage>
-                <NoImageText>No Image</NoImageText>
-              </NoImage>
-            )}
+            <FranchisePosterImage source={franchiseCardBackgroundImage} resizeMode="cover" />
           </PosterFrame>
-          <CardTitle>{item.title}</CardTitle>
+          <CardTitle>{formatFranchiseCollectionTitle(item.title, language)}</CardTitle>
         </CardPressable>
       );
     },
-    [handlePressCard, handlePressInCard]
+    [handlePressCard, handlePressInCard, language]
   );
 
   if (isLoading) {
     return (
       <SafeContainer>
         <LoadingWrap>
-          <MovieLoader label="Loading journeys" />
+          <MovieLoader label={t("loaders.loadingJourneys")} />
         </LoadingWrap>
       </SafeContainer>
     );
@@ -280,14 +296,14 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
               <Feather name="arrow-left" size={18} color="#FFFFFF" />
             </BackButton>
             <HeaderTextWrap>
-              <HeaderTitle>Cinematic Journeys</HeaderTitle>
+              <HeaderTitle>{t("franchise.title")}</HeaderTitle>
             </HeaderTextWrap>
           </Header>
           <ErrorWrap>
             <Feather name="alert-circle" size={36} color="rgba(255,255,255,0.3)" />
             <ErrorText>{errorMessage}</ErrorText>
             <RetryButton onPress={load}>
-              <RetryText>Retry</RetryText>
+              <RetryText>{t("common.retry")}</RetryText>
             </RetryButton>
           </ErrorWrap>
         </Root>
@@ -303,17 +319,17 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
             <Feather name="arrow-left" size={18} color="#FFFFFF" />
           </BackButton>
           <HeaderTextWrap>
-            <HeaderTitle>Cinematic Journeys</HeaderTitle>
-            <HeaderSubtitle>Watch franchises in the right order</HeaderSubtitle>
+            <HeaderTitle>{t("franchise.title")}</HeaderTitle>
+            <HeaderSubtitle>{t("franchise.subtitle")}</HeaderSubtitle>
           </HeaderTextWrap>
         </Header>
 
         {franchises.length === 0 ? (
           <EmptyWrap>
             <Feather name="film" size={36} color="rgba(255,255,255,0.2)" />
-            <EmptyTitle>No Journeys Yet</EmptyTitle>
+            <EmptyTitle>{t("franchise.emptyTitle")}</EmptyTitle>
             <EmptyText>
-              Franchise roadmaps will appear here once they are added to the collection.
+              {t("franchise.emptyDescription")}
             </EmptyText>
           </EmptyWrap>
         ) : (

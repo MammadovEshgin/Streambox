@@ -3,6 +3,7 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { Feather, MaterialIcons } from "@expo/vector-icons";
 import axios from "axios";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Animated,
   BackHandler,
@@ -21,16 +22,35 @@ import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webvie
 
 import { MovieLoader } from "../components/common/MovieLoader";
 import { QualityWarningModal } from "../components/common/QualityWarningModal";
+import { getRandomCinemaInsight } from "../constants/cinemaInsights";
 import { useRecentlyWatched } from "../hooks/useRecentlyWatched";
 
 import { HomeStackParamList } from "../navigation/types";
 import { useTheme } from "styled-components/native";
 import Reanimated, {
-  FadeIn,
-  FadeOut
+  FadeIn
 } from "react-native-reanimated";
-import { resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
+import { resolveHdFilmRuntimeStream, resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
 import { getProviderConfig } from "../services/providerConfigService";
+import { useAppSettings } from "../settings/AppSettingsContext";
+import {
+  normalizeSubtitleUrl,
+  parseSubtitleDocument,
+  type ParsedSubtitleCue
+} from "../utils/subtitles";
+import {
+  BLOCKED_PLAYER_NAVIGATION_PATTERNS,
+  PLAYER_PASSIVE_ASSET_PATTERN,
+  TRUSTED_PLAYER_FRAME_PATTERNS,
+  shouldAcceptDiscoveredHdFilmStream,
+  shouldAllowPlayerWebViewRequest
+} from "./player/playerWebViewPolicy";
+
+function debugLog(...args: unknown[]) {
+  if (__DEV__) {
+    console.log(...args);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Cinema facts shown during loading
@@ -152,12 +172,6 @@ type DirectSubtitleOption = {
   lang: string;
 };
 
-type ParsedSubtitleCue = {
-  start: number;
-  end: number;
-  text: string;
-};
-
 function getSubtitleTrackLabel(track: SubtitleTrack): string {
   const label = track.label?.trim();
   if (label) return label;
@@ -168,197 +182,8 @@ function getSubtitleTrackLabel(track: SubtitleTrack): string {
   return "Subtitle";
 }
 
-function decodeSubtitleText(value: string): string {
-  return value
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'");
-}
+// Subtitle parsing helpers moved to src/utils/subtitles.ts.
 
-function parseVttTimestamp(value: string): number | null {
-  const trimmed = value.trim().replace(",", ".");
-  const parts = trimmed.split(":").map((part) => Number(part));
-
-  if (parts.some((part) => Number.isNaN(part))) return null;
-
-  if (parts.length === 3) {
-    return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  }
-
-  if (parts.length === 2) {
-    return parts[0] * 60 + parts[1];
-  }
-
-  return null;
-}
-
-/**
- * Extract the timestamp portion from the end-part of a VTT/SRT timing line.
- * After splitting "00:10.000 --> 00:13.083 align:start" by "-->",
- * endRaw is " 00:13.083 align:start". We need just "00:13.083".
- * Using `.split(" ")[0]` fails when there's a leading space (produces "").
- */
-function extractTimestampFromEndPart(endRaw: string): string {
-  const trimmed = endRaw.trim();
-  // Take everything up to the first space (cue settings come after)
-  const spaceIdx = trimmed.indexOf(" ");
-  return spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
-}
-
-function parseWebVtt(content: string): ParsedSubtitleCue[] {
-  // Normalize all line ending variants: \r\n, \r (old Mac), \n
-  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-
-  // First try splitting by double newlines (standard VTT)
-  let blocks = normalized.split(/\n{2,}/);
-
-  // If we only get 1-2 blocks but there are multiple --> timestamps,
-  // the file uses single-newline separation — parse line-by-line instead
-  const arrowCount = (normalized.match(/-->/g) || []).length;
-  if (blocks.length <= 2 && arrowCount > 1) {
-    return parseWebVttLineByLine(normalized);
-  }
-
-  const cues: ParsedSubtitleCue[] = [];
-
-  for (const block of blocks) {
-    const lines = block
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (lines.length === 0) continue;
-    if (lines[0].toUpperCase().startsWith("WEBVTT")) continue;
-    if (lines[0].startsWith("NOTE")) continue;
-
-    const timeLineIndex = lines.findIndex((line) => line.includes("-->"));
-    if (timeLineIndex === -1) continue;
-
-    const [startRaw, endRaw] = lines[timeLineIndex].split("-->");
-    const start = parseVttTimestamp(startRaw);
-    const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
-    if (start == null || end == null) continue;
-
-    const text = decodeSubtitleText(lines.slice(timeLineIndex + 1).join("\n")).trim();
-    if (!text) continue;
-
-    cues.push({ start, end, text });
-  }
-
-  return cues;
-}
-
-/** Fallback parser for VTT files that use single-newline separation between cues */
-function parseWebVttLineByLine(normalized: string): ParsedSubtitleCue[] {
-  const lines = normalized.split("\n");
-  const cues: ParsedSubtitleCue[] = [];
-  let i = 0;
-
-  // Skip WEBVTT header
-  while (i < lines.length) {
-    const trimmed = lines[i].trim();
-    if (trimmed.toUpperCase().startsWith("WEBVTT") || trimmed === "" || trimmed.startsWith("NOTE")) {
-      i++;
-      continue;
-    }
-    break;
-  }
-
-  while (i < lines.length) {
-    const trimmed = lines[i].trim();
-
-    // Skip empty lines and numeric cue IDs
-    if (!trimmed || /^\d+$/.test(trimmed)) {
-      i++;
-      continue;
-    }
-
-    // Look for a timestamp line
-    if (trimmed.includes("-->")) {
-      const [startRaw, endRaw] = trimmed.split("-->");
-      const start = parseVttTimestamp(startRaw);
-      const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
-      i++;
-
-      if (start == null || end == null) continue;
-
-      // Collect text lines until next timestamp or empty line
-      const textLines: string[] = [];
-      while (i < lines.length) {
-        const nextTrimmed = lines[i].trim();
-        if (!nextTrimmed || nextTrimmed.includes("-->") || /^\d+$/.test(nextTrimmed)) break;
-        textLines.push(nextTrimmed);
-        i++;
-      }
-
-      const text = decodeSubtitleText(textLines.join("\n")).trim();
-      if (text) {
-        cues.push({ start, end, text });
-      }
-    } else {
-      i++;
-    }
-  }
-
-  return cues;
-}
-
-function parseSubRip(content: string): ParsedSubtitleCue[] {
-  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const blocks = normalized.split(/\n{2,}/);
-  const cues: ParsedSubtitleCue[] = [];
-
-  for (const block of blocks) {
-    const lines = block
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (lines.length === 0) continue;
-
-    const timeLineIndex = lines.findIndex((line) => line.includes("-->"));
-    if (timeLineIndex === -1) continue;
-
-    const [startRaw, endRaw] = lines[timeLineIndex].split("-->");
-    const start = parseVttTimestamp(startRaw);
-    const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
-    if (start == null || end == null) continue;
-
-    const text = decodeSubtitleText(lines.slice(timeLineIndex + 1).join("\n")).trim();
-    if (!text) continue;
-
-    cues.push({ start, end, text });
-  }
-
-  return cues;
-}
-
-function parseSubtitleDocument(content: string): ParsedSubtitleCue[] {
-  const vttCues = parseWebVtt(content);
-  if (vttCues.length > 0) return vttCues;
-  return parseSubRip(content);
-}
-
-function normalizeSubtitleUrl(url: string, ...bases: Array<string | null | undefined>): string {
-  const trimmed = (url ?? "").trim();
-  if (!trimmed) return "";
-
-  for (const base of bases) {
-    if (!base) continue;
-    try {
-      return new URL(trimmed, base).toString();
-    } catch {
-      // Try next base.
-    }
-  }
-
-  return trimmed;
-}
 
 // ---------------------------------------------------------------------------
 // Loading overlay with cinema facts
@@ -373,7 +198,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#000000"
   },
   nativePlayer: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "#000000"
   },
   loaderOverlay: {
@@ -647,21 +472,18 @@ const styles = StyleSheet.create({
 
 function PlayerLoadingOverlay({
   title,
-  mediaType,
   seasonNumber,
   episodeNumber
 }: {
   title: string;
-  mediaType: "movie" | "tv";
   seasonNumber?: number;
   episodeNumber?: number
 }) {
+  const { t } = useTranslation();
   const theme = useTheme();
+  const { language } = useAppSettings();
   const [showFact, setShowFact] = useState(false);
-  const [fact] = useState(() => {
-    const list = mediaType === "tv" ? SERIES_FACTS : MOVIE_FACTS;
-    return list[Math.floor(Math.random() * list.length)];
-  });
+  const [fact] = useState(() => getRandomCinemaInsight(language));
 
   useEffect(() => {
     const timer = setTimeout(() => setShowFact(true), 2500);
@@ -683,7 +505,7 @@ function PlayerLoadingOverlay({
         <Reanimated.View entering={FadeIn.duration(800).delay(100)} style={styles.factContainer}>
           <View style={[styles.factAccent, { backgroundColor: theme.colors.primary }]} />
           <View style={styles.factBody}>
-            <Text style={[styles.factLabel, { color: theme.colors.primary }]}>Fun fact</Text>
+            <Text style={[styles.factLabel, { color: theme.colors.primary }]}>{t("player.didYouKnow")}</Text>
             <Text style={styles.factText}>{fact}</Text>
           </View>
         </Reanimated.View>
@@ -697,35 +519,474 @@ type WebViewProviderSource = "hdfilm" | "dizipal";
 // ---------------------------------------------------------------------------
 // Injected player automation
 // ---------------------------------------------------------------------------
-const HDF_INJECT_BEFORE = `
+const PLAYER_WEBVIEW_USER_AGENT =
+  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+
+// Player WebView navigation policy + patterns moved to ./player/playerWebViewPolicy.ts.
+
+const PLAYER_AD_GUARD_SCRIPT = `
 (function() {
   'use strict';
 
-  window.open = function() { return null; };
+  var blockedPatterns = ${JSON.stringify(BLOCKED_PLAYER_NAVIGATION_PATTERNS)};
+  var trustedFramePatterns = ${JSON.stringify(TRUSTED_PLAYER_FRAME_PATTERNS)};
+  var passiveAssetPattern = ${PLAYER_PASSIVE_ASSET_PATTERN};
+  var currentHost = '';
 
-  var adDomains = ['doubleclick','googlesyndication','adnxs','popads','exoclick','trafficjunky','juicyads','propellerads','popcash','adserver','aj2204'];
-  var _xhrOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function(m, url) {
-    if (adDomains.some(function(domain) { return String(url).toLowerCase().includes(domain); })) return;
-    return _xhrOpen.apply(this, arguments);
-  };
-  var _fetch = window.fetch;
-  window.fetch = function(url) {
-    if (adDomains.some(function(domain) { return String(url).toLowerCase().includes(domain); })) {
-      return Promise.reject(new Error('blocked'));
+  try {
+    currentHost = window.location.hostname.replace(/^www\\./i, '').toLowerCase();
+  } catch (e) {}
+
+  function normalize(value) {
+    return String(value || '').toLowerCase();
+  }
+
+  function isBlockedUrl(value) {
+    var url = normalize(value);
+    if (!url) return false;
+    return blockedPatterns.some(function(pattern) { return url.indexOf(pattern) !== -1; });
+  }
+
+  function isTrustedPlayerUrl(value) {
+    var url = normalize(value);
+    if (!url) return false;
+    return trustedFramePatterns.some(function(pattern) { return url.indexOf(pattern) !== -1; });
+  }
+
+  function getHost(value) {
+    try {
+      return new URL(value, window.location.href).hostname.replace(/^www\\./i, '').toLowerCase();
+    } catch (e) {
+      return '';
     }
-    return _fetch.apply(this, arguments);
-  };
+  }
 
-  var hideStyle = document.createElement('style');
-  hideStyle.id = 'app-player-hide';
-  hideStyle.textContent = [
-    'html, body { background: #000 !important; overflow: hidden !important; margin: 0 !important; padding: 0 !important; }',
-    'body > *:not(script):not(style) { visibility: hidden !important; }'
-  ].join('\\n');
-  (document.head || document.documentElement).appendChild(hideStyle);
+  function isSameHostUrl(value) {
+    var host = getHost(value);
+    return Boolean(host && currentHost && host === currentHost);
+  }
+
+  function isPassiveAssetUrl(value) {
+    return passiveAssetPattern.test(String(value || ''));
+  }
+
+  function isPlayerContainer(el) {
+    if (!el || !el.closest) return false;
+    return Boolean(el.closest(
+      '#player, #playerbase, #mainPlayer, #playerContent, .jwplayer, .jw-wrapper, .jw-media, .jw-controls, .jw-overlays, .video-js, .vjs-control-bar, .plyr, [class*="player"], .kePlayerCont, .film-player, .video-container'
+    ));
+  }
+
+  function isVisibleEnough(el) {
+    try {
+      var rect = el.getBoundingClientRect();
+      var style = window.getComputedStyle(el);
+      return rect.width >= 120 && rect.height >= 80 && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0.05;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function isLikelyPlayerFrame(frame) {
+    var src = frame.getAttribute('src') || '';
+    if (isTrustedPlayerUrl(src) || isSameHostUrl(src)) return true;
+    if (isPlayerContainer(frame) && isVisibleEnough(frame)) return true;
+    return false;
+  }
+
+  function silenceMedia(media, removeSource) {
+    if (!media) return;
+    try {
+      media.muted = true;
+      media.defaultMuted = true;
+      media.volume = 0;
+      media.pause();
+      if (removeSource) {
+        media.removeAttribute('autoplay');
+        media.removeAttribute('src');
+        Array.prototype.forEach.call(media.querySelectorAll('source'), function(source) {
+          source.removeAttribute('src');
+        });
+        if (typeof media.load === 'function') media.load();
+      }
+    } catch (e) {}
+  }
+
+  function neutralizeElement(el) {
+    if (!el || el.__streamboxNeutralized) return;
+    el.__streamboxNeutralized = true;
+    try {
+      if (el.tagName === 'IFRAME') {
+        el.setAttribute('src', 'about:blank');
+        el.removeAttribute('srcdoc');
+      }
+      el.removeAttribute('href');
+      el.removeAttribute('target');
+      el.removeAttribute('onclick');
+      el.style.setProperty('display', 'none', 'important');
+      el.style.setProperty('visibility', 'hidden', 'important');
+      el.style.setProperty('pointer-events', 'none', 'important');
+      el.style.setProperty('opacity', '0', 'important');
+      el.onclick = function(event) {
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+        }
+        return false;
+      };
+    } catch (e) {}
+  }
+
+  window.open = function() { return null; };
+  try {
+    var originalAssign = window.location.assign.bind(window.location);
+    var originalReplace = window.location.replace.bind(window.location);
+    window.location.assign = function(url) {
+      if (isBlockedUrl(url)) return undefined;
+      return originalAssign(url);
+    };
+    window.location.replace = function(url) {
+      if (isBlockedUrl(url)) return undefined;
+      return originalReplace(url);
+    };
+  } catch (e) {}
+
+  function blockClickIfNeeded(event) {
+    var target = event.target;
+    if (target && target.closest && target.closest('#player, #playerbase, #mainPlayer, #playerContent, .jwplayer, .jw-controls, .jw-controlbar, .jw-settings-menu, .video-js, .vjs-control-bar, .plyr, .plyr__controls')) {
+      return true;
+    }
+    var link = target && target.closest ? target.closest('a[href], area[href], [onclick], [data-href], [data-url], [data-link]') : null;
+    var href = link ? (link.href || link.getAttribute('data-href') || link.getAttribute('data-url') || link.getAttribute('data-link') || '') : '';
+    var targetName = link ? normalize(link.getAttribute('target')) : '';
+    var rel = link ? normalize(link.getAttribute('rel')) : '';
+    var marker = link ? normalize(href + ' ' + link.id + ' ' + link.className + ' ' + link.getAttribute('onclick')) : '';
+
+    if (link && (targetName === '_blank' || rel.indexOf('sponsored') !== -1 || isBlockedUrl(marker))) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+      neutralizeElement(link);
+      return false;
+    }
+    return true;
+  }
+
+  ['click', 'auxclick', 'touchend', 'pointerup'].forEach(function(eventName) {
+    document.addEventListener(eventName, blockClickIfNeeded, true);
+  });
+
+  function guardMedia(root) {
+    var doc = root || document;
+    try {
+      Array.prototype.forEach.call(doc.querySelectorAll('audio, video'), function(media) {
+        var marker = normalize(media.id + ' ' + media.className + ' ' + media.src + ' ' + (media.currentSrc || ''));
+        var hiddenOrTiny = !isVisibleEnough(media);
+        var outsidePlayer = !isPlayerContainer(media);
+        var trustedMediaSource = isTrustedPlayerUrl(marker) || marker.indexOf('blob:') !== -1;
+        var looksLikeAd = isBlockedUrl(marker) || marker.indexOf('reklam') !== -1 || marker.indexOf('advert') !== -1 || marker.indexOf('preroll') !== -1 || marker.indexOf('vast') !== -1 || marker.indexOf('vpaid') !== -1;
+
+        if (media.tagName === 'AUDIO' || looksLikeAd || (hiddenOrTiny && outsidePlayer && !trustedMediaSource)) {
+          silenceMedia(media, looksLikeAd || (hiddenOrTiny && outsidePlayer && !trustedMediaSource));
+          return;
+        }
+
+        if (media.duration && media.duration < 45 && media.playbackRate < 8 && !isPlayerContainer(media)) {
+          media.playbackRate = 16;
+        }
+      });
+    } catch (e) {}
+  }
+
+  function guardNodes(root) {
+    var doc = root || document;
+    try {
+      Array.prototype.forEach.call(doc.querySelectorAll('iframe, embed, object, a, div, section, aside'), function(el) {
+        var marker = normalize(el.id + ' ' + el.className + ' ' + (el.getAttribute('src') || '') + ' ' + (el.getAttribute('href') || ''));
+        if (el.tagName === 'IFRAME') {
+          var src = el.getAttribute('src') || '';
+          var shouldKeep = isLikelyPlayerFrame(el) || isPassiveAssetUrl(src);
+          var shouldRemove = !shouldKeep || isBlockedUrl(marker) || marker.indexOf('reklam') !== -1 || marker.indexOf('advert') !== -1 || marker.indexOf('preroll') !== -1;
+          if (shouldRemove) neutralizeElement(el);
+          return;
+        }
+
+        if (isBlockedUrl(marker) || marker.indexOf('reklam') !== -1 || marker.indexOf('advert') !== -1 || marker.indexOf('preroll') !== -1) {
+          neutralizeElement(el);
+        }
+      });
+    } catch (e) {}
+  }
+
+  function guard() {
+    guardMedia(document);
+    guardNodes(document);
+    try {
+      Array.prototype.forEach.call(document.querySelectorAll('iframe'), function(frame) {
+        if (!isLikelyPlayerFrame(frame)) {
+          neutralizeElement(frame);
+          return;
+        }
+        try {
+          var frameDoc = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
+          if (frameDoc) {
+            guardMedia(frameDoc);
+            guardNodes(frameDoc);
+          }
+        } catch (e) {}
+      });
+    } catch (e) {}
+  }
+
+  guard();
+  window.addEventListener('load', guard, true);
+  setInterval(guard, 800);
+  if (document.documentElement) {
+    new MutationObserver(guard).observe(document.documentElement, { childList: true, subtree: true });
+  }
 
   true;
+})();
+`;
+
+const PLAYER_STOP_MEDIA_SCRIPT = `
+(function() {
+  try {
+    Array.prototype.forEach.call(document.querySelectorAll('audio, video'), function(media) {
+      try {
+        media.muted = true;
+        media.defaultMuted = true;
+        media.volume = 0;
+        media.pause();
+        media.removeAttribute('autoplay');
+        media.removeAttribute('src');
+        Array.prototype.forEach.call(media.querySelectorAll('source'), function(source) {
+          source.removeAttribute('src');
+        });
+        if (typeof media.load === 'function') media.load();
+      } catch (e) {}
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('iframe'), function(frame) {
+      try {
+        frame.setAttribute('src', 'about:blank');
+        frame.removeAttribute('srcdoc');
+      } catch (e) {}
+    });
+  } catch (e) {}
+  true;
+})();
+`;
+
+const HDFILM_RUNTIME_DISCOVERY_SCRIPT = `
+(function() {
+  'use strict';
+  if (window.__streamboxHdfilmDiscoveryInstalled) return;
+  window.__streamboxHdfilmDiscoveryInstalled = true;
+
+  var seen = {};
+  var blockedPatterns = ${JSON.stringify(BLOCKED_PLAYER_NAVIGATION_PATTERNS)};
+  var trustedEmbedPattern = /(rapidrame|hdfilmcehennemi\\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape)/i;
+
+  function postToApp(type, payload) {
+    try {
+      if (!window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) return;
+      var message = { type: type };
+      if (payload) {
+        for (var key in payload) {
+          if (Object.prototype.hasOwnProperty.call(payload, key)) {
+            message[key] = payload[key];
+          }
+        }
+      }
+      window.ReactNativeWebView.postMessage(JSON.stringify(message));
+    } catch (e) {}
+  }
+
+  function cleanUrl(value) {
+    if (!value) return '';
+    return String(value)
+      .replace(/\\\\\\//g, '/')
+      .replace(/&amp;/g, '&')
+      .replace(/["'<>\\s]+$/g, '')
+      .trim();
+  }
+
+  function absoluteUrl(value) {
+    var cleaned = cleanUrl(value);
+    if (!cleaned) return '';
+    try {
+      return new URL(cleaned, window.location.href).href;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function isDirectMediaUrl(url) {
+    return /\\.(m3u8|mp4)(?:[?#].*)?$/i.test(url) || url.toLowerCase().indexOf('.m3u8') !== -1 || url.toLowerCase().indexOf('.mp4') !== -1;
+  }
+
+  function isBlockedPlaybackUrl(url) {
+    var normalized = String(url || '').toLowerCase();
+    return blockedPatterns.some(function(pattern) {
+      return normalized.indexOf(pattern) !== -1;
+    });
+  }
+
+  function isTrustedRuntimeContext() {
+    return trustedEmbedPattern.test(window.location.href);
+  }
+
+  function isLikelyMovieStreamUrl(url) {
+    var normalized = String(url || '').toLowerCase();
+    if (isBlockedPlaybackUrl(normalized)) return false;
+    if (trustedEmbedPattern.test(normalized) || isTrustedRuntimeContext()) return true;
+    return /\\/hls2?\\//i.test(normalized) ||
+      /\\.urlset\\//i.test(normalized) ||
+      /\\/(?:master|index|playlist|manifest)\\.m3u8(?:[?#]|$)/i.test(normalized);
+  }
+
+  function inspectPlaybackUrl(value, source) {
+    var url = absoluteUrl(value);
+    if (!url) return;
+
+    var key = source + ':' + url;
+    if (seen[key]) return;
+
+    if (isDirectMediaUrl(url) && isLikelyMovieStreamUrl(url)) {
+      seen[key] = true;
+      postToApp('hdfilm_stream_discovered', {
+        streamUrl: url,
+        streamType: url.toLowerCase().indexOf('.m3u8') !== -1 ? 'm3u8' : 'mp4',
+        referer: window.location.href,
+        embedUrl: window.location.href,
+        source: source
+      });
+      return;
+    }
+
+    if (!isBlockedPlaybackUrl(url) && trustedEmbedPattern.test(url)) {
+      seen[key] = true;
+      postToApp('hdfilm_embed_discovered', {
+        embedUrl: url,
+        pageUrl: window.location.href,
+        source: source
+      });
+    }
+  }
+
+  function scanTextForMediaUrls(text, source) {
+    if (!text || typeof text !== 'string') return;
+    var normalized = text.replace(/\\\\\\//g, '/').replace(/&amp;/g, '&');
+    var directRegex = /https?:\\/\\/[^\\s"'<>]+?(?:\\.m3u8|\\.mp4)(?:[^\\s"'<>]*)?/gi;
+    var match;
+    while ((match = directRegex.exec(normalized)) !== null) {
+      inspectPlaybackUrl(match[0], source);
+    }
+
+    var embedRegex = /https?:\\/\\/[^\\s"'<>]+?(?:rapidrame|hdfilmcehennemi\\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape)[^\\s"'<>]*/gi;
+    while ((match = embedRegex.exec(normalized)) !== null) {
+      inspectPlaybackUrl(match[0], source);
+    }
+  }
+
+  function scanNode(node) {
+    try {
+      if (!node || node.nodeType !== 1) return;
+      var attrs = ['src', 'currentSrc', 'href', 'data-link', 'data-video', 'data-url', 'data-href', 'data-src', 'data-file'];
+      attrs.forEach(function(attr) {
+        var value = attr === 'currentSrc' ? node.currentSrc : node.getAttribute && node.getAttribute(attr);
+        if (value) inspectPlaybackUrl(value, 'dom-' + attr);
+      });
+      if (node.querySelectorAll) {
+        node.querySelectorAll('iframe, video, source, a, button, [data-link], [data-video], [data-url], [data-href], [data-src], [data-file]').forEach(scanNode);
+      }
+    } catch (e) {}
+  }
+
+  function scanDocument() {
+    try {
+      scanNode(document.documentElement);
+      scanTextForMediaUrls(document.documentElement ? document.documentElement.innerHTML : '', 'dom-html');
+    } catch (e) {}
+  }
+
+  try {
+    var originalSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function(name, value) {
+      if (/src|href|link|url|video|file/i.test(String(name || ''))) {
+        inspectPlaybackUrl(value, 'setAttribute-' + name);
+      }
+      return originalSetAttribute.apply(this, arguments);
+    };
+  } catch (e) {}
+
+  try {
+    var originalFetch = window.fetch;
+    if (typeof originalFetch === 'function') {
+      window.fetch = function(input, init) {
+        try {
+          inspectPlaybackUrl(typeof input === 'string' ? input : (input && input.url), 'fetch-request');
+        } catch (e) {}
+        return originalFetch.apply(this, arguments).then(function(response) {
+          try {
+            var clone = response.clone();
+            var contentType = clone.headers && clone.headers.get ? String(clone.headers.get('content-type') || '') : '';
+            var requestUrl = response.url || (typeof input === 'string' ? input : (input && input.url)) || '';
+            if (/json|text|html|javascript|mpegurl|mpeg/i.test(contentType) || isDirectMediaUrl(requestUrl)) {
+              clone.text().then(function(text) {
+                scanTextForMediaUrls(text, 'fetch-response');
+              }).catch(function() {});
+            }
+          } catch (e) {}
+          return response;
+        });
+      };
+    }
+  } catch (e) {}
+
+  try {
+    var originalOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+      try {
+        this.__streamboxUrl = url;
+        inspectPlaybackUrl(url, 'xhr-request');
+        this.addEventListener('load', function() {
+          try {
+            inspectPlaybackUrl(this.responseURL || this.__streamboxUrl, 'xhr-response-url');
+            if (typeof this.responseText === 'string') {
+              scanTextForMediaUrls(this.responseText, 'xhr-response');
+            }
+          } catch (e) {}
+        });
+      } catch (e) {}
+      return originalOpen.apply(this, arguments);
+    };
+  } catch (e) {}
+
+  function startDomWatch() {
+    scanDocument();
+    try {
+      new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+          mutation.addedNodes && Array.prototype.forEach.call(mutation.addedNodes, scanNode);
+          if (mutation.target) scanNode(mutation.target);
+        });
+      }).observe(document.documentElement || document, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src', 'href', 'data-link', 'data-video', 'data-url', 'data-href', 'data-src', 'data-file']
+      });
+    } catch (e) {}
+    setInterval(scanDocument, 1200);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startDomWatch, { once: true });
+  } else {
+    startDomWatch();
+  }
 })();
 `;
 
@@ -733,9 +994,11 @@ const DIZIPAL_INJECT_BEFORE = `
 (function() {
   'use strict';
 
+  ${PLAYER_AD_GUARD_SCRIPT}
+
   window.open = function() { return null; };
 
-  var adDomains = ['doubleclick','googlesyndication','adnxs','popads','exoclick','trafficjunky','juicyads','propellerads','popcash','adserver','aj2204'];
+  var adDomains = ${JSON.stringify(BLOCKED_PLAYER_NAVIGATION_PATTERNS)};
   var _xhrOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(m, url) {
     if (adDomains.some(function(domain) { return String(url).toLowerCase().includes(domain); })) return;
@@ -765,6 +1028,8 @@ function getEmbedInjectBefore(fit: 'contain' | 'cover' = 'contain') {
   return `
 (function() {
   'use strict';
+  ${PLAYER_AD_GUARD_SCRIPT}
+  ${HDFILM_RUNTIME_DISCOVERY_SCRIPT}
   window.open = function() { return null; };
   var baseStyle = document.getElementById('app-fit-style');
   if (!baseStyle) {
@@ -975,8 +1240,10 @@ function getInjectBefore(source: WebViewProviderSource, fit: 'contain' | 'cover'
   return `
 (function() {
   'use strict';
+  ${PLAYER_AD_GUARD_SCRIPT}
+  ${HDFILM_RUNTIME_DISCOVERY_SCRIPT}
   window.open = function() { return null; };
-  var adDomains = ['doubleclick','googlesyndication','adnxs','popads','exoclick','trafficjunky','juicyads','propellerads','popcash','adserver','aj2204'];
+  var adDomains = ${JSON.stringify(BLOCKED_PLAYER_NAVIGATION_PATTERNS)};
   var _xhrOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(m, url) {
     if (adDomains.some(function(domain) { return String(url).toLowerCase().includes(domain); })) return;
@@ -1024,12 +1291,20 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
   return `
 (function() {
   'use strict';
+  ${HDFILM_RUNTIME_DISCOVERY_SCRIPT}
 
   var isTv = ${mediaType === "tv"};
   var targetSeason = ${seasonNumber || 1};
   var targetEpisode = ${episodeNumber || 1};
   var readySent = false;
   var readyFallbackTimer = null;
+  var providerControlsVisible = false;
+  var providerControlsHideTimer = null;
+  var providerControlsLastPrimaryTapAt = 0;
+  var providerControlsLastToggleAt = 0;
+  var providerControlsAutoHideMs = 4400;
+  var visualFrameSeen = false;
+  var visualFrameWarningTimer = null;
 
   function postToApp(type, payload) {
     try {
@@ -1053,6 +1328,24 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
     postToApp('player_ready', { reason: reason });
   }
 
+  function markVisualFrame(reason) {
+    visualFrameSeen = true;
+    if (visualFrameWarningTimer) {
+      clearTimeout(visualFrameWarningTimer);
+      visualFrameWarningTimer = null;
+    }
+    postToApp('player_visual_ready', { reason: reason });
+  }
+
+  function scheduleVisualFrameProbe(reason, delay) {
+    if (visualFrameSeen || visualFrameWarningTimer) return;
+    visualFrameWarningTimer = setTimeout(function() {
+      if (!visualFrameSeen) {
+        postToApp('player_black_screen_suspected', { reason: reason });
+      }
+    }, delay);
+  }
+
   function scheduleReadyFallback(reason, delay) {
     if (readySent) return;
     if (readyFallbackTimer) clearTimeout(readyFallbackTimer);
@@ -1061,22 +1354,54 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
     }, delay);
   }
 
+  function probePresentedVideoFrame(video, reason) {
+    if (!video) return;
+
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      if (video.__streamboxFrameProbeBound) return;
+      video.__streamboxFrameProbeBound = true;
+      try {
+        video.requestVideoFrameCallback(function() {
+          markVisualFrame(reason + '-frame-callback');
+        });
+        return;
+      } catch (e) {}
+    }
+
+    setTimeout(function() {
+      try {
+        if (!video.paused && video.currentTime > 0 && video.readyState >= 3) {
+          markVisualFrame(reason + '-playing-frame');
+        }
+      } catch (e) {}
+    }, 1600);
+  }
+
   function bindVideo(video) {
     if (!video || video.__streamboxBound) return;
     video.__streamboxBound = true;
 
     ['loadeddata', 'canplay', 'playing'].forEach(function(eventName) {
       video.addEventListener(eventName, function() {
+        if (eventName === 'loadeddata' || eventName === 'canplay') {
+          probePresentedVideoFrame(video, 'video-' + eventName);
+        }
         if (eventName === 'playing' || video.readyState >= 2) {
+          probePresentedVideoFrame(video, 'video-' + eventName);
           markPlaybackReady('video-' + eventName);
+          scheduleVisualFrameProbe('video-' + eventName + '-without-presented-frame', 6500);
         }
       });
     });
 
     if (video.readyState >= 2 && !video.paused) {
+      probePresentedVideoFrame(video, 'video-ready');
       markPlaybackReady('video-ready');
+      scheduleVisualFrameProbe('video-ready-without-presented-frame', 6500);
     } else if (video.readyState >= 2) {
+      probePresentedVideoFrame(video, 'video-buffered');
       scheduleReadyFallback('video-buffered', 900);
+      scheduleVisualFrameProbe('video-buffered-without-presented-frame', 7500);
     }
   }
 
@@ -1086,16 +1411,372 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
         var jw = window.jwplayer();
         if (jw && !jw.__streamboxBound && typeof jw.on === 'function') {
           jw.__streamboxBound = true;
-          jw.on('play', function() { markPlaybackReady('jwplayer-play'); });
-          jw.on('buffer', function() { scheduleReadyFallback('jwplayer-buffer', 1200); });
-          jw.on('firstFrame', function() { markPlaybackReady('jwplayer-first-frame'); });
+          jw.on('play', function() {
+            markPlaybackReady('jwplayer-play');
+            scheduleVisualFrameProbe('jwplayer-play-without-first-frame', 8500);
+          });
+          jw.on('buffer', function() {
+            scheduleReadyFallback('jwplayer-buffer', 1200);
+            scheduleVisualFrameProbe('jwplayer-buffer-without-first-frame', 10500);
+          });
+          jw.on('firstFrame', function() {
+            markVisualFrame('jwplayer-first-frame');
+            markPlaybackReady('jwplayer-first-frame');
+          });
         }
         if (jw && typeof jw.getState === 'function') {
           var state = jw.getState();
-          if (state === 'playing') markPlaybackReady('jwplayer-state-playing');
-          if (state === 'buffering') scheduleReadyFallback('jwplayer-state-buffering', 1200);
+          if (state === 'playing') {
+            markPlaybackReady('jwplayer-state-playing');
+            scheduleVisualFrameProbe('jwplayer-state-playing-without-first-frame', 8500);
+          }
+          if (state === 'buffering') {
+            scheduleReadyFallback('jwplayer-state-buffering', 1200);
+            scheduleVisualFrameProbe('jwplayer-state-buffering-without-first-frame', 10500);
+          }
         }
       }
+    } catch (e) {}
+  }
+
+  function getProviderMenuSelector() {
+    return [
+      '.jw-settings-menu',
+      '.jw-settings-submenu',
+      '.jw-settings-topbar',
+      '.jw-settings-content-item',
+      '.jw-settings-item',
+      '.jw-settings-close',
+      '.jw-submenu',
+      '.jw-option',
+      '.vjs-menu',
+      '.vjs-menu-content',
+      '.plyr__menu',
+      '.plyr__menu__container',
+      '[role="menu"]',
+      '[role="menuitem"]'
+    ].join(', ');
+  }
+
+  function getProviderMenuActionSelector() {
+    return [
+      '.jw-settings-content-item',
+      '.jw-settings-item',
+      '.jw-settings-close',
+      '.jw-submenu',
+      '.jw-option',
+      '.jw-settings-topbar .jw-icon',
+      '.jw-settings-menu button',
+      '.jw-settings-menu [role="button"]',
+      '.jw-settings-menu [role="menuitem"]',
+      '.jw-settings-menu [tabindex]',
+      '.jw-settings-submenu button',
+      '.jw-settings-submenu [role="button"]',
+      '.jw-settings-submenu [role="menuitem"]',
+      '.jw-settings-submenu [tabindex]',
+      '.vjs-menu-item',
+      '.vjs-menu button',
+      '.plyr__menu__container button',
+      '.plyr__menu [role="menuitem"]'
+    ].join(', ');
+  }
+
+  function getProviderControlSelector() {
+    return [
+      '.jw-controls',
+      '.jw-controlbar',
+      '.jw-icon',
+      '.jw-button-container',
+      '.jw-slider-time',
+      '.jw-slider-volume',
+      '.jw-display-icon-container',
+      '.jw-settings-menu',
+      '.jw-settings-submenu',
+      '.jw-settings-topbar',
+      '.jw-settings-content-item',
+      '.jw-settings-item',
+      '.jw-settings-close',
+      '.jw-submenu',
+      '.jw-option',
+      '.vjs-control-bar',
+      '.vjs-control',
+      '.vjs-menu',
+      '.vjs-menu-content',
+      '.plyr__controls',
+      '.plyr__control',
+      '.plyr__menu',
+      '.plyr__menu__container',
+      '[role="menu"]',
+      '[role="menuitem"]'
+    ].join(', ');
+  }
+
+  function hasOpenProviderMenu(doc) {
+    try {
+      var rootDoc = doc || document;
+      return Array.prototype.some.call(rootDoc.querySelectorAll(getProviderMenuSelector()), function(menu) {
+        var style = rootDoc.defaultView.getComputedStyle(menu);
+        var rect = menu.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0.05 && rect.width > 20 && rect.height > 20;
+      });
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function setProviderControlsVisible(doc, visible, autoHide) {
+    try {
+      var rootDoc = doc || document;
+      if (!visible && hasOpenProviderMenu(rootDoc)) {
+        return;
+      }
+      providerControlsVisible = visible;
+      rootDoc.__streamboxControlsVisible = visible;
+      if (rootDoc === document) document.__streamboxControlsVisible = visible;
+      if (providerControlsHideTimer) {
+        clearTimeout(providerControlsHideTimer);
+        providerControlsHideTimer = null;
+      }
+
+      rootDoc.querySelectorAll('.jwplayer').forEach(function(player) {
+        if (visible) {
+          player.classList.remove('jw-flag-user-inactive');
+          player.classList.remove('jw-flag-controls-hidden');
+          player.classList.add('jw-flag-user-active');
+        } else {
+          player.classList.remove('jw-flag-user-active');
+          player.classList.add('jw-flag-user-inactive');
+        }
+      });
+      rootDoc.querySelectorAll('.jw-controls, .jw-controlbar, .jw-overlays, .jw-display, .jw-display-icon-container, .vjs-control-bar, .plyr__controls').forEach(function(el) {
+        if (visible) {
+          el.style.setProperty('visibility', 'visible', 'important');
+          el.style.setProperty('opacity', '1', 'important');
+          el.style.setProperty('pointer-events', 'auto', 'important');
+        } else {
+          el.style.setProperty('visibility', 'hidden', 'important');
+          el.style.setProperty('opacity', '0', 'important');
+          el.style.setProperty('pointer-events', 'none', 'important');
+        }
+      });
+      if (visible) {
+        rootDoc.querySelectorAll(getProviderControlSelector()).forEach(function(el) {
+          el.style.setProperty('pointer-events', 'auto', 'important');
+        });
+      }
+      if (visible && rootDoc === document && typeof window.jwplayer === 'function') {
+        try {
+          var jw = window.jwplayer();
+          if (jw && typeof jw.setControls === 'function') jw.setControls(true);
+        } catch (e) {}
+      }
+
+      if (visible && autoHide) {
+        providerControlsHideTimer = setTimeout(function() {
+          setProviderControlsVisible(rootDoc, false, false);
+        }, providerControlsAutoHideMs);
+      }
+    } catch (e) {}
+  }
+
+  function shouldHandleProviderTap(eventName) {
+    var now = Date.now();
+    if (eventName === 'click' && now - providerControlsLastPrimaryTapAt < 650) {
+      return false;
+    }
+    if (eventName !== 'click') {
+      if (now - providerControlsLastPrimaryTapAt < 120) {
+        return false;
+      }
+      providerControlsLastPrimaryTapAt = now;
+    }
+    return true;
+  }
+
+  function getProviderEventPoint(event) {
+    try {
+      var touch = event.changedTouches && event.changedTouches.length ? event.changedTouches[0] : null;
+      if (!touch && event.touches && event.touches.length) touch = event.touches[0];
+      return {
+        x: touch ? touch.clientX : event.clientX,
+        y: touch ? touch.clientY : event.clientY
+      };
+    } catch (e) {
+      return { x: null, y: null };
+    }
+  }
+
+  function getProviderActionTarget(node) {
+    if (!node || !node.closest) return node;
+    return node.closest([
+      'button',
+      'a[href]',
+      '[role="button"]',
+      '[role="menuitem"]',
+      '.jw-settings-content-item',
+      '.jw-settings-item',
+      '.jw-settings-close',
+      '.jw-submenu',
+      '.jw-option',
+      '.jw-icon',
+      '.jw-button-container',
+      '.vjs-control',
+      '.vjs-menu-item',
+      '.plyr__control',
+      '.plyr__menu__container button',
+      '[tabindex]',
+      '[aria-label]',
+      '[title]'
+    ].join(', ')) || node;
+  }
+
+  function findProviderActionFromPoint(rootDoc, event, selector) {
+    try {
+      var point = getProviderEventPoint(event);
+      if (point.x == null || point.y == null || !rootDoc.elementsFromPoint) return null;
+      var stack = rootDoc.elementsFromPoint(point.x, point.y);
+      for (var i = 0; i < stack.length; i++) {
+        var hit = stack[i];
+        if (!hit || !hit.closest) continue;
+        var providerNode = hit.closest(selector);
+        if (providerNode) return getProviderActionTarget(providerNode);
+      }
+      var candidates = rootDoc.querySelectorAll(selector);
+      for (var j = 0; j < candidates.length; j++) {
+        var candidate = candidates[j];
+        var style = rootDoc.defaultView.getComputedStyle(candidate);
+        var rect = candidate.getBoundingClientRect();
+        if (
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          Number(style.opacity || 1) > 0.05 &&
+          rect.width > 4 &&
+          rect.height > 4 &&
+          point.x >= rect.left &&
+          point.x <= rect.right &&
+          point.y >= rect.top &&
+          point.y <= rect.bottom
+        ) {
+          return getProviderActionTarget(candidate);
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function dispatchProviderPointerSequence(rootDoc, actionTarget, point) {
+    var win = rootDoc.defaultView || window;
+    var eventInit = {
+      bubbles: true,
+      cancelable: true,
+      view: win,
+      clientX: point && point.x != null ? point.x : 0,
+      clientY: point && point.y != null ? point.y : 0,
+      screenX: point && point.x != null ? point.x : 0,
+      screenY: point && point.y != null ? point.y : 0
+    };
+    try {
+      if (win.PointerEvent) {
+        actionTarget.dispatchEvent(new win.PointerEvent('pointerdown', Object.assign({}, eventInit, { pointerId: 1, pointerType: 'touch', isPrimary: true })));
+        actionTarget.dispatchEvent(new win.PointerEvent('pointerup', Object.assign({}, eventInit, { pointerId: 1, pointerType: 'touch', isPrimary: true })));
+      }
+    } catch (e) {}
+    try {
+      actionTarget.dispatchEvent(new win.MouseEvent('mousedown', eventInit));
+      actionTarget.dispatchEvent(new win.MouseEvent('mouseup', eventInit));
+      actionTarget.dispatchEvent(new win.MouseEvent('click', eventInit));
+    } catch (e) {
+      try {
+        if (typeof actionTarget.click === 'function') actionTarget.click();
+      } catch (err) {}
+    }
+  }
+
+  function relayProviderClick(rootDoc, event, actionTarget) {
+    if (!actionTarget || actionTarget.__streamboxRelayingProviderClick) return false;
+    try {
+      var point = getProviderEventPoint(event);
+      actionTarget.__streamboxRelayingProviderClick = true;
+      setProviderControlsVisible(rootDoc, true, false);
+      if (event.cancelable !== false && event.preventDefault) event.preventDefault();
+      if (event.stopPropagation) event.stopPropagation();
+      if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+      setTimeout(function() {
+        try {
+          dispatchProviderPointerSequence(rootDoc, actionTarget, point);
+        } catch (e) {}
+        setTimeout(function() {
+          try { actionTarget.__streamboxRelayingProviderClick = false; } catch (e) {}
+        }, 180);
+      }, 0);
+      try {
+        if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_tap' }));
+        }
+      } catch (e) {}
+      return true;
+    } catch (e) {
+      try { actionTarget.__streamboxRelayingProviderClick = false; } catch (err) {}
+      return false;
+    }
+  }
+
+  function bindProviderControlTapBridge(doc) {
+    try {
+      var rootDoc = doc || document;
+      if (rootDoc.__streamboxControlTapBridgeBound) return;
+      rootDoc.__streamboxControlTapBridgeBound = true;
+      var tapEvents = window.PointerEvent ? ['pointerup', 'click'] : ['touchend', 'click'];
+      tapEvents.forEach(function(eventName) {
+        rootDoc.addEventListener(eventName, function(event) {
+          if (!shouldHandleProviderTap(eventName)) return;
+          var target = event.target;
+          var directMenuAction = target && target.closest ? target.closest(getProviderMenuActionSelector()) : null;
+          if (directMenuAction) {
+            setProviderControlsVisible(rootDoc, true, false);
+            try {
+              if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_tap' }));
+              }
+            } catch (e) {}
+            return;
+          }
+          var menuAction = null;
+          if (hasOpenProviderMenu(rootDoc)) {
+            menuAction = findProviderActionFromPoint(rootDoc, event, getProviderMenuActionSelector());
+          }
+          if (!menuAction && target && target.closest) {
+            var targetMenu = target.closest(getProviderMenuActionSelector());
+            if (targetMenu) menuAction = getProviderActionTarget(targetMenu);
+          }
+          if (menuAction && relayProviderClick(rootDoc, event, menuAction)) {
+            return;
+          }
+          if (target && target.closest && target.closest(getProviderControlSelector())) {
+            setProviderControlsVisible(rootDoc, true, true);
+            try {
+              if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_tap' }));
+              }
+            } catch (e) {}
+            return;
+          }
+          if (target && target.closest && target.closest('a[href], [onclick], [data-href], [data-url], [data-link]')) {
+            return;
+          }
+          var now = Date.now();
+          if (now - providerControlsLastToggleAt < 180) return;
+          providerControlsLastToggleAt = now;
+          var nextVisible = !(rootDoc === document ? providerControlsVisible : rootDoc.__streamboxControlsVisible);
+          rootDoc.__streamboxControlsVisible = nextVisible;
+          setProviderControlsVisible(rootDoc, nextVisible, nextVisible);
+          try {
+            if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_tap' }));
+            }
+          } catch (e) {}
+        }, true);
+      });
     } catch (e) {}
   }
 
@@ -1104,20 +1785,74 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
     try {
       Array.prototype.forEach.call(doc.querySelectorAll('video'), bindVideo);
     } catch (e) {}
+    bindProviderControlTapBridge(doc);
     bindKnownPlayerApis();
+  }
+
+  function getViewportSize(doc) {
+    var win = (doc && doc.defaultView) || window;
+    var root = doc && doc.documentElement;
+    var visualViewport = win.visualViewport;
+    var width = Math.round((visualViewport && visualViewport.width) || win.innerWidth || (root && root.clientWidth) || screen.width || 0);
+    var height = Math.round((visualViewport && visualViewport.height) || win.innerHeight || (root && root.clientHeight) || screen.height || 0);
+    return {
+      width: Math.max(1, width),
+      height: Math.max(1, height)
+    };
+  }
+
+  function syncViewportVars(doc) {
+    try {
+      var targetDoc = doc || document;
+      var size = getViewportSize(targetDoc);
+      var root = targetDoc.documentElement;
+      var body = targetDoc.body;
+      root.style.setProperty('--sb-player-width', size.width + 'px');
+      root.style.setProperty('--sb-player-height', size.height + 'px');
+      root.style.setProperty('width', size.width + 'px', 'important');
+      root.style.setProperty('height', size.height + 'px', 'important');
+      if (body) {
+        body.style.setProperty('width', size.width + 'px', 'important');
+        body.style.setProperty('height', size.height + 'px', 'important');
+      }
+
+      var win = targetDoc.defaultView || window;
+      if (!win.__streamboxViewportBound) {
+        win.__streamboxViewportBound = true;
+        win.addEventListener('resize', function() { syncViewportVars(targetDoc); }, { passive: true });
+        win.addEventListener('orientationchange', function() {
+          setTimeout(function() { syncViewportVars(targetDoc); }, 250);
+        }, { passive: true });
+        if (win.visualViewport) {
+          win.visualViewport.addEventListener('resize', function() { syncViewportVars(targetDoc); }, { passive: true });
+          win.visualViewport.addEventListener('scroll', function() { syncViewportVars(targetDoc); }, { passive: true });
+        }
+      }
+
+      if (targetDoc === document && typeof window.jwplayer === 'function') {
+        try {
+          var jw = window.jwplayer();
+          if (jw && typeof jw.resize === 'function') jw.resize(size.width, size.height);
+        } catch (e) {}
+      }
+    } catch (e) {}
   }
 
   function injectFullscreenStyleInFrame(frameDoc) {
     try {
+      syncViewportVars(frameDoc);
       if (frameDoc.getElementById('sb-fs-fix')) return;
       var s = frameDoc.createElement('style');
       s.id = 'sb-fs-fix';
       s.textContent = [
-        'html, body { margin:0!important; padding:0!important; overflow:hidden!important; width:100vw!important; height:100vh!important; background:#000!important; }',
-        'video { object-fit:${fit}!important; width:100vw!important; height:100vh!important; position:fixed!important; top:0!important; left:0!important; }',
+        'html, body { margin:0!important; padding:0!important; overflow:hidden!important; width:var(--sb-player-width,100vw)!important; height:var(--sb-player-height,100dvh)!important; background:#000!important; touch-action:manipulation!important; }',
+        'video { object-fit:${fit}!important; width:var(--sb-player-width,100vw)!important; height:var(--sb-player-height,100dvh)!important; position:absolute!important; top:0!important; left:0!important; }',
         '.jw-aspect { padding-top:0!important; }',
-        '.jwplayer, .jw-wrapper, .jw-media, .jw-preview, .jw-overlays, .jw-controls, #player, #playerbase, .video-js, .plyr { width:100vw!important; height:100vh!important; position:fixed!important; top:0!important; left:0!important; }',
-        '.jw-controls-backdrop, .jw-controlbar { position:fixed!important; bottom:0!important; left:0!important; width:100%!important; z-index:10!important; }'
+        '#player, #playerbase, .jwplayer, .jw-wrapper, .jw-media, .jw-preview, .video-js, .plyr { width:var(--sb-player-width,100vw)!important; height:var(--sb-player-height,100dvh)!important; position:absolute!important; top:0!important; left:0!important; }',
+        '.jw-settings-menu, .jw-settings-submenu, .jw-settings-menu *, .jw-settings-submenu *, .vjs-menu, .vjs-menu *, .plyr__menu, .plyr__menu * { pointer-events:auto!important; z-index:99999999!important; }',
+        '.jw-settings-menu, .jw-icon, .jw-button-container, .jw-slider-time, .vjs-control, .plyr__control { pointer-events:auto!important; }',
+        '.jw-controls-backdrop, .jw-controlbar { bottom:0!important; left:0!important; width:100%!important; z-index:10!important; pointer-events:auto!important; }',
+        '.jw-icon, .jw-button-container, .jw-settings-menu, .jw-slider-time, .vjs-control, .plyr__control { pointer-events:auto!important; }'
       ].join('\\n');
       (frameDoc.head || frameDoc.documentElement).appendChild(s);
     } catch (e) {}
@@ -1177,27 +1912,31 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
   var playerStyle = document.createElement('style');
   playerStyle.id = 'app-player-show';
   playerStyle.textContent = [
-    'html, body { background: #000 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; width: 100vw !important; height: 100vh !important; }',
+    'html, body { background: #000 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; width: var(--sb-player-width, 100vw) !important; height: var(--sb-player-height, 100dvh) !important; touch-action: manipulation !important; -webkit-tap-highlight-color: transparent !important; }',
     'header, footer, nav, aside, .sidebar, .comments, .related, .breadcrumb, .logo, [class*="header"]:not([class*="jw"]):not([class*="vjs"]), [class*="footer"]:not([class*="jw"]):not([class*="vjs"]), [class*="nav-"]:not([class*="jw"]):not([class*="vjs"]), [class*="sidebar"], [class*="comment"], [class*="social"], [class*="share"], [class*="bread"], [class*="cookie"], [class*="consent"], [class*="banner-"], .section-alt, .section-other, .rating, .detail-info, .film-info { display: none !important; }',
-    '.player-wrapper, .player-area, .film-player, #player, .ke_post_body { margin: 0 !important; padding: 0 !important; position: fixed !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; z-index: 999999 !important; }',
-    'iframe { width: 100vw !important; height: 100vh !important; position: fixed !important; top: 0 !important; left: 0 !important; z-index: 999999 !important; border: none !important; }',
-    'video { object-fit: ${fit} !important; width: 100vw !important; height: 100vh !important; position: fixed !important; top: 0 !important; left: 0 !important; }',
+    '.player-wrapper, .player-area, .film-player, #player, .ke_post_body { margin: 0 !important; padding: 0 !important; position: fixed !important; top: 0 !important; left: 0 !important; width: var(--sb-player-width, 100vw) !important; height: var(--sb-player-height, 100dvh) !important; z-index: 999999 !important; }',
+    'iframe { width: var(--sb-player-width, 100vw) !important; height: var(--sb-player-height, 100dvh) !important; position: fixed !important; top: 0 !important; left: 0 !important; z-index: 999999 !important; border: none !important; pointer-events: auto !important; }',
+    'video { object-fit: ${fit} !important; width: var(--sb-player-width, 100vw) !important; height: var(--sb-player-height, 100dvh) !important; position: absolute !important; top: 0 !important; left: 0 !important; }',
     '.jw-aspect { padding-top: 0 !important; }',
-    '.jwplayer, .jw-wrapper, .jw-media, .jw-preview, .jw-overlays { width: 100vw !important; height: 100vh !important; position: fixed !important; top: 0 !important; left: 0 !important; }',
-    '[class*="jw-"], [class*="vjs-"], [class*="plyr"], .jw-controlbar, .jw-controls, .jw-slider-time, .jw-icon, .jw-button-container, .jw-settings-menu, .jw-display, .jw-display-icon-container, .jw-icon-fullscreen, .jw-icon-volume, .jw-text-elapsed, .jw-text-duration, .jw-overlay, .vjs-control-bar, .vjs-progress-control, .vjs-play-control, .vjs-volume-panel { display: flex !important; visibility: visible !important; opacity: 1 !important; pointer-events: auto !important; }',
+    '.jwplayer, .jw-wrapper, .jw-media, .jw-preview { width: var(--sb-player-width, 100vw) !important; height: var(--sb-player-height, 100dvh) !important; position: absolute !important; top: 0 !important; left: 0 !important; }',
+    '.jw-settings-menu, .jw-settings-submenu, .jw-settings-menu *, .jw-settings-submenu *, .vjs-menu, .vjs-menu *, .plyr__menu, .plyr__menu * { pointer-events: auto !important; z-index: 99999999 !important; }',
+    '.jw-settings-menu, .jw-slider-time, .jw-icon, .jw-button-container, .jw-icon-fullscreen, .jw-icon-volume, .jw-text-elapsed, .jw-text-duration, .vjs-control, .vjs-progress-control, .vjs-play-control, .vjs-volume-panel, .plyr__control { pointer-events: auto !important; }',
+    '.jw-controlbar, .vjs-control-bar, .plyr__controls { bottom: 0 !important; left: 0 !important; right: 0 !important; z-index: 9999999 !important; }',
     'ins.adsbygoogle, [id*="google_ads"], [class*="ad-container"], [class*="ad-wrapper"], .ad, .ads, [class*="advert"], [class*="popup"]:not([class*="jw"]):not([class*="vjs"]), [id*="popup"], .popup-overlay { display: none !important; }',
     'a[href*="download"], a[href*="indir"], a[download] { display: none !important; pointer-events: none !important; visibility: hidden !important; width: 0 !important; height: 0 !important; overflow: hidden !important; }',
     '[class*="yardim"], [class*="indir"], [id*="yardim"], [id*="indir"] { display: none !important; pointer-events: none !important; visibility: hidden !important; }'
   ].join('\\n');
   (document.head || document.documentElement).appendChild(playerStyle);
+  syncViewportVars(document);
 
   function forceVideoFullscreen(doc) {
     try {
+      syncViewportVars(doc);
       doc.querySelectorAll('video').forEach(function(v) {
         v.style.setProperty('object-fit', '${fit}', 'important');
-        v.style.setProperty('width', '100vw', 'important');
-        v.style.setProperty('height', '100vh', 'important');
-        v.style.setProperty('position', 'fixed', 'important');
+        v.style.setProperty('width', 'var(--sb-player-width, 100vw)', 'important');
+        v.style.setProperty('height', 'var(--sb-player-height, 100dvh)', 'important');
+        v.style.setProperty('position', 'absolute', 'important');
         v.style.setProperty('top', '0', 'important');
         v.style.setProperty('left', '0', 'important');
       });
@@ -1205,9 +1944,9 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
         el.style.setProperty('padding-top', '0', 'important');
       });
       doc.querySelectorAll('.jwplayer, .jw-wrapper, .jw-media, .jw-preview, .jw-overlays, #player, #playerbase').forEach(function(el) {
-        el.style.setProperty('width', '100vw', 'important');
-        el.style.setProperty('height', '100vh', 'important');
-        el.style.setProperty('position', 'fixed', 'important');
+        el.style.setProperty('width', 'var(--sb-player-width, 100vw)', 'important');
+        el.style.setProperty('height', 'var(--sb-player-height, 100dvh)', 'important');
+        el.style.setProperty('position', 'absolute', 'important');
         el.style.setProperty('top', '0', 'important');
         el.style.setProperty('left', '0', 'important');
         el.style.setProperty('visibility', 'visible', 'important');
@@ -1235,6 +1974,41 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
       try {
         var fd = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
         if (fd) forceVideoFullscreen(fd);
+      } catch (e) {}
+    });
+  }
+
+  function hideProviderNotices(doc) {
+    var rootDoc = doc || document;
+    var blockedText = /datacenter|kaynakli|kaynaklÄ±|kaynakl[iı]|sunucu|teknik|problem|hata/i;
+    rootDoc.querySelectorAll('div, span, p, strong, small').forEach(function(el) {
+      try {
+        if (el.closest && el.closest('.jw-controls, .jw-controlbar, .jw-settings-menu, .jw-settings-submenu, .vjs-control-bar, .plyr__controls')) return;
+        var text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+        if (!text || text.length > 180 || !blockedText.test(text)) return;
+        var style = getComputedStyle(el);
+        var rect = el.getBoundingClientRect();
+        var nearTop = rect.top < 100;
+        var overlayLike = style.position === 'fixed' || style.position === 'absolute' || nearTop;
+        if (overlayLike) {
+          el.style.setProperty('display', 'none', 'important');
+          el.style.setProperty('visibility', 'hidden', 'important');
+          el.style.setProperty('pointer-events', 'none', 'important');
+          el.style.setProperty('opacity', '0', 'important');
+        }
+      } catch (e) {}
+    });
+  }
+
+  function applyProviderUiFixes() {
+    bindProviderControlTapBridge(document);
+    hideProviderNotices(document);
+    document.querySelectorAll('iframe').forEach(function(frame) {
+      try {
+        var fd = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
+        if (!fd) return;
+        bindProviderControlTapBridge(fd);
+        hideProviderNotices(fd);
       } catch (e) {}
     });
   }
@@ -1378,12 +2152,14 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
   }
 
   showPlayerArea();
+  applyProviderUiFixes();
   hideHdfilmUiButtons();
   monitorPlayback();
 
   setTimeout(function() {
     clickRapidrame();
     showPlayerArea();
+    applyProviderUiFixes();
     hideHdfilmUiButtons();
     scheduleReadyFallback('rapidrame-click', 5000);
   }, 1500);
@@ -1392,6 +2168,7 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
     showPlayerArea();
     clickPlay();
     removeAdOverlays();
+    applyProviderUiFixes();
     hideHdfilmUiButtons();
     monitorPlayback();
     scheduleReadyFallback('play-attempt', 3200);
@@ -1400,18 +2177,31 @@ function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover
   setTimeout(function() {
     clickPlay();
     removeAdOverlays();
+    applyProviderUiFixes();
     hideHdfilmUiButtons();
     monitorPlayback();
     scheduleReadyFallback('second-play-attempt', 2200);
   }, 6000);
 
+  setTimeout(function() {
+    setProviderControlsVisible(document, false, false);
+    document.querySelectorAll('iframe').forEach(function(frame) {
+      try {
+        var fd = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
+        if (fd) setProviderControlsVisible(fd, false, false);
+      } catch (e) {}
+    });
+  }, 7600);
+
   setInterval(removeAdOverlays, 2000);
+  setInterval(applyProviderUiFixes, 1200);
   setInterval(hideHdfilmUiButtons, 1500);
   setInterval(monitorPlayback, 1000);
 
   new MutationObserver(function() {
     if (!readySent) showPlayerArea();
     removeAdOverlays();
+    applyProviderUiFixes();
     hideHdfilmUiButtons();
     monitorPlayback();
   }).observe(document.documentElement, { childList: true, subtree: true });
@@ -1534,7 +2324,8 @@ function getDizipalInjectAfter() {
     var hasEmbed = !!document.querySelector('#playerContent iframe, #playerContent video, #playerContent embed, #playerContent object, #mainPlayer iframe, #mainPlayer video');
     var mainVisible = !!(mainPlayer && getComputedStyle(mainPlayer).display !== 'none' && getComputedStyle(mainPlayer).visibility !== 'hidden');
     var childCount = playerContent ? playerContent.children.length : 0;
-    var isVisible = hasEmbed || (mainVisible && childCount > 0);
+    var promptVisible = documentHasStartPrompt(document);
+    var isVisible = hasEmbed || (mainVisible && childCount > 0 && !promptVisible);
 
     if (isVisible && !playerShellVisibleAt) {
       playerShellVisibleAt = Date.now();
@@ -1549,7 +2340,7 @@ function getDizipalInjectAfter() {
 
     readyFallbackTimer = setTimeout(function() {
       readyFallbackTimer = null;
-      if (!hasVisiblePlayerContent()) {
+      if (!hasVisiblePlayerContent() || documentHasStartPrompt(document)) {
         return;
       }
 
@@ -1595,10 +2386,38 @@ function getDizipalInjectAfter() {
     } catch (e) {}
   }
 
+  function resolveClickableTarget(node) {
+    if (!node || typeof node.closest !== 'function') {
+      return node || null;
+    }
+
+    return node.closest('button, a, [role="button"], input, label, .play-btn, .skip-btn, .jw-display-icon-container, .jw-icon-display, .vjs-big-play-button') || node;
+  }
+
+  function dispatchSyntheticTap(node) {
+    if (!node || typeof node.dispatchEvent !== 'function') {
+      return;
+    }
+
+    ['pointerdown', 'mousedown', 'touchstart', 'pointerup', 'mouseup', 'touchend', 'click'].forEach(function(eventName) {
+      try {
+        node.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true, view: window }));
+      } catch (error) {}
+    });
+  }
+
   function clickNode(node) {
-    if (!node) return false;
+    var target = resolveClickableTarget(node);
+    if (!target) return false;
+
     try {
-      node.click();
+      dispatchSyntheticTap(target);
+      if (typeof target.focus === 'function') {
+        try { target.focus(); } catch (e) {}
+      }
+      if (typeof target.click === 'function') {
+        target.click();
+      }
       return true;
     } catch (e) {
       return false;
@@ -1850,7 +2669,7 @@ function getDizipalInjectAfter() {
       clickPlaybackPrompts(document);
       nudgeVideos(document);
 
-      if (hasVisiblePlayerContent()) {
+      if (hasVisiblePlayerContent() && !documentHasStartPrompt(document)) {
         if (playerShellVisibleAt && (Date.now() - playerShellVisibleAt > 5000)) {
           markPlaybackReady('dizipal-mainplayer-visible-5s');
         }
@@ -1919,8 +2738,8 @@ function getDizipalInjectAfter() {
   // Hard fallback: if anything is on screen after 12s, dismiss spinner
   setTimeout(function() {
     if (!readySent && !notFoundSent) {
-      var anyContent = document.querySelector('iframe, video, embed, object, #mainPlayer, #playerContent');
-      if (anyContent) {
+      var anyContent = document.querySelector('iframe, video, embed, object, #mainPlayer iframe, #playerContent iframe, #mainPlayer video, #playerContent video');
+      if (anyContent && !documentHasStartPrompt(document)) {
         markPlaybackReady('dizipal-hard-fallback-12s');
       }
     }
@@ -1936,6 +2755,7 @@ function getDizipalInjectAfter() {
 // ---------------------------------------------------------------------------
 export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const webViewRef = useRef<WebView>(null);
   const [playerResult, setPlayerResult] = useState<WebPlayerResult | null>(null);
@@ -1958,6 +2778,29 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   // â”€â”€ Track recent playback entry only â”€â”€
   const { addToRecentlyWatched } = useRecentlyWatched();
   const hasTrackedRef = useRef(false);
+  const hdfilmNativeFallbackTriggeredRef = useRef(false);
+  const hdfilmRuntimeDiscoveryKeysRef = useRef(new Set<string>());
+  const playerResultRef = useRef<WebPlayerResult | null>(null);
+
+  useEffect(() => {
+    playerResultRef.current = playerResult;
+  }, [playerResult]);
+
+  useEffect(() => {
+    return () => {
+      const currentWebView = webViewRef.current as unknown as {
+        injectJavaScript?: (script: string) => void;
+        stopLoading?: () => void;
+        clearCache?: (includeDiskFiles: boolean) => void;
+        clearHistory?: () => void;
+      } | null;
+
+      currentWebView?.injectJavaScript?.(PLAYER_STOP_MEDIA_SCRIPT);
+      currentWebView?.stopLoading?.();
+      currentWebView?.clearHistory?.();
+      currentWebView?.clearCache?.(true);
+    };
+  }, []);
 
   useEffect(() => {
     if (!hasTrackedRef.current && !route.params.trailerUrl) {
@@ -1986,11 +2829,16 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const hideControlsNow = useCallback(() => {
     clearHideTimer();
     controlsVisibleRef.current = false;
+    controlsOpacity.stopAnimation();
     Animated.timing(controlsOpacity, {
       toValue: 0,
       duration: 300,
       useNativeDriver: true
-    }).start(() => setControlsVisible(false));
+    }).start(() => {
+      if (!controlsVisibleRef.current) {
+        setControlsVisible(false);
+      }
+    });
   }, [controlsOpacity, clearHideTimer]);
 
   const scheduleHideControls = useCallback(() => {
@@ -2001,6 +2849,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const showControls = useCallback(() => {
     clearHideTimer();
     controlsVisibleRef.current = true;
+    controlsOpacity.stopAnimation();
     setControlsVisible(true);
     controlsOpacity.setValue(1);
     scheduleHideControls();
@@ -2102,6 +2951,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setSelectedExternalSubtitle(null);
     setExternalSubtitleCues([]);
     setActiveSubtitleText(null);
+    hdfilmNativeFallbackTriggeredRef.current = false;
+    hdfilmRuntimeDiscoveryKeysRef.current.clear();
 
     if (route.params.trailerUrl) {
       // Show trailer directly
@@ -2132,12 +2983,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       seasonNumber: route.params.seasonNumber,
       episodeNumber: route.params.episodeNumber,
       castNames: route.params.castNames,
-      videoId: route.params.videoId,
-      isAzClassic: route.params.isAzClassic
+      videoId: route.params.videoId
     })
       .then((result) => {
         if (cancelled) return;
-        console.log("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
+        debugLog("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
 
         if (result.qualityWarning && result.source !== "not_found") {
           setIsResolving(false);
@@ -2195,22 +3045,181 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [canGoBack]);
 
   const handleClose = useCallback(() => {
+    webViewRef.current?.injectJavaScript(PLAYER_STOP_MEDIA_SCRIPT);
+    webViewRef.current?.stopLoading();
     void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     navigation.goBack();
   }, [navigation]);
 
-  const handleNavChange = useCallback((s: WebViewNavigation) => setCanGoBack(s.canGoBack), []);
+  const handleNavChange = useCallback((s: WebViewNavigation) => {
+    setCanGoBack(s.canGoBack);
+
+    if (playerResult?.url && s.url && !shouldAllowPlayerWebViewRequest({ url: s.url, isTopFrame: true }, playerResult.url)) {
+      webViewRef.current?.injectJavaScript(PLAYER_STOP_MEDIA_SCRIPT);
+      webViewRef.current?.stopLoading();
+    }
+  }, [playerResult?.url]);
   const handlePlaybackReady = useCallback(() => {
     setIsPlaybackReady(true);
   }, []);
+
+  const switchToHdFilmNativeFallback = useCallback((reason: string) => {
+    setPlayerResult((current) => {
+      if (
+        !current ||
+        current.source !== "hdfilm" ||
+        !current.streamUrl ||
+        hdfilmNativeFallbackTriggeredRef.current
+      ) {
+        return current;
+      }
+
+      hdfilmNativeFallbackTriggeredRef.current = true;
+      debugLog("[Player] Switching HDFilm to native fallback:", reason, current.streamUrl);
+      webViewRef.current?.injectJavaScript(PLAYER_STOP_MEDIA_SCRIPT);
+      webViewRef.current?.stopLoading();
+      setLoadError(null);
+      setIsPlaybackReady(false);
+      setCurrentStreamUrl(current.streamUrl);
+      setSelectedSubtitleTrack(null);
+      setSelectedExternalSubtitle(null);
+      setExternalSubtitleCues([]);
+      setActiveSubtitleText(null);
+
+      return {
+        ...current,
+        url: current.streamUrl,
+        source: "direct",
+        streamUrl: current.streamUrl,
+        streamType: current.streamType ?? "m3u8",
+        referer: current.referer || current.embedUrl || current.url,
+        embedUrl: current.embedUrl || current.referer || current.url
+      };
+    });
+  }, []);
+
+  const switchToDiscoveredHdFilmStream = useCallback((result: WebPlayerResult, reason: string) => {
+    setPlayerResult((current) => {
+      if (
+        !current ||
+        current.source !== "hdfilm" ||
+        !result.streamUrl ||
+        hdfilmNativeFallbackTriggeredRef.current
+      ) {
+        return current;
+      }
+
+      hdfilmNativeFallbackTriggeredRef.current = true;
+      debugLog("[Player] Switching HDFilm runtime stream to native:", reason, result.streamUrl);
+      webViewRef.current?.injectJavaScript(PLAYER_STOP_MEDIA_SCRIPT);
+      webViewRef.current?.stopLoading();
+      setLoadError(null);
+      setIsPlaybackReady(false);
+      setCurrentStreamUrl(result.streamUrl);
+      setSelectedSubtitleTrack(null);
+      setSelectedExternalSubtitle(null);
+      setExternalSubtitleCues([]);
+      setActiveSubtitleText(null);
+
+      return {
+        ...current,
+        ...result,
+        url: result.streamUrl,
+        source: "direct",
+        streamUrl: result.streamUrl,
+        streamType: result.streamType ?? (result.streamUrl.toLowerCase().includes(".m3u8") ? "m3u8" : "mp4"),
+        referer: result.referer || result.embedUrl || current.url,
+        embedUrl: result.embedUrl || result.referer || current.url,
+        subtitles: result.subtitles ?? []
+      };
+    });
+  }, []);
+
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
       const payload = JSON.parse(event.nativeEvent.data);
+      if (payload?.type === "hdfilm_stream_discovered") {
+        if (playerResultRef.current?.source !== "hdfilm") return;
+
+        const streamUrl = typeof payload.streamUrl === "string" ? payload.streamUrl : "";
+        if (!streamUrl) return;
+        const referer =
+          typeof payload.referer === "string"
+            ? payload.referer
+            : playerResultRef.current?.url ?? "";
+        const embedUrl =
+          typeof payload.embedUrl === "string"
+            ? payload.embedUrl
+            : referer || (playerResultRef.current?.url ?? "");
+
+        if (!shouldAcceptDiscoveredHdFilmStream(streamUrl, referer, embedUrl)) {
+          return;
+        }
+
+        const key = `stream:${streamUrl}`;
+        if (hdfilmRuntimeDiscoveryKeysRef.current.has(key)) return;
+        hdfilmRuntimeDiscoveryKeysRef.current.add(key);
+
+        switchToDiscoveredHdFilmStream({
+          url: streamUrl,
+          source: "direct",
+          streamUrl,
+          streamType:
+            typeof payload.streamType === "string"
+              ? payload.streamType
+              : streamUrl.toLowerCase().includes(".m3u8")
+                ? "m3u8"
+                : "mp4",
+          referer,
+          embedUrl,
+          subtitles: []
+        }, String(payload.source ?? "runtime-stream"));
+        return;
+      }
+
+      if (payload?.type === "hdfilm_embed_discovered") {
+        if (playerResultRef.current?.source !== "hdfilm") return;
+
+        const embedUrl = typeof payload.embedUrl === "string" ? payload.embedUrl : "";
+        if (!embedUrl) return;
+
+        const key = `embed:${embedUrl}`;
+        if (hdfilmRuntimeDiscoveryKeysRef.current.has(key)) return;
+        hdfilmRuntimeDiscoveryKeysRef.current.add(key);
+
+        const currentPageUrl =
+          playerResultRef.current?.url ??
+          (typeof payload.pageUrl === "string" ? payload.pageUrl : "");
+
+        void resolveHdFilmRuntimeStream(embedUrl, currentPageUrl)
+          .then((result) => {
+            if (
+              result?.streamUrl &&
+              shouldAcceptDiscoveredHdFilmStream(result.streamUrl, result.referer, result.embedUrl)
+            ) {
+              switchToDiscoveredHdFilmStream(result, String(payload.source ?? "runtime-embed"));
+            }
+          })
+          .catch(() => {
+            // Runtime discovery is best-effort; keep the provider player alive if embed resolution fails.
+          });
+        return;
+      }
+
       if (payload?.type === "player_ready") {
         setLoadError(null);
         setIsPlaybackReady(true);
         return;
       }
+      if (payload?.type === "player_tap") {
+        showControls();
+        return;
+      }
+      if (payload?.type === "player_black_screen_suspected") {
+        switchToHdFilmNativeFallback(String(payload.reason ?? "visual-frame-timeout"));
+        return;
+      }
+      if (payload?.type === "player_controls_hidden") return;
       if (payload?.type === "player_not_found") {
         setLoadError(null);
         setIsPlaybackReady(false);
@@ -2219,7 +3228,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     } catch {
       // Ignore unrelated WebView messages.
     }
-  }, []);
+  }, [showControls, switchToDiscoveredHdFilmStream, switchToHdFilmNativeFallback]);
   const handleError = useCallback(() => {
     setIsPlaybackReady(false);
     setLoadError("Failed to load. Please check your connection.");
@@ -2229,7 +3238,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const directStreamUrl = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") 
     ? (currentStreamUrl || playerResult.streamUrl || null) 
     : null;
-  const videoPlayer = useVideoPlayer(null as string | null, (player) => {
+  const videoPlayer = useVideoPlayer(null as string | null, (player: any) => {
     player.loop = false;
   });
 
@@ -2255,7 +3264,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   useEffect(() => {
     if (!videoPlayer || !directStreamUrl) return;
 
-    console.log("[Player] Loading direct stream:", directStreamUrl, "referer:", streamReferer);
+    debugLog("[Player] Loading direct stream:", directStreamUrl, "referer:", streamReferer);
     const contentType: ContentType | undefined = directStreamType === "m3u8" ? "hls" : undefined;
     const source = {
       uri: directStreamUrl,
@@ -2275,40 +3284,51 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
     let hasStarted = false;
 
-    const statusSub = videoPlayer.addListener("statusChange", (ev) => {
+    const statusSub = videoPlayer.addListener("statusChange", (ev: any) => {
       if (ev.status === "readyToPlay" && !hasStarted) {
         hasStarted = true;
-        console.log("[Player] Ready â€” starting playback");
-        console.log("[Player] Available subtitle tracks:", JSON.stringify(videoPlayer.availableSubtitleTracks));
+        debugLog("[Player] Ready - starting playback");
+        debugLog("[Player] Available subtitle tracks:", JSON.stringify(videoPlayer.availableSubtitleTracks));
         setAvailableSubtitleTracks(videoPlayer.availableSubtitleTracks);
         setSelectedSubtitleTrack(videoPlayer.subtitleTrack ?? null);
         videoPlayer.play();
         setIsPlaybackReady(true);
       }
       if (ev.status === "error") {
-        console.log("[Player] Video error:", ev.error?.message);
+        debugLog("[Player] Video error:", ev.error?.message);
+        setIsPlaybackReady(false);
         setPlayerResult((prev) => {
           if (prev?.source === "dizipal_direct") {
+            setLoadError(null);
             return { url: prev.url, source: "dizipal" };
           }
+          // HDFilm-derived direct streams carry the original page URL so we can
+          // gracefully drop to the on-page JWPlayer if the native stream fails
+          // (broken segment, expired token, geo block, etc.).
+          if (prev?.source === "direct" && prev.webViewFallbackUrl) {
+            debugLog("[Player] Direct stream failed; falling back to HDFilm WebView:", prev.webViewFallbackUrl);
+            setLoadError(null);
+            return { url: prev.webViewFallbackUrl, source: "hdfilm" };
+          }
+          setLoadError("Failed to load this stream. Please try again later.");
           return prev;
         });
       }
     });
 
-    const playingSub = videoPlayer.addListener("playingChange", (ev) => {
+    const playingSub = videoPlayer.addListener("playingChange", (ev: any) => {
       if (ev.isPlaying && !hasStarted) {
         hasStarted = true;
         setIsPlaybackReady(true);
       }
     });
 
-    const subtitleSub = videoPlayer.addListener("availableSubtitleTracksChange", (ev) => {
-      console.log("[Player] Subtitle tracks available:", JSON.stringify(ev.availableSubtitleTracks));
+    const subtitleSub = videoPlayer.addListener("availableSubtitleTracksChange", (ev: any) => {
+      debugLog("[Player] Subtitle tracks available:", JSON.stringify(ev.availableSubtitleTracks));
       setAvailableSubtitleTracks(ev.availableSubtitleTracks);
     });
 
-    const subtitleTrackSub = videoPlayer.addListener("subtitleTrackChange", (ev) => {
+    const subtitleTrackSub = videoPlayer.addListener("subtitleTrackChange", (ev: any) => {
       setSelectedSubtitleTrack(ev.subtitleTrack ?? null);
     });
 
@@ -2356,22 +3376,22 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       })
       .then((response) => {
         if (cancelled) return;
-        console.log(
+        debugLog(
           "[Player] Subtitle response preview:",
           response.data.slice(0, 200).replace(/\s+/g, " ")
         );
         const cues = parseSubtitleDocument(response.data);
-        console.log("[Player] Parsed external subtitles:", selectedExternalSubtitle.label, cues.length);
+        debugLog("[Player] Parsed external subtitles:", selectedExternalSubtitle.label, cues.length);
         if (cues.length === 0) {
           // Log raw bytes to debug encoding issues
           const rawChars = response.data.slice(0, 60);
-          console.log("[Player] Subtitle raw char codes:", Array.from(rawChars).map((c: string) => c.charCodeAt(0)).join(","));
+          debugLog("[Player] Subtitle raw char codes:", Array.from(rawChars).map((c: string) => c.charCodeAt(0)).join(","));
         }
         setExternalSubtitleCues(cues);
       })
       .catch((error) => {
         if (cancelled) return;
-        console.log("[Player] Failed to load external subtitles:", selectedExternalSubtitle.url, error?.message ?? String(error));
+        debugLog("[Player] Failed to load external subtitles:", selectedExternalSubtitle.url, error?.message ?? String(error));
         setExternalSubtitleCues([]);
         setActiveSubtitleText(null);
       });
@@ -2488,22 +3508,19 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   if (isDirectStream && directStreamUrl) {
     return (
       <View style={styles.root}>
+        <VideoView
+          player={videoPlayer}
+          style={styles.nativePlayer}
+          contentFit={videoFit}
+          nativeControls
+          surfaceType="textureView"
+          onTouchEnd={toggleCloseBtn}
+        />
         {isLoading && (
           <PlayerLoadingOverlay
             title={route.params.title}
-            mediaType={route.params.mediaType}
             seasonNumber={route.params.seasonNumber}
             episodeNumber={route.params.episodeNumber}
-          />
-        )}
-        {!isLoading && (
-          <VideoView
-            player={videoPlayer}
-            style={styles.nativePlayer}
-            contentFit={videoFit}
-            nativeControls
-            surfaceType="textureView"
-            onTouchEnd={toggleCloseBtn}
           />
         )}
         {!isLoading && isSubtitleMenuOpen && (
@@ -2512,13 +3529,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         {!isLoading && showCloseBtn && (
           <>
             <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner}>
+              <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
                 <Feather name="x" size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
 
             <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner}>
+              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.toggleFit")}>
                 <Feather name={videoFit === "contain" ? "maximize" : "minimize"} size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
@@ -2527,6 +3544,9 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               <TouchableOpacity
                 onPress={toggleDirectSubtitleMenu}
                 activeOpacity={directSubtitleOptions.length > 0 || availableSubtitleTracks.length > 0 ? 0.8 : 1}
+                accessibilityRole="button"
+                accessibilityLabel={t("player.a11y.subtitles")}
+                accessibilityState={{ disabled: directSubtitleOptions.length === 0 && availableSubtitleTracks.length === 0 }}
                 style={[
                   styles.closeButtonInner,
                   directSubtitleOptions.length === 0 &&
@@ -2544,6 +3564,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
                   onPress={toggleQualityMenu}
                   activeOpacity={0.8}
                   style={styles.closeButtonInner}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("player.a11y.quality")}
                 >
                   <MaterialIcons name="settings" size={20} color="#FFFFFF" />
                 </TouchableOpacity>
@@ -2656,19 +3678,19 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }
 
   return (
-    <Pressable style={styles.root} onPress={toggleCloseBtn}>
+    <View style={styles.root}>
       {/* Close â€” auto-hides after 3s, tap screen to toggle */}
       {showCloseBtn && (
         <>
           <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
-            <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner}>
+            <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
               <Feather name="x" size={18} color="#FFFFFF" />
             </TouchableOpacity>
           </Animated.View>
 
           {(playerResult?.source === 'hdfilm' || playerResult?.source === 'dizipal' || playerResult?.source === 'dizipal_embed') && (
             <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner}>
+              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.toggleFit")}>
                 <Feather name={videoFit === 'contain' ? 'maximize' : 'minimize'} size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
@@ -2680,7 +3702,6 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       {isLoading && (
         <PlayerLoadingOverlay
           title={route.params.title}
-          mediaType={route.params.mediaType}
           seasonNumber={route.params.seasonNumber}
           episodeNumber={route.params.episodeNumber}
         />
@@ -2691,7 +3712,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         <View style={styles.loaderOverlay}>
           <Text style={styles.errorTitle}>Playback Error</Text>
           <Text style={styles.errorText}>{loadError}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={() => {
+          <TouchableOpacity style={styles.retryButton} accessibilityRole="button" accessibilityLabel={t("player.a11y.retry")} onPress={() => {
             setLoadError(null);
             setIsPlaybackReady(false);
             webViewRef.current?.reload();
@@ -2712,7 +3733,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           <Text style={styles.notAvailableHint}>
             We're always adding new content. Please check back later!
           </Text>
-          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.8}>
+          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.8} accessibilityRole="button" accessibilityLabel={t("common.goBack")}>
             <Text style={styles.goBackText}>Go Back</Text>
           </TouchableOpacity>
         </View>
@@ -2754,25 +3775,19 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           mediaPlaybackRequiresUserAction={false}
           allowsFullscreenVideo
           scalesPageToFit={false}
-          sharedCookiesEnabled
+          incognito
+          sharedCookiesEnabled={false}
           thirdPartyCookiesEnabled
-          cacheEnabled
+          cacheEnabled={false}
           mixedContentMode="always"
           originWhitelist={["*"]}
-          userAgent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+          userAgent={PLAYER_WEBVIEW_USER_AGENT}
+          setSupportMultipleWindows={false}
+          javaScriptCanOpenWindowsAutomatically={false}
           onMessage={handleMessage}
           onError={handleError}
           onNavigationStateChange={handleNavChange}
-          onShouldStartLoadWithRequest={(req) => {
-            if (req.url.includes("about:blank")) return true;
-            if (!req.url.startsWith("http")) return false; // Prevent deep links like market://
-            if (!req.isTopFrame) return true;
-            // Native player / Embed should rarely redirect the top frame.
-            if (req.url !== playerResult.url) {
-              return false;
-            }
-            return true;
-          }}
+          onShouldStartLoadWithRequest={(req) => shouldAllowPlayerWebViewRequest(req, playerResult.url)}
         />
       )}
 
@@ -2801,24 +3816,19 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           mediaPlaybackRequiresUserAction={false}
           allowsFullscreenVideo
           scalesPageToFit={false}
-          sharedCookiesEnabled
+          incognito
+          sharedCookiesEnabled={false}
           thirdPartyCookiesEnabled
-          cacheEnabled
+          cacheEnabled={false}
           mixedContentMode="always"
           originWhitelist={["*"]}
-          userAgent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+          userAgent={PLAYER_WEBVIEW_USER_AGENT}
+          setSupportMultipleWindows={false}
+          javaScriptCanOpenWindowsAutomatically={false}
           onMessage={handleMessage}
           onError={handleError}
           onNavigationStateChange={handleNavChange}
-          onShouldStartLoadWithRequest={(req) => {
-            if (req.url.includes("about:blank")) return true;
-            if (!req.url.startsWith("http")) return false; // Prevent deep links like market://
-            if (!req.isTopFrame) return true;
-            if (req.url !== playerResult.url) {
-              return false;
-            }
-            return true;
-          }}
+          onShouldStartLoadWithRequest={(req) => shouldAllowPlayerWebViewRequest(req, playerResult.url)}
         />
       )}
       <QualityWarningModal
@@ -2837,6 +3847,6 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           setQualityWarning(null);
         }}
       />
-    </Pressable>
+    </View>
   );
 }
