@@ -3,7 +3,7 @@ import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import styled from "styled-components/native";
+import styled, { useTheme } from "styled-components/native";
 
 import {
   MediaItem,
@@ -166,6 +166,7 @@ function mergeUniqueMedia(existing: MediaItem[], incoming: MediaItem[]): MediaIt
 export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
   const { source, title, items: routeItems } = route.params;
   const { t } = useTranslation();
+  const theme = useTheme();
   const { language } = useAppSettings();
   const [items, setItems] = useState<MediaItem[]>([]);
   const [page, setPage] = useState(1);
@@ -329,7 +330,7 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
             )}
             {rating !== "0.0" && (
               <RatingBadge>
-                <Feather name="star" size={10} color="#FFD700" style={{ marginRight: 4 }} />
+                <Feather name="star" size={10} color={theme.colors.gold} style={{ marginRight: 4 }} />
                 <RatingValue>{rating}</RatingValue>
               </RatingBadge>
             )}
@@ -339,7 +340,7 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
         </CardPressable>
       );
     },
-    [openMedia, t]
+    [openMedia, t, theme.colors.gold]
   );
 
   if (isLoading) {

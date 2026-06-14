@@ -655,7 +655,7 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
                   <HeroTitle numberOfLines={2}>{movieOfDay.title}</HeroTitle>
                   <HeroMeta>
                     <HeroMetaText>{movieOfDay.year} | </HeroMetaText>
-                    <Feather name="star" size={12} color="#FFD700" />
+                    <Feather name="star" size={12} color={currentTheme.colors.gold} />
                     <HeroMetaText> {formatRating(movieOfDay.rating)}</HeroMetaText>
                   </HeroMeta>
                   {movieOfDay.overview ? (

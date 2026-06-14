@@ -121,7 +121,7 @@ const SendButton = styled.Pressable<{ $disabled: boolean }>`
 `;
 
 const SendLabel = styled.Text`
-  color: #ffffff;
+  color: ${({ theme }) => theme.colors.textOnPrimary};
   font-size: 15px;
   font-weight: 700;
 `;

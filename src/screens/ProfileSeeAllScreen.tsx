@@ -647,7 +647,7 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
             )}
             {typeof item.id !== "string" && (
               <Badge>
-                <Feather name="star" size={10} color="#FFD700" style={{ marginRight: 3 }} />
+                <Feather name="star" size={10} color={currentTheme.colors.gold} style={{ marginRight: 3 }} />
                 <BadgeValue>{formatRating(item.rating)}</BadgeValue>
               </Badge>
             )}
@@ -657,7 +657,7 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
         </CardRoot>
       );
     },
-    [handlePressItem, t]
+    [handlePressItem, t, currentTheme.colors.gold]
   );
 
   const keyExtractor = useCallback((item: MediaItem) => `${item.mediaType}-${item.id}`, []);

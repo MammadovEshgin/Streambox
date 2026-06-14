@@ -343,7 +343,7 @@ export function WatchedGridScreen({ route, navigation }: Props) {
             )}
             {typeof item.id !== "string" && (
               <Badge>
-                <Feather name="star" size={10} color="#FFD700" style={{ marginRight: 3 }} />
+                <Feather name="star" size={10} color={currentTheme.colors.gold} style={{ marginRight: 3 }} />
                 <BadgeValue>{formatRating(displayRating)}</BadgeValue>
               </Badge>
             )}
@@ -353,7 +353,7 @@ export function WatchedGridScreen({ route, navigation }: Props) {
         </CardRoot>
       );
     },
-    [handlePressItem, hydratedItems, resolvedContentLanguage, t]
+    [handlePressItem, hydratedItems, resolvedContentLanguage, t, currentTheme.colors.gold]
   );
 
   const keyExtractor = useCallback((item: WatchHistoryEntry) => `${item.mediaType}-${item.id}`, []);

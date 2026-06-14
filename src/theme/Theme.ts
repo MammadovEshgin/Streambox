@@ -93,9 +93,15 @@ export function createTheme(themeId: ThemeId = DEFAULT_THEME_ID) {
       textPrimary: "#F6F7F4",
       textSecondary: "#B2B8B1",
       textTertiary: "#858D86",
+      /** Text/icon color rendered on top of a `primary`-filled surface. */
+      textOnPrimary: "#FFFFFF",
       border: "#2A312D",
       borderSoft: "#202722",
       overlayScrim: "rgba(13, 16, 15, 0.70)",
+      /** Full-bleed dim behind modals/sheets. */
+      scrim: "rgba(0, 0, 0, 0.72)",
+      /** Rating / star accent — was hardcoded as #FFD700 / #FFD27A in places. */
+      gold: "#FFD700",
       glassFill: "rgba(255, 255, 255, 0.065)",
       glassBorder: "rgba(255, 255, 255, 0.11)"
     },
@@ -124,6 +130,24 @@ export function createTheme(themeId: ThemeId = DEFAULT_THEME_ID) {
       durationBase: 200,
       durationSlow: 280,
       durationCommitted: 600
+    },
+    shadows: {
+      // Elevation presets so shadows aren't hand-rolled per component.
+      // Spread into a styled View / RN style object.
+      card: {
+        shadowColor: "#000000",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 6
+      },
+      raised: {
+        shadowColor: "#000000",
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.4,
+        shadowRadius: 16,
+        elevation: 12
+      }
     }
   };
 }

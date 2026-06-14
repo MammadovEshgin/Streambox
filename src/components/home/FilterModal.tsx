@@ -233,7 +233,7 @@ const ApplyButton = styled(Pressable)`
 `;
 
 const ApplyButtonText = styled.Text`
-  color: #ffffff;
+  color: ${({ theme }) => theme.colors.textOnPrimary};
   font-family: Outfit_700Bold;
   font-size: 16px;
 `;
