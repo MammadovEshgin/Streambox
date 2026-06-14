@@ -129,6 +129,76 @@ test("HDFilm Rapidrame inspection follows master playlists before deciding nativ
   ]);
 });
 
+test("HDFilm buildHdFilmResult ALWAYS goes native when a stream URL was decoded, regardless of preferNative", () => {
+  // Regression guard: previously a 'normal' master playlist (preferNative=false)
+  // would fall through to the WebView player. That fragile path triggered the
+  // POCO F7 / HyperOS black-screen-on-pre-roll bug for titles like "Still Alice".
+  const pageUrl = "https://www.hdfilmcehennemi.nl/still-alice-2014-izle/";
+  const nativeFallback = {
+    streamUrl: "https://srv9.cdn.example/hls/still-alice.mp4/txt/master.txt",
+    streamType: "m3u8",
+    poster: "",
+    referer: "https://hdfilmcehennemi.mobi/video/embed/abc/?rapidrame_id=xyz",
+    subtitles: [],
+    preferNative: false // proper master playlist — previously WebView
+  };
+
+  const result = __internal.buildHdFilmResult(pageUrl, undefined, nativeFallback);
+
+  assert.equal(result.source, "direct");
+  assert.equal(result.url, nativeFallback.streamUrl);
+  assert.equal(result.streamUrl, nativeFallback.streamUrl);
+  assert.equal(result.streamType, "m3u8");
+  // Original page URL is preserved so PlayerScreen can drop back to WebView if
+  // the native stream itself fails (broken segment, geo block, expired token).
+  assert.equal(result.webViewFallbackUrl, pageUrl);
+});
+
+test("HDFilm buildHdFilmResult goes native for the legacy preferNative=true shape too", () => {
+  // The disguised-.jpg HLS case (older behavior) still goes native.
+  const pageUrl = "https://www.hdfilmcehennemi.nl/some-movie/";
+  const nativeFallback = {
+    streamUrl: "https://srv9.cdn.example/hls/movie.mp4/txt/master.txt",
+    streamType: "m3u8",
+    poster: "",
+    referer: "https://hdfilmcehennemi.mobi/video/embed/abc/?rapidrame_id=xyz",
+    subtitles: [],
+    preferNative: true
+  };
+
+  const result = __internal.buildHdFilmResult(pageUrl, undefined, nativeFallback);
+  assert.equal(result.source, "direct");
+  assert.equal(result.webViewFallbackUrl, pageUrl);
+});
+
+test("HDFilm buildHdFilmResult falls back to WebView only when no stream was decoded", () => {
+  // Decoder couldn't extract a stream — the on-page JWPlayer is the last resort.
+  const pageUrl = "https://www.hdfilmcehennemi.nl/some-movie/";
+  const result = __internal.buildHdFilmResult(pageUrl, undefined, null);
+
+  assert.equal(result.source, "hdfilm");
+  assert.equal(result.url, pageUrl);
+  assert.equal(result.streamUrl, undefined);
+  assert.equal(result.webViewFallbackUrl, undefined);
+});
+
+test("HDFilm buildHdFilmResult propagates qualityWarning into the native result", () => {
+  const result = __internal.buildHdFilmResult(
+    "https://example/movie/",
+    "CAM",
+    {
+      streamUrl: "https://x/movie.mp4/txt/master.txt",
+      streamType: "m3u8",
+      poster: "",
+      referer: "https://x/embed",
+      subtitles: [],
+      preferNative: false
+    }
+  );
+  assert.equal(result.qualityWarning, "CAM");
+  assert.equal(result.source, "direct");
+});
+
 test("HDFilm Rapidrame inspection prefers native for disguised image media segments", () => {
   const mediaPlaylist = [
     "#EXTM3U",
