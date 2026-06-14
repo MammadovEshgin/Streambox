@@ -50,3 +50,6 @@ assets/images/franchise/frenchise-card-bg.jpg
 .npm-cache/
 .wrangler/
 supabase/.temp/
+
+# Claude Code local config — machine-specific permissions, never committed.
+.claude/settings.local.json
