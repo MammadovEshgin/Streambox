@@ -40,6 +40,13 @@ export type WebPlayerResult = {
   qualityOptions?: Array<{ label: string; height: number; url: string }>;
   /** If set, the stream is low quality (e.g. "CAM", "TS") — UI should warn the user before playback */
   qualityWarning?: string;
+  /**
+   * Set only on HDFilm-derived `direct` results: the original HDFilm page URL.
+   * If the native stream fails (broken segment, geo block, expired token, etc.)
+   * PlayerScreen can drop back to loading this page in a WebView so the user
+   * still has a chance to watch via the provider's on-page JWPlayer.
+   */
+  webViewFallbackUrl?: string;
 };
 
 const UA =
@@ -630,7 +637,21 @@ function matchesSeriesEpisodeUrl(url: string, seasonNumber: number, episodeNumbe
 }
 
 function buildHdFilmResult(pageUrl: string, qualityWarning?: string, nativeFallback?: DizipalStreamInfo | null): WebPlayerResult {
-  if (nativeFallback?.preferNative) {
+  // If the decoder produced a real stream URL, ALWAYS go native.
+  //
+  // Why: the WebView path is structurally fragile across Android skins. It
+  // requires our injected JS to win a race against the provider's pre-roll ad
+  // overlay — heuristic click-through that's been observed to fail on HyperOS
+  // (POCO F7) and similar non-stock Androids, leaving the user with a black
+  // screen and an unclickable "Skip in 10s" prompt. Native expo-video has no
+  // pre-rolls, no overlays, and no per-OS DOM/JS timing quirks, so this is the
+  // only way to get deterministic playback on every device.
+  //
+  // The previous `preferNative` heuristic (disguised-.jpg HLS segments only) is
+  // kept on `DizipalStreamInfo` for telemetry/diagnostics but no longer gates
+  // playback. expo-video plays both proper master playlists AND the disguised
+  // shape correctly.
+  if (nativeFallback?.streamUrl) {
     return {
       url: nativeFallback.streamUrl,
       source: "direct",
@@ -640,24 +661,21 @@ function buildHdFilmResult(pageUrl: string, qualityWarning?: string, nativeFallb
       referer: nativeFallback.referer,
       embedUrl: nativeFallback.referer,
       subtitles: nativeFallback.subtitles,
+      // Safety net: if the native stream fails at runtime (broken segment,
+      // expired token, regional block), PlayerScreen drops back to loading
+      // this page in a WebView so playback can still be attempted.
+      webViewFallbackUrl: pageUrl,
       qualityWarning
     };
   }
 
+  // Decoder couldn't extract a stream — fall back to the on-page JWPlayer via
+  // WebView. This is the only remaining reason to enter the WebView path; over
+  // time we should reduce how often this happens by improving extraction.
   return {
     url: pageUrl,
     source: "hdfilm",
-    qualityWarning,
-    ...(nativeFallback
-      ? {
-          streamUrl: nativeFallback.streamUrl,
-          streamType: nativeFallback.streamType,
-          poster: nativeFallback.poster,
-          referer: nativeFallback.referer,
-          embedUrl: nativeFallback.referer,
-          subtitles: nativeFallback.subtitles
-        }
-      : {})
+    qualityWarning
   };
 }
 
@@ -1813,6 +1831,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
 }
 
 export const __internal = {
+  buildHdFilmResult,
   decodeRapidrameValueCandidates,
   extractRapidrameStreamUrl,
   hasStrictTitleIdentity,

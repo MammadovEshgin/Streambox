@@ -3302,6 +3302,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             setLoadError(null);
             return { url: prev.url, source: "dizipal" };
           }
+          // HDFilm-derived direct streams carry the original page URL so we can
+          // gracefully drop to the on-page JWPlayer if the native stream fails
+          // (broken segment, expired token, geo block, etc.).
+          if (prev?.source === "direct" && prev.webViewFallbackUrl) {
+            debugLog("[Player] Direct stream failed; falling back to HDFilm WebView:", prev.webViewFallbackUrl);
+            setLoadError(null);
+            return { url: prev.webViewFallbackUrl, source: "hdfilm" };
+          }
           setLoadError("Failed to load this stream. Please try again later.");
           return prev;
         });
