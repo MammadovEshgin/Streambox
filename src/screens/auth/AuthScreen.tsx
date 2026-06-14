@@ -181,7 +181,7 @@ const SubmitButton = styled.Pressable<{ $disabled: boolean }>`
 `;
 
 const SubmitLabel = styled.Text`
-  color: #ffffff;
+  color: ${({ theme }) => theme.colors.textOnPrimary};
   font-family: ${({ theme }) => theme.typography.Button.fontFamily};
   font-size: 16px;
   letter-spacing: 0.4px;

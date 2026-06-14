@@ -655,7 +655,7 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
                   <HeroTitle numberOfLines={2}>{seriesOfDay.title}</HeroTitle>
                   <HeroMeta>
                     <HeroMetaText>{seriesOfDay.year} | </HeroMetaText>
-                    <Feather name="star" size={12} color="#FFD700" />
+                    <Feather name="star" size={12} color={currentTheme.colors.gold} />
                     <HeroMetaText> {formatRating(seriesOfDay.rating)}</HeroMetaText>
                   </HeroMeta>
                   {seriesOfDay.overview ? (

@@ -182,7 +182,7 @@ const StartupSecondaryButton = styled.Pressable`
 `;
 
 const StartupPrimaryText = styled.Text`
-  color: #FFFFFF;
+  color: ${({ theme }) => theme.colors.textOnPrimary};
   font-family: Outfit_700Bold;
   font-size: 15px;
 `;

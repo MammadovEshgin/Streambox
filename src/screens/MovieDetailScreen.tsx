@@ -171,7 +171,7 @@ const TopWatchButton = styled(Pressable)`
 
 const TopWatchButtonText = styled.Text`
   margin-left: 8px;
-  color: #ffffff;
+  color: ${({ theme }) => theme.colors.textOnPrimary};
   font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.2px;

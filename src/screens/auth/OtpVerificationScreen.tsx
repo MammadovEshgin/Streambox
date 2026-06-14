@@ -152,7 +152,7 @@ const VerifyButton = styled.Pressable<{ $disabled: boolean }>`
 `;
 
 const VerifyLabel = styled.Text`
-  color: #ffffff;
+  color: ${({ theme }) => theme.colors.textOnPrimary};
   font-size: 15px;
   font-weight: 700;
 `;

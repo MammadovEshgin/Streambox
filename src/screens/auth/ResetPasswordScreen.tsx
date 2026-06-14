@@ -174,7 +174,7 @@ const SubmitButton = styled.Pressable<{ $disabled: boolean }>`
 `;
 
 const SubmitLabel = styled.Text`
-  color: #ffffff;
+  color: ${({ theme }) => theme.colors.textOnPrimary};
   font-size: 15px;
   font-weight: 700;
 `;
@@ -226,7 +226,7 @@ const GoToLoginButton = styled.Pressable`
 `;
 
 const GoToLoginLabel = styled.Text`
-  color: #ffffff;
+  color: ${({ theme }) => theme.colors.textOnPrimary};
   font-size: 15px;
   font-weight: 700;
 `;

@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { memo } from "react";
 import { PressableProps } from "react-native";
 import { useTranslation } from "react-i18next";
-import styled from "styled-components/native";
+import styled, { useTheme } from "styled-components/native";
 
 import { MediaItem, getTmdbImageUrl } from "../../api/tmdb";
 import { formatRating } from "../../api/mediaFormatting";
@@ -56,7 +56,7 @@ const Badge = styled.View`
 `;
 
 const BadgeValue = styled.Text`
-  color: #FFFFFF;
+  color: ${({ theme }) => theme.colors.textPrimary};
   font-family: Outfit_600SemiBold;
   font-size: 12px;
   letter-spacing: 0.2px;
@@ -94,6 +94,7 @@ type MediaCardProps = {
 
 function MediaCardComponent({ item, onPress, onPressIn, posterUri: customPosterUri, hideRating }: MediaCardProps) {
   const { t } = useTranslation();
+  const theme = useTheme();
   const posterUri = customPosterUri ?? getTmdbImageUrl(item.posterPath, "w342");
   const ratingText = formatRating(item.rating);
 
@@ -113,7 +114,7 @@ function MediaCardComponent({ item, onPress, onPressIn, posterUri: customPosterU
         )}
         {!hideRating && typeof item.id !== "string" && !item.imdbId?.startsWith("az-") && (
           <Badge>
-            <Feather name="star" size={11} color="#FFD700" style={{ marginRight: 4 }} />
+            <Feather name="star" size={11} color={theme.colors.gold} style={{ marginRight: 4 }} />
             <BadgeValue style={{ fontVariant: ["tabular-nums"] }}>{ratingText}</BadgeValue>
           </Badge>
         )}

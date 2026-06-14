@@ -179,7 +179,7 @@ function Slide({
           <MetaRow>
             {typeof item.id !== "string" && !item.imdbId?.startsWith("az-") && (
               <>
-                <Feather name="star" size={11} color="#FFD27A" />
+                <Feather name="star" size={11} color={theme.colors.gold} />
                 <MetaText style={{ fontVariant: ["tabular-nums"] }}> {formatRating(item.rating)}   ·   </MetaText>
               </>
             )}

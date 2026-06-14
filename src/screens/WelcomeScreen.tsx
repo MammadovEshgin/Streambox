@@ -195,7 +195,7 @@ const StartButton = styled(Pressable)`
 `;
 
 const StartText = styled.Text`
-  color: #ffffff;
+  color: ${({ theme }) => theme.colors.textOnPrimary};
   font-family: ${({ theme }) => theme.typography.Button.fontFamily};
   font-size: 14px;
   letter-spacing: 0.2px;
