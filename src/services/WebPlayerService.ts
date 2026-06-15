@@ -1009,6 +1009,7 @@ function unmixRapidrameBytes(value: string): string {
  * If the provider flips between these, playback keeps working with no release.
  */
 const RAPIDRAME_PRE_UNMIX_TRANSFORMS: Array<(joined: string) => string> = [
+  (joined) => rot13(decodeBase64Binary(reverseString(joined))), // auto-derived by check-hdfilm-resolver
   (joined) => reverseString(decodeBase64Binary(rot13(joined))), // auto-derived by check-hdfilm-resolver
   (joined) => decodeBase64Binary(rot13(reverseString(joined))), // auto-derived by check-hdfilm-resolver
   // Current scheme — reverse the joined parts, then base64-decode twice.
