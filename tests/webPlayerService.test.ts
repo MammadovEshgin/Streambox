@@ -260,6 +260,71 @@ test("HDFilm extractRapidrameStreamUrl unpacks inline packer.js wrapping the s_*
   assert.equal(result, url);
 });
 
+test("HDFilm scoring rejects substring-title + year-coincidence (Fury 2014 → Cuban Fury 2014 was the bug)", () => {
+  // Real HDFilm shape. Cuban Fury (2014) has Turkish title "Aşkın Dansı".
+  // Searching "Fury" surfaces it. Without the gating fix, scoreMatch returns
+  // 40 for the substring overlap, the +50 same-year boost lifts it to 90,
+  // and HDFilm wins over Dizipal (which has the actual Fury 2014). After
+  // fix: substring-only matches do NOT receive the year boost, so this
+  // result stays at 40, below the 50-point filter cutoff in
+  // findBestHdFilmMatch — HDFilm correctly returns null and the Dizipal
+  // fallback resolves the right movie.
+  const result = {
+    title: "Aşkın Dansı - Cuban Fury",
+    text: "aşkın dansı cuban fury 2014",
+    href: "/hd-askin-dansi-izle-6/",
+    resultYear: "2014"
+  };
+  const score = __internal.scoreHdFilmResult(result, "Fury", "2014");
+  assert.ok(score < 50, `expected substring+year match to score < 50, got ${score}`);
+});
+
+test("HDFilm scoring still rewards exact title + correct year (regression guard for the fix)", () => {
+  const result = {
+    title: "Fury",
+    text: "fury 2014",
+    href: "/fury-izle/",
+    resultYear: "2014"
+  };
+  const score = __internal.scoreHdFilmResult(result, "Fury", "2014");
+  assert.ok(score >= 120, `expected exact title + year match to score >= 120, got ${score}`);
+});
+
+test("HDFilm scoring still rewards prefix title + correct year (Fury Road / Mad Max style)", () => {
+  // Target "Mad Max" → result "Mad Max: Fury Road" starts with target.
+  // Should win comfortably when year aligns.
+  const result = {
+    title: "Mad Max: Fury Road",
+    text: "mad max fury road 2015",
+    href: "/mad-max-fury-road/",
+    resultYear: "2015"
+  };
+  const score = __internal.scoreHdFilmResult(result, "Mad Max", "2015");
+  assert.ok(score >= 100, `expected prefix title + correct year to score >= 100, got ${score}`);
+});
+
+test("HDFilm scoring penalizes strong title + wrong year (Dune 1984 vs 2021 disambiguation)", () => {
+  // Target Dune (2021). HDFilm has Dune (1984) too. Title=100, year wrong → -40 → 60.
+  // Still passes the 50 cutoff so it can be returned if no better candidate
+  // exists, but loses cleanly to the correct-year same-title result if one is
+  // also present.
+  const result1984 = {
+    title: "Dune",
+    text: "dune 1984",
+    href: "/dune-1984/",
+    resultYear: "1984"
+  };
+  const result2021 = {
+    title: "Dune",
+    text: "dune 2021",
+    href: "/dune-2021/",
+    resultYear: "2021"
+  };
+  const score1984 = __internal.scoreHdFilmResult(result1984, "Dune", "2021");
+  const score2021 = __internal.scoreHdFilmResult(result2021, "Dune", "2021");
+  assert.ok(score2021 > score1984, `2021 should score higher than 1984: 2021=${score2021}, 1984=${score1984}`);
+});
+
 test("HDFilm Rapidrame inspection prefers native for disguised image media segments", () => {
   const mediaPlaylist = [
     "#EXTM3U",
