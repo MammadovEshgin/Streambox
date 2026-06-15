@@ -188,6 +188,78 @@ export function clearInMemoryRuntimeCache() {
   runtimeCache.clear();
 }
 
+let inMemoryHydrationPromise: Promise<void> | null = null;
+
+/**
+ * Best-effort: read every persisted runtime-cache entry from AsyncStorage into
+ * the in-memory `runtimeCache` map. Called once at app boot so that hub
+ * screens (Movies / Series / Home) mounting immediately after see their
+ * cached content via the synchronous `readRuntimeCache(...)` on their FIRST
+ * render — eliminating the skeleton flash that otherwise appears while their
+ * own per-key `readPersistedRuntimeCache` useEffect awaits AsyncStorage.
+ *
+ * Subsequent invocations return the same promise, so the App boot effect can
+ * await without worrying about racing other callers. Failures are swallowed:
+ * if AsyncStorage is wedged at boot the screens still fall back to their own
+ * read paths and we get the old behavior (skeleton for ~200ms).
+ *
+ * Entries whose stored JSON shape doesn't look like a CacheEntry are skipped
+ * silently. Per-domain shape validation still happens lazily inside
+ * `readPersistedRuntimeCache` (which the screens call), so anything truly
+ * corrupt gets discarded on the next read.
+ *
+ * IMPORTANT: never clobber an entry that's already in memory. Migrations or
+ * eager writes that happen alongside the hydration must win — the disk copy
+ * is by definition older.
+ */
+export function hydratePersistedRuntimeCachesIntoMemory(): Promise<void> {
+  if (inMemoryHydrationPromise) {
+    return inMemoryHydrationPromise;
+  }
+
+  inMemoryHydrationPromise = (async () => {
+    try {
+      const keys = await AsyncStorage.getAllKeys();
+      const targets = keys.filter((key) => key.startsWith(PERSISTENT_CACHE_PREFIX));
+      if (targets.length === 0) {
+        return;
+      }
+
+      const entries = await AsyncStorage.multiGet(targets);
+      for (const [storageKey, raw] of entries) {
+        if (!raw) {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(raw) as CacheEntry<unknown> | null;
+          if (
+            !parsed
+            || typeof parsed !== "object"
+            || typeof parsed.updatedAt !== "number"
+            || !("value" in parsed)
+          ) {
+            continue;
+          }
+
+          const key = storageKey.slice(PERSISTENT_CACHE_PREFIX.length);
+          if (runtimeCache.has(key)) {
+            continue;
+          }
+          runtimeCache.set(key, parsed);
+        } catch {
+          // Skip malformed entries — readPersistedRuntimeCache will purge them
+          // when the screen tries to read them via the validating path.
+        }
+      }
+    } catch {
+      // Best-effort. Swallow to preserve cold-start resilience.
+    }
+  })();
+
+  return inMemoryHydrationPromise;
+}
+
 export async function clearPersistedRuntimeCaches(): Promise<void> {
   clearInMemoryRuntimeCache();
   persistentWriteTimers.forEach((timer) => clearTimeout(timer));

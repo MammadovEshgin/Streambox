@@ -32,7 +32,7 @@ import { initialiseProviderConfigs } from "./src/services/providerConfigService"
 import { flushTelemetry, initialiseTelemetry, trackAppError, trackEvent, trackPerformance } from "./src/services/telemetryService";
 import { AppSettingsProvider, useAppSettings } from "./src/settings/AppSettingsContext";
 import { migrateLegacyContentImageCaches } from "./src/services/remoteImageCache";
-import { clearPersistedRuntimeCaches } from "./src/services/runtimeCache";
+import { clearPersistedRuntimeCaches, hydratePersistedRuntimeCachesIntoMemory } from "./src/services/runtimeCache";
 import { runStorageMigrationsIfNeeded } from "./src/services/storageMigrations";
 
 const FIRST_OPEN_KEY = "@streambox/first-open-complete-v6";
@@ -300,6 +300,13 @@ function AppShell() {
   const [pendingEmail, setPendingEmail] = useState("");
   const [startupRetryNonce, setStartupRetryNonce] = useState(0);
   const [migrationsReady, setMigrationsReady] = useState(false);
+  // Tracks whether the persisted hub caches (Movies / Series / Home) have
+  // been read off disk into the in-memory `runtimeCache` map. We gate the
+  // "app" launch phase on this so MoviesScreen / SeriesScreen / HomeScreen
+  // mount only after `readRuntimeCache(...)` will return data synchronously
+  // — eliminating the skeleton flash that previously occurred while their
+  // own AsyncStorage read was in flight on first render.
+  const [hubCachesHydrated, setHubCachesHydrated] = useState(false);
   const isResettingPasswordRef = useRef(false);
   const previousSessionUserIdRef = useRef<string | null>(null);
   const appStartedAtRef = useRef(Date.now());
@@ -339,6 +346,18 @@ function AppShell() {
     }
 
     void runMigrations();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void hydratePersistedRuntimeCachesIntoMemory().finally(() => {
+      if (active) {
+        setHubCachesHydrated(true);
+      }
+    });
     return () => {
       active = false;
     };
@@ -537,7 +556,9 @@ function AppShell() {
     },
   }), [activeTheme]);
 
-  const shouldShowAppLoader = launchPhase === "loading" || (launchPhase === "app" && !isUserDataReady);
+  const shouldShowAppLoader =
+    launchPhase === "loading"
+    || (launchPhase === "app" && (!isUserDataReady || !hubCachesHydrated));
   const loaderSubtitle = launchPhase === "app"
     ? t("loaders.syncingData")
     : t("loaders.preparingCinemaRoom");
