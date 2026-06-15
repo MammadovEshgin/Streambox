@@ -472,16 +472,31 @@ function scoreHdFilmResult(result: SearchResult, target: string, targetYear?: st
     if (s > bestScore) bestScore = s;
   }
 
-  // Year handling: when we know the target year, year match is critical for disambiguation.
-  // Two movies with the same title (e.g. "Dune" 1984 vs 2021) must be separated decisively.
+  // Year handling: year match is a TIE-BREAKER for already-strong title matches,
+  // never a LIFTER for weak ones.
+  //
+  // Concrete bug this prevents: target "Fury" (2014). HDFilm has "Aşkın Dansı -
+  // Cuban Fury" (2014). scoreMatch returns 40 for the substring overlap. A
+  // naive +50 year boost lifts that to 90 — above the 50-point filter cutoff —
+  // and "Cuban Fury" wins, even though the real Fury (2014) only exists on
+  // Dizipal. By gating the boost on bestScore >= 60 (i.e. at least a clean
+  // prefix or exact match), substring-only results stay weak, HDFilm returns
+  // null for searches whose title isn't actually present, and the Dizipal
+  // fallback kicks in correctly.
   if (targetYear && result.resultYear) {
     if (result.resultYear === targetYear) {
-      bestScore += 50; // strong boost for correct year
+      if (bestScore >= 60) {
+        bestScore += 50; // strong title + correct year → near-certain match
+      }
+      // bestScore < 60 → no boost. Substring-only matches stay strictly below
+      // the findBestHdFilmMatch 50-point cutoff so they can't beat the real
+      // match on another provider just because the year coincides.
     } else if (bestScore >= 80) {
-      // High title match but WRONG year — penalize heavily so year-matching results always win
+      // High title match but WRONG year — penalize heavily so year-matching
+      // results always win when both exist.
       bestScore -= 40;
     } else if (bestScore >= 50) {
-      // Medium title match with wrong year — moderate penalty
+      // Medium title match with wrong year — moderate penalty.
       bestScore -= 20;
     }
   }
@@ -1919,5 +1934,6 @@ export const __internal = {
   isAlternateTitleSafeForDizipal,
   isDizipalUrlTitleCompatible,
   scoreDizipalResult,
+  scoreHdFilmResult,
   scoreStrictDizipalTitle
 };
