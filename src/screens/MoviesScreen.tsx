@@ -28,7 +28,7 @@ import { useWatchHistory } from "../hooks/useWatchHistory";
 import { useLikedMovies } from "../hooks/useLikedMovies";
 import { HomeStackParamList } from "../navigation/types";
 import { useAuth } from "../context/AuthContext";
-import { getLocalDateFreshnessKey } from "../services/contentFreshness";
+import { useTodayKey } from "../hooks/useTodayKey";
 import { getPersonalizedMovieOfTheDay } from "../services/movieOfDayService";
 import {
   readPersistedRuntimeCache,
@@ -426,15 +426,16 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
         .filter((id): id is number => typeof id === "number"),
     [history]
   );
+  const todayKey = useTodayKey();
   const dailyPersonalizationVersion = useMemo(
     () =>
       [
-        getLocalDateFreshnessKey(),
+        todayKey,
         user?.id ?? "anonymous",
         likedMovies.filter((id): id is number => typeof id === "number").join(","),
         watchedMovieIds.join(","),
       ].join("|"),
-    [likedMovies, user?.id, watchedMovieIds]
+    [todayKey, likedMovies, user?.id, watchedMovieIds]
   );
   const getMoviesHubFreshnessVersion = useCallback(() => dailyPersonalizationVersion, [dailyPersonalizationVersion]);
 
