@@ -27,7 +27,7 @@ import { useRuntimeCacheAutoRefresh } from "../hooks/useRuntimeCacheAutoRefresh"
 import { useLikedSeries } from "../hooks/useLikedSeries";
 import { useWatchHistory } from "../hooks/useWatchHistory";
 import { HomeStackParamList } from "../navigation/types";
-import { getLocalDateFreshnessKey } from "../services/contentFreshness";
+import { useTodayKey } from "../hooks/useTodayKey";
 import { getPersonalizedSeriesOfTheDay } from "../services/movieOfDayService";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -426,15 +426,16 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
         .filter((id): id is number => typeof id === "number"),
     [history]
   );
+  const todayKey = useTodayKey();
   const dailyPersonalizationVersion = useMemo(
     () =>
       [
-        getLocalDateFreshnessKey(),
+        todayKey,
         user?.id ?? "anonymous",
         likedSeries.filter((id): id is number => typeof id === "number").join(","),
         watchedSeriesIds.join(","),
       ].join("|"),
-    [likedSeries, user?.id, watchedSeriesIds]
+    [todayKey, likedSeries, user?.id, watchedSeriesIds]
   );
   const getSeriesHubFreshnessVersion = useCallback(() => dailyPersonalizationVersion, [dailyPersonalizationVersion]);
 
