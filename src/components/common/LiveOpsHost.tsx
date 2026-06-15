@@ -3,6 +3,7 @@ import * as WebBrowser from "expo-web-browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppState,
+  type AppStateStatus,
   Image,
   InteractionManager,
   Linking,
@@ -15,6 +16,7 @@ import styled from "styled-components/native";
 import { useAuth } from "../../context/AuthContext";
 import { useAppSettings } from "../../settings/AppSettingsContext";
 import { applyFetchedAppUpdate, checkForPendingAppUpdate } from "../../services/appUpdateService";
+import { isPlayerActive } from "../../services/playerActivityFlag";
 import {
   fetchNextLiveAnnouncement,
   markLiveAnnouncementSeen,
@@ -152,11 +154,16 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
   const { session } = useAuth();
   const { t } = useTranslation();
   const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null);
-  const [updateReady, setUpdateReady] = useState(false);
+  // We track update-ready as a ref, not as visible state. The HDFilm decoder
+  // rotates often; surfacing a "Restart now" modal every time would be hostile.
+  // Instead we silently apply the update the next time the user returns to the
+  // app after backgrounding it (see the AppState effect below).
+  const updateReadyRef = useRef(false);
   const refreshInFlightRef = useRef(false);
   const mountedRef = useRef(true);
   const bootTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didForceUpdateCheckRef = useRef(false);
+  const lastAppStateRef = useRef<AppStateStatus>(AppState.currentState);
   const appVersion = useMemo(
     () => String(Constants.expoConfig?.version ?? "1.0.0"),
     []
@@ -191,7 +198,7 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
       }
 
       if (pendingUpdate) {
-        setUpdateReady(true);
+        updateReadyRef.current = true;
       }
     } catch (error) {
       console.warn("Live ops refresh failed:", error);
@@ -231,9 +238,24 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
     }
 
     const subscription = AppState.addEventListener("change", (nextState) => {
-      if (nextState === "active") {
-        void runLiveOpsRefresh();
+      const previous = lastAppStateRef.current;
+      lastAppStateRef.current = nextState;
+
+      if (nextState !== "active") {
+        return;
       }
+
+      // Returning to the app. If a new bundle is staged, apply it silently —
+      // but never mid-playback (would yank the user out of their movie).
+      // PlayerScreen sets the player-active flag on mount; we skip the reload
+      // when it's set and try again on the next return.
+      if (previous !== "active" && updateReadyRef.current && !isPlayerActive()) {
+        updateReadyRef.current = false;
+        void applyFetchedAppUpdate();
+        return;
+      }
+
+      void runLiveOpsRefresh();
     });
 
     return () => subscription.remove();
@@ -258,18 +280,6 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
       await openAnnouncementUrl(url);
     }
   }, [announcement, dismissAnnouncement]);
-
-  const handleRestartLater = useCallback(() => {
-    setUpdateReady(false);
-  }, []);
-
-  const handleRestartNow = useCallback(async () => {
-    try {
-      await applyFetchedAppUpdate();
-    } catch (error) {
-      console.warn("Failed to apply fetched update:", error);
-    }
-  }, []);
 
   return (
     <>
@@ -298,29 +308,6 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
                       <PrimaryButtonLabel>{t("liveOps.gotIt")}</PrimaryButtonLabel>
                     </PrimaryButton>
                   )}
-                </ActionRow>
-              </Card>
-            </CardShell>
-          </Overlay>
-        </Modal>
-      ) : null}
-
-      {!announcement && updateReady ? (
-        <Modal visible transparent animationType="fade" onRequestClose={handleRestartLater}>
-          <Overlay>
-            <CardShell>
-              <Card>
-                <Accent $accent="rgba(34, 197, 94, 0.85)" />
-                <Eyebrow>{t("liveOps.updateEyebrow")}</Eyebrow>
-                <Title>{t("liveOps.updateTitle")}</Title>
-                <Body>{t("liveOps.updateBody")}</Body>
-                <ActionRow>
-                  <SecondaryButton onPress={handleRestartLater}>
-                    <SecondaryButtonLabel>{t("liveOps.updateLater")}</SecondaryButtonLabel>
-                  </SecondaryButton>
-                  <PrimaryButton onPress={() => void handleRestartNow()}>
-                    <PrimaryButtonLabel>{t("liveOps.updateRestartNow")}</PrimaryButtonLabel>
-                  </PrimaryButton>
                 </ActionRow>
               </Card>
             </CardShell>
