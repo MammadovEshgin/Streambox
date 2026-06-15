@@ -29,10 +29,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -40,17 +40,36 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 1. Read-only health check. If healthy, the workflow ends green.
-      #    If broken, this step fails (continue-on-error) and we move on.
+      # 1. Read-only health check.
+      #
+      # The script has three meaningful exit codes:
+      #   0 — decoder healthy (or auto-patched in --write mode)
+      #   2 — couldn't reach hdfilmcehennemi from this network at all
+      #       (Cloudflare WAF on the provider tends to flag GitHub-hosted
+      #       datacenter IPs as bots). NOT a decoder rotation; user-facing
+      #       playback works fine. We can't verify, so we skip and exit
+      #       green with a notice instead of false-alarming the maintainer.
+      #   other — decoder is genuinely broken (provider rotated the scheme).
       - name: Health check (read-only)
         id: health
-        run: npm run check:hdfilm
+        run: |
+          set +e
+          npm run check:hdfilm
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" = "2" ]; then
+            echo "::notice::Resolver health unverifiable from this runner (exit 2 — Cloudflare/geo block on hdfilmcehennemi from GitHub-hosted IPs). User-facing playback is independent of this check. To get end-to-end automatic verification + auto-fix again, move this workflow onto a self-hosted runner with a residential IP."
+            exit 0
+          fi
+          exit $code
         continue-on-error: true
 
-      # 2. Decoder is broken — try to auto-derive a new scheme against a live
-      #    probe. `--write` also patches WebPlayerService.ts in place.
+      # 2. Decoder genuinely broken (exit 1/3/4/5) — try to auto-derive a new
+      #    scheme against a live probe. Skipped when the runner couldn't even
+      #    reach the provider (exit 2), because auto-derive would also need to
+      #    fetch the same blocked pages.
       - name: Auto-derive new scheme (write mode)
-        if: steps.health.outcome == 'failure'
+        if: steps.health.outcome == 'failure' && steps.health.outputs.exit_code != '2'
         id: derive
         run: npm run check:hdfilm -- --write
         continue-on-error: true
@@ -117,9 +136,15 @@ jobs:
       # 5. Auto-derive failed (new scheme isn't a composition of known
       #    primitives). Fail loudly so the GitHub failure notification reaches
       #    the maintainer for manual fix.
+      #
+      #    Excludes the geo-block case (exit 2): there the runner couldn't
+      #    verify anything, so we have no signal that the decoder is broken
+      #    and shouldn't false-alarm. The notice emitted in the health step
+      #    is the right signal in that path.
       - name: Fail loudly if not recovered
         if: |
           steps.health.outcome == 'failure' &&
+          steps.health.outputs.exit_code != '2' &&
           (steps.derive.outcome != 'success' || steps.validate.outcome != 'success')
         run: |
           echo "::error::HDFilm decoder is BROKEN and auto-recovery did not succeed."
