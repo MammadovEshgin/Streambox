@@ -1087,7 +1087,71 @@ function isRapidrameNativeSafeStream(streamUrl: string): boolean {
   return isDirectStreamUrl(streamUrl);
 }
 
-function extractRapidrameStreamUrl(embedHtml: string): string | null {
+/**
+ * Inline packer.js (`eval(function(p,a,c,k,e,d){...}(...))`) unpacker.
+ *
+ * The HDFilmCehennemi /rplayer/ flow wraps its `dc_*()` decoder AND the
+ * `var s_* = dc_*([...])` parts assignment inside one of these packed blocks.
+ * Without unpacking we can't see the assignment, so `extractRapidrameStreamUrl`
+ * fails its regex lookup and the result falls back to the WebView player — which
+ * is what kept titles like "Still Alice" / "Unutma Beni" off the native path
+ * even after the global decoder scheme was fixed.
+ *
+ * Returns the original HTML with the FIRST packed block replaced by its
+ * expansion. Idempotent / safe to call on HTML with no packed block.
+ */
+function tryUnpackInlinePackerJs(html: string): string {
+  const match = html.match(/eval\(function\(p,a,c,k,e,(?:d|r)\)\{[\s\S]*?\}\('((?:[^'\\]|\\.)*?)',\s*(\d+),\s*(\d+),\s*'((?:[^'\\]|\\.)*?)'\.split\('\|'\)/);
+  if (!match) return html;
+
+  const [fullEvalPrefix, payload, baseStr, , wordsStr] = match;
+  const base = parseInt(baseStr, 10);
+  if (!Number.isFinite(base) || base < 2 || base > 62) return html;
+
+  const words = wordsStr.split("|");
+  const digits = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+  function fromBase(token: string): number {
+    let n = 0;
+    for (const ch of token) {
+      const v = digits.indexOf(ch);
+      if (v < 0 || v >= base) return -1;
+      n = n * base + v;
+    }
+    return n;
+  }
+
+  const expanded = payload.replace(/\b\w+\b/g, (token) => {
+    const idx = fromBase(token);
+    if (idx < 0 || idx >= words.length) return token;
+    const word = words[idx];
+    return word === "" ? token : word;
+  });
+
+  // Replace the full eval(...) call — find its closing paren by scanning from
+  // the start of the match. Regex-only matching is fragile around the trailing
+  // `{}))` so we walk parentheses to be safe.
+  const startIdx = html.indexOf(fullEvalPrefix);
+  if (startIdx < 0) return html;
+  let depth = 0;
+  let endIdx = -1;
+  for (let i = startIdx + "eval".length; i < html.length; i += 1) {
+    const ch = html[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) { endIdx = i; break; }
+    }
+  }
+  if (endIdx < 0) return html;
+  return html.slice(0, startIdx) + expanded + html.slice(endIdx + 1);
+}
+
+function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
+  // Unpack any inline packer.js block first. For the older /video/embed/ flow
+  // this is a no-op (no packed block). For the newer /rplayer/ flow it's what
+  // makes the `s_* = dc_*(…)` assignment visible to the regex below.
+  const embedHtml = tryUnpackInlinePackerJs(embedHtmlInput);
   const sourceVariable = embedHtml.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*(s_[A-Za-z0-9_]+)/)?.[1];
   if (!sourceVariable) {
     return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
@@ -1123,9 +1187,22 @@ function extractRapidrameStreamUrl(embedHtml: string): string | null {
 }
 
 function extractHdFilmEmbedUrl(pageHtml: string, pageUrl: string): string | null {
-  const iframeMatch = pageHtml.match(/<iframe[^>]+src=["']([^"']+)["']/i);
-  if (iframeMatch?.[1] && /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer/i.test(iframeMatch[1])) {
-    return toAbsoluteUrl(pageUrl, iframeMatch[1]);
+  // Iframe URLs may live on a few different attributes depending on how the
+  // page was authored. Some titles (e.g. "Still Alice" / "Unutma Beni") use
+  // lazy-loaded iframes where the real URL is on `data-src` and `src` is
+  // empty or absent — missing this case sends the user to the WebView player
+  // instead of native expo-video, which is the same fragile path that caused
+  // the POCO F7 black-screen-on-pre-roll incident.
+  const iframeAttrRegexes = [
+    /<iframe[^>]+\bsrc=["']([^"']+)["']/i,
+    /<iframe[^>]+\bdata-src=["']([^"']+)["']/i,
+    /<iframe[^>]+\bdata-lazy-src=["']([^"']+)["']/i
+  ];
+  for (const regex of iframeAttrRegexes) {
+    const match = pageHtml.match(regex);
+    if (match?.[1] && /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer/i.test(match[1])) {
+      return toAbsoluteUrl(pageUrl, match[1]);
+    }
   }
 
   const dataVideoMatch = pageHtml.match(/data-(?:video|link|url)=["']([^"']+)["']/i);
@@ -1834,6 +1911,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
 export const __internal = {
   buildHdFilmResult,
   decodeRapidrameValueCandidates,
+  extractHdFilmEmbedUrl,
   extractRapidrameStreamUrl,
   hasStrictTitleIdentity,
   inspectRapidramePlaylist,

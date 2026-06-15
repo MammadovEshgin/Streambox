@@ -199,6 +199,67 @@ test("HDFilm buildHdFilmResult propagates qualityWarning into the native result"
   assert.equal(result.source, "direct");
 });
 
+test("HDFilm extractHdFilmEmbedUrl recognizes lazy-loaded data-src iframes (Still Alice fix)", () => {
+  // Real HTML shape from hdfilmcehennemi.nl pages that lazy-load their player
+  // iframe (Still Alice / Unutma Beni was the first reported case). Before the
+  // fix the regex only matched `src=`, so these titles fell through to the
+  // fragile WebView path that caused the POCO F7 black screen.
+  const pageHtml = [
+    '<iframe class="rapidrame" data-src="https://www.hdfilmcehennemi.nl/rplayer/4u445b9hmyeb/"',
+    '   width="100%" height="100%" allowfullscreen></iframe>'
+  ].join("\n");
+
+  const embedUrl = __internal.extractHdFilmEmbedUrl(pageHtml, "https://www.hdfilmcehennemi.nl/hd-unutma-beni-izle-5/");
+  assert.equal(embedUrl, "https://www.hdfilmcehennemi.nl/rplayer/4u445b9hmyeb/");
+});
+
+test("HDFilm extractHdFilmEmbedUrl still finds plain src= iframes", () => {
+  const pageHtml = '<iframe src="https://hdfilmcehennemi.mobi/video/embed/abc123/" allowfullscreen></iframe>';
+  const embedUrl = __internal.extractHdFilmEmbedUrl(pageHtml, "https://www.hdfilmcehennemi.nl/whatever/");
+  assert.equal(embedUrl, "https://hdfilmcehennemi.mobi/video/embed/abc123/");
+});
+
+test("HDFilm extractRapidrameStreamUrl unpacks inline packer.js wrapping the s_* assignment", () => {
+  // Minimal rplayer-shape HTML: a packed eval(...) block that, when unpacked,
+  // contains the `var s_X = dc_Y([...])` assignment the extractor needs. The
+  // parts encode "https://example/x.m3u8" via the legacy rot13→b64→reverse→unmix
+  // scheme so the existing decoder primitives are exercised end-to-end.
+  const url = "https://example.test/hls/x.m3u8";
+  // Reverse the unmix: shift each char forward by 399756995 % (i + 5).
+  let mixed = "";
+  for (let i = 0; i < url.length; i += 1) {
+    mixed += String.fromCharCode((url.charCodeAt(i) + (399756995 % (i + 5))) % 256);
+  }
+  // Inverse of (rot13 → atob → reverse): reverse → btoa → rot13.
+  const reversed = mixed.split("").reverse().join("");
+  const b64 = Buffer.from(reversed, "binary").toString("base64");
+  const rot13 = b64.replace(/[a-zA-Z]/g, (ch) => {
+    const code = ch.charCodeAt(0);
+    const base = code <= 90 ? 65 : 97;
+    return String.fromCharCode(((code - base + 13) % 26) + base);
+  });
+
+  // Use the trivial "no packing" packer payload — base 62, every token is a
+  // distinct word so the unpacker just substitutes verbatim. We hand-write the
+  // unpacked body and feed it via a "packed" wrapper that maps token "AAA" to
+  // the body. This keeps the test independent of packer.js encoding details.
+  const partsJson = JSON.stringify([rot13]);
+  const unpackedBody =
+    `var s_TEST=dc_FN(${partsJson});` +
+    `jwplayer("player").setup({sources:[{file:s_TEST,type:"hls"}]});`;
+
+  // Hand-build a packed block where a single token decodes to the index of
+  // `unpackedBody` in the word list. The unpacker's digit alphabet orders
+  // 0-9, a-z, A-Z, so the token "b" decodes to 11 in base 62.
+  const words = new Array(12).fill("");
+  words[11] = unpackedBody;
+  const packedHtml =
+    `eval(function(p,a,c,k,e,d){return p}('b',62,1,'${words.join("|")}'.split('|'),0,{}))`;
+
+  const result = __internal.extractRapidrameStreamUrl(packedHtml);
+  assert.equal(result, url);
+});
+
 test("HDFilm Rapidrame inspection prefers native for disguised image media segments", () => {
   const mediaPlaylist = [
     "#EXTM3U",
