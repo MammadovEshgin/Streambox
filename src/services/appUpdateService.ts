@@ -3,7 +3,10 @@ import * as Updates from "expo-updates";
 import { markThrottledCheck, shouldRunThrottledCheck } from "./liveOpsStorage";
 
 const LAST_UPDATE_CHECK_KEY = "@streambox/live-ops/last-update-check-v1";
-export const APP_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+// 5 minutes. Decoder rotations are now auto-recovered every 30 min by the
+// Oracle VM cron; checking in-app this often means the OTA reaches the user
+// within minutes of being published, instead of waiting on a cold launch.
+export const APP_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 export type PendingAppUpdate = {
   fetchedAt: number;

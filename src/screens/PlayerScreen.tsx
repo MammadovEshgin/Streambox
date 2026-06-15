@@ -31,6 +31,7 @@ import Reanimated, {
   FadeIn
 } from "react-native-reanimated";
 import { resolveHdFilmRuntimeStream, resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
+import { setPlayerActive } from "../services/playerActivityFlag";
 import { getProviderConfig } from "../services/providerConfigService";
 import { useAppSettings } from "../settings/AppSettingsContext";
 import {
@@ -2785,6 +2786,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   useEffect(() => {
     playerResultRef.current = playerResult;
   }, [playerResult]);
+
+  // Block silent OTA reload while this screen is mounted — otherwise the user
+  // returning to the app after a brief lock-screen would lose their playback
+  // position to a forced JS reload.
+  useEffect(() => {
+    setPlayerActive(true);
+    return () => setPlayerActive(false);
+  }, []);
 
   useEffect(() => {
     return () => {
