@@ -1,0 +1,15 @@
+node_modules
+.expo
+dist
+web-build
+android-build
+ios-build
+build
+coverage
+.wrangler
+.npm-cache
+package-lock.json
+*.lock
+assets
+content-sources
+supabase/.temp
