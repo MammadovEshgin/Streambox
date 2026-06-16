@@ -597,9 +597,22 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
         scoreHdFilmResult(result, title, year),
         originalTitle ? scoreHdFilmResult(result, originalTitle, year) : 0
       ),
+      resultYear: result.resultYear,
       qualityWarning: detectQualityWarning(result)
     }))
-    .filter((entry) => entry.titleScore >= 50)
+    .filter((entry) => {
+      if (entry.titleScore < 50) return false;
+      // Hard year gate. The soft -40 penalty in scoreHdFilmResult can still
+      // leave a wrong-year exact-title page above the 50 cutoff (e.g. Dune
+      // 1984's page title "Dune: Çöl Gezegeni  - Dune 1984" contains the
+      // 2021 Turkish title "Dune: Çöl Gezegeni" verbatim → variant score
+      // 100, year mismatch → 60, passes — and that movie then plays even
+      // though the user clicked the 2021 poster). When we know both years
+      // and they disagree, the candidate is the wrong movie. Reject it
+      // outright so the resolver falls through to Dizipal / direct.
+      if (year && entry.resultYear && entry.resultYear !== year) return false;
+      return true;
+    })
     .sort((a, b) => b.titleScore - a.titleScore);
 
   if (scored.length === 0) return null;
@@ -850,7 +863,15 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
       resultYear: result.resultYear,
       qualityWarning: detectQualityWarning(result)
     }))
-    .filter((entry) => entry.score >= 80 && isDizipalUrlTitleCompatible(entry.href, title, safeOriginalTitle))
+    .filter((entry) => {
+      if (entry.score < 80) return false;
+      // Same hard year gate as HDFilm: if the user clicked a specific
+      // year's poster (e.g. Dune 2021), never substitute a same-title
+      // different-year movie (Dune 1984) just because the title scored
+      // high enough after the -55 penalty.
+      if (year && entry.resultYear && entry.resultYear !== year) return false;
+      return isDizipalUrlTitleCompatible(entry.href, title, safeOriginalTitle);
+    })
     .sort((a, b) => b.score - a.score);
 
   if (scored.length === 0) return null;

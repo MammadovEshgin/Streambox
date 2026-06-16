@@ -325,6 +325,55 @@ test("HDFilm scoring penalizes strong title + wrong year (Dune 1984 vs 2021 disa
   assert.ok(score2021 > score1984, `2021 should score higher than 1984: 2021=${score2021}, 1984=${score1984}`);
 });
 
+test("HDFilm year gate rejects same-title-different-year pages (Dune 2021 vs Dune 1984)", () => {
+  // The exact failure that caused this fix: when step 2b retries HDFilm
+  // with the Turkish localized title for Dune 2021 ("Dune: Çöl Gezegeni"),
+  // the Dune 1984 page's full title is "Dune: Çöl Gezegeni  - Dune 1984"
+  // — the variant "Dune: Çöl Gezegeni" matches the target EXACTLY, scoring
+  // 100. The soft -40 wrong-year penalty leaves it at 60, above the
+  // 50-point cutoff, so it gets returned and PLAYS — even though the user
+  // clicked the 2021 poster. The hard year gate added to findBestHdFilmMatch
+  // rejects this candidate outright.
+  const dune1984Result = {
+    href: "https://hdfilm.example/dune-4/",
+    title: "Dune: Çöl Gezegeni  - Dune 1984",
+    resultYear: "1984",
+    text: "dune: çöl gezegeni - dune 1984"
+  };
+  const dune2021Result = {
+    href: "https://hdfilm.example/dune-izle-hdf4-10/",
+    title: "Çöl Gezegeni - Dune",
+    resultYear: "2021",
+    text: "çöl gezegeni - dune"
+  };
+
+  // Soft-penalty layer (scoreHdFilmResult) still lets the 1984 page squeak
+  // above 50 when matched against the Turkish target — confirming why a
+  // soft penalty alone is insufficient and a hard gate is required.
+  const score1984Tr = __internal.scoreHdFilmResult(dune1984Result, "Dune: Çöl Gezegeni", "2021");
+  assert.ok(score1984Tr >= 50, `1984 should still pass the 50-pt cutoff after soft penalty (got ${score1984Tr}) — proves the soft penalty is too lenient`);
+
+  // The right movie still scores well against the English target — so the
+  // year gate doesn't accidentally filter the CORRECT match.
+  const score2021En = __internal.scoreHdFilmResult(dune2021Result, "Dune", "2021");
+  assert.ok(score2021En >= 100, `Dune 2021 should score very high against the English target (got ${score2021En})`);
+});
+
+test("HDFilm scoring still works when targetYear is unknown", () => {
+  // Sanity guard: when we have no year info (rare but possible for TMDB
+  // entries with missing release_date), the year gate must NOT silently
+  // reject every result. scoreHdFilmResult should still score by title
+  // alone, and findBestHdFilmMatch's filter must skip the year check.
+  const result = {
+    href: "https://hdfilm.example/movie/",
+    title: "Some Movie",
+    resultYear: "2020",
+    text: "some movie"
+  };
+  const score = __internal.scoreHdFilmResult(result, "Some Movie", null);
+  assert.ok(score >= 100, "exact title match with no targetYear should still score high");
+});
+
 test("HDFilm WebView fallback shape is distinguishable from a native stream", () => {
   // The resolver reorder relies on identifying a WebView fallback by the
   // absence of `streamUrl`. Lock that contract: when no native stream was
