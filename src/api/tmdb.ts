@@ -16,8 +16,49 @@ import {
   type ImdbTop250Item,
 } from "./imdb";
 
-export type MediaType = "movie" | "tv";
-export type CastGender = "male" | "female" | null;
+// Re-export the public type contracts. They live in tmdb.types.ts so other
+// modules (screens, hooks, services) can pull just the types without dragging
+// the entire ~3k-line client implementation through their dependency graph.
+// Existing `import { MediaItem } from "../api/tmdb"` continues to work.
+export type {
+  MediaType,
+  CastGender,
+  MediaItem,
+  CastMember,
+  DirectorMember,
+  CrewMember,
+  MovieDetails,
+  SeriesSeason,
+  SeriesEpisode,
+  SeriesDetails,
+  ExternalRatings,
+  SeriesExternalRatings,
+  PersonDetails,
+  PaginatedMediaResponse,
+  MovieTasteProfile,
+  DiscoverCollectionSource,
+} from "./tmdb.types";
+
+// Internal alias to use the types locally without changing every reference
+// in this file to `MediaItem`, etc.
+import type {
+  MediaType,
+  CastGender,
+  MediaItem,
+  CastMember,
+  DirectorMember,
+  CrewMember,
+  MovieDetails,
+  SeriesSeason,
+  SeriesEpisode,
+  SeriesDetails,
+  ExternalRatings,
+  SeriesExternalRatings,
+  PersonDetails,
+  PaginatedMediaResponse,
+  MovieTasteProfile,
+  DiscoverCollectionSource,
+} from "./tmdb.types";
 
 type TmdbMediaRecord = {
   id: number;
@@ -299,157 +340,6 @@ type TmdbPersonSearchResponse = {
   total_pages: number;
   total_results: number;
 };
-
-export type MediaItem = {
-  id: number | string;
-  title: string;
-  originalTitle?: string;
-  posterPath: string | null;
-  backdropPath: string | null;
-  rating: number;
-  overview: string;
-  year: string;
-  mediaType: MediaType;
-  imdbId?: string | null;
-  rank?: number;
-  genreIds?: number[];
-};
-
-export type CastMember = {
-  id: number;
-  name: string;
-  character: string;
-  profilePath: string | null;
-  gender: CastGender;
-};
-
-export type DirectorMember = {
-  id: number;
-  name: string;
-  profilePath: string | null;
-};
-
-export type CrewMember = {
-  id: number;
-  name: string;
-  job: string;
-  department: string;
-  profilePath: string | null;
-};
-
-export type MovieDetails = {
-  id: number;
-  title: string;
-  originalTitle?: string;
-  overview: string;
-  runtimeMinutes: number | null;
-  genres: string[];
-  genreIds: number[];
-  ageRating: string;
-  posterPath: string | null;
-  backdropPath: string | null;
-  voteAverage: number;
-  voteCount: number;
-  releaseDate: string;
-  imdbId: string | null;
-  collectionId: number | null;
-  cast: CastMember[];
-  directors: DirectorMember[];
-  crew: CrewMember[];
-};
-
-export type SeriesSeason = {
-  id: number;
-  seasonNumber: number;
-  name: string;
-  episodeCount: number;
-  airDate: string | null;
-  posterPath: string | null;
-};
-
-export type SeriesEpisode = {
-  id: number;
-  seasonNumber: number;
-  episodeNumber: number;
-  name: string;
-  overview: string;
-  runtimeMinutes: number | null;
-  stillPath: string | null;
-  airDate: string | null;
-  voteAverage: number;
-};
-
-export type SeriesDetails = {
-  id: number;
-  title: string;
-  originalTitle?: string;
-  overview: string;
-  genres: string[];
-  genreIds: number[];
-  posterPath: string | null;
-  backdropPath: string | null;
-  voteAverage: number;
-  voteCount: number;
-  firstAirDate: string;
-  imdbId: string | null;
-  numberOfSeasons: number;
-  numberOfEpisodes: number;
-  episodeRuntimeMinutes: number | null;
-  seasons: SeriesSeason[];
-  cast: CastMember[];
-  directors: DirectorMember[];
-  crew: CrewMember[];
-};
-
-export type ExternalRatings = {
-  imdb: string | null;
-  rottenTomatoes: string | null;
-  metacritic: string | null;
-  letterboxd: string | null;
-};
-
-export type SeriesExternalRatings = Omit<ExternalRatings, "letterboxd">;
-
-export type PersonDetails = {
-  id: number;
-  name: string;
-  biography: string;
-  birthday: string | null;
-  placeOfBirth: string | null;
-  knownForDepartment: string | null;
-  popularity: number;
-  profilePath: string | null;
-  knownForMovies: MediaItem[];
-};
-
-export type PaginatedMediaResponse = {
-  items: MediaItem[];
-  page: number;
-  totalPages: number;
-};
-
-export type MovieTasteProfile = {
-  id: number;
-  title: string;
-  overview: string;
-  posterPath: string | null;
-  backdropPath: string | null;
-  rating: number;
-  popularity: number;
-  releaseYear: number | null;
-  genreIds: number[];
-  castIds: number[];
-  directorIds: number[];
-  imdbId: string | null;
-};
-
-export type DiscoverCollectionSource =
-  | "trending_movies"
-  | "trending_series"
-  | "top_new_movies"
-  | "imdb_top_250"
-  | "top_new_series"
-  | "imdb_top_250_series";
 
 type TmdbImageSize = "w185" | "w300" | "w342" | "w500" | "w780" | "original";
 
