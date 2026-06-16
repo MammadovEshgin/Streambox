@@ -325,6 +325,56 @@ test("HDFilm scoring penalizes strong title + wrong year (Dune 1984 vs 2021 disa
   assert.ok(score2021 > score1984, `2021 should score higher than 1984: 2021=${score2021}, 1984=${score1984}`);
 });
 
+test("Dizipal matching handles Turkish dotless-i (Yadigârları → yadigarlari)", () => {
+  // Concrete bug this prevents: target = Turkish-localized TMDB title
+  // "Harry Potter ve Ölüm Yadigârları: Bölüm 1". Dizipal returns the same
+  // movie at `/film/harry-potter-ve-olum-yadigarlari-bolum-1`. The two are
+  // word-identical after diacritic folding, BUT the Turkish dotless i (ı,
+  // U+0131) has no NFD decomposition — so without an explicit fold it gets
+  // stripped by `[^a-z0-9\s]`, turning "yadigarları" into "yadigarlar" and
+  // breaking both the title score AND the slug-vs-title compat check.
+  // Result: searchDizipal rejected the page below the 80-point cutoff, the
+  // resolver returned not_found, and the player UI said "not available".
+  const slug = "harry-potter-ve-olum-yadigarlari-bolum-1";
+  const dizipalUrl = `${dizipalBase}/film/${slug}`;
+  const turkishTitle = "Harry Potter ve Ölüm Yadigârları: Bölüm 1";
+
+  const result = {
+    href: dizipalUrl,
+    text: `${turkishTitle} 2010`.toLowerCase(),
+    title: turkishTitle,
+    resultYear: "2010"
+  };
+
+  const score = __internal.scoreDizipalResult(result, turkishTitle, "2010");
+  assert.ok(score >= 80, `score should clear the 80-point cutoff for an exact Turkish-title match, got ${score}`);
+
+  const compat = __internal.isDizipalUrlTitleCompatible(dizipalUrl, turkishTitle);
+  assert.equal(compat, true, "URL slug should be compatible with the Turkish title once ı→i is folded");
+
+  assert.equal(
+    __internal.hasStrictTitleIdentity("harry potter ve olum yadigarlari bolum 1", turkishTitle),
+    true,
+    "slug and Turkish title should be identity-equal under the new normalization"
+  );
+});
+
+test("Dizipal matching still scores English title low against Turkish-only result", () => {
+  // Sanity: the English target alone (no Turkish alt title yet) must NOT
+  // suddenly start matching the Turkish-named result with a passing score —
+  // that would re-introduce the false-positive risk the strict scoring was
+  // designed to prevent. Step 2b's job is to retry with the Turkish title;
+  // 2a should still fail cleanly.
+  const result = {
+    href: `${dizipalBase}/film/harry-potter-ve-olum-yadigarlari-bolum-1`,
+    text: "harry potter ve ölüm yadigârları: bölüm 1 2010",
+    title: "Harry Potter ve Ölüm Yadigârları: Bölüm 1",
+    resultYear: "2010"
+  };
+  const score = __internal.scoreDizipalResult(result, "Harry Potter and the Deathly Hallows: Part 1", "2010");
+  assert.ok(score < 80, `English-title match against Turkish-only result must stay below the 80 cutoff, got ${score}`);
+});
+
 test("HDFilm Rapidrame inspection prefers native for disguised image media segments", () => {
   const mediaPlaylist = [
     "#EXTM3U",

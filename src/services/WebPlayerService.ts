@@ -132,6 +132,24 @@ function extractText(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/**
+ * Fold a string to ASCII for title comparison.
+ *
+ * NFD + combining-diacritic stripping handles most Latin letters with marks
+ * (ö → o, ü → u, â → a, ç → c, ş → s, ğ → g, …). But it does NOT handle the
+ * Turkish dotless i (ı, U+0131) because that codepoint has no NFD
+ * decomposition — it's a base letter, not "i with diacritic". Without an
+ * explicit mapping, ı gets wiped out by the `[^a-z0-9\s]` strip downstream,
+ * which silently breaks titles like "Yadigârları" (becomes "yadigarlar")
+ * against slugs like "yadigarlari" (becomes "yadigarlari").
+ *
+ * Apply this BEFORE the `[^a-z0-9\s]` filter in every title normalization
+ * path so Turkish-titled Dizipal results match their TMDB-localized titles.
+ */
+function foldTurkishDotlessI(value: string): string {
+  return value.replace(/ı/g, "i").replace(/İ/g, "i");
+}
+
 /** Extract title from <h4 class="title">...</h4>, decode HTML entities */
 function extractH4Title(html: string): string {
   const match = html.match(/<h4[^>]*class=["']title["'][^>]*>(.*?)<\/h4>/i);
@@ -177,8 +195,7 @@ type NormalizedTitle = {
 const TITLE_INITIAL_STOP_WORDS = new Set(["a", "an", "and", "at", "by", "for", "in", "of", "on", "the", "to", "with"]);
 
 function normalizeTitle(value: string): NormalizedTitle {
-  const text = value
-    .toLowerCase()
+  const text = foldTurkishDotlessI(value.toLowerCase())
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/&/g, " and ")
@@ -234,8 +251,17 @@ function isAlternateTitleSafeForDizipal(title: string, alternateTitle?: string):
 
 export function scoreMatch(resultText: string, target: string, year?: string | number | null): number {
   if (!resultText || !target) return 0;
-  const normalizedResult = resultText.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
-  const normalizedTarget = target.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  // Fold ı/İ → i AND apply NFD diacritic stripping so Turkish-only chars
+  // (Yadigârları, Bölüm, Aşk, …) compare cleanly against ASCII slugs.
+  const foldForCompare = (value: string): string =>
+    foldTurkishDotlessI(value.toLowerCase())
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z0-9\s]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  const normalizedResult = foldForCompare(resultText);
+  const normalizedTarget = foldForCompare(target);
   const yearStr = year ? String(year) : null;
 
   // Strip year from result text for title-only comparison (sites often append "2021", "1080p" etc.)
@@ -315,8 +341,7 @@ function scoreStrictDizipalTitle(variant: string, target: string): number {
 }
 
 function normalizeName(name: string): string {
-  return name
-    .toLowerCase()
+  return foldTurkishDotlessI(name.toLowerCase())
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9\s]/g, "")
