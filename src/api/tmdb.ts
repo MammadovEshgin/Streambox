@@ -2836,21 +2836,50 @@ export async function getTurkishAlternativeTitle(
   const key = `${mediaType}#${tmdbId}`;
   if (altTitleCache.has(key)) return altTitleCache.get(key)!;
 
-  try {
-    const endpoint =
+  // /translations holds the canonical, official localized title (what Dizipal
+  // and other TR streaming sites use). /alternative_titles only holds
+  // user-submitted alternates, which TMDB has for very few titles — for most
+  // movies it's empty. Querying both in parallel and preferring /translations
+  // gives a much higher hit rate (e.g. Harry Potter Deathly Hallows had no
+  // alternate but does have a translation: "Harry Potter ve Ölüm Yadigârları").
+  const translationsEndpoint =
+    mediaType === "movie"
+      ? `/movie/${tmdbId}/translations`
+      : `/tv/${tmdbId}/translations`;
+  const alternativesEndpoint =
+    mediaType === "movie"
+      ? `/movie/${tmdbId}/alternative_titles`
+      : `/tv/${tmdbId}/alternative_titles`;
+
+  const [translations, alternatives] = await Promise.allSettled([
+    tmdbClient.get(translationsEndpoint),
+    tmdbClient.get(alternativesEndpoint)
+  ]);
+
+  let resolved: string | null = null;
+
+  if (translations.status === "fulfilled") {
+    const list = translations.value.data?.translations ?? [];
+    const trEntry = list.find((t: any) => t?.iso_639_1 === "tr");
+    const candidate =
       mediaType === "movie"
-        ? `/movie/${tmdbId}/alternative_titles`
-        : `/tv/${tmdbId}/alternative_titles`;
-    const { data } = await tmdbClient.get(endpoint);
-    const titles = data.titles ?? data.results ?? [];
-    const turkish = titles.find((t: any) => t.iso_3166_1 === "TR");
-    const result = turkish?.title ?? null;
-    altTitleCache.set(key, result);
-    return result;
-  } catch {
-    altTitleCache.set(key, null);
-    return null;
+        ? trEntry?.data?.title
+        : trEntry?.data?.name;
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      resolved = candidate.trim();
+    }
   }
+
+  if (!resolved && alternatives.status === "fulfilled") {
+    const titles = alternatives.value.data?.titles ?? alternatives.value.data?.results ?? [];
+    const trAlt = titles.find((t: any) => t?.iso_3166_1 === "TR");
+    if (typeof trAlt?.title === "string" && trAlt.title.trim().length > 0) {
+      resolved = trAlt.title.trim();
+    }
+  }
+
+  altTitleCache.set(key, resolved);
+  return resolved;
 }
 
 export async function getLocalizedFranchiseMetadata(
