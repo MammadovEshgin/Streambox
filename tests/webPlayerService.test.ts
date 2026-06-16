@@ -325,6 +325,28 @@ test("HDFilm scoring penalizes strong title + wrong year (Dune 1984 vs 2021 disa
   assert.ok(score2021 > score1984, `2021 should score higher than 1984: 2021=${score2021}, 1984=${score1984}`);
 });
 
+test("HDFilm WebView fallback shape is distinguishable from a native stream", () => {
+  // The resolver reorder relies on identifying a WebView fallback by the
+  // absence of `streamUrl`. Lock that contract: when no native stream was
+  // decoded, buildHdFilmResult must produce a result with NO streamUrl, so
+  // the caller can defer it and try other providers first.
+  const webview = __internal.buildHdFilmResult("https://hdfilm.example/page");
+  assert.equal(webview.streamUrl, undefined, "WebView fallback must not carry a streamUrl");
+  assert.equal(webview.source, "hdfilm");
+
+  // And: when a native stream IS decoded, the result MUST carry streamUrl
+  // so the resolver returns it immediately (winning the priority race).
+  const native = __internal.buildHdFilmResult("https://hdfilm.example/page", undefined, {
+    streamUrl: "https://cdn.example/movie.m3u8",
+    streamType: "m3u8",
+    poster: "",
+    referer: "",
+    subtitles: []
+  });
+  assert.equal(native.streamUrl, "https://cdn.example/movie.m3u8");
+  assert.equal(native.source, "direct");
+});
+
 test("Dizipal matching handles Turkish dotless-i (Yadigârları → yadigarlari)", () => {
   // Concrete bug this prevents: target = Turkish-localized TMDB title
   // "Harry Potter ve Ölüm Yadigârları: Bölüm 1". Dizipal returns the same

@@ -1801,9 +1801,30 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
     };
   }
 
-  // 1. HDFilm — find the single best match, check if video is available
+  // 1. HDFilm — try to extract a real native stream. We DEFER the WebView
+  //    fallback (source: "hdfilm" pointing at an HDFilm page) because that
+  //    path is fragile: HDFilm sometimes shows a page with alternative-link
+  //    buttons or a placeholder iframe but no actually-playable source, and
+  //    the WebView then shows a blank player. If Dizipal (or any other
+  //    provider) can deliver a real stream we always want that instead.
+  //
+  //    Concrete bug this prevents: titles where HDFilm has a page but the
+  //    decoder yields no native stream, while Dizipal has the same title
+  //    with a working stream. Before this change the resolver returned the
+  //    HDFilm WebView immediately and Dizipal was never tried.
   const isSeries = request.mediaType !== "movie";
   const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year, request.originalTitle);
+
+  let hdfilmWebViewFallback: WebPlayerResult | null = null;
+  const considerHdFilmResult = (result: WebPlayerResult): WebPlayerResult | null => {
+    // A native stream is the strong outcome — return immediately.
+    if (result.streamUrl) return result;
+    // Otherwise the result is a WebView-pointing HDFilm page. Save it as the
+    // last-resort fallback (only used if everything else fails) and keep
+    // looking for a provider that yields a real stream.
+    if (!hdfilmWebViewFallback) hdfilmWebViewFallback = result;
+    return null;
+  };
 
   if (hdfilmMatch) {
     if (isSeries) {
@@ -1814,24 +1835,28 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           request.episodeNumber
         );
         if (episodeResult) {
-          return buildHdFilmResult(
+          const built = buildHdFilmResult(
             episodeResult.url,
             episodeResult.qualityWarning,
             episodeResult.nativeFallback
           );
+          const ret = considerHdFilmResult(built);
+          if (ret) return ret;
         }
-      } else {
-        return { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: hdfilmMatch.qualityWarning };
+      } else if (!hdfilmWebViewFallback) {
+        hdfilmWebViewFallback = { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: hdfilmMatch.qualityWarning };
       }
     } else {
       const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
       if (videoCheck.available) {
-        return buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+        const built = buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+        const ret = considerHdFilmResult(built);
+        if (ret) return ret;
       }
     }
   }
 
-  // 2. Dizipal — fallback
+  // 2. Dizipal — primary fallback when HDFilm produced no native stream.
   {
     const dizipalResult = await resolvePlayableDizipalUrl(request);
     if (dizipalResult) {
@@ -1862,7 +1887,13 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
     }
   }
 
-  // 2b. Retry Turkish sources with alternative title from TMDB
+  // 2b. Retry Turkish sources with the localized title from TMDB.
+  //
+  //    For most cross-language titles ("Harry Potter and the Deathly
+  //    Hallows" vs "Harry Potter ve Ölüm Yadigârları") the English search
+  //    in step 2 scores too low against the Turkish-only Dizipal entry to
+  //    pass the strict 80-point cutoff. Asking TMDB for the canonical
+  //    Turkish translation and retrying matches with score ≥ 100.
   if (request.tmdbId) {
     try {
       const altTitle = await getTurkishAlternativeTitle(request.tmdbId, request.mediaType);
@@ -1875,17 +1906,21 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
                 hdRetry.url, request.seasonNumber, request.episodeNumber
               );
               if (episodeResult) {
-                return buildHdFilmResult(
+                const built = buildHdFilmResult(
                   episodeResult.url,
                   episodeResult.qualityWarning,
                   episodeResult.nativeFallback
                 );
+                const ret = considerHdFilmResult(built);
+                if (ret) return ret;
               }
             }
           } else {
             const videoCheck = await checkVideoAvailability(hdRetry.url);
             if (videoCheck.available) {
-              return buildHdFilmResult(hdRetry.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+              const built = buildHdFilmResult(hdRetry.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+              const ret = considerHdFilmResult(built);
+              if (ret) return ret;
             }
           }
         }
@@ -1912,7 +1947,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
     } catch { /* silent */ }
   }
 
-  // 3. Try Direct Scrapers (Consumet & Stremio Addons) final fallback for best quality
+  // 3. Direct scrapers (Consumet & Stremio addons) — last source of real streams.
   try {
     const directResult = await resolveDirectLink({
       title: request.title,
@@ -1945,6 +1980,11 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   } catch (error) {
     debugLog("[WebPlayerService] Direct resolution skipped:", error);
   }
+
+  // 4. Last resort: HDFilm WebView. Only reached when no provider produced
+  //    a native stream — better than not_found, even if the JS injection in
+  //    PlayerScreen sometimes loses the race against pre-roll ads.
+  if (hdfilmWebViewFallback) return hdfilmWebViewFallback;
 
   return { url: "", source: "not_found" };
 }
