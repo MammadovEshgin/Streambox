@@ -17,16 +17,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund --prefer-offline
+        # `npm install` (not `npm ci`) — the lockfile picks up
+        # platform-specific optional deps on the dev machine that may not
+        # match the Linux runner. install reconciles those without failing
+        # while still respecting the locked versions of everything else.
+        run: npm install --no-audit --no-fund --prefer-offline
 
       - name: Typecheck
         run: npm run typecheck
