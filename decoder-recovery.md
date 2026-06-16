@@ -213,13 +213,3 @@ When you ship successfully:
 - Don't suggest "follow-ups" or "next steps" unless something genuinely
   unexpected happened.
 
----
-
-## Optional: Windows Task Scheduler automation (currently NOT enabled)
-
-There's a PowerShell script `scripts/auto-recover.ps1` that wraps the entire
-happy path. It can be wired to Windows Task Scheduler to run every 30 min
-and ship OTAs without the user asking. The user opted out of this in favor
-of telling an LLM when the decoder breaks. **Do not enable this unless the
-user explicitly asks.** If they ever do, the setup commands are in the
-script's header comment.
