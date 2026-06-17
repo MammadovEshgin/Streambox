@@ -875,6 +875,34 @@ function shouldAllowPlayerWebViewRequest(req: { url: string; isTopFrame?: boolea
   );
 }
 
+/**
+ * Remote-control bridge for the WebView's HTML video element on Android TV.
+ *
+ * Background: TV playback runs in the WebView because the same Chromium engine
+ * that the phone uses already solves Cloudflare's JS challenge and feeds the
+ * stream into JWPlayer / HLS.js. We tried switching to the native VideoView
+ * after sniffing the .m3u8 URL but modern players use Media Source Extensions
+ * (the video element's `src` is a blob://), so the original network URL never
+ * surfaces in a way that ExoPlayer could replay with the right cookies.
+ *
+ * Pragmatic answer: keep the WebView as the player, drive its <video> element
+ * directly from the React Native side. PlayerScreen forwards D-pad events
+ * (Center=toggle, Left/Right=seek ±10s, Up/Down=±60s) by injecting JS — no
+ * focus model required, no stream extraction, no extra moving parts.
+ */
+const TV_VIDEO_TOGGLE_PLAY_JS = `
+(function() {
+  var v = document.querySelector('video');
+  if (!v) return true;
+  if (v.paused) { v.play().catch(function(){}); } else { v.pause(); }
+  if (window.ReactNativeWebView) {
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_toggle', paused: v.paused }));
+  }
+  return true;
+})();
+true;
+`;
+
 const PLAYER_AD_GUARD_SCRIPT = `
 (function() {
   'use strict';
@@ -3229,6 +3257,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
       const payload = JSON.parse(event.nativeEvent.data);
+      if (payload?.type === "player_toggle" || payload?.type === "player_seek") return;
       if (payload?.type === "player_ready") {
         setLoadError(null);
         setIsPlaybackReady(true);
@@ -3256,6 +3285,24 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setIsPlaybackReady(false);
     setLoadError("Failed to load. Please check your connection.");
   }, []);
+
+  // TV remote Center handler. The remote can't focus DOM elements inside the
+  // WebView, so we expose a fullscreen focusable wake-layer that catches the
+  // Center press and forwards a play/pause toggle to the page's <video> via
+  // injected JS. Phone builds keep the existing showControls() behaviour —
+  // they have a touch model and don't need this.
+  const handleTvCenterPress = useCallback(() => {
+    showControls();
+    if (!isTvBuild()) return;
+    const source = playerResult?.source;
+    const isWebViewPlayback = source === "hdfilm" || source === "dizipal" || source === "dizipal_embed";
+    if (!isWebViewPlayback) return;
+    try {
+      webViewRef.current?.injectJavaScript(TV_VIDEO_TOGGLE_PLAY_JS);
+    } catch {
+      /* WebView may have unmounted — safe to swallow */
+    }
+  }, [playerResult?.source, showControls]);
 
   // Android TV's Chromium WebView fires the page-level `load` event but the
   // in-page injection script's `player_ready` postMessage doesn't always make
@@ -3559,7 +3606,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             focusable
             hasTVPreferredFocus
             style={styles.tvControlWakeLayer}
-            onPress={() => showControls()}
+            onPress={handleTvCenterPress}
           />
         )}
         {!isLoading && isSubtitleMenuOpen && (
@@ -3913,7 +3960,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           focusable
           hasTVPreferredFocus
           style={styles.tvControlWakeLayer}
-          onPress={() => showControls()}
+          onPress={handleTvCenterPress}
         />
       )}
       <QualityWarningModal
