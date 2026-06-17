@@ -3257,6 +3257,20 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setLoadError("Failed to load. Please check your connection.");
   }, []);
 
+  // Android TV's Chromium WebView fires the page-level `load` event but the
+  // in-page injection script's `player_ready` postMessage doesn't always make
+  // it back to the JS bridge (we've verified the video element itself is
+  // playing — audio focus is held). Falling back to the WebView's onLoadEnd
+  // on TV unblocks the loader overlay so the actual playback surface is
+  // visible. Phone keeps the stricter `player_ready` gate to avoid flashing
+  // the unstyled page before the video starts.
+  const handleWebViewLoadEnd = useCallback(() => {
+    if (isTvBuild()) {
+      setLoadError(null);
+      setIsPlaybackReady(true);
+    }
+  }, []);
+
   // Native video player for direct streams
   const directStreamUrl = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") 
     ? (currentStreamUrl || playerResult.streamUrl || null) 
@@ -3847,6 +3861,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           javaScriptCanOpenWindowsAutomatically={false}
           onMessage={handleMessage}
           onError={handleError}
+          onLoadEnd={handleWebViewLoadEnd}
           onNavigationStateChange={handleNavChange}
           onShouldStartLoadWithRequest={(req) => shouldAllowPlayerWebViewRequest(req, playerResult.url)}
         />
@@ -3888,6 +3903,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           javaScriptCanOpenWindowsAutomatically={false}
           onMessage={handleMessage}
           onError={handleError}
+          onLoadEnd={handleWebViewLoadEnd}
           onNavigationStateChange={handleNavChange}
           onShouldStartLoadWithRequest={(req) => shouldAllowPlayerWebViewRequest(req, playerResult.url)}
         />
