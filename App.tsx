@@ -36,6 +36,23 @@ import { clearPersistedRuntimeCaches } from "./src/services/runtimeCache";
 import { runStorageMigrationsIfNeeded } from "./src/services/storageMigrations";
 import { isTvBuild } from "./src/utils/tv";
 
+// One-shot startup beacon so we can verify which OTA bundle is actually
+// running on a device, even in production. console.warn survives in non-dev
+// React Native builds while console.log does not. The fingerprint changes
+// each publish so the device side becomes unambiguous.
+console.warn(
+  "[STREAMBOX-BOOT]",
+  JSON.stringify({
+    bundleFingerprint: "tv-2026-06-17f",
+    channel: Updates.channel ?? null,
+    updateId: Updates.updateId ?? null,
+    runtimeVersion: String(Updates.runtimeVersion ?? "unknown"),
+    isTvBuild: isTvBuild(),
+    platformIsTV: Platform.isTV,
+    envTvFlag: process.env.EXPO_PUBLIC_STREAMBOX_TV_BUILD ?? null,
+  })
+);
+
 const FIRST_OPEN_KEY = "@streambox/first-open-complete-v6";
 const SIGN_OUT_WELCOME_KEY = "@streambox/sign-out-welcome-v1";
 const LAST_STARTUP_ERROR_KEY = "@streambox/last-startup-error-v1";

@@ -14,7 +14,6 @@ import axios from "axios";
 import { resolveDirectLink } from "./DirectLinkService";
 import { getProviderConfig } from "./providerConfigService";
 import { getTurkishAlternativeTitle } from "../api/tmdb";
-import { isTvBuild } from "../utils/tv";
 
 export type WebPlayerRequest = {
   mediaType: "movie" | "tv";
@@ -41,13 +40,6 @@ export type WebPlayerResult = {
   qualityOptions?: Array<{ label: string; height: number; url: string }>;
   /** If set, the stream is low quality (e.g. "CAM", "TS") — UI should warn the user before playback */
   qualityWarning?: string;
-  /**
-   * Populated when `source === "not_found"` — short human-readable trace of which
-   * providers were attempted and why each failed. Used by TV builds to surface a
-   * diagnostic line beneath the "Not Available" screen so a black-box failure is
-   * actually actionable.
-   */
-  diagnostics?: string[];
 };
 
 const UA =
@@ -524,7 +516,7 @@ function matchesSeriesEpisodeUrl(url: string, seasonNumber: number, episodeNumbe
 }
 
 function buildHdFilmResult(pageUrl: string, qualityWarning?: string, nativeFallback?: DizipalStreamInfo | null): WebPlayerResult {
-  if (nativeFallback && (nativeFallback.preferNative || isTvBuild())) {
+  if (nativeFallback && nativeFallback.preferNative) {
     return {
       url: nativeFallback.streamUrl,
       source: "direct",
@@ -1278,140 +1270,6 @@ async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<Diz
   return null;
 }
 
-function toDirectStreamResult(directResult: Awaited<ReturnType<typeof resolveDirectLink>>): WebPlayerResult | null {
-  if (!directResult || !directResult.primary) return null;
-  const { primary } = directResult;
-  const referer = primary.headers?.Referer || primary.headers?.referer || "";
-  return {
-    url: primary.url,
-    source: "direct",
-    streamUrl: primary.url,
-    streamType: primary.format === "hls" ? "m3u8" : "mp4",
-    referer,
-    subtitles: (primary.subtitles || []).map((s: any) => ({
-      url: s.url,
-      label: s.label,
-      lang: s.language,
-    })),
-    qualityOptions: primary.qualityOptions,
-  };
-}
-
-function toDizipalDirectResult(
-  dizipalResult: NonNullable<Awaited<ReturnType<typeof resolvePlayableDizipalUrl>>>
-): WebPlayerResult {
-  const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
-  if (!stream) {
-    throw new Error("toDizipalDirectResult requires a native stream");
-  }
-  return {
-    url: pageUrl,
-    source: "dizipal_direct",
-    streamUrl: stream.streamUrl,
-    streamType: stream.streamType,
-    poster: stream.poster,
-    referer: stream.referer || "",
-    embedUrl: embedUrl ?? undefined,
-    subtitles: stream.subtitles,
-    qualityWarning,
-  };
-}
-
-/**
- * TV resolver: native-stream only.
- *
- * Android TV has no usable WebView playback flow — JWPlayer iframes and the
- * HDFilm runtime-discovery handoff both depend on focus/touch behaviour that
- * doesn't exist on a remote. Returning a `hdfilm` / `dizipal` / `dizipal_embed`
- * source on TV would surface a WebView the user can't interact with.
- *
- * So on TV we reorder the chain to put providers that deliver clean
- * MP4/HLS URLs first, and skip everything WebView-only:
- *   1. Stremio addons (DirectLinkService) — always native, no WebView. Most reliable on TV.
- *   2. Dizipal — but ONLY when its player config yielded a native HLS URL.
- *   3. HDFilm — but ONLY when checkVideoAvailability surfaced a native fallback URL.
- *   4. Turkish alt-title retry against the same native-only paths above.
- */
-async function resolveTvNativeUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {
-  const isSeries = request.mediaType !== "movie";
-  const diagnostics: string[] = [];
-
-  try {
-    const directResult = await resolveDirectLink({
-      title: request.title,
-      mediaType: request.mediaType,
-      tmdbId: request.tmdbId,
-      imdbId: request.imdbId?.startsWith("tt") ? request.imdbId : undefined,
-      seasonNumber: request.seasonNumber,
-      episodeNumber: request.episodeNumber,
-    });
-    const directStream = toDirectStreamResult(directResult);
-    if (directStream) return directStream;
-    diagnostics.push("Stremio: no playable candidates");
-  } catch (error) {
-    debugLog("[WebPlayerService][TV] Direct resolution skipped:", error);
-    diagnostics.push(`Stremio: ${error instanceof Error ? error.message : "unavailable"}`);
-  }
-
-  const dizipalResult = await resolvePlayableDizipalUrl(request);
-  if (dizipalResult?.stream) return toDizipalDirectResult(dizipalResult);
-  diagnostics.push(dizipalResult ? "Dizipal: found page but no native stream" : "Dizipal: no match");
-
-  const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year, request.originalTitle);
-  if (hdfilmMatch) {
-    if (isSeries && request.seasonNumber && request.episodeNumber) {
-      const episodeResult = await resolvePlayableSeriesEpisodeUrl(hdfilmMatch.url, request.seasonNumber, request.episodeNumber);
-      if (episodeResult?.nativeFallback) {
-        const result = buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
-        if (result.source === "direct") return result;
-      }
-      diagnostics.push(episodeResult ? "HDFilm: episode found but no native fallback" : "HDFilm: episode lookup failed");
-    } else if (!isSeries) {
-      const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
-      if (videoCheck.nativeFallback) {
-        const result = buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
-        if (result.source === "direct") return result;
-      }
-      diagnostics.push(videoCheck.available ? "HDFilm: page available but no native fallback (non-rapidrame embed)" : "HDFilm: page check failed");
-    }
-  } else {
-    diagnostics.push("HDFilm: no match");
-  }
-
-  if (request.tmdbId) {
-    try {
-      const altTitle = await getTurkishAlternativeTitle(request.tmdbId, request.mediaType);
-      if (altTitle && altTitle !== request.title && altTitle !== request.originalTitle) {
-        diagnostics.push(`Retry with TR title "${altTitle}"`);
-        const retryRequest: WebPlayerRequest = { ...request, title: altTitle, originalTitle: undefined };
-        const altDizipal = await resolvePlayableDizipalUrl(retryRequest);
-        if (altDizipal?.stream) return toDizipalDirectResult(altDizipal);
-
-        const altHdfilm = await findBestHdFilmMatch(altTitle, request.castNames ?? [], request.year);
-        if (altHdfilm) {
-          if (isSeries && request.seasonNumber && request.episodeNumber) {
-            const episodeResult = await resolvePlayableSeriesEpisodeUrl(altHdfilm.url, request.seasonNumber, request.episodeNumber);
-            if (episodeResult?.nativeFallback) {
-              const result = buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
-              if (result.source === "direct") return result;
-            }
-          } else if (!isSeries) {
-            const videoCheck = await checkVideoAvailability(altHdfilm.url);
-            if (videoCheck.nativeFallback) {
-              const result = buildHdFilmResult(altHdfilm.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
-              if (result.source === "direct") return result;
-            }
-          }
-        }
-      }
-    } catch {
-      /* silent — alt-title is best-effort */
-    }
-  }
-
-  return { url: "", source: "not_found", diagnostics };
-}
-
 export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {
   if (request.videoId) {
     return {
@@ -1420,9 +1278,12 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
     };
   }
 
-  if (isTvBuild()) {
-    return resolveTvNativeUrl(request);
-  }
+  // Android TV uses the same WebView playback path as mobile. The WebView's
+  // Chromium engine solves the Cloudflare JS challenge during page load (same
+  // as on phone), JWPlayer/Dizipal autoplays via mediaPlaybackRequiresUserAction={false},
+  // and the existing dizipal_direct/hdfilm-native branches still fire when a
+  // provider yields a clean MP4/HLS. There is no separate TV resolver — the
+  // platform is Android either way.
 
   // 1. HDFilm — find the single best match, check if video is available
   const isSeries = request.mediaType !== "movie";
