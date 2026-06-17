@@ -41,6 +41,13 @@ export type WebPlayerResult = {
   qualityOptions?: Array<{ label: string; height: number; url: string }>;
   /** If set, the stream is low quality (e.g. "CAM", "TS") — UI should warn the user before playback */
   qualityWarning?: string;
+  /**
+   * Populated when `source === "not_found"` — short human-readable trace of which
+   * providers were attempted and why each failed. Used by TV builds to surface a
+   * diagnostic line beneath the "Not Available" screen so a black-box failure is
+   * actually actionable.
+   */
+  diagnostics?: string[];
 };
 
 const UA =
@@ -1327,6 +1334,7 @@ function toDizipalDirectResult(
  */
 async function resolveTvNativeUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {
   const isSeries = request.mediaType !== "movie";
+  const diagnostics: string[] = [];
 
   try {
     const directResult = await resolveDirectLink({
@@ -1339,12 +1347,15 @@ async function resolveTvNativeUrl(request: WebPlayerRequest): Promise<WebPlayerR
     });
     const directStream = toDirectStreamResult(directResult);
     if (directStream) return directStream;
+    diagnostics.push("Stremio: no playable candidates");
   } catch (error) {
     debugLog("[WebPlayerService][TV] Direct resolution skipped:", error);
+    diagnostics.push(`Stremio: ${error instanceof Error ? error.message : "unavailable"}`);
   }
 
   const dizipalResult = await resolvePlayableDizipalUrl(request);
   if (dizipalResult?.stream) return toDizipalDirectResult(dizipalResult);
+  diagnostics.push(dizipalResult ? "Dizipal: found page but no native stream" : "Dizipal: no match");
 
   const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year, request.originalTitle);
   if (hdfilmMatch) {
@@ -1354,19 +1365,24 @@ async function resolveTvNativeUrl(request: WebPlayerRequest): Promise<WebPlayerR
         const result = buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
         if (result.source === "direct") return result;
       }
+      diagnostics.push(episodeResult ? "HDFilm: episode found but no native fallback" : "HDFilm: episode lookup failed");
     } else if (!isSeries) {
       const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
       if (videoCheck.nativeFallback) {
         const result = buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
         if (result.source === "direct") return result;
       }
+      diagnostics.push(videoCheck.available ? "HDFilm: page available but no native fallback (non-rapidrame embed)" : "HDFilm: page check failed");
     }
+  } else {
+    diagnostics.push("HDFilm: no match");
   }
 
   if (request.tmdbId) {
     try {
       const altTitle = await getTurkishAlternativeTitle(request.tmdbId, request.mediaType);
       if (altTitle && altTitle !== request.title && altTitle !== request.originalTitle) {
+        diagnostics.push(`Retry with TR title "${altTitle}"`);
         const retryRequest: WebPlayerRequest = { ...request, title: altTitle, originalTitle: undefined };
         const altDizipal = await resolvePlayableDizipalUrl(retryRequest);
         if (altDizipal?.stream) return toDizipalDirectResult(altDizipal);
@@ -1393,7 +1409,7 @@ async function resolveTvNativeUrl(request: WebPlayerRequest): Promise<WebPlayerR
     }
   }
 
-  return { url: "", source: "not_found" };
+  return { url: "", source: "not_found", diagnostics };
 }
 
 export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {

@@ -646,6 +646,15 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: 28
   },
+  notAvailableDiagnostics: {
+    color: "rgba(255,255,255,0.45)",
+    fontSize: 11,
+    textAlign: "left",
+    lineHeight: 16,
+    fontFamily: "Courier",
+    paddingHorizontal: 24,
+    marginBottom: 20
+  },
   goBackButton: {
     paddingHorizontal: 36,
     paddingVertical: 13,
@@ -3797,7 +3806,18 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           <Text style={styles.notAvailableHint}>
             We're always adding new content. Please check back later!
           </Text>
-          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.8}>
+          {isTvBuild() && playerResult?.diagnostics?.length ? (
+            <Text style={styles.notAvailableDiagnostics}>
+              {playerResult.diagnostics.map((line) => `• ${line}`).join("\n")}
+            </Text>
+          ) : null}
+          <TouchableOpacity
+            focusable
+            hasTVPreferredFocus
+            style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]}
+            onPress={handleClose}
+            activeOpacity={0.8}
+          >
             <Text style={styles.goBackText}>Go Back</Text>
           </TouchableOpacity>
         </View>

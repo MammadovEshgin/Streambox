@@ -15,6 +15,7 @@ import styled from "styled-components/native";
 import { useAuth } from "../../context/AuthContext";
 import { useAppSettings } from "../../settings/AppSettingsContext";
 import { applyFetchedAppUpdate, checkForPendingAppUpdate } from "../../services/appUpdateService";
+import { isTvBuild } from "../../utils/tv";
 import {
   fetchNextLiveAnnouncement,
   markLiveAnnouncementSeen,
@@ -270,6 +271,18 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
       console.warn("Failed to apply fetched update:", error);
     }
   }, []);
+
+  // Android TV remotes can't focus React Native <Modal> buttons reliably, so
+  // the user has no way to tap "Restart Now". Auto-apply the OTA on TV after
+  // a short delay — this is safe because TV sessions are foreground-only and
+  // a one-shot reload is preferable to leaving the device on stale code.
+  useEffect(() => {
+    if (!updateReady || !isTvBuild()) return;
+    const t = setTimeout(() => {
+      void applyFetchedAppUpdate();
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [updateReady]);
 
   return (
     <>
