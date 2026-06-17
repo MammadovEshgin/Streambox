@@ -3105,6 +3105,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         if (cancelled) return;
         debugLog("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
 
+        // TV builds rely on native playback only — WebView sources have no usable focus model on a remote.
+        // The resolver already gates these out, so reaching this branch is a logic bug; coerce defensively.
+        if (isTvBuild() && (result.source === "hdfilm" || result.source === "dizipal" || result.source === "dizipal_embed")) {
+          debugLog("[Player][TV] Refusing WebView source", result.source, "— coercing to not_found.");
+          setPlayerResult({ url: "", source: "not_found" });
+          setIsResolving(false);
+          return;
+        }
+
         if (result.qualityWarning && result.source !== "not_found") {
           setIsResolving(false);
           setQualityWarning({ label: result.qualityWarning, result });

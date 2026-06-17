@@ -1271,6 +1271,131 @@ async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<Diz
   return null;
 }
 
+function toDirectStreamResult(directResult: Awaited<ReturnType<typeof resolveDirectLink>>): WebPlayerResult | null {
+  if (!directResult || !directResult.primary) return null;
+  const { primary } = directResult;
+  const referer = primary.headers?.Referer || primary.headers?.referer || "";
+  return {
+    url: primary.url,
+    source: "direct",
+    streamUrl: primary.url,
+    streamType: primary.format === "hls" ? "m3u8" : "mp4",
+    referer,
+    subtitles: (primary.subtitles || []).map((s: any) => ({
+      url: s.url,
+      label: s.label,
+      lang: s.language,
+    })),
+    qualityOptions: primary.qualityOptions,
+  };
+}
+
+function toDizipalDirectResult(
+  dizipalResult: NonNullable<Awaited<ReturnType<typeof resolvePlayableDizipalUrl>>>
+): WebPlayerResult {
+  const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
+  if (!stream) {
+    throw new Error("toDizipalDirectResult requires a native stream");
+  }
+  return {
+    url: pageUrl,
+    source: "dizipal_direct",
+    streamUrl: stream.streamUrl,
+    streamType: stream.streamType,
+    poster: stream.poster,
+    referer: stream.referer || "",
+    embedUrl: embedUrl ?? undefined,
+    subtitles: stream.subtitles,
+    qualityWarning,
+  };
+}
+
+/**
+ * TV resolver: native-stream only.
+ *
+ * Android TV has no usable WebView playback flow — JWPlayer iframes and the
+ * HDFilm runtime-discovery handoff both depend on focus/touch behaviour that
+ * doesn't exist on a remote. Returning a `hdfilm` / `dizipal` / `dizipal_embed`
+ * source on TV would surface a WebView the user can't interact with.
+ *
+ * So on TV we reorder the chain to put providers that deliver clean
+ * MP4/HLS URLs first, and skip everything WebView-only:
+ *   1. Stremio addons (DirectLinkService) — always native, no WebView. Most reliable on TV.
+ *   2. Dizipal — but ONLY when its player config yielded a native HLS URL.
+ *   3. HDFilm — but ONLY when checkVideoAvailability surfaced a native fallback URL.
+ *   4. Turkish alt-title retry against the same native-only paths above.
+ */
+async function resolveTvNativeUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {
+  const isSeries = request.mediaType !== "movie";
+
+  try {
+    const directResult = await resolveDirectLink({
+      title: request.title,
+      mediaType: request.mediaType,
+      tmdbId: request.tmdbId,
+      imdbId: request.imdbId?.startsWith("tt") ? request.imdbId : undefined,
+      seasonNumber: request.seasonNumber,
+      episodeNumber: request.episodeNumber,
+    });
+    const directStream = toDirectStreamResult(directResult);
+    if (directStream) return directStream;
+  } catch (error) {
+    debugLog("[WebPlayerService][TV] Direct resolution skipped:", error);
+  }
+
+  const dizipalResult = await resolvePlayableDizipalUrl(request);
+  if (dizipalResult?.stream) return toDizipalDirectResult(dizipalResult);
+
+  const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year, request.originalTitle);
+  if (hdfilmMatch) {
+    if (isSeries && request.seasonNumber && request.episodeNumber) {
+      const episodeResult = await resolvePlayableSeriesEpisodeUrl(hdfilmMatch.url, request.seasonNumber, request.episodeNumber);
+      if (episodeResult?.nativeFallback) {
+        const result = buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
+        if (result.source === "direct") return result;
+      }
+    } else if (!isSeries) {
+      const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
+      if (videoCheck.nativeFallback) {
+        const result = buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+        if (result.source === "direct") return result;
+      }
+    }
+  }
+
+  if (request.tmdbId) {
+    try {
+      const altTitle = await getTurkishAlternativeTitle(request.tmdbId, request.mediaType);
+      if (altTitle && altTitle !== request.title && altTitle !== request.originalTitle) {
+        const retryRequest: WebPlayerRequest = { ...request, title: altTitle, originalTitle: undefined };
+        const altDizipal = await resolvePlayableDizipalUrl(retryRequest);
+        if (altDizipal?.stream) return toDizipalDirectResult(altDizipal);
+
+        const altHdfilm = await findBestHdFilmMatch(altTitle, request.castNames ?? [], request.year);
+        if (altHdfilm) {
+          if (isSeries && request.seasonNumber && request.episodeNumber) {
+            const episodeResult = await resolvePlayableSeriesEpisodeUrl(altHdfilm.url, request.seasonNumber, request.episodeNumber);
+            if (episodeResult?.nativeFallback) {
+              const result = buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
+              if (result.source === "direct") return result;
+            }
+          } else if (!isSeries) {
+            const videoCheck = await checkVideoAvailability(altHdfilm.url);
+            if (videoCheck.nativeFallback) {
+              const result = buildHdFilmResult(altHdfilm.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
+              if (result.source === "direct") return result;
+            }
+          }
+        }
+      }
+    } catch {
+      /* silent — alt-title is best-effort */
+    }
+  }
+
+  return { url: "", source: "not_found" };
+}
+
 export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {
   if (request.videoId) {
     return {
@@ -1279,9 +1404,12 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
     };
   }
 
+  if (isTvBuild()) {
+    return resolveTvNativeUrl(request);
+  }
+
   // 1. HDFilm — find the single best match, check if video is available
   const isSeries = request.mediaType !== "movie";
-  const tvBuild = isTvBuild();
   const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year, request.originalTitle);
 
   if (hdfilmMatch) {
@@ -1293,17 +1421,15 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
           request.episodeNumber
         );
         if (episodeResult) {
-          const result = buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
-          if (!tvBuild || result.source === "direct") return result;
+          return buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
         }
       } else {
-        if (!tvBuild) return { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: hdfilmMatch.qualityWarning };
+        return { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: hdfilmMatch.qualityWarning };
       }
     } else {
       const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
       if (videoCheck.available) {
-        const result = buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
-        if (!tvBuild || result.source === "direct") return result;
+        return buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
       }
     }
   }
@@ -1352,15 +1478,13 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
                 hdRetry.url, request.seasonNumber, request.episodeNumber
               );
               if (episodeResult) {
-                const result = buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
-                if (!tvBuild || result.source === "direct") return result;
+                return buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback);
               }
             }
           } else {
             const videoCheck = await checkVideoAvailability(hdRetry.url);
             if (videoCheck.available) {
-              const result = buildHdFilmResult(hdRetry.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
-              if (!tvBuild || result.source === "direct") return result;
+              return buildHdFilmResult(hdRetry.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
             }
           }
         }
