@@ -714,6 +714,45 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     return () => clearTimeout(timer);
   }, [playerResult, isPlaybackReady]);
 
+  // Native-stream stall escape hatch.
+  //
+  // Some Cloudflare-protected CDN hosts (imagestoo.com et al.) accept the
+  // m3u8 request but never serve segments to a native client without
+  // browser cookies. ExoPlayer ends up buffering forever — no readyToPlay,
+  // no error event for ~30s. The user gives up before then.
+  //
+  // After 20s with no readyToPlay (generous enough for a slow-but-working
+  // network), trigger the SAME path the explicit error handler uses:
+  //   • direct + webViewFallbackUrl → hdfilm WebView (known to work)
+  //   • dizipal_direct              → not_found     (no embed fallback)
+  //   • other                       → "Failed to load this stream" error
+  // This deliberately does NOT swap into dizipal_embed/dizipal — per
+  // user feedback, those WebView paths surface a broken player and are
+  // strictly worse than an honest "Not Available".
+  useEffect(() => {
+    if (!playerResult) return;
+    const source = playerResult.source;
+    const isNativeStream = source === "dizipal_direct" || source === "direct";
+    if (!isNativeStream) return;
+    if (isPlaybackReady) return;
+    const timer = setTimeout(() => {
+      debugLog(`[Player] Native stream stalled (${source}) — applying error path`);
+      setPlayerResult((prev) => {
+        if (prev?.source === "direct" && prev.webViewFallbackUrl) {
+          setLoadError(null);
+          return { url: prev.webViewFallbackUrl, source: "hdfilm" };
+        }
+        if (prev?.source === "dizipal_direct") {
+          setLoadError(null);
+          return { url: "", source: "not_found" };
+        }
+        setLoadError("Failed to load this stream. Please try again later.");
+        return prev;
+      });
+    }, 20_000);
+    return () => clearTimeout(timer);
+  }, [playerResult, isPlaybackReady]);
+
 
   const handleFullScreenChange = useCallback((isFullScreen: boolean) => {
     if (isFullScreen) {
@@ -1217,6 +1256,16 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             seasonNumber={route.params.seasonNumber}
             episodeNumber={route.params.episodeNumber}
           />
+        )}
+        {/* Always-visible close button during loading, so a stuck stream
+            can still be backed out of without resorting to the system
+            back gesture. zIndex above the loader (loaderOverlay is 10). */}
+        {isLoading && (
+          <Animated.View style={[styles.closeButton, { zIndex: 20 }]}>
+            <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
+              <Feather name="x" size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+          </Animated.View>
         )}
         {!isLoading && isSubtitleMenuOpen && (
           <Pressable style={styles.subtitleMenuBackdrop} onPress={() => setIsSubtitleMenuOpen(false)} />
