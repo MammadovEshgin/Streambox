@@ -102,6 +102,24 @@ function baseHeaders(referer) {
   };
 }
 
+// Detects whether the configured URL has been rotated to a new domain.
+// Dizipal CDN issues a 301 from the old host to the new one; with
+// redirect:"follow" the bot used to get a 200 from the final URL and
+// declare everything healthy, masking the rotation. Compare the final
+// origin to the requested origin to surface stale config.
+function compareOrigins(requestedUrl, finalUrl) {
+  try {
+    const requestedOrigin = new URL(requestedUrl).origin;
+    const finalOrigin = new URL(finalUrl).origin;
+    if (requestedOrigin === finalOrigin) {
+      return { rotated: false, requestedOrigin, finalOrigin };
+    }
+    return { rotated: true, requestedOrigin, finalOrigin };
+  } catch {
+    return { rotated: false, requestedOrigin: null, finalOrigin: null };
+  }
+}
+
 async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
   const startedAt = Date.now();
   const timeoutMs = getTimeoutMs(env);
@@ -116,16 +134,27 @@ async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
     const validatorResult = validator
       ? validator(response, body)
       : { ok: response.ok, reason: response.ok ? "ok" : `HTTP ${response.status}` };
-    const ok = Boolean(response.ok && validatorResult.ok);
-    const reason = ok ? "ok" : validatorResult.reason || `HTTP ${response.status}`;
+    const transport = Boolean(response.ok && validatorResult.ok);
+    const rotation = compareOrigins(url, response.url ?? url);
+    // Endpoint is only "ok" if it works AND the origin hasn't rotated.
+    // A 200 from a redirected host means the user's configured URL is stale.
+    const ok = transport && !rotation.rotated;
+    const reason = !transport
+      ? (validatorResult.reason || `HTTP ${response.status}`)
+      : rotation.rotated
+        ? `URL rotated: ${rotation.requestedOrigin} → ${rotation.finalOrigin}`
+        : "ok";
 
     return {
       id,
       label,
       url,
+      finalUrl: response.url ?? url,
       ok,
       status: response.status,
       reason,
+      rotated: rotation.rotated,
+      latestBaseUrl: rotation.rotated ? rotation.finalOrigin : null,
       durationMs: Date.now() - startedAt,
       checkedAt: new Date().toISOString(),
     };
@@ -134,9 +163,12 @@ async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
       id,
       label,
       url,
+      finalUrl: null,
       ok: false,
       status: null,
       reason: error instanceof Error ? error.message : String(error),
+      rotated: false,
+      latestBaseUrl: null,
       durationMs: Date.now() - startedAt,
       checkedAt: new Date().toISOString(),
     };
@@ -234,13 +266,17 @@ async function saveState(env, state) {
 function buildNextCheckState(previous, result, failureThreshold) {
   const failedCount = result.ok ? 0 : (previous?.failedCount ?? 0) + 1;
   const previousStatus = previous?.status ?? "unknown";
+  // Rotation is a softer state than "down" — the upstream is reachable, just
+  // at a new domain. Stop the failedCount climb from declaring it down.
   const nextStatus = result.ok
     ? "up"
-    : failedCount >= failureThreshold
-      ? "down"
-      : previousStatus === "down"
+    : result.rotated
+      ? "rotated"
+      : failedCount >= failureThreshold
         ? "down"
-        : "degraded";
+        : previousStatus === "down"
+          ? "down"
+          : "degraded";
 
   return {
     status: nextStatus,
@@ -251,6 +287,8 @@ function buildNextCheckState(previous, result, failureThreshold) {
     lastStatus: result.status,
     lastReason: result.reason,
     lastUrl: result.url,
+    lastFinalUrl: result.finalUrl ?? null,
+    lastRotatedOrigin: result.latestBaseUrl ?? previous?.lastRotatedOrigin ?? null,
     lastDurationMs: result.durationMs,
     updatedAt: result.checkedAt,
   };
@@ -259,7 +297,19 @@ function buildNextCheckState(previous, result, failureThreshold) {
 function buildAlerts(previous, next, result) {
   const alerts = [];
 
-  if (previous.status !== "down" && next.status === "down") {
+  // A URL rotation is a separate, lower-severity signal from "down" — the
+  // provider is still reachable, just at a new domain. Treat it as its own
+  // alert so the operator can run /set_dizipal without first seeing a noisy
+  // "down" page that's actually working through the redirect.
+  if (result.rotated && (previous.lastRotatedOrigin ?? null) !== result.latestBaseUrl) {
+    alerts.push({
+      type: "rotated",
+      title: `${result.label} URL rotated`,
+      message: `${result.label} rotated to a new domain.\n\nConfigured: ${result.url}\nLatest: ${result.latestBaseUrl}\n\nUpdate with:\n/set_dizipal ${result.latestBaseUrl}`,
+    });
+  }
+
+  if (previous.status !== "down" && next.status === "down" && !result.rotated) {
     alerts.push({
       type: "down",
       title: `${result.label} is down`,
@@ -448,30 +498,56 @@ async function updateDizipalConfig(env, baseUrl) {
 function formatCheckResults(results) {
   return results
     .map((result) => {
-      const marker = result.ok ? "OK" : "FAIL";
+      const marker = result.ok ? "OK" : result.rotated ? "ROTATED" : "FAIL";
       const status = result.status ?? "network";
       return `${marker} ${result.label}: ${status} (${result.reason})`;
     })
     .join("\n");
 }
 
+// Returns the unique latestBaseUrl seen across the rotated results, if any.
+// All Dizipal checks should redirect to the same head, so we just take the
+// first one — but assert they agree to flag oddball CDN states.
+function summariseRotation(results) {
+  const rotatedOrigins = Array.from(
+    new Set(results.filter((r) => r.rotated && r.latestBaseUrl).map((r) => r.latestBaseUrl))
+  );
+  if (rotatedOrigins.length === 0) return null;
+  return rotatedOrigins;
+}
+
 async function handleTelegramStatus(env, chatId) {
   const current = await fetchCurrentDizipalConfig(env);
   const results = await validateDizipalCandidate(env, current.baseUrl);
   const state = await loadState(env);
+  const rotatedOrigins = summariseRotation(results.results);
 
-  await sendTelegramMessage(
-    env,
-    chatId,
-    [
-      "StreamBox Dizipal status",
+  const lines = [
+    "StreamBox Dizipal status",
+    "",
+    `Configured URL: ${current.baseUrl}`,
+    `Monitor state:  ${state.checks?.dizipal_search?.status ?? "unknown"}`,
+  ];
+
+  if (rotatedOrigins) {
+    const latest = rotatedOrigins[0];
+    lines.push(
       "",
-      `Current URL: ${current.baseUrl}`,
-      `Monitor state: ${state.checks?.dizipal_search?.status ?? "unknown"}`,
+      "⚠ URL rotation detected.",
+      `Latest URL: ${latest}`,
       "",
-      formatCheckResults(results.results),
-    ].join("\n")
-  );
+      `Update with:`,
+      `/set_dizipal ${latest}`,
+    );
+    if (rotatedOrigins.length > 1) {
+      lines.push("", `Multiple final origins observed: ${rotatedOrigins.join(", ")}`);
+    }
+  } else {
+    lines.push("", "No rotation detected — configured URL is current.");
+  }
+
+  lines.push("", formatCheckResults(results.results));
+  await sendTelegramMessage(env, chatId, lines.join("\n"));
 }
 
 async function handleTelegramSetDizipal(env, chatId, args) {
@@ -479,17 +555,22 @@ async function handleTelegramSetDizipal(env, chatId, args) {
   const validation = await validateDizipalCandidate(env, candidateUrl);
 
   if (!validation.ok) {
-    await sendTelegramMessage(
-      env,
-      chatId,
-      [
-        "Dizipal update rejected.",
+    const rotatedOrigins = summariseRotation(validation.results);
+    const lines = [
+      "Dizipal update rejected.",
+      "",
+      `Candidate: ${candidateUrl}`,
+    ];
+    if (rotatedOrigins) {
+      const latest = rotatedOrigins[0];
+      lines.push(
         "",
-        `Candidate: ${candidateUrl}`,
-        "",
-        formatCheckResults(validation.results),
-      ].join("\n")
-    );
+        `Candidate redirects to ${latest}.`,
+        `Use:  /set_dizipal ${latest}`,
+      );
+    }
+    lines.push("", formatCheckResults(validation.results));
+    await sendTelegramMessage(env, chatId, lines.join("\n"));
     return;
   }
 
