@@ -30,9 +30,28 @@ import { useTheme } from "styled-components/native";
 import Reanimated, {
   FadeIn
 } from "react-native-reanimated";
-import { resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
+import { resolveHdFilmRuntimeStream, resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
+import { setPlayerActive } from "../services/playerActivityFlag";
 import { getProviderConfig } from "../services/providerConfigService";
 import { useAppSettings } from "../settings/AppSettingsContext";
+import {
+  normalizeSubtitleUrl,
+  parseSubtitleDocument,
+  type ParsedSubtitleCue
+} from "../utils/subtitles";
+import {
+  shouldAcceptDiscoveredHdFilmStream,
+  shouldAllowPlayerWebViewRequest,
+} from "./player/playerWebViewPolicy";
+import {
+  PLAYER_STOP_MEDIA_SCRIPT,
+  PLAYER_WEBVIEW_USER_AGENT,
+  getEmbedInjectAfter,
+  getEmbedInjectBefore,
+  getInjectAfter,
+  getInjectBefore,
+  type WebViewProviderSource,
+} from "./player/webviewInjection";
 import { isTvBuild } from "../utils/tv";
 
 function debugLog(...args: unknown[]) {
@@ -41,117 +60,28 @@ function debugLog(...args: unknown[]) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Cinema facts shown during loading
-// ---------------------------------------------------------------------------
-const MOVIE_FACTS = [
-  "In Interstellar, the 'mountain' waves on Miller's planet were actually created by a mechanical device in a water tank, not just CGI.",
-  "The famous shower scene in Psycho took seven days to film and contains 77 different camera angles.",
-  "In The Godfather, the cat Marlon Brando holds in the opening scene was a stray found in the studio and was not in the script.",
-  "The Star Wars character Yoda's eyes were modeled after Albert Einstein's eyes to give him an intelligent, wise look.",
-  "The gold paint on the actress in Goldfinger was genuine, and she had to be painted very quickly to avoid 'skin suffocation'.",
-  "For The Revenant, Leonardo DiCaprio actually ate a raw bison liver despite being a vegetarian.",
-  "The 'horses' in Monty Python and the Holy Grail were actually just coconut shells because the production couldn't afford real horses.",
-  "Toy Story 2 was almost completely deleted by a computer command during production; fortunately, a technical director had a backup at home.",
-  "The speed of the bus in Speed (1994) was actually 50 mph, but they filmed it from angles that made it look much faster.",
-  "In Back to the Future, the time machine was originally going to be a refrigerator before they decided on a DeLorean.",
-  "The movie Gravity actually had a longer production cycle than the time it took to send a man to the moon.",
-  "Parasite (2019) used over 60% CGI to enhance the house architecture, although it looks like a real building.",
-  "The scream in The Dark Knight during the hospital explosion was genuine; Ledger was instructed to keep walking despite the delayed blast.",
-  "The Blair Witch Project actors were given less food each day of filming to increase their real-life irritability and fear.",
-  "In E.T. the Extra-Terrestrial, the sound of E.T. walking was made by someone squishing jelly in wet rags.",
-  "The Jurassic Park T-Rex would often 'come to life' in the rain because the animatronic's skin would absorb water and twitch.",
-  "1917 was filmed in long, continuous takes, with the longest take lasting about nine minutes.",
-  "Jackie Chan famously performs all his own stunts and holds the record for 'Most Stunts by a Living Actor'.",
-  "In Django Unchained, Leonardo DiCaprio accidentally smashed a glass and cut his hand, but he kept acting and used the real blood for the scene.",
-  "The Inception spinning top was actually a custom-made metal piece that cost hundreds of dollars to balance perfectly.",
-  "The Matrix green code is actually a scan of a sushi cookbook translated into Japanese characters.",
-  "The script for Rocky was written by Sylvester Stallone in just three and a half days.",
-  "Avatar used 'virtual cameras' that allowed James Cameron to see the CGI world in real-time while filming live actors.",
-  "In The Shining, Danny Lloyd (who played Danny) didn't know he was filming a horror movie; he thought it was a drama.",
-  "The movie 300 was filmed entirely in a warehouse with green screens, except for one scene with horses.",
-  "For Terminator 2, Linda Hamilton’s twin sister played the 'fake' Sarah Connor in the mirror scene.",
-  "Scream (1996) was originally titled 'Scary Movie' until the producers changed it at the last minute.",
-  "The Pulp Fiction briefcase contents are never revealed, but Quentin Tarantino says it's 'whatever the audience wants it to be'.",
-  "WALL-E contains almost no dialogue for the first 40 minutes of the film.",
-  "The sound of the TIE Fighter in Star Wars is a combination of an elephant call and a car driving on wet pavement.",
-  "In A Clockwork Orange, Malcolm McDowell actually scratched his cornea during the 'eye-clamping' scene.",
-  "Saving Private Ryan used real veterans from D-Day as consultants to ensure the Omaha Beach scene was as accurate as possible.",
-  "The movie Mad Max: Fury Road used almost 80% practical effects and real vehicles, despite its futuristic look.",
-  "Spirited Away remains the only hand-drawn, non-English language animation to win an Academy Award.",
-  "In The Usual Suspects, the lineup scene was supposed to be serious, but the actors kept laughing, so the director used the funny take.",
-  "The Truman Show was inspired by a Twilight Zone episode titled 'Special Service'.",
-  "For Iron Man, Robert Downey Jr. actually had the 'burger' from the movie to help him get back into character.",
-  "Fight Club director David Fincher hid a Starbucks cup in every single scene of the movie.",
-  "The Titanic set was so large they had to build a new studio in Mexico just to house the water tanks.",
-  "Raiders of the Lost Ark used over 6,000 snakes for the Well of Souls scene; most were harmless, but some were cobras.",
-  "The Dark Knight Rises used 11,000 real extras for the Gotham Rogues football game scene.",
-  "The Silence of the Lambs is one of only three movies to win the 'Big Five' Oscars.",
-  "Up required Pixar to simulate the movement of over 10,000 individual balloons.",
-  "In Spider-Man (2002), the cafeteria scene where Peter catches the food on a tray took 156 takes to get right without CGI.",
-  "Heat (1995) features a shootout scene so realistic it's used as training footage for marine recruits.",
-  "Braveheart used members of the Irish Army Reserves as extras for the battle scenes.",
-  "The Lion King was the first Disney animated feature to be based on an original story idea.",
-  "Interstellar consulted physicist Kip Thorne to ensure the black hole 'Gargantua' was scientifically accurate.",
-  "The word 'Zombie' is never used in Night of the Living Dead.",
-  "The first movie ever made was just 2 seconds long — 'Roundhay Garden Scene' (1888)."
-];
+// Toggles the WebView's HTML <video> via remote Center press on TV.
+// Phones use touch/JWPlayer click; TV remotes can't reach inside a WebView.
+const TV_VIDEO_TOGGLE_PLAY_JS = `
+(function() {
+  try {
+    var v = document.querySelector('video');
+    if (!v) return true;
+    if (v.paused) {
+      var p = v.play();
+      if (p && typeof p.catch === 'function') p.catch(function(){});
+    } else {
+      v.pause();
+    }
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_toggle', paused: v.paused }));
+    }
+  } catch (e) {}
+  return true;
+})();
+true;
+`;
 
-const PLAYER_HTTP_UA =
-  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
-
-const SERIES_FACTS = [
-  "The Sopranos used real mobsters as consultants to ensure the dialogue and behavior were authentic.",
-  "Breaking Bad creator Vince Gilligan originally wanted the show to take place in Riverside, California.",
-  "Game of Thrones had a budget of roughly $15 million per episode for its final season.",
-  "The Simpsons is the longest-running American sitcom, having started as shorts in 1987.",
-  "Friends was originally titled 'Insomnia Café' and then 'Friends Like Us' before settling on the final title.",
-  "Stranger Things was rejected by 15-20 different networks before Netflix picked it up.",
-  "The Wire was so realistic that real criminals and police officers praised its depiction of the drug trade.",
-  "The Office (US) pilots were almost identical to the UK version, but the show eventually evolved.",
-  "Squid Game was in development for over 10 years because studios thought the concept was too unrealistic.",
-  "Succession's theme song has a 'broken' piano melody to symbolize the dysfunction of the family.",
-  "Chernobyl (2019) used a sister plant to the actual Chernobyl in Lithuania for filming.",
-  "Better Call Saul was originally envisioned as a 30-minute comedy before becoming a drama.",
-  "Seinfeld had a 'no hugging, no learning' rule for its characters to avoid standard sitcom clichés.",
-  "The Last of Us series used real-life locations in Alberta, Canada, meant to look like post-apocalyptic Boston.",
-  "Twin Peaks was so mysterious that the cast didn't know who the killer was until the scene was filmed.",
-  "The Bear used real professional chefs as consultants, and the actors underwent actual culinary training.",
-  "Black Mirror got its name from the appearance of a turned-off screen: a cold, black mirror.",
-  "The Mandalorian used a revolutionary LED screen technology called 'The Volume' instead of green screens.",
-  "Sherlock (BBC) didn't have a pilot; it was originally intended to be 60 minutes long.",
-  "Ted Lasso was originally a character created for NBC Sports commercials.",
-  "Mr. Robot used real hacking techniques and code on-screen, often consulting with security experts.",
-  "Mindhunter based its lead characters on real FBI agents who pioneered criminal profiling.",
-  "Yellowstone is filmed largely on a real working ranch in Montana.",
-  "Arcane took six years to produce, with some animators working on a single scene for months.",
-  "The Crown has a research team of over 10 people to ensure historical accuracy.",
-  "Peaky Blinders used over 3,000 cigarettes per season; the actors used nicotine-free herbal versions.",
-  "Dark (Netflix) was the first German-language original series on the platform and became a global hit.",
-  "The Boys (Amazon) used practical effects for many of its 'gorier' moments to give them a raw feel.",
-  "Narcos used real news footage from the 1980s and 90s to ground the story in reality.",
-  "Beef (Netflix) was inspired by a real-life road rage incident that the creator experienced.",
-  "Hannibal's food scenes were styled by a professional culinary artist to make 'human' meals look gourmet.",
-  "The Queen's Gambit led to a 125% increase in chess set sales globally.",
-  "House of Cards was the first series from a streaming platform to be nominated for a major Emmy.",
-  "Atlanta was described by Donald Glover as 'Twin Peaks with rappers'.",
-  "Curb Your Enthusiasm scripts are almost entirely improvised; the actors only get an outline.",
-  "The White Lotus was originally intended to be a one-season 'limited series'.",
-  "Fargo ensures that every season has a 'Coen Brothers-esque' vibe.",
-  "Westworld used a real self-playing piano to symbolize the 'programmed' nature of the hosts.",
-  "Sons of Anarchy had real Hells Angels members as cast members and consultants.",
-  "Mad Men had a strict 'no anachronism' policy, ensuring every detail was historically perfect.",
-  "The Walking Dead extras had to attend 'Zombie School' to learn how to move like walkers.",
-  "Money Heist (La Casa de Papel) was almost canceled in Spain before Netflix picked it up.",
-  "Henry Cavill is a massive fan of The Witcher games and books and lobbied hard for the role.",
-  "Fleabag started as a one-woman play at the Edinburgh Festival Fringe.",
-  "Severance director Ben Stiller spent years developing the concept with creator Dan Erickson.",
-  "The Leftovers used music from different genres to symbolize the chaotic 'departure'.",
-  "Doctor Who is the longest-running science fiction television show in the world.",
-  "Lost actors were often kept in the dark about their characters' futures to maintain mystery.",
-  "Bluey has become a global hit because it depicts realistic, non-idealized parenting struggles.",
-  "Band of Brothers put the actors through a ten-day boot camp to help them bond."
-];
 
 type PlayerScreenProps = NativeStackScreenProps<HomeStackParamList, "Player">;
 
@@ -159,12 +89,6 @@ type DirectSubtitleOption = {
   url: string;
   label: string;
   lang: string;
-};
-
-type ParsedSubtitleCue = {
-  start: number;
-  end: number;
-  text: string;
 };
 
 function getSubtitleTrackLabel(track: SubtitleTrack): string {
@@ -177,197 +101,8 @@ function getSubtitleTrackLabel(track: SubtitleTrack): string {
   return "Subtitle";
 }
 
-function decodeSubtitleText(value: string): string {
-  return value
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'");
-}
+// Subtitle parsing helpers moved to src/utils/subtitles.ts.
 
-function parseVttTimestamp(value: string): number | null {
-  const trimmed = value.trim().replace(",", ".");
-  const parts = trimmed.split(":").map((part) => Number(part));
-
-  if (parts.some((part) => Number.isNaN(part))) return null;
-
-  if (parts.length === 3) {
-    return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  }
-
-  if (parts.length === 2) {
-    return parts[0] * 60 + parts[1];
-  }
-
-  return null;
-}
-
-/**
- * Extract the timestamp portion from the end-part of a VTT/SRT timing line.
- * After splitting "00:10.000 --> 00:13.083 align:start" by "-->",
- * endRaw is " 00:13.083 align:start". We need just "00:13.083".
- * Using `.split(" ")[0]` fails when there's a leading space (produces "").
- */
-function extractTimestampFromEndPart(endRaw: string): string {
-  const trimmed = endRaw.trim();
-  // Take everything up to the first space (cue settings come after)
-  const spaceIdx = trimmed.indexOf(" ");
-  return spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
-}
-
-function parseWebVtt(content: string): ParsedSubtitleCue[] {
-  // Normalize all line ending variants: \r\n, \r (old Mac), \n
-  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-
-  // First try splitting by double newlines (standard VTT)
-  let blocks = normalized.split(/\n{2,}/);
-
-  // If we only get 1-2 blocks but there are multiple --> timestamps,
-  // the file uses single-newline separation — parse line-by-line instead
-  const arrowCount = (normalized.match(/-->/g) || []).length;
-  if (blocks.length <= 2 && arrowCount > 1) {
-    return parseWebVttLineByLine(normalized);
-  }
-
-  const cues: ParsedSubtitleCue[] = [];
-
-  for (const block of blocks) {
-    const lines = block
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (lines.length === 0) continue;
-    if (lines[0].toUpperCase().startsWith("WEBVTT")) continue;
-    if (lines[0].startsWith("NOTE")) continue;
-
-    const timeLineIndex = lines.findIndex((line) => line.includes("-->"));
-    if (timeLineIndex === -1) continue;
-
-    const [startRaw, endRaw] = lines[timeLineIndex].split("-->");
-    const start = parseVttTimestamp(startRaw);
-    const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
-    if (start == null || end == null) continue;
-
-    const text = decodeSubtitleText(lines.slice(timeLineIndex + 1).join("\n")).trim();
-    if (!text) continue;
-
-    cues.push({ start, end, text });
-  }
-
-  return cues;
-}
-
-/** Fallback parser for VTT files that use single-newline separation between cues */
-function parseWebVttLineByLine(normalized: string): ParsedSubtitleCue[] {
-  const lines = normalized.split("\n");
-  const cues: ParsedSubtitleCue[] = [];
-  let i = 0;
-
-  // Skip WEBVTT header
-  while (i < lines.length) {
-    const trimmed = lines[i].trim();
-    if (trimmed.toUpperCase().startsWith("WEBVTT") || trimmed === "" || trimmed.startsWith("NOTE")) {
-      i++;
-      continue;
-    }
-    break;
-  }
-
-  while (i < lines.length) {
-    const trimmed = lines[i].trim();
-
-    // Skip empty lines and numeric cue IDs
-    if (!trimmed || /^\d+$/.test(trimmed)) {
-      i++;
-      continue;
-    }
-
-    // Look for a timestamp line
-    if (trimmed.includes("-->")) {
-      const [startRaw, endRaw] = trimmed.split("-->");
-      const start = parseVttTimestamp(startRaw);
-      const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
-      i++;
-
-      if (start == null || end == null) continue;
-
-      // Collect text lines until next timestamp or empty line
-      const textLines: string[] = [];
-      while (i < lines.length) {
-        const nextTrimmed = lines[i].trim();
-        if (!nextTrimmed || nextTrimmed.includes("-->") || /^\d+$/.test(nextTrimmed)) break;
-        textLines.push(nextTrimmed);
-        i++;
-      }
-
-      const text = decodeSubtitleText(textLines.join("\n")).trim();
-      if (text) {
-        cues.push({ start, end, text });
-      }
-    } else {
-      i++;
-    }
-  }
-
-  return cues;
-}
-
-function parseSubRip(content: string): ParsedSubtitleCue[] {
-  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const blocks = normalized.split(/\n{2,}/);
-  const cues: ParsedSubtitleCue[] = [];
-
-  for (const block of blocks) {
-    const lines = block
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (lines.length === 0) continue;
-
-    const timeLineIndex = lines.findIndex((line) => line.includes("-->"));
-    if (timeLineIndex === -1) continue;
-
-    const [startRaw, endRaw] = lines[timeLineIndex].split("-->");
-    const start = parseVttTimestamp(startRaw);
-    const end = parseVttTimestamp(extractTimestampFromEndPart(endRaw ?? ""));
-    if (start == null || end == null) continue;
-
-    const text = decodeSubtitleText(lines.slice(timeLineIndex + 1).join("\n")).trim();
-    if (!text) continue;
-
-    cues.push({ start, end, text });
-  }
-
-  return cues;
-}
-
-function parseSubtitleDocument(content: string): ParsedSubtitleCue[] {
-  const vttCues = parseWebVtt(content);
-  if (vttCues.length > 0) return vttCues;
-  return parseSubRip(content);
-}
-
-function normalizeSubtitleUrl(url: string, ...bases: Array<string | null | undefined>): string {
-  const trimmed = (url ?? "").trim();
-  if (!trimmed) return "";
-
-  for (const base of bases) {
-    if (!base) continue;
-    try {
-      return new URL(trimmed, base).toString();
-    } catch {
-      // Try next base.
-    }
-  }
-
-  return trimmed;
-}
 
 // ---------------------------------------------------------------------------
 // Loading overlay with cinema facts
@@ -382,8 +117,19 @@ const styles = StyleSheet.create({
     backgroundColor: "#000000"
   },
   nativePlayer: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "#000000"
+  },
+  // Small invisible focus target placed center-bottom — only used on Android
+  // TV. The default focus lands here, and pressing OK fires JS injection
+  // into the WebView's <video>. D-pad Up still reaches the close button.
+  tvWebViewFocusTarget: {
+    position: "absolute",
+    left: "30%",
+    right: "30%",
+    bottom: 24,
+    height: 64,
+    backgroundColor: "transparent"
   },
   loaderOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -479,22 +225,11 @@ const styles = StyleSheet.create({
   closeButtonInner: {
     width: 36,
     height: 36,
-    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center"
   },
-  playerControlFocused: {
-    borderWidth: 2,
-    borderColor: "#22C55E",
-    backgroundColor: "rgba(34,197,94,0.18)"
-  },
   controlButtonDisabled: {
     opacity: 0.45
-  },
-  tvControlWakeLayer: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 20,
-    backgroundColor: "transparent"
   },
   subtitleMenuBackdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -709,2189 +444,13 @@ function PlayerLoadingOverlay({
   );
 }
 
-type WebViewProviderSource = "hdfilm" | "dizipal";
-
-// ---------------------------------------------------------------------------
-// Injected player automation
-// ---------------------------------------------------------------------------
-const PLAYER_WEBVIEW_USER_AGENT =
-  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
-
-const BLOCKED_PLAYER_NAVIGATION_PATTERNS = [
-  "://ad.",
-  ".ad.",
-  "/ad/",
-  "/ads/",
-  "/advert",
-  "/banner",
-  "/popunder",
-  "/popup",
-  "/preroll",
-  "/vast",
-  "/vpaid",
-  "/ima3",
-  "doubleclick",
-  "googlesyndication",
-  "googletagservices",
-  "googletagmanager",
-  "googleadservices",
-  "googleads",
-  "google-analytics",
-  "adservice",
-  "adserver",
-  "adsystem",
-  "adnxs",
-  "adsterra",
-  "ad-maven",
-  "adcash",
-  "clickadu",
-  "hilltopads",
-  "onclickads",
-  "yllix",
-  "adform",
-  "aniview",
-  "popads",
-  "popcash",
-  "propellerads",
-  "exoclick",
-  "trafficjunky",
-  "juicyads",
-  "onclick",
-  "revcontent",
-  "taboola",
-  "outbrain",
-  "mgid",
-  "aj2204",
-  "market://",
-  "intent://",
-  "play.google.com",
-];
-
-const TRUSTED_PLAYER_FRAME_PATTERNS = [
-  "hdfilmcehennemi",
-  "dizipal",
-  "rplayer",
-  "rapidrame",
-  "vidmoly",
-  "closeload",
-  "fastplayer",
-  "filemoon",
-  "voe.",
-  "voe.sx",
-  "streamwish",
-  "dood",
-  "doodstream",
-  "d000d",
-  "mixdrop",
-  "streamtape",
-  "ok.ru",
-  "uqload",
-  "vidoza",
-  "streamsb",
-  "sbembed",
-  "filelions",
-  "luluvdo",
-  "sendvid",
-  "streamruby",
-  "upstream",
-  "mcloud",
-  "vidcloud",
-  "govid",
-  "hls",
-  "m3u8",
-];
-
-const PLAYER_PASSIVE_ASSET_PATTERN =
-  /\.(m3u8|mp4|m4v|webm|mov|ts|m4s|vtt|srt|png|jpe?g|gif|webp|svg|css|js|woff2?|ttf|otf)(?:[?#].*)?$/i;
-
-function isHttpUrl(url: string) {
-  return /^https?:\/\//i.test(url);
-}
-
-function getUrlHost(url: string) {
-  try {
-    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-function isBlockedPlayerNavigation(url: string) {
-  const normalized = url.toLowerCase();
-  return BLOCKED_PLAYER_NAVIGATION_PATTERNS.some((pattern) => normalized.includes(pattern));
-}
-
-function isTrustedPlayerFrameUrl(url: string) {
-  const normalized = url.toLowerCase();
-  return TRUSTED_PLAYER_FRAME_PATTERNS.some((pattern) => normalized.includes(pattern));
-}
-
-function isLikelyPassivePlayerAsset(url: string) {
-  return PLAYER_PASSIVE_ASSET_PATTERN.test(url);
-}
-
-function isLikelyUnknownDocumentNavigation(url: string) {
-  try {
-    const parsed = new URL(url);
-    const path = parsed.pathname.toLowerCase();
-    if (isLikelyPassivePlayerAsset(url)) return false;
-    if (/\.(html?|php|aspx?)(?:$|[?#])/i.test(path)) return true;
-    if (!/\.[a-z0-9]{2,5}$/i.test(path)) return true;
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-function shouldAllowPlayerWebViewRequest(req: { url: string; isTopFrame?: boolean }, initialUrl: string) {
-  const url = req.url;
-
-  if (!url || url.includes("about:blank") || url.startsWith("blob:")) {
-    return true;
-  }
-
-  if (!isHttpUrl(url)) {
-    return false;
-  }
-
-  if (isBlockedPlayerNavigation(url)) {
-    return false;
-  }
-
-  const initialHost = getUrlHost(initialUrl);
-  const nextHost = getUrlHost(url);
-
-  if (!req.isTopFrame) {
-    if (initialHost && nextHost === initialHost) return true;
-    if (isTrustedPlayerFrameUrl(url)) return true;
-    if (isLikelyPassivePlayerAsset(url)) return true;
-    return !isLikelyUnknownDocumentNavigation(url);
-  }
-
-  return Boolean(
-    initialHost &&
-      nextHost &&
-      (nextHost === initialHost || isTrustedPlayerFrameUrl(url))
-  );
-}
-
-/**
- * Remote-control bridge for the WebView's HTML video element on Android TV.
- *
- * Background: TV playback runs in the WebView because the same Chromium engine
- * that the phone uses already solves Cloudflare's JS challenge and feeds the
- * stream into JWPlayer / HLS.js. We tried switching to the native VideoView
- * after sniffing the .m3u8 URL but modern players use Media Source Extensions
- * (the video element's `src` is a blob://), so the original network URL never
- * surfaces in a way that ExoPlayer could replay with the right cookies.
- *
- * Pragmatic answer: keep the WebView as the player, drive its <video> element
- * directly from the React Native side. PlayerScreen forwards D-pad events
- * (Center=toggle, Left/Right=seek ±10s, Up/Down=±60s) by injecting JS — no
- * focus model required, no stream extraction, no extra moving parts.
- */
-const TV_VIDEO_TOGGLE_PLAY_JS = `
-(function() {
-  var v = document.querySelector('video');
-  if (!v) return true;
-  if (v.paused) { v.play().catch(function(){}); } else { v.pause(); }
-  if (window.ReactNativeWebView) {
-    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_toggle', paused: v.paused }));
-  }
-  return true;
-})();
-true;
-`;
-
-const PLAYER_AD_GUARD_SCRIPT = `
-(function() {
-  'use strict';
-
-  var blockedPatterns = ${JSON.stringify(BLOCKED_PLAYER_NAVIGATION_PATTERNS)};
-  var trustedFramePatterns = ${JSON.stringify(TRUSTED_PLAYER_FRAME_PATTERNS)};
-  var passiveAssetPattern = ${PLAYER_PASSIVE_ASSET_PATTERN};
-  var currentHost = '';
-
-  try {
-    currentHost = window.location.hostname.replace(/^www\\./i, '').toLowerCase();
-  } catch (e) {}
-
-  function normalize(value) {
-    return String(value || '').toLowerCase();
-  }
-
-  function isBlockedUrl(value) {
-    var url = normalize(value);
-    if (!url) return false;
-    return blockedPatterns.some(function(pattern) { return url.indexOf(pattern) !== -1; });
-  }
-
-  function isTrustedPlayerUrl(value) {
-    var url = normalize(value);
-    if (!url) return false;
-    return trustedFramePatterns.some(function(pattern) { return url.indexOf(pattern) !== -1; });
-  }
-
-  function getHost(value) {
-    try {
-      return new URL(value, window.location.href).hostname.replace(/^www\\./i, '').toLowerCase();
-    } catch (e) {
-      return '';
-    }
-  }
-
-  function isSameHostUrl(value) {
-    var host = getHost(value);
-    return Boolean(host && currentHost && host === currentHost);
-  }
-
-  function isPassiveAssetUrl(value) {
-    return passiveAssetPattern.test(String(value || ''));
-  }
-
-  function isPlayerContainer(el) {
-    if (!el || !el.closest) return false;
-    return Boolean(el.closest(
-      '#player, #playerbase, #mainPlayer, #playerContent, .jwplayer, .jw-wrapper, .jw-media, .jw-controls, .jw-overlays, .video-js, .vjs-control-bar, .plyr, [class*="player"], .kePlayerCont, .film-player, .video-container'
-    ));
-  }
-
-  function isVisibleEnough(el) {
-    try {
-      var rect = el.getBoundingClientRect();
-      var style = window.getComputedStyle(el);
-      return rect.width >= 120 && rect.height >= 80 && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0.05;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function isLikelyPlayerFrame(frame) {
-    var src = frame.getAttribute('src') || '';
-    if (isTrustedPlayerUrl(src) || isSameHostUrl(src)) return true;
-    if (isPlayerContainer(frame) && isVisibleEnough(frame)) return true;
-    return false;
-  }
-
-  function silenceMedia(media, removeSource) {
-    if (!media) return;
-    try {
-      media.muted = true;
-      media.defaultMuted = true;
-      media.volume = 0;
-      media.pause();
-      if (removeSource) {
-        media.removeAttribute('autoplay');
-        media.removeAttribute('src');
-        Array.prototype.forEach.call(media.querySelectorAll('source'), function(source) {
-          source.removeAttribute('src');
-        });
-        if (typeof media.load === 'function') media.load();
-      }
-    } catch (e) {}
-  }
-
-  function neutralizeElement(el) {
-    if (!el || el.__streamboxNeutralized) return;
-    el.__streamboxNeutralized = true;
-    try {
-      if (el.tagName === 'IFRAME') {
-        el.setAttribute('src', 'about:blank');
-        el.removeAttribute('srcdoc');
-      }
-      el.removeAttribute('href');
-      el.removeAttribute('target');
-      el.removeAttribute('onclick');
-      el.style.setProperty('display', 'none', 'important');
-      el.style.setProperty('visibility', 'hidden', 'important');
-      el.style.setProperty('pointer-events', 'none', 'important');
-      el.style.setProperty('opacity', '0', 'important');
-      el.onclick = function(event) {
-        if (event) {
-          event.preventDefault();
-          event.stopPropagation();
-          if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-        }
-        return false;
-      };
-    } catch (e) {}
-  }
-
-  window.open = function() { return null; };
-  try {
-    var originalAssign = window.location.assign.bind(window.location);
-    var originalReplace = window.location.replace.bind(window.location);
-    window.location.assign = function(url) {
-      if (isBlockedUrl(url)) return undefined;
-      return originalAssign(url);
-    };
-    window.location.replace = function(url) {
-      if (isBlockedUrl(url)) return undefined;
-      return originalReplace(url);
-    };
-  } catch (e) {}
-
-  function blockClickIfNeeded(event) {
-    var target = event.target;
-    if (target && target.closest && target.closest('#player, #playerbase, #mainPlayer, #playerContent, .jwplayer, .jw-controls, .jw-controlbar, .jw-settings-menu, .video-js, .vjs-control-bar, .plyr, .plyr__controls')) {
-      return true;
-    }
-    var link = target && target.closest ? target.closest('a[href], area[href], [onclick], [data-href], [data-url], [data-link]') : null;
-    var href = link ? (link.href || link.getAttribute('data-href') || link.getAttribute('data-url') || link.getAttribute('data-link') || '') : '';
-    var targetName = link ? normalize(link.getAttribute('target')) : '';
-    var rel = link ? normalize(link.getAttribute('rel')) : '';
-    var marker = link ? normalize(href + ' ' + link.id + ' ' + link.className + ' ' + link.getAttribute('onclick')) : '';
-
-    if (link && (targetName === '_blank' || rel.indexOf('sponsored') !== -1 || isBlockedUrl(marker))) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-      neutralizeElement(link);
-      return false;
-    }
-    return true;
-  }
-
-  ['click', 'auxclick', 'touchend', 'pointerup'].forEach(function(eventName) {
-    document.addEventListener(eventName, blockClickIfNeeded, true);
-  });
-
-  function guardMedia(root) {
-    var doc = root || document;
-    try {
-      Array.prototype.forEach.call(doc.querySelectorAll('audio, video'), function(media) {
-        var marker = normalize(media.id + ' ' + media.className + ' ' + media.src + ' ' + (media.currentSrc || ''));
-        var hiddenOrTiny = !isVisibleEnough(media);
-        var outsidePlayer = !isPlayerContainer(media);
-        var trustedMediaSource = isTrustedPlayerUrl(marker) || marker.indexOf('blob:') !== -1;
-        var looksLikeAd = isBlockedUrl(marker) || marker.indexOf('reklam') !== -1 || marker.indexOf('advert') !== -1 || marker.indexOf('preroll') !== -1 || marker.indexOf('vast') !== -1 || marker.indexOf('vpaid') !== -1;
-
-        if (media.tagName === 'AUDIO' || looksLikeAd || (hiddenOrTiny && outsidePlayer && !trustedMediaSource)) {
-          silenceMedia(media, looksLikeAd || (hiddenOrTiny && outsidePlayer && !trustedMediaSource));
-          return;
-        }
-
-        if (media.duration && media.duration < 45 && media.playbackRate < 8 && !isPlayerContainer(media)) {
-          media.playbackRate = 16;
-        }
-      });
-    } catch (e) {}
-  }
-
-  function guardNodes(root) {
-    var doc = root || document;
-    try {
-      Array.prototype.forEach.call(doc.querySelectorAll('iframe, embed, object, a, div, section, aside'), function(el) {
-        var marker = normalize(el.id + ' ' + el.className + ' ' + (el.getAttribute('src') || '') + ' ' + (el.getAttribute('href') || ''));
-        if (el.tagName === 'IFRAME') {
-          var src = el.getAttribute('src') || '';
-          var shouldKeep = isLikelyPlayerFrame(el) || isPassiveAssetUrl(src);
-          var shouldRemove = !shouldKeep || isBlockedUrl(marker) || marker.indexOf('reklam') !== -1 || marker.indexOf('advert') !== -1 || marker.indexOf('preroll') !== -1;
-          if (shouldRemove) neutralizeElement(el);
-          return;
-        }
-
-        if (isBlockedUrl(marker) || marker.indexOf('reklam') !== -1 || marker.indexOf('advert') !== -1 || marker.indexOf('preroll') !== -1) {
-          neutralizeElement(el);
-        }
-      });
-    } catch (e) {}
-  }
-
-  function guard() {
-    guardMedia(document);
-    guardNodes(document);
-    try {
-      Array.prototype.forEach.call(document.querySelectorAll('iframe'), function(frame) {
-        if (!isLikelyPlayerFrame(frame)) {
-          neutralizeElement(frame);
-          return;
-        }
-        try {
-          var frameDoc = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
-          if (frameDoc) {
-            guardMedia(frameDoc);
-            guardNodes(frameDoc);
-          }
-        } catch (e) {}
-      });
-    } catch (e) {}
-  }
-
-  guard();
-  window.addEventListener('load', guard, true);
-  setInterval(guard, 800);
-  if (document.documentElement) {
-    new MutationObserver(guard).observe(document.documentElement, { childList: true, subtree: true });
-  }
-
-  true;
-})();
-`;
-
-const PLAYER_STOP_MEDIA_SCRIPT = `
-(function() {
-  try {
-    Array.prototype.forEach.call(document.querySelectorAll('audio, video'), function(media) {
-      try {
-        media.muted = true;
-        media.defaultMuted = true;
-        media.volume = 0;
-        media.pause();
-        media.removeAttribute('autoplay');
-        media.removeAttribute('src');
-        Array.prototype.forEach.call(media.querySelectorAll('source'), function(source) {
-          source.removeAttribute('src');
-        });
-        if (typeof media.load === 'function') media.load();
-      } catch (e) {}
-    });
-    Array.prototype.forEach.call(document.querySelectorAll('iframe'), function(frame) {
-      try {
-        frame.setAttribute('src', 'about:blank');
-        frame.removeAttribute('srcdoc');
-      } catch (e) {}
-    });
-  } catch (e) {}
-  true;
-})();
-`;
-
-const DIZIPAL_INJECT_BEFORE = `
-(function() {
-  'use strict';
-
-  ${PLAYER_AD_GUARD_SCRIPT}
-
-  window.open = function() { return null; };
-
-  var adDomains = ${JSON.stringify(BLOCKED_PLAYER_NAVIGATION_PATTERNS)};
-  var _xhrOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function(m, url) {
-    if (adDomains.some(function(domain) { return String(url).toLowerCase().includes(domain); })) return;
-    return _xhrOpen.apply(this, arguments);
-  };
-  var _fetch = window.fetch;
-  window.fetch = function(url) {
-    if (adDomains.some(function(domain) { return String(url).toLowerCase().includes(domain); })) {
-      return Promise.reject(new Error('blocked'));
-    }
-    return _fetch.apply(this, arguments);
-  };
-
-  var baseStyle = document.createElement('style');
-  baseStyle.id = 'app-player-base';
-  baseStyle.textContent = [
-    'html, body { background: #000 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }',
-    'body { min-height: 100vh !important; }'
-  ].join('\\n');
-  (document.head || document.documentElement).appendChild(baseStyle);
-
-  true;
-})();
-`;
-
-function getEmbedInjectBefore(fit: 'contain' | 'cover' = 'contain') {
-  return `
-(function() {
-  'use strict';
-  ${PLAYER_AD_GUARD_SCRIPT}
-  window.open = function() { return null; };
-  var baseStyle = document.getElementById('app-fit-style');
-  if (!baseStyle) {
-    baseStyle = document.createElement('style');
-    baseStyle.id = 'app-fit-style';
-    (document.head || document.documentElement).appendChild(baseStyle);
-  }
-  baseStyle.textContent = [
-    '*, *::before, *::after { box-sizing: border-box !important; }',
-    'html, body { background: #000 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; width: 100vw !important; height: 100vh !important; }',
-    '.first-notification, .modals, .pppx, .rek, .cc-overlay, [onclick*="kapasas"], [id*="google_ads"], ins.adsbygoogle { display: none !important; }',
-    '#player, #playerbase, .jwplayer, .jw-wrapper, .jw-media, video { width: 100vw !important; height: 100vh !important; position: fixed !important; top: 0 !important; left: 0 !important; z-index: 9990 !important; }',
-    'video { object-fit: ${fit} !important; visibility: visible !important; opacity: 1 !important; z-index: 9991 !important; }',
-    '.jw-controls, .jw-overlays, .vjs-control-bar, .plyr__controls { z-index: 9999 !important; visibility: visible !important; opacity: 1 !important; }',
-    '.jw-aspect { padding-top: 0 !important; }'
-  ].join('\\n');
-  true;
-})();
-`;
-}
-
-function getEmbedInjectAfter(fit: 'contain' | 'cover' = 'contain') {
-  return `
-(function() {
-  'use strict';
-  var readySent = false;
-  var notFoundSent = false;
-  var readyFallbackTimer = null;
-
-  function postReady(reason) {
-    if (readySent || notFoundSent) return;
-    readySent = true;
-    if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_ready', reason: reason }));
-    }
-  }
-
-  function cleanup() {
-    var selectors = ['.first-notification', '.modals', '.pppx', '.rek', '.cc-overlay', '[onclick*="kapasas"]', '[class*="reklam"]', '.reklam_x', '.rek_close'];
-    selectors.forEach(function(sel) {
-      document.querySelectorAll(sel).forEach(function(el) { el.style.setProperty('display', 'none', 'important'); });
-    });
-
-    if (typeof window.fireload === 'function' && !window.__fireloadCalled) {
-      window.__fireloadCalled = true;
-      try { window.fireload(); } catch(e) {}
-    }
-    if (typeof window.kapasas === 'function') {
-      try { window.kapasas(); } catch(e) {}
-    }
-  }
-
-  function isInsidePlayerControls(el) {
-    // Returns true if the element is inside JWPlayer/VJS control bars
-    // (not the big center play overlay, but the bottom bar controls).
-    var cur = el;
-    while (cur && cur !== document.body) {
-      var cls = (cur.className || '').toString();
-      if (cls.indexOf('jw-controlbar') !== -1 || cls.indexOf('jw-settings') !== -1 ||
-          cls.indexOf('vjs-control-bar') !== -1) {
-        return true;
-      }
-      cur = cur.parentElement;
-    }
-    return false;
-  }
-
-  function clickPlaybackPrompts(doc) {
-    if (!doc) return;
-    // Click play overlays and start buttons, but NEVER touch JWPlayer/VJS control bar internals
-    var targets = doc.querySelectorAll(
-      'button, [role="button"], a, div, span, .play-button, .vjs-big-play-button, ' +
-      '.jw-display-icon-container, .plyr__control--overlaid, #playerCover, .player-cover-overlay'
-    );
-    targets.forEach(function(btn) {
-      if (btn.__sbClicked) return;
-      if (isInsidePlayerControls(btn)) return;
-
-      var text = (btn.textContent || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-      var cls = (btn.className || '').toString().toLowerCase();
-      var id = (btn.id || '').toString().toLowerCase();
-      
-      var shouldClick =
-        cls.indexOf('jw-display-icon') !== -1 ||
-        cls.indexOf('vjs-big-play') !== -1 ||
-        cls.indexOf('play-button') !== -1 ||
-        cls.indexOf('plyr__control--overlaid') !== -1 ||
-        cls.indexOf('cover') !== -1 ||
-        id === 'playercover' || id === 'skipbtn' ||
-        text.indexOf('videoyu') !== -1 ||
-        text.indexOf('baslat') !== -1 ||
-        text.indexOf('izle') !== -1 ||
-        text.indexOf('tikla') !== -1 ||
-        text.indexOf('gec') !== -1 ||
-        text.indexOf('skip') !== -1 ||
-        text === 'play' || text === 'start';
-
-      if (shouldClick) {
-        btn.__sbClicked = true;
-        btn.click();
-      }
-    });
-
-    try {
-      doc.querySelectorAll('iframe').forEach(function(ifrm) {
-        var ifrmDoc = ifrm.contentDocument || (ifrm.contentWindow ? ifrm.contentWindow.document : null);
-        if (ifrmDoc) clickPlaybackPrompts(ifrmDoc);
-      });
-    } catch(e) {}
-  }
-
-  function showPlayerArea() {
-    var playerItems = document.querySelectorAll('video, iframe, #player, #playerbase, .jwplayer, .video-js, .plyr');
-    playerItems.forEach(function(el) {
-      var curr = el;
-      while (curr && curr !== document.body) {
-        curr.style.setProperty('display', 'block', 'important');
-        curr.style.setProperty('visibility', 'visible', 'important');
-        curr.style.setProperty('opacity', '1', 'important');
-        curr = curr.parentElement;
-      }
-    });
-  }
-
-  function bindVideo(video) {
-    if (!video || video.__bound) return;
-    video.__bound = true;
-    ['playing', 'canplay', 'loadeddata'].forEach(function(evt) {
-      video.addEventListener(evt, function() { postReady('embed-video-' + evt); });
-    });
-    if (video.readyState >= 2) postReady('embed-video-ready');
-
-    // Force visibility and fit
-    video.style.setProperty('object-fit', '${fit}', 'important');
-    video.style.setProperty('visibility', 'visible', 'important');
-    video.style.setProperty('opacity', '1', 'important');
-  }
-
-  function scanAndBind(doc) {
-    var root = doc || document;
-    root.querySelectorAll('video').forEach(bindVideo);
-    
-    try {
-      root.querySelectorAll('iframe').forEach(function(ifrm) {
-        var ifrmDoc = ifrm.contentDocument || (ifrm.contentWindow ? ifrm.contentWindow.document : null);
-        if (ifrmDoc) scanAndBind(ifrmDoc);
-      });
-    } catch(e) {}
-
-    if (root === document && typeof window.jwplayer === 'function') {
-      try {
-        var jw = window.jwplayer();
-        if (jw && !jw.__bound && typeof jw.on === 'function') {
-          jw.__bound = true;
-          jw.on('play', function() { postReady('jwplayer-play'); });
-          jw.on('firstFrame', function() { postReady('jwplayer-firstFrame'); });
-        }
-        if (jw && typeof jw.getState === 'function' && jw.getState() === 'playing') {
-          postReady('jwplayer-state-playing');
-        }
-      } catch(e) {}
-    }
-  }
-
-  function forceResize() {
-    if (typeof window.jwplayer === 'function') {
-      try {
-        var jw = window.jwplayer();
-        if (jw && typeof jw.resize === 'function') jw.resize(window.innerWidth, window.innerHeight);
-      } catch(e) {}
-    }
-  }
-
-  function monitor() {
-    cleanup();
-    scanAndBind(document);
-    // Only do aggressive actions before the player is ready.
-    // After readySent, stop interfering with the running player.
-    if (!readySent) {
-      clickPlaybackPrompts(document);
-      showPlayerArea();
-      forceResize();
-    }
-  }
-
-  monitor();
-  window.addEventListener('load', monitor);
-  setInterval(monitor, 1000);
-  new MutationObserver(monitor).observe(document.documentElement, { childList: true, subtree: true });
-
-  // Hard fallback: if we have a jwplayer or video on screen after 6s, just show it
-  setTimeout(function() {
-    if (!readySent) {
-      var p = document.querySelector('video, .jwplayer, #player, iframe');
-      if (p) postReady('embed-hard-fallback-6s');
-    }
-  }, 6000);
-
-  true;
-})();
-`;
-}
-
-function getInjectBefore(source: WebViewProviderSource, fit: 'contain' | 'cover' = 'contain') {
-  if (source === "dizipal") return DIZIPAL_INJECT_BEFORE;
-
-  // Dynamic HDF_INJECT_BEFORE to handle initial fit
-  return `
-(function() {
-  'use strict';
-  ${PLAYER_AD_GUARD_SCRIPT}
-  window.open = function() { return null; };
-  var adDomains = ${JSON.stringify(BLOCKED_PLAYER_NAVIGATION_PATTERNS)};
-  var _xhrOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function(m, url) {
-    if (adDomains.some(function(domain) { return String(url).toLowerCase().includes(domain); })) return;
-    return _xhrOpen.apply(this, arguments);
-  };
-  var _fetch = window.fetch;
-  window.fetch = function(url) {
-    if (adDomains.some(function(domain) { return String(url).toLowerCase().includes(domain); })) {
-      return Promise.reject(new Error('blocked'));
-    }
-    return _fetch.apply(this, arguments);
-  };
-
-  var hideStyle = document.createElement('style');
-  hideStyle.id = 'app-player-hide';
-  hideStyle.textContent = [
-    'html, body { background: #000 !important; overflow: hidden !important; margin: 0 !important; padding: 0 !important; }',
-    'body > *:not(script):not(style) { visibility: hidden !important; }'
-  ].join('\\n');
-  (document.head || document.documentElement).appendChild(hideStyle);
-
-  var fitStyle = document.createElement('style');
-  fitStyle.id = 'app-fit-style';
-  fitStyle.textContent = 'video { object-fit: ${fit} !important; }';
-  (document.head || document.documentElement).appendChild(fitStyle);
-
-  true;
-})();
-`;
-}
-
-function getInjectAfter(
-  source: WebViewProviderSource,
-  mediaType: "movie" | "tv",
-  fit: 'contain' | 'cover' = 'contain',
-  seasonNumber?: number,
-  episodeNumber?: number
-) {
-  return source === "dizipal"
-    ? getDizipalInjectAfter()
-    : getHdFilmInjectAfter(mediaType, fit, seasonNumber, episodeNumber);
-}
-
-function getHdFilmInjectAfter(mediaType: "movie" | "tv", fit: 'contain' | 'cover' = 'contain', seasonNumber?: number, episodeNumber?: number) {
-  return `
-(function() {
-  'use strict';
-
-  var isTv = ${mediaType === "tv"};
-  var targetSeason = ${seasonNumber || 1};
-  var targetEpisode = ${episodeNumber || 1};
-  var readySent = false;
-  var readyFallbackTimer = null;
-  var providerControlsVisible = false;
-  var providerControlsHideTimer = null;
-  var providerControlsLastPrimaryTapAt = 0;
-  var providerControlsLastToggleAt = 0;
-  var providerControlsAutoHideMs = 4400;
-  var visualFrameSeen = false;
-  var visualFrameWarningTimer = null;
-
-  function postToApp(type, payload) {
-    try {
-      if (!window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) return;
-      var message = { type: type };
-      if (payload) {
-        for (var key in payload) {
-          if (Object.prototype.hasOwnProperty.call(payload, key)) {
-            message[key] = payload[key];
-          }
-        }
-      }
-      window.ReactNativeWebView.postMessage(JSON.stringify(message));
-    } catch (e) {}
-  }
-
-  function markPlaybackReady(reason) {
-    if (readySent) return;
-    readySent = true;
-    if (readyFallbackTimer) clearTimeout(readyFallbackTimer);
-    postToApp('player_ready', { reason: reason });
-  }
-
-  function markVisualFrame(reason) {
-    visualFrameSeen = true;
-    if (visualFrameWarningTimer) {
-      clearTimeout(visualFrameWarningTimer);
-      visualFrameWarningTimer = null;
-    }
-    postToApp('player_visual_ready', { reason: reason });
-  }
-
-  function scheduleVisualFrameProbe(reason, delay) {
-    if (visualFrameSeen || visualFrameWarningTimer) return;
-    visualFrameWarningTimer = setTimeout(function() {
-      if (!visualFrameSeen) {
-        postToApp('player_black_screen_suspected', { reason: reason });
-      }
-    }, delay);
-  }
-
-  function scheduleReadyFallback(reason, delay) {
-    if (readySent) return;
-    if (readyFallbackTimer) clearTimeout(readyFallbackTimer);
-    readyFallbackTimer = setTimeout(function() {
-      markPlaybackReady(reason);
-    }, delay);
-  }
-
-  function bindVideo(video) {
-    if (!video || video.__streamboxBound) return;
-    video.__streamboxBound = true;
-
-    ['loadeddata', 'canplay', 'playing'].forEach(function(eventName) {
-      video.addEventListener(eventName, function() {
-        if (eventName === 'loadeddata' || eventName === 'canplay' || (video.videoWidth > 0 && video.videoHeight > 0)) {
-          markVisualFrame('video-' + eventName);
-        }
-        if (eventName === 'playing' || video.readyState >= 2) {
-          markPlaybackReady('video-' + eventName);
-        }
-      });
-    });
-
-    if (video.readyState >= 2 && !video.paused) {
-      if (video.videoWidth > 0 && video.videoHeight > 0) markVisualFrame('video-ready');
-      markPlaybackReady('video-ready');
-    } else if (video.readyState >= 2) {
-      if (video.videoWidth > 0 && video.videoHeight > 0) markVisualFrame('video-buffered');
-      scheduleReadyFallback('video-buffered', 900);
-    }
-  }
-
-  function bindKnownPlayerApis() {
-    try {
-      if (typeof window.jwplayer === 'function') {
-        var jw = window.jwplayer();
-        if (jw && !jw.__streamboxBound && typeof jw.on === 'function') {
-          jw.__streamboxBound = true;
-          jw.on('play', function() {
-            markPlaybackReady('jwplayer-play');
-            scheduleVisualFrameProbe('jwplayer-play-without-first-frame', 8500);
-          });
-          jw.on('buffer', function() {
-            scheduleReadyFallback('jwplayer-buffer', 1200);
-            scheduleVisualFrameProbe('jwplayer-buffer-without-first-frame', 10500);
-          });
-          jw.on('firstFrame', function() {
-            markVisualFrame('jwplayer-first-frame');
-            markPlaybackReady('jwplayer-first-frame');
-          });
-        }
-        if (jw && typeof jw.getState === 'function') {
-          var state = jw.getState();
-          if (state === 'playing') {
-            markPlaybackReady('jwplayer-state-playing');
-            scheduleVisualFrameProbe('jwplayer-state-playing-without-first-frame', 8500);
-          }
-          if (state === 'buffering') {
-            scheduleReadyFallback('jwplayer-state-buffering', 1200);
-            scheduleVisualFrameProbe('jwplayer-state-buffering-without-first-frame', 10500);
-          }
-        }
-      }
-    } catch (e) {}
-  }
-
-  function getProviderMenuSelector() {
-    return [
-      '.jw-settings-menu',
-      '.jw-settings-submenu',
-      '.jw-settings-topbar',
-      '.jw-settings-content-item',
-      '.jw-settings-item',
-      '.jw-settings-close',
-      '.jw-submenu',
-      '.jw-option',
-      '.vjs-menu',
-      '.vjs-menu-content',
-      '.plyr__menu',
-      '.plyr__menu__container',
-      '[role="menu"]',
-      '[role="menuitem"]'
-    ].join(', ');
-  }
-
-  function getProviderMenuActionSelector() {
-    return [
-      '.jw-settings-content-item',
-      '.jw-settings-item',
-      '.jw-settings-close',
-      '.jw-submenu',
-      '.jw-option',
-      '.jw-settings-topbar .jw-icon',
-      '.jw-settings-menu button',
-      '.jw-settings-menu [role="button"]',
-      '.jw-settings-menu [role="menuitem"]',
-      '.jw-settings-menu [tabindex]',
-      '.jw-settings-submenu button',
-      '.jw-settings-submenu [role="button"]',
-      '.jw-settings-submenu [role="menuitem"]',
-      '.jw-settings-submenu [tabindex]',
-      '.vjs-menu-item',
-      '.vjs-menu button',
-      '.plyr__menu__container button',
-      '.plyr__menu [role="menuitem"]'
-    ].join(', ');
-  }
-
-  function getProviderControlSelector() {
-    return [
-      '.jw-controls',
-      '.jw-controlbar',
-      '.jw-icon',
-      '.jw-button-container',
-      '.jw-slider-time',
-      '.jw-slider-volume',
-      '.jw-display-icon-container',
-      '.jw-settings-menu',
-      '.jw-settings-submenu',
-      '.jw-settings-topbar',
-      '.jw-settings-content-item',
-      '.jw-settings-item',
-      '.jw-settings-close',
-      '.jw-submenu',
-      '.jw-option',
-      '.vjs-control-bar',
-      '.vjs-control',
-      '.vjs-menu',
-      '.vjs-menu-content',
-      '.plyr__controls',
-      '.plyr__control',
-      '.plyr__menu',
-      '.plyr__menu__container',
-      '[role="menu"]',
-      '[role="menuitem"]'
-    ].join(', ');
-  }
-
-  function hasOpenProviderMenu(doc) {
-    try {
-      var rootDoc = doc || document;
-      return Array.prototype.some.call(rootDoc.querySelectorAll(getProviderMenuSelector()), function(menu) {
-        var style = rootDoc.defaultView.getComputedStyle(menu);
-        var rect = menu.getBoundingClientRect();
-        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0.05 && rect.width > 20 && rect.height > 20;
-      });
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function setProviderControlsVisible(doc, visible, autoHide) {
-    try {
-      var rootDoc = doc || document;
-      if (!visible && hasOpenProviderMenu(rootDoc)) {
-        return;
-      }
-      providerControlsVisible = visible;
-      rootDoc.__streamboxControlsVisible = visible;
-      if (rootDoc === document) document.__streamboxControlsVisible = visible;
-      if (providerControlsHideTimer) {
-        clearTimeout(providerControlsHideTimer);
-        providerControlsHideTimer = null;
-      }
-
-      rootDoc.querySelectorAll('.jwplayer').forEach(function(player) {
-        if (visible) {
-          player.classList.remove('jw-flag-user-inactive');
-          player.classList.remove('jw-flag-controls-hidden');
-          player.classList.add('jw-flag-user-active');
-        } else {
-          player.classList.remove('jw-flag-user-active');
-          player.classList.add('jw-flag-user-inactive');
-        }
-      });
-      rootDoc.querySelectorAll('.jw-controls, .jw-controlbar, .jw-overlays, .jw-display, .jw-display-icon-container, .vjs-control-bar, .plyr__controls').forEach(function(el) {
-        if (visible) {
-          el.style.setProperty('visibility', 'visible', 'important');
-          el.style.setProperty('opacity', '1', 'important');
-          el.style.setProperty('pointer-events', 'auto', 'important');
-        } else {
-          el.style.setProperty('visibility', 'hidden', 'important');
-          el.style.setProperty('opacity', '0', 'important');
-          el.style.setProperty('pointer-events', 'none', 'important');
-        }
-      });
-      if (visible) {
-        rootDoc.querySelectorAll(getProviderControlSelector()).forEach(function(el) {
-          el.style.setProperty('pointer-events', 'auto', 'important');
-        });
-      }
-      if (visible && rootDoc === document && typeof window.jwplayer === 'function') {
-        try {
-          var jw = window.jwplayer();
-          if (jw && typeof jw.setControls === 'function') jw.setControls(true);
-        } catch (e) {}
-      }
-
-      if (visible && autoHide) {
-        providerControlsHideTimer = setTimeout(function() {
-          setProviderControlsVisible(rootDoc, false, false);
-        }, providerControlsAutoHideMs);
-      }
-    } catch (e) {}
-  }
-
-  function shouldHandleProviderTap(eventName) {
-    var now = Date.now();
-    if (eventName === 'click' && now - providerControlsLastPrimaryTapAt < 650) {
-      return false;
-    }
-    if (eventName !== 'click') {
-      if (now - providerControlsLastPrimaryTapAt < 120) {
-        return false;
-      }
-      providerControlsLastPrimaryTapAt = now;
-    }
-    return true;
-  }
-
-  function getProviderEventPoint(event) {
-    try {
-      var touch = event.changedTouches && event.changedTouches.length ? event.changedTouches[0] : null;
-      if (!touch && event.touches && event.touches.length) touch = event.touches[0];
-      return {
-        x: touch ? touch.clientX : event.clientX,
-        y: touch ? touch.clientY : event.clientY
-      };
-    } catch (e) {
-      return { x: null, y: null };
-    }
-  }
-
-  function getProviderActionTarget(node) {
-    if (!node || !node.closest) return node;
-    return node.closest([
-      'button',
-      'a[href]',
-      '[role="button"]',
-      '[role="menuitem"]',
-      '.jw-settings-content-item',
-      '.jw-settings-item',
-      '.jw-settings-close',
-      '.jw-submenu',
-      '.jw-option',
-      '.jw-icon',
-      '.jw-button-container',
-      '.vjs-control',
-      '.vjs-menu-item',
-      '.plyr__control',
-      '.plyr__menu__container button',
-      '[tabindex]',
-      '[aria-label]',
-      '[title]'
-    ].join(', ')) || node;
-  }
-
-  function findProviderActionFromPoint(rootDoc, event, selector) {
-    try {
-      var point = getProviderEventPoint(event);
-      if (point.x == null || point.y == null || !rootDoc.elementsFromPoint) return null;
-      var stack = rootDoc.elementsFromPoint(point.x, point.y);
-      for (var i = 0; i < stack.length; i++) {
-        var hit = stack[i];
-        if (!hit || !hit.closest) continue;
-        var providerNode = hit.closest(selector);
-        if (providerNode) return getProviderActionTarget(providerNode);
-      }
-      var candidates = rootDoc.querySelectorAll(selector);
-      for (var j = 0; j < candidates.length; j++) {
-        var candidate = candidates[j];
-        var style = rootDoc.defaultView.getComputedStyle(candidate);
-        var rect = candidate.getBoundingClientRect();
-        if (
-          style.display !== 'none' &&
-          style.visibility !== 'hidden' &&
-          Number(style.opacity || 1) > 0.05 &&
-          rect.width > 4 &&
-          rect.height > 4 &&
-          point.x >= rect.left &&
-          point.x <= rect.right &&
-          point.y >= rect.top &&
-          point.y <= rect.bottom
-        ) {
-          return getProviderActionTarget(candidate);
-        }
-      }
-    } catch (e) {}
-    return null;
-  }
-
-  function dispatchProviderPointerSequence(rootDoc, actionTarget, point) {
-    var win = rootDoc.defaultView || window;
-    var eventInit = {
-      bubbles: true,
-      cancelable: true,
-      view: win,
-      clientX: point && point.x != null ? point.x : 0,
-      clientY: point && point.y != null ? point.y : 0,
-      screenX: point && point.x != null ? point.x : 0,
-      screenY: point && point.y != null ? point.y : 0
-    };
-    try {
-      if (win.PointerEvent) {
-        actionTarget.dispatchEvent(new win.PointerEvent('pointerdown', Object.assign({}, eventInit, { pointerId: 1, pointerType: 'touch', isPrimary: true })));
-        actionTarget.dispatchEvent(new win.PointerEvent('pointerup', Object.assign({}, eventInit, { pointerId: 1, pointerType: 'touch', isPrimary: true })));
-      }
-    } catch (e) {}
-    try {
-      actionTarget.dispatchEvent(new win.MouseEvent('mousedown', eventInit));
-      actionTarget.dispatchEvent(new win.MouseEvent('mouseup', eventInit));
-      actionTarget.dispatchEvent(new win.MouseEvent('click', eventInit));
-    } catch (e) {
-      try {
-        if (typeof actionTarget.click === 'function') actionTarget.click();
-      } catch (err) {}
-    }
-  }
-
-  function relayProviderClick(rootDoc, event, actionTarget) {
-    if (!actionTarget || actionTarget.__streamboxRelayingProviderClick) return false;
-    try {
-      var point = getProviderEventPoint(event);
-      actionTarget.__streamboxRelayingProviderClick = true;
-      setProviderControlsVisible(rootDoc, true, false);
-      if (event.cancelable !== false && event.preventDefault) event.preventDefault();
-      if (event.stopPropagation) event.stopPropagation();
-      if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-      setTimeout(function() {
-        try {
-          dispatchProviderPointerSequence(rootDoc, actionTarget, point);
-        } catch (e) {}
-        setTimeout(function() {
-          try { actionTarget.__streamboxRelayingProviderClick = false; } catch (e) {}
-        }, 180);
-      }, 0);
-      try {
-        if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_tap' }));
-        }
-      } catch (e) {}
-      return true;
-    } catch (e) {
-      try { actionTarget.__streamboxRelayingProviderClick = false; } catch (err) {}
-      return false;
-    }
-  }
-
-  function bindProviderControlTapBridge(doc) {
-    try {
-      var rootDoc = doc || document;
-      if (rootDoc.__streamboxControlTapBridgeBound) return;
-      rootDoc.__streamboxControlTapBridgeBound = true;
-      var tapEvents = window.PointerEvent ? ['pointerup', 'click'] : ['touchend', 'click'];
-      tapEvents.forEach(function(eventName) {
-        rootDoc.addEventListener(eventName, function(event) {
-          if (!shouldHandleProviderTap(eventName)) return;
-          var target = event.target;
-          var directMenuAction = target && target.closest ? target.closest(getProviderMenuActionSelector()) : null;
-          if (directMenuAction) {
-            setProviderControlsVisible(rootDoc, true, false);
-            try {
-              if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_tap' }));
-              }
-            } catch (e) {}
-            return;
-          }
-          var menuAction = null;
-          if (hasOpenProviderMenu(rootDoc)) {
-            menuAction = findProviderActionFromPoint(rootDoc, event, getProviderMenuActionSelector());
-          }
-          if (!menuAction && target && target.closest) {
-            var targetMenu = target.closest(getProviderMenuActionSelector());
-            if (targetMenu) menuAction = getProviderActionTarget(targetMenu);
-          }
-          if (menuAction && relayProviderClick(rootDoc, event, menuAction)) {
-            return;
-          }
-          if (target && target.closest && target.closest(getProviderControlSelector())) {
-            setProviderControlsVisible(rootDoc, true, true);
-            try {
-              if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_tap' }));
-              }
-            } catch (e) {}
-            return;
-          }
-          if (target && target.closest && target.closest('a[href], [onclick], [data-href], [data-url], [data-link]')) {
-            return;
-          }
-          var now = Date.now();
-          if (now - providerControlsLastToggleAt < 180) return;
-          providerControlsLastToggleAt = now;
-          var nextVisible = !(rootDoc === document ? providerControlsVisible : rootDoc.__streamboxControlsVisible);
-          rootDoc.__streamboxControlsVisible = nextVisible;
-          setProviderControlsVisible(rootDoc, nextVisible, nextVisible);
-          try {
-            if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'player_tap' }));
-            }
-          } catch (e) {}
-        }, true);
-      });
-    } catch (e) {}
-  }
-
-  function scanForReadyPlayers(rootDoc) {
-    var doc = rootDoc || document;
-    try {
-      Array.prototype.forEach.call(doc.querySelectorAll('video'), bindVideo);
-    } catch (e) {}
-    bindProviderControlTapBridge(doc);
-    bindKnownPlayerApis();
-  }
-
-  function getViewportSize(doc) {
-    var win = (doc && doc.defaultView) || window;
-    var root = doc && doc.documentElement;
-    var visualViewport = win.visualViewport;
-    var width = Math.round((visualViewport && visualViewport.width) || win.innerWidth || (root && root.clientWidth) || screen.width || 0);
-    var height = Math.round((visualViewport && visualViewport.height) || win.innerHeight || (root && root.clientHeight) || screen.height || 0);
-    return {
-      width: Math.max(1, width),
-      height: Math.max(1, height)
-    };
-  }
-
-  function syncViewportVars(doc) {
-    try {
-      var targetDoc = doc || document;
-      var size = getViewportSize(targetDoc);
-      var root = targetDoc.documentElement;
-      var body = targetDoc.body;
-      root.style.setProperty('--sb-player-width', size.width + 'px');
-      root.style.setProperty('--sb-player-height', size.height + 'px');
-      root.style.setProperty('width', size.width + 'px', 'important');
-      root.style.setProperty('height', size.height + 'px', 'important');
-      if (body) {
-        body.style.setProperty('width', size.width + 'px', 'important');
-        body.style.setProperty('height', size.height + 'px', 'important');
-      }
-
-      var win = targetDoc.defaultView || window;
-      if (!win.__streamboxViewportBound) {
-        win.__streamboxViewportBound = true;
-        win.addEventListener('resize', function() { syncViewportVars(targetDoc); }, { passive: true });
-        win.addEventListener('orientationchange', function() {
-          setTimeout(function() { syncViewportVars(targetDoc); }, 250);
-        }, { passive: true });
-        if (win.visualViewport) {
-          win.visualViewport.addEventListener('resize', function() { syncViewportVars(targetDoc); }, { passive: true });
-          win.visualViewport.addEventListener('scroll', function() { syncViewportVars(targetDoc); }, { passive: true });
-        }
-      }
-
-      if (targetDoc === document && typeof window.jwplayer === 'function') {
-        try {
-          var jw = window.jwplayer();
-          if (jw && typeof jw.resize === 'function') jw.resize(size.width, size.height);
-        } catch (e) {}
-      }
-    } catch (e) {}
-  }
-
-  function injectFullscreenStyleInFrame(frameDoc) {
-    try {
-      syncViewportVars(frameDoc);
-      if (frameDoc.getElementById('sb-fs-fix')) return;
-      var s = frameDoc.createElement('style');
-      s.id = 'sb-fs-fix';
-      s.textContent = [
-        'html, body { margin:0!important; padding:0!important; overflow:hidden!important; width:var(--sb-player-width,100vw)!important; height:var(--sb-player-height,100dvh)!important; background:#000!important; touch-action:manipulation!important; }',
-        'video { object-fit:${fit}!important; width:var(--sb-player-width,100vw)!important; height:var(--sb-player-height,100dvh)!important; position:absolute!important; top:0!important; left:0!important; }',
-        '.jw-aspect { padding-top:0!important; }',
-        '#player, #playerbase, .jwplayer, .jw-wrapper, .jw-media, .jw-preview, .video-js, .plyr { width:var(--sb-player-width,100vw)!important; height:var(--sb-player-height,100dvh)!important; position:absolute!important; top:0!important; left:0!important; }',
-        '.jw-settings-menu, .jw-settings-submenu, .jw-settings-menu *, .jw-settings-submenu *, .vjs-menu, .vjs-menu *, .plyr__menu, .plyr__menu * { pointer-events:auto!important; z-index:99999999!important; }',
-        '.jw-settings-menu, .jw-icon, .jw-button-container, .jw-slider-time, .vjs-control, .plyr__control { pointer-events:auto!important; }',
-        '.jw-controls-backdrop, .jw-controlbar { bottom:0!important; left:0!important; width:100%!important; z-index:10!important; pointer-events:auto!important; }',
-        '.jw-icon, .jw-button-container, .jw-settings-menu, .jw-slider-time, .vjs-control, .plyr__control { pointer-events:auto!important; }'
-      ].join('\\n');
-      (frameDoc.head || frameDoc.documentElement).appendChild(s);
-    } catch (e) {}
-  }
-
-  function inspectAccessibleFrame(frame) {
-    try {
-      var frameDoc = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
-      if (!frameDoc) return;
-      injectFullscreenStyleInFrame(frameDoc);
-      scanForReadyPlayers(frameDoc);
-    } catch (e) {}
-  }
-
-  function monitorIframes() {
-    Array.prototype.forEach.call(document.querySelectorAll('iframe'), function(frame) {
-      if (frame.__streamboxBound) return;
-      frame.__streamboxBound = true;
-      frame.addEventListener('load', function() {
-        inspectAccessibleFrame(frame);
-        scheduleReadyFallback('iframe-load', 2200);
-      });
-      inspectAccessibleFrame(frame);
-    });
-  }
-
-  function monitorPlayback() {
-    scanForReadyPlayers(document);
-    monitorIframes();
-  }
-
-  window.addEventListener('load', function() {
-    monitorPlayback();
-    scheduleReadyFallback('window-load', 5000);
-  });
-
-  if (isTv && window.location.href.includes('/dizi/') && !window.location.href.includes('bolum')) {
-    var navInterval = setInterval(function() {
-      var links = document.querySelectorAll('a[href*="bolum"]');
-      for (var i = 0; i < links.length; i++) {
-        var href = links[i].href.toLowerCase();
-        if (
-          (href.includes('sezon-' + targetSeason) || href.includes(targetSeason + '-sezon') || href.includes('sezon' + targetSeason)) &&
-          (href.includes('bolum-' + targetEpisode) || href.includes(targetEpisode + '-bolum') || href.includes('bolum' + targetEpisode))
-        ) {
-          clearInterval(navInterval);
-          window.location.href = links[i].href;
-          return;
-        }
-      }
-    }, 500);
-
-    setTimeout(function() { clearInterval(navInterval); }, 10000);
-    return;
-  }
-
-  var playerStyle = document.createElement('style');
-  playerStyle.id = 'app-player-show';
-  playerStyle.textContent = [
-    'html, body { background: #000 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; width: var(--sb-player-width, 100vw) !important; height: var(--sb-player-height, 100dvh) !important; touch-action: manipulation !important; -webkit-tap-highlight-color: transparent !important; }',
-    'header, footer, nav, aside, .sidebar, .comments, .related, .breadcrumb, .logo, [class*="header"]:not([class*="jw"]):not([class*="vjs"]), [class*="footer"]:not([class*="jw"]):not([class*="vjs"]), [class*="nav-"]:not([class*="jw"]):not([class*="vjs"]), [class*="sidebar"], [class*="comment"], [class*="social"], [class*="share"], [class*="bread"], [class*="cookie"], [class*="consent"], [class*="banner-"], .section-alt, .section-other, .rating, .detail-info, .film-info { display: none !important; }',
-    '.player-wrapper, .player-area, .film-player, #player, .ke_post_body { margin: 0 !important; padding: 0 !important; position: fixed !important; top: 0 !important; left: 0 !important; width: var(--sb-player-width, 100vw) !important; height: var(--sb-player-height, 100dvh) !important; z-index: 999999 !important; }',
-    'iframe { width: var(--sb-player-width, 100vw) !important; height: var(--sb-player-height, 100dvh) !important; position: fixed !important; top: 0 !important; left: 0 !important; z-index: 999999 !important; border: none !important; pointer-events: auto !important; }',
-    'video { object-fit: ${fit} !important; width: var(--sb-player-width, 100vw) !important; height: var(--sb-player-height, 100dvh) !important; position: absolute !important; top: 0 !important; left: 0 !important; }',
-    '.jw-aspect { padding-top: 0 !important; }',
-    '.jwplayer, .jw-wrapper, .jw-media, .jw-preview { width: var(--sb-player-width, 100vw) !important; height: var(--sb-player-height, 100dvh) !important; position: absolute !important; top: 0 !important; left: 0 !important; }',
-    '.jw-settings-menu, .jw-settings-submenu, .jw-settings-menu *, .jw-settings-submenu *, .vjs-menu, .vjs-menu *, .plyr__menu, .plyr__menu * { pointer-events: auto !important; z-index: 99999999 !important; }',
-    '.jw-settings-menu, .jw-slider-time, .jw-icon, .jw-button-container, .jw-icon-fullscreen, .jw-icon-volume, .jw-text-elapsed, .jw-text-duration, .vjs-control, .vjs-progress-control, .vjs-play-control, .vjs-volume-panel, .plyr__control { pointer-events: auto !important; }',
-    '.jw-controlbar, .vjs-control-bar, .plyr__controls { bottom: 0 !important; left: 0 !important; right: 0 !important; z-index: 9999999 !important; }',
-    'ins.adsbygoogle, [id*="google_ads"], [class*="ad-container"], [class*="ad-wrapper"], .ad, .ads, [class*="advert"], [class*="popup"]:not([class*="jw"]):not([class*="vjs"]), [id*="popup"], .popup-overlay { display: none !important; }',
-    'a[href*="download"], a[href*="indir"], a[download] { display: none !important; pointer-events: none !important; visibility: hidden !important; width: 0 !important; height: 0 !important; overflow: hidden !important; }',
-    '[class*="yardim"], [class*="indir"], [id*="yardim"], [id*="indir"] { display: none !important; pointer-events: none !important; visibility: hidden !important; }'
-  ].join('\\n');
-  (document.head || document.documentElement).appendChild(playerStyle);
-  syncViewportVars(document);
-
-  function forceVideoFullscreen(doc) {
-    try {
-      syncViewportVars(doc);
-      doc.querySelectorAll('video').forEach(function(v) {
-        v.style.setProperty('object-fit', '${fit}', 'important');
-        v.style.setProperty('width', 'var(--sb-player-width, 100vw)', 'important');
-        v.style.setProperty('height', 'var(--sb-player-height, 100dvh)', 'important');
-        v.style.setProperty('position', 'absolute', 'important');
-        v.style.setProperty('top', '0', 'important');
-        v.style.setProperty('left', '0', 'important');
-      });
-      doc.querySelectorAll('.jw-aspect').forEach(function(el) {
-        el.style.setProperty('padding-top', '0', 'important');
-      });
-      doc.querySelectorAll('.jwplayer, .jw-wrapper, .jw-media, .jw-preview, .jw-overlays, #player, #playerbase').forEach(function(el) {
-        el.style.setProperty('width', 'var(--sb-player-width, 100vw)', 'important');
-        el.style.setProperty('height', 'var(--sb-player-height, 100dvh)', 'important');
-        el.style.setProperty('position', 'absolute', 'important');
-        el.style.setProperty('top', '0', 'important');
-        el.style.setProperty('left', '0', 'important');
-        el.style.setProperty('visibility', 'visible', 'important');
-        el.style.setProperty('display', 'block', 'important');
-      });
-    } catch (e) {}
-  }
-
-  function showPlayerArea() {
-    var playerContainers = document.querySelectorAll('.kePlayerCont, .player-wrapper, .film-player, #player, #playerbase, [class*="player"], .video-container, .ke_post_body, video, iframe[src*="vidmoly"], iframe[src*="rapid"], iframe[src*="closeload"], iframe[src*="ok.ru"]');
-    playerContainers.forEach(function(el) {
-      var current = el;
-      while (current && current !== document.body) {
-        current.style.setProperty('display', 'block', 'important');
-        current.style.setProperty('visibility', 'visible', 'important');
-        current.style.setProperty('opacity', '1', 'important');
-        current = current.parentElement;
-      }
-      document.body.style.setProperty('display', 'block', 'important');
-      document.body.style.setProperty('visibility', 'visible', 'important');
-    });
-
-    forceVideoFullscreen(document);
-    document.querySelectorAll('iframe').forEach(function(frame) {
-      try {
-        var fd = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
-        if (fd) forceVideoFullscreen(fd);
-      } catch (e) {}
-    });
-  }
-
-  function hideProviderNotices(doc) {
-    var rootDoc = doc || document;
-    var blockedText = /datacenter|kaynakli|kaynaklÄ±|kaynakl[iı]|sunucu|teknik|problem|hata/i;
-    rootDoc.querySelectorAll('div, span, p, strong, small').forEach(function(el) {
-      try {
-        if (el.closest && el.closest('.jw-controls, .jw-controlbar, .jw-settings-menu, .jw-settings-submenu, .vjs-control-bar, .plyr__controls')) return;
-        var text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
-        if (!text || text.length > 180 || !blockedText.test(text)) return;
-        var style = getComputedStyle(el);
-        var rect = el.getBoundingClientRect();
-        var nearTop = rect.top < 100;
-        var overlayLike = style.position === 'fixed' || style.position === 'absolute' || nearTop;
-        if (overlayLike) {
-          el.style.setProperty('display', 'none', 'important');
-          el.style.setProperty('visibility', 'hidden', 'important');
-          el.style.setProperty('pointer-events', 'none', 'important');
-          el.style.setProperty('opacity', '0', 'important');
-        }
-      } catch (e) {}
-    });
-  }
-
-  function applyProviderUiFixes() {
-    bindProviderControlTapBridge(document);
-    hideProviderNotices(document);
-    document.querySelectorAll('iframe').forEach(function(frame) {
-      try {
-        var fd = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
-        if (!fd) return;
-        bindProviderControlTapBridge(fd);
-        hideProviderNotices(fd);
-      } catch (e) {}
-    });
-  }
-
-  function clickRapidrame() {
-    var buttons = document.querySelectorAll('button, a, [data-link], .alternative-link');
-    var clicked = false;
-    buttons.forEach(function(btn) {
-      if (!clicked && btn.textContent && btn.textContent.toLowerCase().includes('rapidrame')) {
-        btn.click();
-        clicked = true;
-      }
-    });
-    if (!clicked) {
-      var firstServer = document.querySelector('.alternative-link, .server-item, [class*="server"]');
-      if (firstServer) {
-        firstServer.click();
-        clicked = true;
-      }
-    }
-    return clicked;
-  }
-
-  function clickPlay() {
-    var hdfPlay = document.querySelector('[class*="play-icon"], [class*="play-overlay"], .hdf-play');
-    if (hdfPlay) hdfPlay.click();
-
-    var playBtns = document.querySelectorAll('.jw-display-icon-container, .jw-icon-display, .vjs-big-play-button, [class*="play-button"], .play-btn');
-    playBtns.forEach(function(button) { button.click(); });
-
-    var videos = document.querySelectorAll('video');
-    videos.forEach(function(video) {
-      try { video.play(); } catch (e) {}
-    });
-
-    var iframes = document.querySelectorAll('iframe');
-    iframes.forEach(function(frame) {
-      try {
-        var frameDoc = frame.contentDocument || frame.contentWindow.document;
-        var framePlay = frameDoc.querySelector('.jw-display-icon-container, .jw-icon-display, [class*="play"], video');
-        if (framePlay && framePlay.click) framePlay.click();
-        var frameVideo = frameDoc.querySelector('video');
-        if (frameVideo) frameVideo.play().catch(function() {});
-      } catch (e) {}
-    });
-  }
-
-  var controlWhitelist = /jw-|vjs-|plyr|jwplayer|video-js|controlbar|slider-time|icon-fullscreen|icon-volume|icon-display|display-icon|settings-menu|play-control|progress-control|volume-panel|text-elapsed|text-duration|big-play|captions|audio-tracks|kePlayer|player-wrapper|film-player|ke-title/i;
-
-  function nukeElement(el) {
-    el.style.setProperty('display', 'none', 'important');
-    el.style.setProperty('visibility', 'hidden', 'important');
-    el.style.setProperty('pointer-events', 'none', 'important');
-    el.style.setProperty('opacity', '0', 'important');
-    el.style.setProperty('width', '0', 'important');
-    el.style.setProperty('height', '0', 'important');
-    el.style.setProperty('overflow', 'hidden', 'important');
-    el.removeAttribute('href');
-    el.onclick = function(e) { e.preventDefault(); e.stopPropagation(); return false; };
-    if (el.parentElement && el.parentElement.tagName !== 'BODY') {
-      var parent = el.parentElement;
-      var parentText = (parent.textContent || '').trim().toLowerCase();
-      var text = (el.textContent || '').trim().toLowerCase();
-      if (parentText === text) {
-        parent.style.setProperty('display', 'none', 'important');
-        parent.style.setProperty('pointer-events', 'none', 'important');
-      }
-    }
-  }
-
-  function hideButtonsInDoc(doc) {
-    var blockedLabels = ['yardım', 'yardim'];
-    var blockedHrefPatterns = ['download', 'indir'];
-
-    doc.querySelectorAll('a, button, span, div').forEach(function(el) {
-      var text = (el.textContent || '').trim().toLowerCase();
-
-      // Match by text content (Yardım etc.)
-      if (text) {
-        for (var i = 0; i < blockedLabels.length; i++) {
-          if (text === blockedLabels[i] || text.indexOf(blockedLabels[i]) === 0) {
-            nukeElement(el);
-            return;
-          }
-        }
-      }
-
-      // Match by href containing download/indir patterns
-      var href = (el.getAttribute('href') || '').toLowerCase();
-      if (href) {
-        for (var j = 0; j < blockedHrefPatterns.length; j++) {
-          if (href.indexOf(blockedHrefPatterns[j]) !== -1) {
-            nukeElement(el);
-            return;
-          }
-        }
-      }
-    });
-  }
-
-  function injectHideStyleInDoc(doc) {
-    try {
-      if (doc.getElementById('sb-hide-btns')) return;
-      var s = doc.createElement('style');
-      s.id = 'sb-hide-btns';
-      s.textContent = 'a[href*="download"], a[href*="indir"], a[download] { display:none!important; pointer-events:none!important; visibility:hidden!important; width:0!important; height:0!important; overflow:hidden!important; }';
-      (doc.head || doc.documentElement).appendChild(s);
-    } catch (e) {}
-  }
-
-  function hideHdfilmUiButtons() {
-    hideButtonsInDoc(document);
-    document.querySelectorAll('iframe').forEach(function(frame) {
-      try {
-        var fd = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
-        if (fd) {
-          injectHideStyleInDoc(fd);
-          hideButtonsInDoc(fd);
-        }
-      } catch (e) {}
-    });
-  }
-
-  function removeAdOverlays() {
-    document.querySelectorAll('*').forEach(function(el) {
-      try {
-        var cls = (el.className || '').toString();
-        var id = (el.id || '').toString();
-        if (controlWhitelist.test(cls) || controlWhitelist.test(id)) return;
-        if (el.tagName === 'IFRAME' || el.tagName === 'VIDEO') return;
-        if (el.closest && (el.closest('.jwplayer') || el.closest('.video-js') || el.closest('.jw-wrapper') || el.closest('[class*="jw-"]'))) return;
-
-        var style = getComputedStyle(el);
-        var zIndex = parseInt(style.zIndex || '0', 10);
-        if ((style.position === 'fixed' || style.position === 'absolute') && zIndex > 5000) {
-          if (zIndex === 999999 || cls.includes('player') || id.includes('player')) return;
-          el.style.setProperty('display', 'none', 'important');
-        }
-      } catch (e) {}
-    });
-  }
-
-  showPlayerArea();
-  applyProviderUiFixes();
-  hideHdfilmUiButtons();
-  monitorPlayback();
-
-  setTimeout(function() {
-    clickRapidrame();
-    showPlayerArea();
-    applyProviderUiFixes();
-    hideHdfilmUiButtons();
-    scheduleReadyFallback('rapidrame-click', 5000);
-  }, 1500);
-
-  setTimeout(function() {
-    showPlayerArea();
-    clickPlay();
-    removeAdOverlays();
-    applyProviderUiFixes();
-    hideHdfilmUiButtons();
-    monitorPlayback();
-    scheduleReadyFallback('play-attempt', 3200);
-  }, 4000);
-
-  setTimeout(function() {
-    clickPlay();
-    removeAdOverlays();
-    applyProviderUiFixes();
-    hideHdfilmUiButtons();
-    monitorPlayback();
-    scheduleReadyFallback('second-play-attempt', 2200);
-  }, 6000);
-
-  setTimeout(function() {
-    setProviderControlsVisible(document, false, false);
-    document.querySelectorAll('iframe').forEach(function(frame) {
-      try {
-        var fd = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
-        if (fd) setProviderControlsVisible(fd, false, false);
-      } catch (e) {}
-    });
-  }, 7600);
-
-  setInterval(removeAdOverlays, 2000);
-  setInterval(applyProviderUiFixes, 1200);
-  setInterval(hideHdfilmUiButtons, 1500);
-  setInterval(monitorPlayback, 1000);
-
-  new MutationObserver(function() {
-    if (!readySent) showPlayerArea();
-    removeAdOverlays();
-    applyProviderUiFixes();
-    hideHdfilmUiButtons();
-    monitorPlayback();
-  }).observe(document.documentElement, { childList: true, subtree: true });
-
-  true;
-})();
-`;
-}
-
-function getDizipalInjectAfter() {
-  return `
-(function() {
-  'use strict';
-
-  var readySent = false;
-  var notFoundSent = false;
-  var readyFallbackTimer = null;
-  var notFoundTimer = null;
-  var lastStartAttemptAt = 0;
-  var playerShellVisibleAt = 0;
-
-  function postToApp(type, payload) {
-    try {
-      var message = { type: type, href: window.location.href };
-      if (payload) {
-        for (var key in payload) {
-          if (Object.prototype.hasOwnProperty.call(payload, key)) {
-            message[key] = payload[key];
-          }
-        }
-      }
-      var messageStr = JSON.stringify(message);
-
-      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-        window.ReactNativeWebView.postMessage(messageStr);
-      } else {
-        window.top.postMessage(messageStr, '*');
-      }
-    } catch (e) {
-      try { window.top.postMessage(JSON.stringify({ type: type }), '*'); } catch (e2) {}
-    }
-  }
-
-  function clearTimers() {
-    if (readyFallbackTimer) {
-      clearTimeout(readyFallbackTimer);
-      readyFallbackTimer = null;
-    }
-    if (notFoundTimer) {
-      clearTimeout(notFoundTimer);
-      notFoundTimer = null;
-    }
-  }
-
-  function markPlaybackReady(reason) {
-    if (readySent || notFoundSent) return;
-    readySent = true;
-    clearTimers();
-    postToApp('player_ready', { reason: reason });
-  }
-
-  function markNotFound(reason) {
-    if (readySent || notFoundSent) return;
-    notFoundSent = true;
-    clearTimers();
-    postToApp('player_not_found', { reason: reason });
-  }
-
-  window.addEventListener('message', function(e) {
-    try {
-      if (typeof e.data === 'string') {
-        var parsed = JSON.parse(e.data);
-        if (parsed.type === 'player_ready') {
-          markPlaybackReady(parsed.reason || 'iframe-message');
-        } else if (parsed.type === 'player_not_found') {
-          markNotFound(parsed.reason || 'iframe-message');
-        }
-      }
-    } catch (err) {}
-  });
-
-  function normalizeText(value) {
-    try {
-      return String(value || '')
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-    } catch (e) {
-      return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
-    }
-  }
-
-  function isStartPromptText(text) {
-    var normalized = normalizeText(text);
-    return (
-      normalized.indexOf('videoyu baslat') !== -1 ||
-      normalized.indexOf('izlemeye basla') !== -1 ||
-      normalized.indexOf('izle') !== -1 ||
-      normalized.indexOf('oynat') !== -1 ||
-      normalized.indexOf('reklami gec') !== -1 ||
-      normalized.indexOf('skip ad') !== -1 ||
-      normalized.indexOf('tikla') !== -1 ||
-      normalized.indexOf('baslat') !== -1 ||
-      normalized === 'play' ||
-      normalized === 'start'
-    );
-  }
-
-  function hasVisiblePlayerContent() {
-    if (window.location.hostname.indexOf('dizipal') === -1) {
-      if (!playerShellVisibleAt) playerShellVisibleAt = Date.now();
-      scheduleReadyFallback('dizipal-iframe-ultimate-fallback', 10000);
-      return true;
-    }
-
-    var mainPlayer = document.getElementById('mainPlayer');
-    var playerContent = document.getElementById('playerContent');
-    var hasEmbed = !!document.querySelector('#playerContent iframe, #playerContent video, #playerContent embed, #playerContent object, #mainPlayer iframe, #mainPlayer video');
-    var mainVisible = !!(mainPlayer && getComputedStyle(mainPlayer).display !== 'none' && getComputedStyle(mainPlayer).visibility !== 'hidden');
-    var childCount = playerContent ? playerContent.children.length : 0;
-    var promptVisible = documentHasStartPrompt(document);
-    var isVisible = hasEmbed || (mainVisible && childCount > 0 && !promptVisible);
-
-    if (isVisible && !playerShellVisibleAt) {
-      playerShellVisibleAt = Date.now();
-    }
-
-    return isVisible;
-  }
-
-  function scheduleReadyFallback(reason, delay) {
-    if (readySent || notFoundSent) return;
-    if (readyFallbackTimer) return; // Do not constantly reset the timer!
-
-    readyFallbackTimer = setTimeout(function() {
-      readyFallbackTimer = null;
-      if (!hasVisiblePlayerContent() || documentHasStartPrompt(document)) {
-        return;
-      }
-
-      markPlaybackReady(reason);
-    }, delay);
-  }
-
-  function scheduleNotFound(reason, delay) {
-    if (readySent || notFoundSent) return;
-    if (notFoundTimer) return; // Do not continuously reset
-
-    notFoundTimer = setTimeout(function() {
-      notFoundTimer = null;
-      if (!hasVisiblePlayerContent()) {
-        markNotFound(reason);
-      }
-    }, delay);
-  }
-
-  function bindVideo(video) {
-    if (!video || video.__streamboxBound) return;
-    video.__streamboxBound = true;
-
-    ['loadeddata', 'canplay', 'playing'].forEach(function(eventName) {
-      video.addEventListener(eventName, function() {
-        if (eventName === 'playing' || video.readyState >= 2) {
-          markPlaybackReady('dizipal-video-' + eventName);
-        }
-      });
-    });
-
-    if (video.readyState >= 2 && !video.paused) {
-      markPlaybackReady('dizipal-video-ready');
-    } else if (video.readyState >= 2) {
-      scheduleReadyFallback('dizipal-video-buffered', 1200);
-    }
-  }
-
-  function scanForVideos(rootDoc) {
-    var doc = rootDoc || document;
-    try {
-      Array.prototype.forEach.call(doc.querySelectorAll('video'), bindVideo);
-    } catch (e) {}
-  }
-
-  function resolveClickableTarget(node) {
-    if (!node || typeof node.closest !== 'function') {
-      return node || null;
-    }
-
-    return node.closest('button, a, [role="button"], input, label, .play-btn, .skip-btn, .jw-display-icon-container, .jw-icon-display, .vjs-big-play-button') || node;
-  }
-
-  function dispatchSyntheticTap(node) {
-    if (!node || typeof node.dispatchEvent !== 'function') {
-      return;
-    }
-
-    ['pointerdown', 'mousedown', 'touchstart', 'pointerup', 'mouseup', 'touchend', 'click'].forEach(function(eventName) {
-      try {
-        node.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true, view: window }));
-      } catch (error) {}
-    });
-  }
-
-  function clickNode(node) {
-    var target = resolveClickableTarget(node);
-    if (!target) return false;
-
-    try {
-      dispatchSyntheticTap(target);
-      if (typeof target.focus === 'function') {
-        try { target.focus(); } catch (e) {}
-      }
-      if (typeof target.click === 'function') {
-        target.click();
-      }
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function clickPlaybackPrompts(rootDoc) {
-    var doc = rootDoc || document;
-    var clicked = false;
-    var selectors = [
-      '#playerCover',
-      '.player-cover-overlay',
-      '.play-btn',
-      '#skipBtn',
-      '.skip-btn',
-      '#prerollResumeBtn',
-      '.jw-display-icon-container',
-      '.jw-icon-display',
-      '.vjs-big-play-button',
-      '[class*="play-button"]',
-      '[class*="play-btn"]',
-      '[class*="play_btn"]',
-      '[data-action="play"]',
-      'button',
-      'input',
-      'a',
-      '[role="button"]',
-      'div',
-      'span'
-    ];
-
-    try {
-      Array.prototype.forEach.call(doc.querySelectorAll(selectors.join(',')), function(node) {
-        var text = normalizeText(node.textContent || node.innerText || node.value || node.getAttribute('aria-label') || node.getAttribute('title') || node.getAttribute('placeholder') || '');
-        var className = normalizeText(node.className || '');
-        var id = normalizeText(node.id || '');
-        var shouldClick =
-          id === 'playercover' ||
-          id === 'skipbtn' ||
-          id === 'prerollresumebtn' ||
-          className.indexOf('play-btn') !== -1 ||
-          className.indexOf('jw-display-icon-container') !== -1 ||
-          className.indexOf('jw-icon-display') !== -1 ||
-          className.indexOf('vjs-big-play-button') !== -1 ||
-          isStartPromptText(text);
-
-        if (shouldClick && clickNode(node)) {
-          clicked = true;
-        }
-      });
-      
-      // Recursive call for accessible iframes
-      Array.prototype.forEach.call(doc.querySelectorAll('iframe'), function(frame) {
-        try {
-          var frameDoc = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
-          if (frameDoc && clickPlaybackPrompts(frameDoc)) {
-            clicked = true;
-          }
-        } catch(e) {}
-      });
-    } catch (e) {}
-
-    return clicked;
-  }
-
-  function documentHasStartPrompt(rootDoc) {
-    var doc = rootDoc || document;
-    try {
-      return Array.prototype.some.call(doc.querySelectorAll('button, a, [role="button"], div, span'), function(node) {
-        return isStartPromptText(node.textContent || node.innerText || node.value || node.getAttribute('aria-label') || node.getAttribute('title') || '');
-      });
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function nudgeVideos(rootDoc) {
-    var doc = rootDoc || document;
-    try {
-      Array.prototype.forEach.call(doc.querySelectorAll('video'), function(video) {
-        bindVideo(video);
-        try {
-          var playResult = video.play();
-          if (playResult && typeof playResult.catch === 'function') {
-            playResult.catch(function() {});
-          }
-        } catch (e) {}
-      });
-    } catch (e) {}
-  }
-
-  function inspectAccessibleFrame(frame) {
-    try {
-      var frameDoc = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
-      if (!frameDoc) return;
-      scanForVideos(frameDoc);
-      clickPlaybackPrompts(frameDoc);
-      nudgeVideos(frameDoc);
-    } catch (e) {}
-  }
-
-  function monitorIframes() {
-    Array.prototype.forEach.call(document.querySelectorAll('#playerContent iframe, #mainPlayer iframe, iframe'), function(frame) {
-      if (frame.__streamboxBound) return;
-      frame.__streamboxBound = true;
-      frame.addEventListener('load', function() {
-        inspectAccessibleFrame(frame);
-        scheduleReadyFallback('dizipal-iframe-load', 8000);
-      });
-      inspectAccessibleFrame(frame);
-    });
-  }
-
-  function applyPlayerChrome() {
-    if (document.getElementById('streambox-dizipal-style')) return;
-
-    var style = document.createElement('style');
-    style.id = 'streambox-dizipal-style';
-    style.textContent = [
-      'html, body, .site-wrapper, .main-content, .watch-page, .watch-page.film-page, .watch-page .container, .video-wrapper, .video-player-container, .video-player-wrapper, #mainPlayer, #playerContent { background: #000 !important; margin: 0 !important; padding: 0 !important; }',
-      '.site-wrapper, .main-content, .watch-page, .watch-page .container, .video-wrapper, .video-player-container, .video-player-wrapper, #mainPlayer, #playerContent { width: 100vw !important; max-width: 100vw !important; }',
-      '.watch-page, .watch-page .container, .video-wrapper, .video-player-container, .video-player-wrapper, #mainPlayer, #playerContent { height: 100vh !important; min-height: 100vh !important; }',
-      '.video-wrapper, .video-player-container, .video-player-wrapper, #mainPlayer, #playerContent { position: fixed !important; inset: 0 !important; z-index: 999999 !important; display: flex !important; align-items: center !important; justify-content: center !important; }',
-      '#playerContent iframe, #mainPlayer iframe, #playerContent video, #mainPlayer video { width: 100vw !important; height: 100vh !important; border: none !important; z-index: 10 !important; max-width: 100% !important; max-height: 100% !important; }',
-      '.jw-controls, .vjs-control-bar, .jw-controlbar, .video-controls, .player-controls { z-index: 9999999 !important; visibility: visible !important; }',
-      '.pageskin-desktop-wrapper, .pageskin-click-left, .pageskin-click-right, .pageskin-mobile-wrapper, .main-header, .announcement-bar, .main-footer, .mobile-bottom-nav, .footer-sticky-ad, .ad-container, .embed-text-banner, .film-info-box, .episode-navigation, .episode-panel, .comments-section, .related-section, .watch-title-top, .series-hero, .watch-hero, .modal, .fade, .show, .popup { display: none !important; }'
-    ].join('\\n');
-    (document.head || document.documentElement).appendChild(style);
-  }
-
-  function removeNoise() {
-    var selectors = [
-      '.pageskin-desktop-wrapper',
-      '.pageskin-click-left',
-      '.pageskin-click-right',
-      '.pageskin-mobile-wrapper',
-      '.main-header',
-      '.announcement-bar',
-      '.main-footer',
-      '.mobile-bottom-nav',
-      '.footer-sticky-ad',
-      '.ad-container',
-      '.embed-text-banner',
-      '.film-info-box',
-      '.episode-navigation',
-      '.episode-panel',
-      '.comments-section',
-      '.related-section',
-      '.watch-title-top',
-      '.series-hero',
-      '.watch-hero'
-    ];
-
-    selectors.forEach(function(selector) {
-      document.querySelectorAll(selector).forEach(function(element) {
-        element.style.setProperty('display', 'none', 'important');
-        element.style.setProperty('visibility', 'hidden', 'important');
-        element.style.setProperty('pointer-events', 'none', 'important');
-      });
-    });
-
-    document.querySelectorAll('a[target="_blank"], .modal, .fade, .show, .popup, [id*="google_ads"]').forEach(function(el) {
-      if (el.closest('.video-player-container') || el.closest('#mainPlayer') || el.closest('#playerContent')) return;
-      // Do NOT hide elements that look like start prompts (might be the "VİDEOYU BAŞLAT" modal)
-      var text = (el.textContent || '').toLowerCase();
-      if (text.indexOf('videoyu') !== -1 || text.indexOf('baslat') !== -1 || text.indexOf('oynat') !== -1) return;
-      
-      el.style.setProperty('display', 'none', 'important');
-      el.style.setProperty('pointer-events', 'none', 'important');
-    });
-
-    var clickable = document.getElementById('prerollClickable');
-    if (clickable) {
-      clickable.onclick = null;
-      clickable.style.setProperty('pointer-events', 'none', 'important');
-    }
-  }
-
-  function managePreroll(rootDoc) {
-    var doc = rootDoc || document;
-    try {
-      var videos = doc.querySelectorAll('video');
-      Array.prototype.forEach.call(videos, function(v) {
-        if (v.id === 'prerollVideo' || v.className.indexOf('ad-') !== -1 || v.duration < 60) {
-          v.muted = true;
-          if (v.playbackRate < 8) v.playbackRate = 16.0;
-        }
-      });
-
-      var skipBtn = doc.getElementById('skipBtn');
-      if (skipBtn && getComputedStyle(skipBtn).display !== 'none') {
-        clickNode(skipBtn);
-      }
-
-      var allNodes = doc.querySelectorAll('button, div, a, span');
-      Array.prototype.forEach.call(allNodes, function(node) {
-        var txt = normalizeText(node.textContent || node.innerText || '');
-        if (txt.indexOf('reklami gec') !== -1 || txt.indexOf('skip ad') !== -1) {
-          clickNode(node);
-        }
-      });
-      
-      Array.prototype.forEach.call(doc.querySelectorAll('iframe'), function(frame) {
-        try {
-          var frameDoc = frame.contentDocument || (frame.contentWindow ? frame.contentWindow.document : null);
-          if (frameDoc) managePreroll(frameDoc);
-        } catch(e) {}
-      });
-    } catch (e) {}
-  }
-
-  var windowStartPlayerCalled = false;
-
-  function startPlayerNow(forceReason) {
-    if (readySent || notFoundSent) return;
-
-    var now = Date.now();
-    if (!forceReason && now - lastStartAttemptAt < 900) {
-      return;
-    }
-
-    lastStartAttemptAt = now;
-    managePreroll(document);
-    clickPlaybackPrompts(document);
-
-    if (!windowStartPlayerCalled && typeof window.startPlayer === 'function') {
-      try {
-        window.startPlayer();
-        windowStartPlayerCalled = true;
-      } catch (e) {}
-    }
-
-    var cover = document.getElementById('playerCover');
-    if (cover) {
-      clickNode(cover);
-    }
-
-    clickPlaybackPrompts(document);
-    nudgeVideos(document);
-    scheduleNotFound('dizipal-start-timeout', 35000);
-  }
-
-  function monitorPlayback() {
-    scanForVideos(document);
-    monitorIframes();
-    managePreroll(document); // Always try to skip ads in the main document recursively
-
-    if (!readySent && !notFoundSent) {
-      clickPlaybackPrompts(document);
-      nudgeVideos(document);
-
-      if (hasVisiblePlayerContent() && !documentHasStartPrompt(document)) {
-        if (playerShellVisibleAt && (Date.now() - playerShellVisibleAt > 5000)) {
-          markPlaybackReady('dizipal-mainplayer-visible-5s');
-        }
-      }
-
-      if (documentHasStartPrompt(document)) {
-        startPlayerNow(false);
-      }
-    }
-  }
-
-  function hookConsoleErrors() {
-    var originalError = console.error;
-    console.error = function() {
-      try {
-        var message = Array.prototype.map.call(arguments, function(value) { return String(value); }).join(' ');
-        if (message.toLowerCase().indexOf('no video config') !== -1) {
-          markNotFound('dizipal-no-video-config');
-        }
-      } catch (e) {}
-      if (originalError) {
-        return originalError.apply(console, arguments);
-      }
-    };
-  }
-
-  hookConsoleErrors();
-  applyPlayerChrome();
-  removeNoise();
-  managePreroll();
-
-  window.addEventListener('load', function() {
-    applyPlayerChrome();
-    removeNoise();
-    managePreroll();
-    startPlayerNow(true);
-    monitorPlayback();
-  });
-
-  setTimeout(function() {
-    startPlayerNow(true);
-    monitorPlayback();
-  }, 350);
-
-  setTimeout(function() {
-    startPlayerNow(true);
-    monitorPlayback();
-  }, 2200);
-
-  setInterval(function() {
-    applyPlayerChrome();
-    removeNoise();
-    managePreroll();
-    monitorPlayback();
-  }, 1000);
-
-  new MutationObserver(function() {
-    applyPlayerChrome();
-    removeNoise();
-    managePreroll();
-    monitorPlayback();
-  }).observe(document.documentElement, { childList: true, subtree: true });
-
-  scheduleNotFound('dizipal-initial-timeout', 25000);
-
-  // Hard fallback: if anything is on screen after 12s, dismiss spinner
-  setTimeout(function() {
-    if (!readySent && !notFoundSent) {
-      var anyContent = document.querySelector('iframe, video, embed, object, #mainPlayer iframe, #playerContent iframe, #mainPlayer video, #playerContent video');
-      if (anyContent && !documentHasStartPrompt(document)) {
-        markPlaybackReady('dizipal-hard-fallback-12s');
-      }
-    }
-  }, 12000);
-
-  true;
-})();
-`;
-}
 
 // ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const webViewRef = useRef<WebView>(null);
   const [playerResult, setPlayerResult] = useState<WebPlayerResult | null>(null);
@@ -2910,12 +469,25 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   const [currentStreamUrl, setCurrentStreamUrl] = useState<string | null>(null);
   const [isQualityMenuOpen, setIsQualityMenuOpen] = useState(false);
-  const [focusedPlayerControl, setFocusedPlayerControl] = useState<"close" | "fit" | "cc" | "quality" | null>(null);
 
   // â”€â”€ Track recent playback entry only â”€â”€
   const { addToRecentlyWatched } = useRecentlyWatched();
   const hasTrackedRef = useRef(false);
   const hdfilmNativeFallbackTriggeredRef = useRef(false);
+  const hdfilmRuntimeDiscoveryKeysRef = useRef(new Set<string>());
+  const playerResultRef = useRef<WebPlayerResult | null>(null);
+
+  useEffect(() => {
+    playerResultRef.current = playerResult;
+  }, [playerResult]);
+
+  // Block silent OTA reload while this screen is mounted — otherwise the user
+  // returning to the app after a brief lock-screen would lose their playback
+  // position to a forced JS reload.
+  useEffect(() => {
+    setPlayerActive(true);
+    return () => setPlayerActive(false);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -2977,28 +549,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     hideTimerRef.current = setTimeout(hideControlsNow, AUTO_HIDE_MS);
   }, [clearHideTimer, hideControlsNow]);
 
-  const showControls = useCallback((autoHide = true) => {
+  const showControls = useCallback(() => {
     clearHideTimer();
     controlsVisibleRef.current = true;
     controlsOpacity.stopAnimation();
     setControlsVisible(true);
     controlsOpacity.setValue(1);
-    if (autoHide) {
-      scheduleHideControls();
-    }
+    scheduleHideControls();
   }, [controlsOpacity, clearHideTimer, scheduleHideControls]);
-
-  const handlePlayerControlFocus = useCallback((control: "close" | "fit" | "cc" | "quality") => {
-    setFocusedPlayerControl(control);
-    showControls(false);
-  }, [showControls]);
-
-  const handlePlayerControlBlur = useCallback(() => {
-    setFocusedPlayerControl(null);
-    if (controlsVisibleRef.current) {
-      scheduleHideControls();
-    }
-  }, [scheduleHideControls]);
 
   const toggleControls = useCallback(() => {
     if (isSubtitleMenuOpen || isQualityMenuOpen) return;
@@ -3097,6 +655,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setExternalSubtitleCues([]);
     setActiveSubtitleText(null);
     hdfilmNativeFallbackTriggeredRef.current = false;
+    hdfilmRuntimeDiscoveryKeysRef.current.clear();
 
     if (route.params.trailerUrl) {
       // Show trailer directly
@@ -3158,7 +717,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
     StatusBar.setHidden(true, "fade");
 
-    if (playerResult.source !== "youtube_embed" || isTvBuild()) {
+    if (playerResult.source !== "youtube_embed") {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
     } else {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
@@ -3166,11 +725,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
     return () => {
       StatusBar.setHidden(false, "fade");
-      void ScreenOrientation.lockAsync(
-        isTvBuild()
-          ? ScreenOrientation.OrientationLock.LANDSCAPE
-          : ScreenOrientation.OrientationLock.PORTRAIT_UP
-      );
+      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
   }, [playerResult]);
 
@@ -3178,11 +733,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     if (isFullScreen) {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
     } else {
-      void ScreenOrientation.lockAsync(
-        isTvBuild()
-          ? ScreenOrientation.OrientationLock.LANDSCAPE
-          : ScreenOrientation.OrientationLock.PORTRAIT_UP
-      );
+      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     }
   }, []);
 
@@ -3199,11 +750,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const handleClose = useCallback(() => {
     webViewRef.current?.injectJavaScript(PLAYER_STOP_MEDIA_SCRIPT);
     webViewRef.current?.stopLoading();
-    void ScreenOrientation.lockAsync(
-      isTvBuild()
-        ? ScreenOrientation.OrientationLock.LANDSCAPE
-        : ScreenOrientation.OrientationLock.PORTRAIT_UP
-    );
+    void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     navigation.goBack();
   }, [navigation]);
 
@@ -3254,10 +801,114 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     });
   }, []);
 
+  const switchToDiscoveredHdFilmStream = useCallback((result: WebPlayerResult, reason: string) => {
+    setPlayerResult((current) => {
+      if (
+        !current ||
+        current.source !== "hdfilm" ||
+        !result.streamUrl ||
+        hdfilmNativeFallbackTriggeredRef.current
+      ) {
+        return current;
+      }
+
+      hdfilmNativeFallbackTriggeredRef.current = true;
+      debugLog("[Player] Switching HDFilm runtime stream to native:", reason, result.streamUrl);
+      webViewRef.current?.injectJavaScript(PLAYER_STOP_MEDIA_SCRIPT);
+      webViewRef.current?.stopLoading();
+      setLoadError(null);
+      setIsPlaybackReady(false);
+      setCurrentStreamUrl(result.streamUrl);
+      setSelectedSubtitleTrack(null);
+      setSelectedExternalSubtitle(null);
+      setExternalSubtitleCues([]);
+      setActiveSubtitleText(null);
+
+      return {
+        ...current,
+        ...result,
+        url: result.streamUrl,
+        source: "direct",
+        streamUrl: result.streamUrl,
+        streamType: result.streamType ?? (result.streamUrl.toLowerCase().includes(".m3u8") ? "m3u8" : "mp4"),
+        referer: result.referer || result.embedUrl || current.url,
+        embedUrl: result.embedUrl || result.referer || current.url,
+        subtitles: result.subtitles ?? []
+      };
+    });
+  }, []);
+
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
       const payload = JSON.parse(event.nativeEvent.data);
-      if (payload?.type === "player_toggle" || payload?.type === "player_seek") return;
+      if (payload?.type === "hdfilm_stream_discovered") {
+        if (playerResultRef.current?.source !== "hdfilm") return;
+
+        const streamUrl = typeof payload.streamUrl === "string" ? payload.streamUrl : "";
+        if (!streamUrl) return;
+        const referer =
+          typeof payload.referer === "string"
+            ? payload.referer
+            : playerResultRef.current?.url ?? "";
+        const embedUrl =
+          typeof payload.embedUrl === "string"
+            ? payload.embedUrl
+            : referer || (playerResultRef.current?.url ?? "");
+
+        if (!shouldAcceptDiscoveredHdFilmStream(streamUrl, referer, embedUrl)) {
+          return;
+        }
+
+        const key = `stream:${streamUrl}`;
+        if (hdfilmRuntimeDiscoveryKeysRef.current.has(key)) return;
+        hdfilmRuntimeDiscoveryKeysRef.current.add(key);
+
+        switchToDiscoveredHdFilmStream({
+          url: streamUrl,
+          source: "direct",
+          streamUrl,
+          streamType:
+            typeof payload.streamType === "string"
+              ? payload.streamType
+              : streamUrl.toLowerCase().includes(".m3u8")
+                ? "m3u8"
+                : "mp4",
+          referer,
+          embedUrl,
+          subtitles: []
+        }, String(payload.source ?? "runtime-stream"));
+        return;
+      }
+
+      if (payload?.type === "hdfilm_embed_discovered") {
+        if (playerResultRef.current?.source !== "hdfilm") return;
+
+        const embedUrl = typeof payload.embedUrl === "string" ? payload.embedUrl : "";
+        if (!embedUrl) return;
+
+        const key = `embed:${embedUrl}`;
+        if (hdfilmRuntimeDiscoveryKeysRef.current.has(key)) return;
+        hdfilmRuntimeDiscoveryKeysRef.current.add(key);
+
+        const currentPageUrl =
+          playerResultRef.current?.url ??
+          (typeof payload.pageUrl === "string" ? payload.pageUrl : "");
+
+        void resolveHdFilmRuntimeStream(embedUrl, currentPageUrl)
+          .then((result) => {
+            if (
+              result?.streamUrl &&
+              shouldAcceptDiscoveredHdFilmStream(result.streamUrl, result.referer, result.embedUrl)
+            ) {
+              switchToDiscoveredHdFilmStream(result, String(payload.source ?? "runtime-embed"));
+            }
+          })
+          .catch(() => {
+            // Runtime discovery is best-effort; keep the provider player alive if embed resolution fails.
+          });
+        return;
+      }
+
       if (payload?.type === "player_ready") {
         setLoadError(null);
         setIsPlaybackReady(true);
@@ -3267,6 +918,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         showControls();
         return;
       }
+      if (payload?.type === "player_toggle") return;
       if (payload?.type === "player_black_screen_suspected") {
         switchToHdFilmNativeFallback(String(payload.reason ?? "visual-frame-timeout"));
         return;
@@ -3280,43 +932,38 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     } catch {
       // Ignore unrelated WebView messages.
     }
-  }, [showControls, switchToHdFilmNativeFallback]);
+  }, [showControls, switchToDiscoveredHdFilmStream, switchToHdFilmNativeFallback]);
   const handleError = useCallback(() => {
     setIsPlaybackReady(false);
     setLoadError("Failed to load. Please check your connection.");
   }, []);
 
-  // TV remote Center handler. The remote can't focus DOM elements inside the
-  // WebView, so we expose a fullscreen focusable wake-layer that catches the
-  // Center press and forwards a play/pause toggle to the page's <video> via
-  // injected JS. Phone builds keep the existing showControls() behaviour —
-  // they have a touch model and don't need this.
+  // TV-only: the injected JS posts `player_ready` after JWPlayer fully
+  // initialises and starts the <video>. On Android TV's Chromium WebView that
+  // race sometimes never finishes (no autoplay user gesture, JWPlayer waits
+  // forever), so the loader sits over a playing-but-hidden video. Hide the
+  // loader on the WebView's own onLoadEnd; the page has already painted by
+  // then and JWPlayer will autoplay via the Cloudflare cookie.
+  const handleWebViewLoadEnd = useCallback(() => {
+    if (!isTvBuild()) return;
+    setLoadError(null);
+    setIsPlaybackReady(true);
+  }, []);
+
+  // TV-only: Center button (a.k.a. "OK") on Android TV remotes can't reach
+  // inside a WebView's <video> element. Inject JS to toggle play/pause via
+  // the same path JWPlayer would use. Phones still use touch/native controls.
   const handleTvCenterPress = useCallback(() => {
     showControls();
     if (!isTvBuild()) return;
     const source = playerResult?.source;
-    const isWebViewPlayback = source === "hdfilm" || source === "dizipal" || source === "dizipal_embed";
+    const isWebViewPlayback =
+      source === "hdfilm" || source === "dizipal" || source === "dizipal_embed";
     if (!isWebViewPlayback) return;
     try {
       webViewRef.current?.injectJavaScript(TV_VIDEO_TOGGLE_PLAY_JS);
-    } catch {
-      /* WebView may have unmounted — safe to swallow */
-    }
+    } catch {}
   }, [playerResult?.source, showControls]);
-
-  // Android TV's Chromium WebView fires the page-level `load` event but the
-  // in-page injection script's `player_ready` postMessage doesn't always make
-  // it back to the JS bridge (we've verified the video element itself is
-  // playing — audio focus is held). Falling back to the WebView's onLoadEnd
-  // on TV unblocks the loader overlay so the actual playback surface is
-  // visible. Phone keeps the stricter `player_ready` gate to avoid flashing
-  // the unstyled page before the video starts.
-  const handleWebViewLoadEnd = useCallback(() => {
-    if (isTvBuild()) {
-      setLoadError(null);
-      setIsPlaybackReady(true);
-    }
-  }, []);
 
   // Native video player for direct streams
   const directStreamUrl = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") 
@@ -3355,7 +1002,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       headers: {
         ...(streamReferer ? { Referer: streamReferer } : {}),
         ...(streamReferer ? { Origin: new URL(streamReferer).origin } : {}),
-        "User-Agent": PLAYER_HTTP_UA
+        "User-Agent": PLAYER_WEBVIEW_USER_AGENT
       },
       contentType
     };
@@ -3385,6 +1032,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           if (prev?.source === "dizipal_direct") {
             setLoadError(null);
             return { url: prev.url, source: "dizipal" };
+          }
+          // HDFilm-derived direct streams carry the original page URL so we can
+          // gracefully drop to the on-page JWPlayer if the native stream fails
+          // (broken segment, expired token, geo block, etc.).
+          if (prev?.source === "direct" && prev.webViewFallbackUrl) {
+            debugLog("[Player] Direct stream failed; falling back to HDFilm WebView:", prev.webViewFallbackUrl);
+            setLoadError(null);
+            return { url: prev.webViewFallbackUrl, source: "hdfilm" };
           }
           setLoadError("Failed to load this stream. Please try again later.");
           return prev;
@@ -3438,7 +1093,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
     const headers = {
       Accept: "text/vtt,text/plain,application/x-subrip,*/*",
-      "User-Agent": PLAYER_HTTP_UA,
+      "User-Agent": PLAYER_WEBVIEW_USER_AGENT,
       ...(subtitleReferer ? { Referer: subtitleReferer } : {}),
       ...(subtitleOrigin ? { Origin: subtitleOrigin } : {})
     };
@@ -3584,29 +1239,19 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   if (isDirectStream && directStreamUrl) {
     return (
       <View style={styles.root}>
+        <VideoView
+          player={videoPlayer}
+          style={styles.nativePlayer}
+          contentFit={videoFit}
+          nativeControls
+          surfaceType="textureView"
+          onTouchEnd={toggleCloseBtn}
+        />
         {isLoading && (
           <PlayerLoadingOverlay
             title={route.params.title}
             seasonNumber={route.params.seasonNumber}
             episodeNumber={route.params.episodeNumber}
-          />
-        )}
-        {!isLoading && (
-          <VideoView
-            player={videoPlayer}
-            style={styles.nativePlayer}
-            contentFit={videoFit}
-            nativeControls
-            surfaceType="textureView"
-            onTouchEnd={toggleCloseBtn}
-          />
-        )}
-        {!isLoading && isTvBuild() && (
-          <Pressable
-            focusable
-            hasTVPreferredFocus
-            style={styles.tvControlWakeLayer}
-            onPress={handleTvCenterPress}
           />
         )}
         {!isLoading && isSubtitleMenuOpen && (
@@ -3615,41 +1260,26 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         {!isLoading && showCloseBtn && (
           <>
             <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity
-                focusable
-                onFocus={() => handlePlayerControlFocus("close")}
-                onBlur={handlePlayerControlBlur}
-                onPress={handleClose}
-                activeOpacity={0.8}
-                style={[styles.closeButtonInner, focusedPlayerControl === "close" && styles.playerControlFocused]}
-              >
+              <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
                 <Feather name="x" size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
 
             <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity
-                focusable
-                onFocus={() => handlePlayerControlFocus("fit")}
-                onBlur={handlePlayerControlBlur}
-                onPress={toggleVideoFit}
-                activeOpacity={0.8}
-                style={[styles.closeButtonInner, focusedPlayerControl === "fit" && styles.playerControlFocused]}
-              >
+              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.toggleFit")}>
                 <Feather name={videoFit === "contain" ? "maximize" : "minimize"} size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
 
             <Animated.View style={[styles.ccButton, { opacity: closeBtnOpacity }]}>
               <TouchableOpacity
-                focusable
-                onFocus={() => handlePlayerControlFocus("cc")}
-                onBlur={handlePlayerControlBlur}
                 onPress={toggleDirectSubtitleMenu}
                 activeOpacity={directSubtitleOptions.length > 0 || availableSubtitleTracks.length > 0 ? 0.8 : 1}
+                accessibilityRole="button"
+                accessibilityLabel={t("player.a11y.subtitles")}
+                accessibilityState={{ disabled: directSubtitleOptions.length === 0 && availableSubtitleTracks.length === 0 }}
                 style={[
                   styles.closeButtonInner,
-                  focusedPlayerControl === "cc" && styles.playerControlFocused,
                   directSubtitleOptions.length === 0 &&
                   availableSubtitleTracks.length === 0 &&
                   styles.controlButtonDisabled
@@ -3662,12 +1292,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             {playerResult?.qualityOptions && playerResult.qualityOptions.length > 1 && (
               <Animated.View style={[styles.ccButton, { right: 154, opacity: closeBtnOpacity }]}>
                 <TouchableOpacity
-                  focusable
-                  onFocus={() => handlePlayerControlFocus("quality")}
-                  onBlur={handlePlayerControlBlur}
                   onPress={toggleQualityMenu}
                   activeOpacity={0.8}
-                  style={[styles.closeButtonInner, focusedPlayerControl === "quality" && styles.playerControlFocused]}
+                  style={styles.closeButtonInner}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("player.a11y.quality")}
                 >
                   <MaterialIcons name="settings" size={20} color="#FFFFFF" />
                 </TouchableOpacity>
@@ -3785,28 +1414,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       {showCloseBtn && (
         <>
           <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
-            <TouchableOpacity
-              focusable
-              onFocus={() => handlePlayerControlFocus("close")}
-              onBlur={handlePlayerControlBlur}
-              onPress={handleClose}
-              activeOpacity={0.8}
-              style={[styles.closeButtonInner, focusedPlayerControl === "close" && styles.playerControlFocused]}
-            >
+            <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
               <Feather name="x" size={18} color="#FFFFFF" />
             </TouchableOpacity>
           </Animated.View>
 
           {(playerResult?.source === 'hdfilm' || playerResult?.source === 'dizipal' || playerResult?.source === 'dizipal_embed') && (
             <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity
-                focusable
-                onFocus={() => handlePlayerControlFocus("fit")}
-                onBlur={handlePlayerControlBlur}
-                onPress={toggleVideoFit}
-                activeOpacity={0.8}
-                style={[styles.closeButtonInner, focusedPlayerControl === "fit" && styles.playerControlFocused]}
-              >
+              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.toggleFit")}>
                 <Feather name={videoFit === 'contain' ? 'maximize' : 'minimize'} size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </Animated.View>
@@ -3828,7 +1443,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         <View style={styles.loaderOverlay}>
           <Text style={styles.errorTitle}>Playback Error</Text>
           <Text style={styles.errorText}>{loadError}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={() => {
+          <TouchableOpacity style={styles.retryButton} accessibilityRole="button" accessibilityLabel={t("player.a11y.retry")} onPress={() => {
             setLoadError(null);
             setIsPlaybackReady(false);
             webViewRef.current?.reload();
@@ -3849,13 +1464,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           <Text style={styles.notAvailableHint}>
             We're always adding new content. Please check back later!
           </Text>
-          <TouchableOpacity
-            focusable
-            hasTVPreferredFocus
-            style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]}
-            onPress={handleClose}
-            activeOpacity={0.8}
-          >
+          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.8} accessibilityRole="button" accessibilityLabel={t("common.goBack")}>
             <Text style={styles.goBackText}>Go Back</Text>
           </TouchableOpacity>
         </View>
@@ -3882,7 +1491,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         </View>
       )}
 
-      {/* WebView for Dizipal embed (direct embed URL â€” full JWPlayer with subs/audio) */}
+      {/* WebView for Dizipal embed (direct embed URL — full JWPlayer with subs/audio) */}
       {playerResult?.source === "dizipal_embed" && (
         <WebView
           ref={webViewRef}
@@ -3955,12 +1564,18 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           onShouldStartLoadWithRequest={(req) => shouldAllowPlayerWebViewRequest(req, playerResult.url)}
         />
       )}
-      {!isLoading && isTvBuild() && playerResult && playerResult.source !== "not_found" && (
+
+      {/* TV-only: invisible focus target that captures the remote Center press
+          (Android TV remotes can't deliver the press into the WebView's
+          <video>). Focused by default so the user can just press OK. */}
+      {isTvBuild() && (playerResult?.source === "hdfilm" || playerResult?.source === "dizipal" || playerResult?.source === "dizipal_embed") && (
         <Pressable
-          focusable
+          // @ts-ignore — RN TV-prop, only typed in react-native-tvos
           hasTVPreferredFocus
-          style={styles.tvControlWakeLayer}
           onPress={handleTvCenterPress}
+          style={styles.tvWebViewFocusTarget}
+          accessibilityRole="button"
+          accessibilityLabel={t("player.a11y.togglePlay") || "Toggle play"}
         />
       )}
       <QualityWarningModal
@@ -3968,11 +1583,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         qualityLabel={qualityWarning?.label ?? ""}
         onGoBack={() => {
           setQualityWarning(null);
-          void ScreenOrientation.lockAsync(
-            isTvBuild()
-              ? ScreenOrientation.OrientationLock.LANDSCAPE
-              : ScreenOrientation.OrientationLock.PORTRAIT_UP
-          );
+          void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
           navigation.goBack();
         }}
         onContinue={() => {
