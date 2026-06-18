@@ -801,6 +801,62 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     return () => clearTimeout(timer);
   }, [playerResult, isPlaybackReady]);
 
+  // Native-stream stall fallback.
+  //
+  // Some Cloudflare-protected CDN hosts (notably imagestoo.com, which
+  // serves Rings of Power and similar Dizipal-only titles) only return
+  // bytes to a browser context with the right session cookies. ExoPlayer
+  // can't get those cookies, so the master.m3u8 fetch silently returns
+  // 0 bytes and the player buffers forever — no onError, no onReady,
+  // just an infinite spinner.
+  //
+  // After 10s with no `player_ready`, swap the source to the WebView
+  // equivalent. The WebView's Chromium engine solves the Cloudflare
+  // challenge transparently and JWPlayer plays the stream from inside
+  // the page. Preference order:
+  //   1. dizipal_direct + embedUrl → dizipal_embed   (player-only page)
+  //   2. dizipal_direct + page url → dizipal         (full episode page)
+  //   3. direct (HDFilm) + webViewFallbackUrl → hdfilm
+  // If none of those is available we leave the native attempt going
+  // (the WebView loader cap above will eventually hide the loader for
+  // sources that switched).
+  useEffect(() => {
+    if (!playerResult) return;
+    const source = playerResult.source;
+    const isNativeStream = source === "dizipal_direct" || source === "direct";
+    if (!isNativeStream) return;
+    if (isPlaybackReady) return;
+    const timer = setTimeout(() => {
+      if (source === "dizipal_direct" && playerResult.embedUrl) {
+        debugLog("[Player] native stalled — falling back to dizipal_embed");
+        setPlayerResult({
+          url: playerResult.embedUrl,
+          source: "dizipal_embed",
+          embedUrl: playerResult.embedUrl,
+          qualityWarning: playerResult.qualityWarning,
+        });
+      } else if (source === "dizipal_direct" && playerResult.url) {
+        debugLog("[Player] native stalled — falling back to dizipal page WebView");
+        setPlayerResult({
+          url: playerResult.url,
+          source: "dizipal",
+          qualityWarning: playerResult.qualityWarning,
+        });
+      } else if (source === "direct" && playerResult.webViewFallbackUrl) {
+        debugLog("[Player] native stalled — falling back to hdfilm WebView");
+        setPlayerResult({
+          url: playerResult.webViewFallbackUrl,
+          source: "hdfilm",
+          qualityWarning: playerResult.qualityWarning,
+        });
+      }
+      // If no fallback is available, leave the player as-is so the user
+      // can press Back; the alternative (forcing not_found) would lose
+      // any chance of recovery if the stream is just slow to start.
+    }, 10_000);
+    return () => clearTimeout(timer);
+  }, [playerResult, isPlaybackReady]);
+
   const handleFullScreenChange = useCallback((isFullScreen: boolean) => {
     if (isFullScreen) {
       lockOrientation(ScreenOrientation.OrientationLock.LANDSCAPE);
