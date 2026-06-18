@@ -42,12 +42,15 @@ const CarouselRoot = styled.View`
   margin-bottom: 22px;
 `;
 
-const SlideContainer = styled.View`
+const SlideContainer = styled.View<{ $focused?: boolean }>`
   width: ${SLIDE_WIDTH}px;
   height: ${SLIDE_HEIGHT}px;
   border-radius: 24px;
   overflow: hidden;
   background-color: ${({ theme }: { theme: AppTheme }) => theme.colors.surface};
+  border-width: ${({ $focused }) => ($focused ? 3 : 0)}px;
+  border-color: ${({ $focused, theme }: { $focused?: boolean; theme: AppTheme }) =>
+    $focused ? theme.colors.primary : "transparent"};
 `;
 
 const ContentOverlay = styled.View`
@@ -151,9 +154,16 @@ function Slide({
 
   const logoUri = logoPath ? getTmdbImageUrl(logoPath, "w300") : null;
 
+  const [focused, setFocused] = useState(false);
+
   return (
-    <Pressable onPress={onPress}>
-      <SlideContainer>
+    <Pressable
+      focusable
+      onPress={onPress}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+    >
+      <SlideContainer $focused={focused}>
         {backdropUri ? (
           <Animated.Image
             source={{ uri: backdropUri }}

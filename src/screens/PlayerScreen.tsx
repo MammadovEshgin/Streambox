@@ -54,10 +54,56 @@ import {
 } from "./player/webviewInjection";
 import { isTvBuild } from "../utils/tv";
 
+// Android TVs physically can't rotate. Forcing PORTRAIT_UP on a TV makes the
+// system render the app in a 1080x1920 portrait viewport letterboxed into the
+// 1920x1080 panel — every screen suddenly looks like a phone column with
+// black bars. Skip every orientation lock on TV; on phones we still want the
+// player to be landscape and the rest of the app to be portrait.
+function lockOrientation(lock: ScreenOrientation.OrientationLock) {
+  if (isTvBuild()) return;
+  void ScreenOrientation.lockAsync(lock);
+}
+
 function debugLog(...args: unknown[]) {
   if (__DEV__) {
     console.log(...args);
   }
+}
+
+// Small wrapper around the player's circular control buttons that adds a
+// visible focus ring on Android TV (where the user navigates with the D-pad
+// and needs to know which control they're about to press).
+type ControlButtonProps = {
+  onPress: () => void;
+  accessibilityLabel: string;
+  disabled?: boolean;
+  children: React.ReactNode;
+  innerStyleExtras?: any;
+};
+
+function ControlButton({ onPress, accessibilityLabel, disabled, children, innerStyleExtras }: ControlButtonProps) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <TouchableOpacity
+      onPress={disabled ? undefined : onPress}
+      activeOpacity={0.8}
+      // @ts-ignore — onFocus/onBlur are valid on Android TV but not typed on TouchableOpacity in stock RN
+      onFocus={() => setFocused(true)}
+      // @ts-ignore
+      onBlur={() => setFocused(false)}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled: !!disabled }}
+      style={[
+        styles.closeButtonInner,
+        focused && styles.closeButtonInnerFocused,
+        disabled && styles.controlButtonDisabled,
+        innerStyleExtras
+      ]}
+    >
+      {children}
+    </TouchableOpacity>
+  );
 }
 
 // Toggles the WebView's HTML <video> via remote Center press on TV.
@@ -226,7 +272,14 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     alignItems: "center",
-    justifyContent: "center"
+    justifyContent: "center",
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: "transparent"
+  },
+  closeButtonInnerFocused: {
+    borderColor: "#22C55E",
+    backgroundColor: "rgba(34, 197, 94, 0.18)"
   },
   controlButtonDisabled: {
     opacity: 0.45
@@ -718,22 +771,22 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     StatusBar.setHidden(true, "fade");
 
     if (playerResult.source !== "youtube_embed") {
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+      lockOrientation(ScreenOrientation.OrientationLock.LANDSCAPE);
     } else {
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+      lockOrientation(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     }
 
     return () => {
       StatusBar.setHidden(false, "fade");
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+      lockOrientation(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
   }, [playerResult]);
 
   const handleFullScreenChange = useCallback((isFullScreen: boolean) => {
     if (isFullScreen) {
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+      lockOrientation(ScreenOrientation.OrientationLock.LANDSCAPE);
     } else {
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+      lockOrientation(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     }
   }, []);
 
@@ -750,7 +803,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const handleClose = useCallback(() => {
     webViewRef.current?.injectJavaScript(PLAYER_STOP_MEDIA_SCRIPT);
     webViewRef.current?.stopLoading();
-    void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    lockOrientation(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     navigation.goBack();
   }, [navigation]);
 
@@ -1260,46 +1313,32 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         {!isLoading && showCloseBtn && (
           <>
             <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
+              <ControlButton onPress={handleClose} accessibilityLabel={t("player.a11y.close")}>
                 <Feather name="x" size={18} color="#FFFFFF" />
-              </TouchableOpacity>
+              </ControlButton>
             </Animated.View>
 
             <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.toggleFit")}>
+              <ControlButton onPress={toggleVideoFit} accessibilityLabel={t("player.a11y.toggleFit")}>
                 <Feather name={videoFit === "contain" ? "maximize" : "minimize"} size={18} color="#FFFFFF" />
-              </TouchableOpacity>
+              </ControlButton>
             </Animated.View>
 
             <Animated.View style={[styles.ccButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity
+              <ControlButton
                 onPress={toggleDirectSubtitleMenu}
-                activeOpacity={directSubtitleOptions.length > 0 || availableSubtitleTracks.length > 0 ? 0.8 : 1}
-                accessibilityRole="button"
                 accessibilityLabel={t("player.a11y.subtitles")}
-                accessibilityState={{ disabled: directSubtitleOptions.length === 0 && availableSubtitleTracks.length === 0 }}
-                style={[
-                  styles.closeButtonInner,
-                  directSubtitleOptions.length === 0 &&
-                  availableSubtitleTracks.length === 0 &&
-                  styles.controlButtonDisabled
-                ]}
+                disabled={directSubtitleOptions.length === 0 && availableSubtitleTracks.length === 0}
               >
                 <MaterialIcons name="closed-caption" size={20} color="#FFFFFF" />
-              </TouchableOpacity>
+              </ControlButton>
             </Animated.View>
 
             {playerResult?.qualityOptions && playerResult.qualityOptions.length > 1 && (
               <Animated.View style={[styles.ccButton, { right: 154, opacity: closeBtnOpacity }]}>
-                <TouchableOpacity
-                  onPress={toggleQualityMenu}
-                  activeOpacity={0.8}
-                  style={styles.closeButtonInner}
-                  accessibilityRole="button"
-                  accessibilityLabel={t("player.a11y.quality")}
-                >
+                <ControlButton onPress={toggleQualityMenu} accessibilityLabel={t("player.a11y.quality")}>
                   <MaterialIcons name="settings" size={20} color="#FFFFFF" />
-                </TouchableOpacity>
+                </ControlButton>
               </Animated.View>
             )}
 
@@ -1414,16 +1453,16 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       {showCloseBtn && (
         <>
           <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
-            <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
+            <ControlButton onPress={handleClose} accessibilityLabel={t("player.a11y.close")}>
               <Feather name="x" size={18} color="#FFFFFF" />
-            </TouchableOpacity>
+            </ControlButton>
           </Animated.View>
 
           {(playerResult?.source === 'hdfilm' || playerResult?.source === 'dizipal' || playerResult?.source === 'dizipal_embed') && (
             <Animated.View style={[styles.scalingButton, { opacity: closeBtnOpacity }]}>
-              <TouchableOpacity onPress={toggleVideoFit} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.toggleFit")}>
+              <ControlButton onPress={toggleVideoFit} accessibilityLabel={t("player.a11y.toggleFit")}>
                 <Feather name={videoFit === 'contain' ? 'maximize' : 'minimize'} size={18} color="#FFFFFF" />
-              </TouchableOpacity>
+              </ControlButton>
             </Animated.View>
           )}
         </>
@@ -1583,7 +1622,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         qualityLabel={qualityWarning?.label ?? ""}
         onGoBack={() => {
           setQualityWarning(null);
-          void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+          lockOrientation(ScreenOrientation.OrientationLock.PORTRAIT_UP);
           navigation.goBack();
         }}
         onContinue={() => {

@@ -123,21 +123,18 @@ const RailCardWrap = styled.View`
   margin-right: 12px;
 `;
 
-const FranchiseCardRoot = styled.Pressable<{ $focused?: boolean }>`
+const FranchiseCardRoot = styled.Pressable`
   width: 132px;
-  border-radius: 16px;
-  border-width: 3px;
-  border-color: ${({ $focused, theme }) => ($focused ? theme.colors.primary : "transparent")};
 `;
 
-const FranchiseArtworkFrame = styled.View`
+const FranchiseArtworkFrame = styled.View<{ $focused?: boolean }>`
   width: 132px;
   height: 198px;
   border-radius: 14px;
   overflow: hidden;
   background-color: ${({ theme }) => theme.colors.surfaceRaised};
-  border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.glassBorder};
+  border-width: ${({ $focused }) => ($focused ? 3 : 1)}px;
+  border-color: ${({ $focused, theme }) => ($focused ? theme.colors.primary : theme.colors.glassBorder)};
 `;
 
 const FranchisePosterImage = styled.Image`
@@ -179,14 +176,13 @@ function FranchiseRailCard({ item, onPress, onPrefetch }: FranchiseRailCardProps
   return (
     <FranchiseCardRoot
       focusable
-      $focused={isFocused}
       onFocus={() => setIsFocused(true)}
       onBlur={() => setIsFocused(false)}
       onPress={onPress}
       onPressIn={onPrefetch}
       style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}
     >
-      <FranchiseArtworkFrame>
+      <FranchiseArtworkFrame $focused={isFocused}>
         <FranchisePosterImage source={franchiseCardBackgroundImage} resizeMode="cover" />
       </FranchiseArtworkFrame>
       <FranchiseCardTitle numberOfLines={1}>{item.title}</FranchiseCardTitle>

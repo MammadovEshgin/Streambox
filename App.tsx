@@ -43,7 +43,7 @@ import { isTvBuild } from "./src/utils/tv";
 console.warn(
   "[STREAMBOX-BOOT]",
   JSON.stringify({
-    bundleFingerprint: "tv-2026-06-18a",
+    bundleFingerprint: "tv-2026-06-18b",
     channel: Updates.channel ?? null,
     updateId: Updates.updateId ?? null,
     runtimeVersion: String(Updates.runtimeVersion ?? "unknown"),

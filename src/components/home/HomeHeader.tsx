@@ -51,14 +51,22 @@ const SearchIcon = styled.View`
 
 /* SearchInput is rendered inline as a plain RNTextInput to support ref forwarding */
 
-const ClearButton = styled(Pressable)`
+const ClearButton = styled(Pressable)<{ $focused?: boolean }>`
   width: 28px;
   height: 28px;
   border-radius: 14px;
-  background-color: ${({ theme }) => theme.colors.border};
+  background-color: ${({ theme, $focused }) => ($focused ? theme.colors.primary : theme.colors.border)};
   align-items: center;
   justify-content: center;
   margin-left: 8px;
+`;
+
+const ResultRowFocusable = styled(Pressable)<{ $focused?: boolean }>`
+  flex-direction: row;
+  align-items: center;
+  padding: 10px 14px;
+  background-color: ${({ theme, $focused }) => ($focused ? theme.colors.primarySoft : "transparent")};
+  border-radius: 12px;
 `;
 
 const FilterButton = styled(Pressable) <{ $active: boolean }>`
@@ -111,11 +119,7 @@ const ResultsScroll = styled(ScrollView).attrs({
   width: 100%;
 `;
 
-const ResultRow = styled(Pressable)`
-  flex-direction: row;
-  align-items: center;
-  padding: 10px 14px;
-`;
+/* ResultRow is rendered via the focus-aware ResultRowFocusable below. */
 
 const ResultSeparator = styled.View`
   height: 1px;
@@ -233,6 +237,67 @@ type HomeHeaderProps = {
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
 
+function FocusableResultRow({ item, onSelect, theme, t }: {
+  item: MediaItem;
+  onSelect: (item: MediaItem) => void;
+  theme: ReturnType<typeof useTheme>;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  const [focused, setFocused] = useState(false);
+  const posterUri = getTmdbImageUrl(item.posterPath, "w185");
+  return (
+    <ResultRowFocusable
+      focusable
+      $focused={focused}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onPress={() => onSelect(item)}
+    >
+      {posterUri ? (
+        <PosterImage source={{ uri: posterUri }} resizeMode="cover" />
+      ) : (
+        <PosterPlaceholder>
+          <Feather name="film" size={18} color={theme.colors.textSecondary} />
+        </PosterPlaceholder>
+      )}
+      <ResultInfo>
+        <ResultTitle numberOfLines={1}>{item.title}</ResultTitle>
+        <ResultMeta>{item.year !== "----" ? item.year : t("common.unknownYear")}</ResultMeta>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          {typeof item.rating === "number" && item.rating > 0 && (
+            <ResultRating>
+              <Feather name="star" size={11} color={theme.colors.primary} />
+              <RatingText>{formatRating(item.rating)}</RatingText>
+            </ResultRating>
+          )}
+          <MediaTypeBadge>
+            <MediaTypeBadgeText>
+              {item.mediaType === "movie" ? t("common.movie") : t("common.series")}
+            </MediaTypeBadgeText>
+          </MediaTypeBadge>
+        </View>
+      </ResultInfo>
+      <Feather name="chevron-right" size={18} color={theme.colors.textSecondary} />
+    </ResultRowFocusable>
+  );
+}
+
+function FocusableClearButton({ onPress }: { onPress: () => void }) {
+  const [focused, setFocused] = useState(false);
+  const theme = useTheme();
+  return (
+    <ClearButton
+      focusable
+      $focused={focused}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onPress={onPress}
+    >
+      <Feather name="x" size={14} color={focused ? "#FFFFFF" : theme.colors.textPrimary} />
+    </ClearButton>
+  );
+}
+
 export function HomeHeader({
   query,
   onChangeQuery,
@@ -344,40 +409,10 @@ export function HomeHeader({
   };
 
   const renderResultItem = useCallback(
-    (item: MediaItem) => {
-      const posterUri = getTmdbImageUrl(item.posterPath, "w185");
-
-      return (
-        <ResultRow onPress={() => handleSelectItem(item)}>
-          {posterUri ? (
-            <PosterImage source={{ uri: posterUri }} resizeMode="cover" />
-          ) : (
-            <PosterPlaceholder>
-              <Feather name="film" size={18} color={currentTheme.colors.textSecondary} />
-            </PosterPlaceholder>
-          )}
-          <ResultInfo>
-            <ResultTitle numberOfLines={1}>{item.title}</ResultTitle>
-            <ResultMeta>{item.year !== "----" ? item.year : t("common.unknownYear")}</ResultMeta>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              {typeof item.rating === "number" && item.rating > 0 && (
-                <ResultRating>
-                  <Feather name="star" size={11} color={currentTheme.colors.primary} />
-                  <RatingText>{formatRating(item.rating)}</RatingText>
-                </ResultRating>
-              )}
-              <MediaTypeBadge>
-                <MediaTypeBadgeText>
-                  {item.mediaType === "movie" ? t("common.movie") : t("common.series")}
-                </MediaTypeBadgeText>
-              </MediaTypeBadge>
-            </View>
-          </ResultInfo>
-          <Feather name="chevron-right" size={18} color={currentTheme.colors.textSecondary} />
-        </ResultRow>
-      );
-    },
-    [handleSelectItem, currentTheme]
+    (item: MediaItem) => (
+      <FocusableResultRow item={item} onSelect={handleSelectItem} theme={currentTheme} t={t} />
+    ),
+    [handleSelectItem, currentTheme, t]
   );
 
   return (
@@ -416,9 +451,7 @@ export function HomeHeader({
             }}
           />
           {query.length > 0 && (
-            <ClearButton onPress={handleClear}>
-              <Feather name="x" size={14} color={currentTheme.colors.textPrimary} />
-            </ClearButton>
+            <FocusableClearButton onPress={handleClear} />
           )}
         </SearchField>
         <FilterButton

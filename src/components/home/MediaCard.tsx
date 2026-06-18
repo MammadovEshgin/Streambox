@@ -6,7 +6,6 @@ import styled from "styled-components/native";
 
 import { MediaItem, getTmdbImageUrl } from "../../api/tmdb";
 import { formatRating } from "../../api/mediaFormatting";
-import { isTvBuild } from "../../utils/tv";
 import { CachedRemoteImage } from "../common/CachedRemoteImage";
 
 const CardRoot = styled.Pressable`
@@ -96,7 +95,6 @@ type MediaCardProps = {
 function MediaCardComponent({ item, onPress, onPressIn, posterUri: customPosterUri, hideRating }: MediaCardProps) {
   const { t } = useTranslation();
   const [focused, setFocused] = useState(false);
-  const tvBuild = isTvBuild();
   const posterUri = customPosterUri ?? getTmdbImageUrl(item.posterPath, "w342");
   const ratingText = formatRating(item.rating);
 
@@ -109,7 +107,7 @@ function MediaCardComponent({ item, onPress, onPressIn, posterUri: customPosterU
       onBlur={() => setFocused(false)}
       style={({ pressed }) => [
         {
-          transform: [{ scale: tvBuild ? 1 : focused ? 1.035 : pressed ? 0.97 : 1 }],
+          transform: [{ scale: focused ? 1.05 : pressed ? 0.97 : 1 }],
           opacity: pressed ? 0.96 : 1,
         },
       ]}
