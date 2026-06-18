@@ -36,11 +36,10 @@ function getResponseFinalOrigin(response: any): string | null {
 import { getTurkishAlternativeTitle } from "../api/tmdb";
 
 // Maximum time we'll spend resolving before giving up and showing "Not Available".
-// Without this, a combination of provider failures (stale URLs, redirect chains,
-// Cloudflare challenges) can add up to 90+ seconds and the user sees an infinite
-// spinner. 25s gives every step room to succeed in the common case while putting
-// a hard ceiling on the worst case.
-const RESOLVER_TOTAL_TIMEOUT_MS = 25_000;
+// 15s — the happy paths (HDFilm native, Dizipal native, DirectLink) all return
+// in 1-3s. The 15s ceiling exists for pathological cases where multiple
+// providers stall in series; the user sees "Not Available" instead of spinning.
+const RESOLVER_TOTAL_TIMEOUT_MS = 15_000;
 
 // Best-effort wait before resolution: if provider config hasn't loaded yet,
 // give it a brief window (Supabase fetch is ~500ms typical) so we don't run
