@@ -55,14 +55,26 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     referer: "https://www.hdfilmcehennemi.nl/",
   },
   dizipal: {
-    baseUrl: "https://dizipal2070.com",
-    referer: "https://dizipal2070.com/",
+    // Dizipal rotates the digit suffix every few days. Keep this current to
+    // minimise the redirect chain on first launch (each stale step adds ~1s
+    // to every search; a 6s axios timeout chokes after ~6 hops).
+    baseUrl: "https://dizipal2079.com",
+    referer: "https://dizipal2079.com/",
   },
 };
 
 const STALE_PROVIDER_BASE_URLS: Partial<Record<keyof ProviderConfigMap, Record<string, ProviderEntry>>> = {
   dizipal: {
     "https://dizipal2031.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2070.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2071.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2072.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2073.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2074.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2075.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2076.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2077.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2078.com": HARDCODED_FALLBACK.dizipal,
   },
 };
 
@@ -128,6 +140,65 @@ export async function refreshProviderConfigs(): Promise<boolean> {
     debugLog("[ProviderConfig] Refreshed from remote", summarise(remote));
     return true;
   }
+  return false;
+}
+
+/**
+ * Self-heal: record a base URL actually reached on the wire — typically the
+ * post-redirect origin extracted from `response.request.responseURL`.
+ *
+ * Dizipal rotates its domain every few days. The remote config (Supabase)
+ * is kept in sync by an operator-driven Telegram bot, but in the gap
+ * between rotation and `/set_dizipal`, every device hits a 301 chain (~1s
+ * per hop). Once a single request completes, axios has already followed
+ * the chain — we capture the final origin and pin it in memory so the
+ * rest of this session goes direct.
+ *
+ * Persists to AsyncStorage so a cold restart within the same rotation
+ * window also starts direct. Does NOT push to Supabase — that's the bot
+ * operator's job — so a single misbehaving device can't poison the
+ * central config.
+ */
+export function recordObservedBaseUrl(
+  provider: keyof ProviderConfigMap,
+  observedBaseUrl: string | null | undefined
+): void {
+  if (!observedBaseUrl) return;
+  let normalized: string;
+  try {
+    normalized = new URL(observedBaseUrl).origin;
+  } catch {
+    return;
+  }
+
+  const current = _configs[provider].baseUrl.replace(/\/+$/, "");
+  if (current === normalized) return;
+
+  // Sanity check: only accept origins that look like the same provider.
+  // Blocks a hijacked redirect from poisoning the in-memory config.
+  if (!sameProviderFamily(provider, normalized)) {
+    debugLog(`[ProviderConfig] Ignoring foreign observed origin: ${normalized}`);
+    return;
+  }
+
+  _configs[provider] = {
+    baseUrl: normalized,
+    referer: `${normalized}/`,
+  };
+  void persistToStorage(_configs);
+  debugLog(`[ProviderConfig] Self-healed ${provider}: ${current} → ${normalized}`);
+}
+
+function sameProviderFamily(provider: keyof ProviderConfigMap, observedOrigin: string): boolean {
+  let host = "";
+  try {
+    host = new URL(observedOrigin).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (!host) return false;
+  if (provider === "dizipal") return host.includes("dizipal");
+  if (provider === "hdfilm") return host.includes("hdfilm");
   return false;
 }
 
