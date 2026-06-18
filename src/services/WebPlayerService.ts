@@ -12,7 +12,27 @@
 
 import axios from "axios";
 import { resolveDirectLink } from "./DirectLinkService";
-import { getProviderConfig, isProviderConfigReady, refreshProviderConfigs } from "./providerConfigService";
+import { getProviderConfig, isProviderConfigReady, recordObservedBaseUrl, refreshProviderConfigs } from "./providerConfigService";
+
+// Pulls the post-redirect origin out of an axios response so the caller can
+// teach providerConfigService where the provider actually lives now. Axios
+// in React Native exposes the final XHR URL on `response.request.responseURL`
+// (the W3C XMLHttpRequest field). On the rare RN runtime where that is
+// undefined we fall through silently — the request still worked, the
+// observation just doesn't update config.
+function getResponseFinalOrigin(response: any): string | null {
+  const finalUrl: string | undefined =
+    response?.request?.responseURL ??
+    response?.request?._response?.url ??
+    response?.request?.url ??
+    response?.config?.url;
+  if (!finalUrl) return null;
+  try {
+    return new URL(finalUrl).origin;
+  } catch {
+    return null;
+  }
+}
 import { getTurkishAlternativeTitle } from "../api/tmdb";
 
 // Maximum time we'll spend resolving before giving up and showing "Not Available".
@@ -452,6 +472,8 @@ async function queryHdFilm(query: string): Promise<SearchResult[]> {
       }
     );
 
+    recordObservedBaseUrl("hdfilm", getResponseFinalOrigin(response));
+
     const rawResults = response.data?.results;
     if (!Array.isArray(rawResults) || rawResults.length === 0) return [];
 
@@ -829,6 +851,11 @@ async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<S
       }
     });
 
+    // Self-heal: if Dizipal redirected us to a new domain, pin it so the
+    // rest of this session (and the next cold start, via AsyncStorage) skip
+    // the 1s-per-hop chain. Costs nothing on the happy path.
+    recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
+
     const rawResults = Array.isArray(response.data?.results) ? response.data.results : [];
     if (!response.data?.success || rawResults.length === 0) {
       return [];
@@ -977,6 +1004,8 @@ async function fetchDizipalPageHtml(pageUrl: string): Promise<string | null> {
         Referer: getDizipalReferer()
       }
     });
+
+    recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
 
     return response.data;
   } catch {
