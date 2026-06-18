@@ -43,7 +43,7 @@ import { isTvBuild } from "./src/utils/tv";
 console.warn(
   "[STREAMBOX-BOOT]",
   JSON.stringify({
-    bundleFingerprint: "tv-2026-06-18e",
+    bundleFingerprint: "tv-2026-06-18f",
     channel: Updates.channel ?? null,
     updateId: Updates.updateId ?? null,
     runtimeVersion: String(Updates.runtimeVersion ?? "unknown"),
@@ -79,6 +79,49 @@ function summariseStack(stack: string | undefined, maxLines = 3): string {
 }
 
 void SplashScreen.preventAutoHideAsync().catch(() => undefined);
+
+// Cold-start update gate.
+//
+// With expo-updates' default config (checkAutomatically: ON_LOAD,
+// fallbackToCacheTimeout: 0) a published OTA takes TWO cold launches to
+// land on the device — launch 1 downloads it in the background, launch 2
+// actually uses it. That two-step is invisible and surprising: a user
+// who's been told "your bug is fixed, restart the app" relaunches once,
+// nothing changes, and concludes the fix never shipped.
+//
+// Here we explicitly check + fetch + reload synchronously *before* the
+// splash hides, so a single relaunch is always enough. On the splash the
+// user sees a brief moment of "Updating..." instead of staring at a
+// stale bundle. After this gate either:
+//   - there is no update                  → resolve immediately
+//   - the update is already pending       → reload (~1s splash flash)
+//   - a new update is detected           → fetch then reload
+//
+// Errors are intentionally swallowed: if we can't update we keep going
+// with the cached bundle rather than blocking app launch.
+const UPDATE_GATE_TIMEOUT_MS = 6_000;
+
+async function applyAnyPendingOtaBeforeBoot(): Promise<void> {
+  if (__DEV__ || !Updates.isEnabled) return;
+
+  const work = (async () => {
+    try {
+      const result = await Updates.checkForUpdateAsync();
+      if (!result.isAvailable) return;
+      await Updates.fetchUpdateAsync();
+      await Updates.reloadAsync(); // never returns — process restarts
+    } catch (error) {
+      console.warn("[OTA gate] cold-start update apply failed:", error);
+    }
+  })();
+
+  await Promise.race([
+    work,
+    new Promise<void>((resolve) => setTimeout(resolve, UPDATE_GATE_TIMEOUT_MS)),
+  ]);
+}
+
+void applyAnyPendingOtaBeforeBoot();
 
 type LaunchPhase = "loading" | "welcome" | "auth" | "app";
 type AuthFlow = "main" | "otp" | "forgot" | "reset";

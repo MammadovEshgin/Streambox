@@ -21,7 +21,7 @@ import {
   type LiveAnnouncement,
 } from "../../services/announcementsService";
 
-const LIVE_OPS_BOOT_DELAY_MS = 1400;
+const LIVE_OPS_BOOT_DELAY_MS = 500;
 
 const Overlay = styled.View`
   flex: 1;

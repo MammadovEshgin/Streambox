@@ -797,7 +797,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     if (isPlaybackReady) return;
     const timer = setTimeout(() => {
       setIsPlaybackReady(true);
-    }, 25_000);
+    }, 12_000);
     return () => clearTimeout(timer);
   }, [playerResult, isPlaybackReady]);
 
