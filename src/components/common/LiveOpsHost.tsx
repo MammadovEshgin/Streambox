@@ -15,7 +15,6 @@ import styled from "styled-components/native";
 import { useAuth } from "../../context/AuthContext";
 import { useAppSettings } from "../../settings/AppSettingsContext";
 import { applyFetchedAppUpdate, checkForPendingAppUpdate } from "../../services/appUpdateService";
-import { isTvBuild } from "../../utils/tv";
 import {
   fetchNextLiveAnnouncement,
   markLiveAnnouncementSeen,
@@ -94,15 +93,15 @@ const ActionRow = styled.View`
   margin-top: 22px;
 `;
 
-const SecondaryButton = styled(Pressable)`
+const SecondaryButton = styled(Pressable)<{ $focused?: boolean }>`
   flex: 1;
   min-height: 50px;
   border-radius: 16px;
-  border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.1);
+  border-width: ${({ $focused }) => ($focused ? 2 : 1)}px;
+  border-color: ${({ $focused, theme }) => ($focused ? theme.colors.primary : "rgba(255, 255, 255, 0.1)")};
   align-items: center;
   justify-content: center;
-  background-color: rgba(255, 255, 255, 0.02);
+  background-color: ${({ $focused }) => ($focused ? "rgba(34, 197, 94, 0.12)" : "rgba(255, 255, 255, 0.02)")};
 `;
 
 const SecondaryButtonLabel = styled.Text`
@@ -111,13 +110,15 @@ const SecondaryButtonLabel = styled.Text`
   font-size: 15px;
 `;
 
-const PrimaryButton = styled(Pressable)`
+const PrimaryButton = styled(Pressable)<{ $focused?: boolean }>`
   flex: 1.35;
   min-height: 50px;
   border-radius: 16px;
   align-items: center;
   justify-content: center;
   background-color: ${({ theme }) => theme.colors.primary};
+  border-width: ${({ $focused }) => ($focused ? 3 : 0)}px;
+  border-color: #FFFFFF;
 `;
 
 const PrimaryButtonLabel = styled.Text`
@@ -129,6 +130,42 @@ const PrimaryButtonLabel = styled.Text`
 type LiveOpsHostProps = {
   enabled: boolean;
 };
+
+// Focus-aware wrappers so the TV remote can land on the modal buttons and the
+// user sees which one is selected. `hasTVPreferredFocus` on the primary button
+// makes the D-pad start on "Restart Now" so a single OK press applies the
+// update — no manual focus navigation needed for the common case.
+function FocusableSecondaryButton({ onPress, children }: { onPress: () => void; children: React.ReactNode }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <SecondaryButton
+      focusable
+      $focused={focused}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onPress={onPress}
+    >
+      {children}
+    </SecondaryButton>
+  );
+}
+
+function FocusablePrimaryButton({ onPress, preferTvFocus, children }: { onPress: () => void; preferTvFocus?: boolean; children: React.ReactNode }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <PrimaryButton
+      focusable
+      // @ts-ignore — Android TV-only prop, not in stock RN types
+      hasTVPreferredFocus={preferTvFocus}
+      $focused={focused}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onPress={onPress}
+    >
+      {children}
+    </PrimaryButton>
+  );
+}
 
 async function openAnnouncementUrl(url: string) {
   try {
@@ -272,18 +309,6 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
     }
   }, []);
 
-  // Android TV remotes can't focus React Native <Modal> buttons reliably, so
-  // the user has no way to tap "Restart Now". Auto-apply the OTA on TV after
-  // a short delay — this is safe because TV sessions are foreground-only and
-  // a one-shot reload is preferable to leaving the device on stale code.
-  useEffect(() => {
-    if (!updateReady || !isTvBuild()) return;
-    const t = setTimeout(() => {
-      void applyFetchedAppUpdate();
-    }, 1500);
-    return () => clearTimeout(t);
-  }, [updateReady]);
-
   return (
     <>
       {announcement ? (
@@ -299,17 +324,17 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
                 <ActionRow>
                   {hasAnnouncementCta ? (
                     <>
-                      <SecondaryButton onPress={() => void dismissAnnouncement(announcement)}>
+                      <FocusableSecondaryButton onPress={() => void dismissAnnouncement(announcement)}>
                         <SecondaryButtonLabel>{t("liveOps.gotIt")}</SecondaryButtonLabel>
-                      </SecondaryButton>
-                      <PrimaryButton onPress={() => void handleAnnouncementPrimary()}>
+                      </FocusableSecondaryButton>
+                      <FocusablePrimaryButton preferTvFocus onPress={() => void handleAnnouncementPrimary()}>
                         <PrimaryButtonLabel>{announcement.ctaLabel ?? t("liveOps.learnMore")}</PrimaryButtonLabel>
-                      </PrimaryButton>
+                      </FocusablePrimaryButton>
                     </>
                   ) : (
-                    <PrimaryButton onPress={() => void handleAnnouncementPrimary()}>
+                    <FocusablePrimaryButton preferTvFocus onPress={() => void handleAnnouncementPrimary()}>
                       <PrimaryButtonLabel>{t("liveOps.gotIt")}</PrimaryButtonLabel>
-                    </PrimaryButton>
+                    </FocusablePrimaryButton>
                   )}
                 </ActionRow>
               </Card>
@@ -328,12 +353,12 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
                 <Title>{t("liveOps.updateTitle")}</Title>
                 <Body>{t("liveOps.updateBody")}</Body>
                 <ActionRow>
-                  <SecondaryButton onPress={handleRestartLater}>
+                  <FocusableSecondaryButton onPress={handleRestartLater}>
                     <SecondaryButtonLabel>{t("liveOps.updateLater")}</SecondaryButtonLabel>
-                  </SecondaryButton>
-                  <PrimaryButton onPress={() => void handleRestartNow()}>
+                  </FocusableSecondaryButton>
+                  <FocusablePrimaryButton preferTvFocus onPress={() => void handleRestartNow()}>
                     <PrimaryButtonLabel>{t("liveOps.updateRestartNow")}</PrimaryButtonLabel>
-                  </PrimaryButton>
+                  </FocusablePrimaryButton>
                 </ActionRow>
               </Card>
             </CardShell>
