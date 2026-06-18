@@ -55,14 +55,26 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     referer: "https://www.hdfilmcehennemi.nl/",
   },
   dizipal: {
-    baseUrl: "https://dizipal2070.com",
-    referer: "https://dizipal2070.com/",
+    // Dizipal rotates the digit suffix every few days. Keep this current to
+    // minimise the redirect chain on first launch (each stale step adds ~1s
+    // to every search; a 6s axios timeout chokes after ~6 hops).
+    baseUrl: "https://dizipal2079.com",
+    referer: "https://dizipal2079.com/",
   },
 };
 
 const STALE_PROVIDER_BASE_URLS: Partial<Record<keyof ProviderConfigMap, Record<string, ProviderEntry>>> = {
   dizipal: {
     "https://dizipal2031.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2070.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2071.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2072.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2073.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2074.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2075.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2076.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2077.com": HARDCODED_FALLBACK.dizipal,
+    "https://dizipal2078.com": HARDCODED_FALLBACK.dizipal,
   },
 };
 

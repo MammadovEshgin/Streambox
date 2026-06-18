@@ -12,8 +12,32 @@
 
 import axios from "axios";
 import { resolveDirectLink } from "./DirectLinkService";
-import { getProviderConfig } from "./providerConfigService";
+import { getProviderConfig, isProviderConfigReady, refreshProviderConfigs } from "./providerConfigService";
 import { getTurkishAlternativeTitle } from "../api/tmdb";
+
+// Maximum time we'll spend resolving before giving up and showing "Not Available".
+// Without this, a combination of provider failures (stale URLs, redirect chains,
+// Cloudflare challenges) can add up to 90+ seconds and the user sees an infinite
+// spinner. 25s gives every step room to succeed in the common case while putting
+// a hard ceiling on the worst case.
+const RESOLVER_TOTAL_TIMEOUT_MS = 25_000;
+
+// Best-effort wait before resolution: if provider config hasn't loaded yet,
+// give it a brief window (Supabase fetch is ~500ms typical) so we don't run
+// the resolver against stale cached URLs.
+const PROVIDER_CONFIG_WAIT_TIMEOUT_MS = 3_000;
+
+async function ensureProviderConfigReady(): Promise<void> {
+  if (isProviderConfigReady()) return;
+  try {
+    await Promise.race([
+      refreshProviderConfigs(),
+      new Promise<void>((resolve) => setTimeout(resolve, PROVIDER_CONFIG_WAIT_TIMEOUT_MS)),
+    ]);
+  } catch {
+    /* fall through with whatever config is in memory */
+  }
+}
 
 export type WebPlayerRequest = {
   mediaType: "movie" | "tv";
@@ -1822,6 +1846,22 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
     };
   }
 
+  // Wait briefly for provider config so we don't run against stale hardcoded URLs.
+  await ensureProviderConfigReady();
+
+  // Race the full pipeline against a hard timeout. Without this, a combination
+  // of slow provider failures can stack to 60-90 seconds and the user sees an
+  // unbounded spinner. On timeout we return not_found so the UI shows the
+  // "Not Available" message instead of hanging.
+  return Promise.race([
+    resolveWebPlayerUrlInner(request),
+    new Promise<WebPlayerResult>((resolve) =>
+      setTimeout(() => resolve({ url: "", source: "not_found" }), RESOLVER_TOTAL_TIMEOUT_MS)
+    ),
+  ]);
+}
+
+async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebPlayerResult> {
   // 1. HDFilm — try to extract a real native stream. We DEFER the WebView
   //    fallback (source: "hdfilm" pointing at an HDFilm page) because that
   //    path is fragile: HDFilm sometimes shows a page with alternative-link
