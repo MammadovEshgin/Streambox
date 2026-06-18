@@ -3,7 +3,6 @@ import * as WebBrowser from "expo-web-browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppState,
-  type AppStateStatus,
   Image,
   InteractionManager,
   Linking,
@@ -95,15 +94,15 @@ const ActionRow = styled.View`
   margin-top: 22px;
 `;
 
-const SecondaryButton = styled(Pressable)`
+const SecondaryButton = styled(Pressable)<{ $focused?: boolean }>`
   flex: 1;
   min-height: 50px;
   border-radius: 16px;
-  border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.1);
+  border-width: ${({ $focused }) => ($focused ? 2 : 1)}px;
+  border-color: ${({ $focused, theme }) => ($focused ? theme.colors.primary : "rgba(255, 255, 255, 0.1)")};
   align-items: center;
   justify-content: center;
-  background-color: rgba(255, 255, 255, 0.02);
+  background-color: ${({ $focused }) => ($focused ? "rgba(34, 197, 94, 0.12)" : "rgba(255, 255, 255, 0.02)")};
 `;
 
 const SecondaryButtonLabel = styled.Text`
@@ -112,17 +111,19 @@ const SecondaryButtonLabel = styled.Text`
   font-size: 15px;
 `;
 
-const PrimaryButton = styled(Pressable)`
+const PrimaryButton = styled(Pressable)<{ $focused?: boolean }>`
   flex: 1.35;
   min-height: 50px;
   border-radius: 16px;
   align-items: center;
   justify-content: center;
   background-color: ${({ theme }) => theme.colors.primary};
+  border-width: ${({ $focused }) => ($focused ? 3 : 0)}px;
+  border-color: #FFFFFF;
 `;
 
 const PrimaryButtonLabel = styled.Text`
-  color: ${({ theme }) => theme.colors.textOnPrimary};
+  color: #FFFFFF;
   font-family: Outfit_700Bold;
   font-size: 15px;
 `;
@@ -130,6 +131,42 @@ const PrimaryButtonLabel = styled.Text`
 type LiveOpsHostProps = {
   enabled: boolean;
 };
+
+// Focus-aware wrappers so the TV remote can land on the modal buttons and the
+// user sees which one is selected. `hasTVPreferredFocus` on the primary button
+// makes the D-pad start on "Restart Now" so a single OK press applies the
+// update — no manual focus navigation needed for the common case.
+function FocusableSecondaryButton({ onPress, children }: { onPress: () => void; children: React.ReactNode }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <SecondaryButton
+      focusable
+      $focused={focused}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onPress={onPress}
+    >
+      {children}
+    </SecondaryButton>
+  );
+}
+
+function FocusablePrimaryButton({ onPress, preferTvFocus, children }: { onPress: () => void; preferTvFocus?: boolean; children: React.ReactNode }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <PrimaryButton
+      focusable
+      // @ts-ignore — Android TV-only prop, not in stock RN types
+      hasTVPreferredFocus={preferTvFocus}
+      $focused={focused}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onPress={onPress}
+    >
+      {children}
+    </PrimaryButton>
+  );
+}
 
 async function openAnnouncementUrl(url: string) {
   try {
@@ -154,16 +191,16 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
   const { session } = useAuth();
   const { t } = useTranslation();
   const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null);
-  // We track update-ready as a ref, not as visible state. The HDFilm decoder
-  // rotates often; surfacing a "Restart now" modal every time would be hostile.
-  // Instead we silently apply the update the next time the user returns to the
-  // app after backgrounding it (see the AppState effect below).
-  const updateReadyRef = useRef(false);
+  const [updateReady, setUpdateReady] = useState(false);
+  // Mirror of isPlayerActive() — when an update is pending and the user is
+  // mid-playback we hold the modal back; this ticker lets the component
+  // re-render once they leave the player so the modal can pop. Cheap (only
+  // active while updateReady is true and a 2s cadence).
+  const [playerActiveTick, setPlayerActiveTick] = useState(0);
   const refreshInFlightRef = useRef(false);
   const mountedRef = useRef(true);
   const bootTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didForceUpdateCheckRef = useRef(false);
-  const lastAppStateRef = useRef<AppStateStatus>(AppState.currentState);
   const appVersion = useMemo(
     () => String(Constants.expoConfig?.version ?? "1.0.0"),
     []
@@ -198,7 +235,7 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
       }
 
       if (pendingUpdate) {
-        updateReadyRef.current = true;
+        setUpdateReady(true);
       }
     } catch (error) {
       console.warn("Live ops refresh failed:", error);
@@ -238,28 +275,24 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
     }
 
     const subscription = AppState.addEventListener("change", (nextState) => {
-      const previous = lastAppStateRef.current;
-      lastAppStateRef.current = nextState;
-
-      if (nextState !== "active") {
-        return;
+      if (nextState === "active") {
+        void runLiveOpsRefresh();
       }
-
-      // Returning to the app. If a new bundle is staged, apply it silently —
-      // but never mid-playback (would yank the user out of their movie).
-      // PlayerScreen sets the player-active flag on mount; we skip the reload
-      // when it's set and try again on the next return.
-      if (previous !== "active" && updateReadyRef.current && !isPlayerActive()) {
-        updateReadyRef.current = false;
-        void applyFetchedAppUpdate();
-        return;
-      }
-
-      void runLiveOpsRefresh();
     });
 
     return () => subscription.remove();
   }, [enabled, runLiveOpsRefresh]);
+
+  // Poll player-active flag while an update is pending so the modal pops as
+  // soon as the user leaves the player. No-op when updateReady is false.
+  useEffect(() => {
+    if (!updateReady) return;
+    if (!isPlayerActive()) return;
+    const handle = setInterval(() => {
+      if (!isPlayerActive()) setPlayerActiveTick((t) => t + 1);
+    }, 2000);
+    return () => clearInterval(handle);
+  }, [updateReady, playerActiveTick]);
 
   const dismissAnnouncement = useCallback(async (target: LiveAnnouncement) => {
     await markLiveAnnouncementSeen({
@@ -281,6 +314,18 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
     }
   }, [announcement, dismissAnnouncement]);
 
+  const handleRestartLater = useCallback(() => {
+    setUpdateReady(false);
+  }, []);
+
+  const handleRestartNow = useCallback(async () => {
+    try {
+      await applyFetchedAppUpdate();
+    } catch (error) {
+      console.warn("Failed to apply fetched update:", error);
+    }
+  }, []);
+
   return (
     <>
       {announcement ? (
@@ -296,18 +341,41 @@ export function LiveOpsHost({ enabled }: LiveOpsHostProps) {
                 <ActionRow>
                   {hasAnnouncementCta ? (
                     <>
-                      <SecondaryButton onPress={() => void dismissAnnouncement(announcement)}>
+                      <FocusableSecondaryButton onPress={() => void dismissAnnouncement(announcement)}>
                         <SecondaryButtonLabel>{t("liveOps.gotIt")}</SecondaryButtonLabel>
-                      </SecondaryButton>
-                      <PrimaryButton onPress={() => void handleAnnouncementPrimary()}>
+                      </FocusableSecondaryButton>
+                      <FocusablePrimaryButton preferTvFocus onPress={() => void handleAnnouncementPrimary()}>
                         <PrimaryButtonLabel>{announcement.ctaLabel ?? t("liveOps.learnMore")}</PrimaryButtonLabel>
-                      </PrimaryButton>
+                      </FocusablePrimaryButton>
                     </>
                   ) : (
-                    <PrimaryButton onPress={() => void handleAnnouncementPrimary()}>
+                    <FocusablePrimaryButton preferTvFocus onPress={() => void handleAnnouncementPrimary()}>
                       <PrimaryButtonLabel>{t("liveOps.gotIt")}</PrimaryButtonLabel>
-                    </PrimaryButton>
+                    </FocusablePrimaryButton>
                   )}
+                </ActionRow>
+              </Card>
+            </CardShell>
+          </Overlay>
+        </Modal>
+      ) : null}
+
+      {!announcement && updateReady && !isPlayerActive() ? (
+        <Modal visible transparent animationType="fade" onRequestClose={handleRestartLater}>
+          <Overlay>
+            <CardShell>
+              <Card>
+                <Accent $accent="rgba(34, 197, 94, 0.85)" />
+                <Eyebrow>{t("liveOps.updateEyebrow")}</Eyebrow>
+                <Title>{t("liveOps.updateTitle")}</Title>
+                <Body>{t("liveOps.updateBody")}</Body>
+                <ActionRow>
+                  <FocusableSecondaryButton onPress={handleRestartLater}>
+                    <SecondaryButtonLabel>{t("liveOps.updateLater")}</SecondaryButtonLabel>
+                  </FocusableSecondaryButton>
+                  <FocusablePrimaryButton preferTvFocus onPress={() => void handleRestartNow()}>
+                    <PrimaryButtonLabel>{t("liveOps.updateRestartNow")}</PrimaryButtonLabel>
+                  </FocusablePrimaryButton>
                 </ActionRow>
               </Card>
             </CardShell>

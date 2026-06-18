@@ -695,6 +695,25 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     };
   }, [playerResult]);
 
+  // Safety net: bound how long the loader can sit on top of a WebView. The
+  // injected JS posts `player_ready` once JWPlayer initialises — but if the
+  // provider's Cloudflare challenge stalls or JWPlayer never starts, that
+  // message never arrives and the loader sits indefinitely over a
+  // page-loaded WebView. After this many ms with no player_ready, hide the
+  // loader anyway; the WebView is already rendered behind it so the user
+  // sees the provider's own UI immediately.
+  useEffect(() => {
+    if (!playerResult) return;
+    const source = playerResult.source;
+    const isWebViewPlayback = source === "hdfilm" || source === "dizipal" || source === "dizipal_embed";
+    if (!isWebViewPlayback) return;
+    if (isPlaybackReady) return;
+    const timer = setTimeout(() => {
+      setIsPlaybackReady(true);
+    }, 25_000);
+    return () => clearTimeout(timer);
+  }, [playerResult, isPlaybackReady]);
+
   const handleFullScreenChange = useCallback((isFullScreen: boolean) => {
     if (isFullScreen) {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
