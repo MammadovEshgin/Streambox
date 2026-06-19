@@ -30,7 +30,13 @@ import { useTheme } from "styled-components/native";
 import Reanimated, {
   FadeIn
 } from "react-native-reanimated";
-import { resolveHdFilmRuntimeStream, resolveWebPlayerUrl, type WebPlayerResult } from "../services/WebPlayerService";
+import {
+  resolveDirectWebPlayerFallback,
+  resolveHdFilmRuntimeStream,
+  resolveWebPlayerUrl,
+  type WebPlayerRequest,
+  type WebPlayerResult
+} from "../services/WebPlayerService";
 import { setPlayerActive } from "../services/playerActivityFlag";
 import { getProviderConfig } from "../services/providerConfigService";
 import { useAppSettings } from "../settings/AppSettingsContext";
@@ -39,6 +45,7 @@ import {
   parseSubtitleDocument,
   type ParsedSubtitleCue
 } from "../utils/subtitles";
+import { HlsWebPlayer, type HlsWebPlayerEvent } from "./player/HlsWebPlayer";
 import {
   shouldAcceptDiscoveredHdFilmStream,
   shouldAllowPlayerWebViewRequest,
@@ -56,6 +63,16 @@ import {
 function debugLog(...args: unknown[]) {
   if (__DEV__) {
     console.log(...args);
+  }
+}
+
+function isImagestooStream(url?: string | null): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "imagestoo.com" || host.endsWith(".imagestoo.com");
+  } catch {
+    return false;
   }
 }
 
@@ -442,6 +459,55 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const hdfilmNativeFallbackTriggeredRef = useRef(false);
   const hdfilmRuntimeDiscoveryKeysRef = useRef(new Set<string>());
   const playerResultRef = useRef<WebPlayerResult | null>(null);
+  const directFallbackPromiseRef = useRef<Promise<WebPlayerResult> | null>(null);
+  const dizipalRecoveryTriggeredRef = useRef(false);
+
+  const buildWebPlayerRequest = useCallback((): WebPlayerRequest => ({
+    mediaType: route.params.mediaType,
+    title: route.params.title,
+    originalTitle: route.params.originalTitle,
+    tmdbId: route.params.tmdbId,
+    imdbId: route.params.imdbId,
+    year: route.params.year,
+    seasonNumber: route.params.seasonNumber,
+    episodeNumber: route.params.episodeNumber,
+    castNames: route.params.castNames,
+    videoId: route.params.videoId
+  }), [route.params]);
+
+  const recoverFromDizipalFailure = useCallback((reason: string) => {
+    if (dizipalRecoveryTriggeredRef.current) return;
+    dizipalRecoveryTriggeredRef.current = true;
+    debugLog("[Player] Dizipal CDN failed; trying direct providers:", reason);
+    setIsResolving(true);
+
+    const startedAt = Date.now();
+    const pending = directFallbackPromiseRef.current
+      ?? resolveDirectWebPlayerFallback(buildWebPlayerRequest());
+    directFallbackPromiseRef.current = pending;
+
+    void pending.then((fallback) => {
+      const elapsed = Date.now() - startedAt;
+      debugLog(`[Player] Direct fallback resolved in ${elapsed}ms — source:${fallback.source} streamUrl:${fallback.streamUrl ?? "none"} referer:${fallback.referer ?? "none"}`);
+
+      const current = playerResultRef.current;
+      if (current?.source !== "dizipal_direct" && current?.source !== "dizipal_html5") {
+        debugLog("[Player] Direct fallback ignored — playerResult moved on:", current?.source);
+        return;
+      }
+
+      setLoadError(null);
+      setIsPlaybackReady(false);
+      setPlayerResult(fallback);
+      setCurrentStreamUrl(fallback.streamUrl ?? null);
+    }).catch((error) => {
+      debugLog("[Player] Direct fallback threw — falling through to not_found:", error?.message ?? String(error));
+      setPlayerResult({ url: "", source: "not_found" });
+      setCurrentStreamUrl(null);
+    }).finally(() => {
+      setIsResolving(false);
+    });
+  }, [buildWebPlayerRequest]);
 
   useEffect(() => {
     playerResultRef.current = playerResult;
@@ -622,6 +688,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setActiveSubtitleText(null);
     hdfilmNativeFallbackTriggeredRef.current = false;
     hdfilmRuntimeDiscoveryKeysRef.current.clear();
+    dizipalRecoveryTriggeredRef.current = false;
+    directFallbackPromiseRef.current = null;
 
     if (route.params.trailerUrl) {
       // Show trailer directly
@@ -642,18 +710,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     }
 
     setIsResolving(true);
-    resolveWebPlayerUrl({
-      mediaType: route.params.mediaType,
-      title: route.params.title,
-      originalTitle: route.params.originalTitle,
-      tmdbId: route.params.tmdbId,
-      imdbId: route.params.imdbId,
-      year: route.params.year,
-      seasonNumber: route.params.seasonNumber,
-      episodeNumber: route.params.episodeNumber,
-      castNames: route.params.castNames,
-      videoId: route.params.videoId
-    })
+    resolveWebPlayerUrl(buildWebPlayerRequest())
       .then((result) => {
         if (cancelled) return;
         debugLog("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
@@ -675,7 +732,21 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       });
 
     return () => { cancelled = true; };
-  }, [route.params]);
+  }, [route.params, buildWebPlayerRequest]);
+
+  // Prepare a provider-independent alternative without delaying native playback.
+  useEffect(() => {
+    if (
+      playerResult?.source !== "dizipal_direct"
+      || !isImagestooStream(playerResult.streamUrl)
+      || directFallbackPromiseRef.current
+    ) {
+      return;
+    }
+
+    directFallbackPromiseRef.current = resolveDirectWebPlayerFallback(buildWebPlayerRequest());
+    void directFallbackPromiseRef.current.catch(() => undefined);
+  }, [playerResult?.source, playerResult?.streamUrl, buildWebPlayerRequest]);
 
   // Landscape lock â€” only when movie is actually available
   useEffect(() => {
@@ -716,19 +787,19 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   // Native-stream stall escape hatch.
   //
-  // Some Cloudflare-protected CDN hosts (imagestoo.com et al.) accept the
-  // m3u8 request but never serve segments to a native client without
-  // browser cookies. ExoPlayer ends up buffering forever — no readyToPlay,
-  // no error event for ~30s. The user gives up before then.
+  // Some provider CDNs accept the media request but never return response
+  // headers — most often imagestoo.com, which now serves 404 HTML for many
+  // titles' deleted media files. After 8s with no readyToPlay, route to the
+  // appropriate fallback:
   //
-  // After 20s with no readyToPlay (generous enough for a slow-but-working
-  // network), trigger the SAME path the explicit error handler uses:
-  //   • direct + webViewFallbackUrl → hdfilm WebView (known to work)
-  //   • dizipal_direct              → not_found     (no embed fallback)
-  //   • other                       → "Failed to load this stream" error
-  // This deliberately does NOT swap into dizipal_embed/dizipal — per
-  // user feedback, those WebView paths surface a broken player and are
-  // strictly worse than an honest "Not Available".
+  //   • direct + webViewFallbackUrl  → hdfilm WebView (known to work)
+  //   • dizipal_direct + imagestoo   → SKIP dizipal_html5 entirely. The media
+  //                                     file is gone; the WebView fallback
+  //                                     would just stall another 18s before
+  //                                     the watchdog routes us here anyway.
+  //                                     Go straight to direct providers.
+  //   • dizipal_direct + other host  → dizipal_html5 clean WebView fallback
+  //   • direct                       → "Not Available"
   useEffect(() => {
     if (!playerResult) return;
     const source = playerResult.source;
@@ -736,23 +807,48 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     if (!isNativeStream) return;
     if (isPlaybackReady) return;
     const timer = setTimeout(() => {
-      debugLog(`[Player] Native stream stalled (${source}) — applying error path`);
-      setPlayerResult((prev) => {
-        if (prev?.source === "direct" && prev.webViewFallbackUrl) {
-          setLoadError(null);
-          return { url: prev.webViewFallbackUrl, source: "hdfilm" };
-        }
-        if (prev?.source === "dizipal_direct") {
-          setLoadError(null);
-          return { url: "", source: "not_found" };
-        }
-        setLoadError("Failed to load this stream. Please try again later.");
-        return prev;
-      });
-    }, 20_000);
-    return () => clearTimeout(timer);
-  }, [playerResult, isPlaybackReady]);
+      debugLog(`[Player] Native stream stalled (${source}) — switching to fallback player`);
+      const prev = playerResultRef.current;
 
+      if (prev?.source === "direct" && prev.webViewFallbackUrl) {
+        setLoadError(null);
+        setPlayerResult({ url: prev.webViewFallbackUrl, source: "hdfilm" });
+        return;
+      }
+
+      if (prev?.source === "dizipal_direct" && prev.streamUrl) {
+        if (isImagestooStream(prev.streamUrl)) {
+          // Imagestoo's deleted-media case. The prefetch started when this
+          // playerResult was set (see useEffect at the directFallbackPromiseRef
+          // block), so the addon call is already in-flight or done.
+          debugLog("[Player] Imagestoo stream — skipping HTML5 WebView, going straight to direct providers");
+          recoverFromDizipalFailure("native_stall_imagestoo");
+          return;
+        }
+        setLoadError(null);
+        setPlayerResult({ ...prev, source: "dizipal_html5" });
+        return;
+      }
+
+      if (prev?.source === "direct") {
+        setLoadError(null);
+        setPlayerResult({ url: "", source: "not_found" });
+        return;
+      }
+
+      setLoadError("Failed to load this stream. Please try again later.");
+    }, 8_000);
+    return () => clearTimeout(timer);
+  }, [playerResult, isPlaybackReady, recoverFromDizipalFailure]);
+
+  useEffect(() => {
+    if (playerResult?.source !== "dizipal_html5") return;
+    if (isPlaybackReady) return;
+    const timer = setTimeout(() => {
+      recoverFromDizipalFailure("webview_watchdog");
+    }, 18_000);
+    return () => clearTimeout(timer);
+  }, [playerResult?.source, isPlaybackReady, recoverFromDizipalFailure]);
 
   const handleFullScreenChange = useCallback((isFullScreen: boolean) => {
     if (isFullScreen) {
@@ -778,6 +874,24 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     navigation.goBack();
   }, [navigation]);
+
+  const handleHlsWebPlayerEvent = useCallback((event: HlsWebPlayerEvent) => {
+    switch (event.type) {
+      case "ready":
+      case "playing":
+        setIsPlaybackReady(true);
+        break;
+      case "error":
+        debugLog("[Player] HLS WebView reported error:", event.message);
+        recoverFromDizipalFailure(event.message);
+        break;
+      case "ended":
+        handleClose();
+        break;
+      default:
+        break;
+    }
+  }, [handleClose, recoverFromDizipalFailure]);
 
   const handleNavChange = useCallback((s: WebViewNavigation) => {
     setCanGoBack(s.canGoBack);
@@ -970,6 +1084,16 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     player.loop = false;
   });
 
+  useEffect(() => {
+    const sourceIsDirect = playerResult?.source === "dizipal_direct" || playerResult?.source === "direct";
+    if (sourceIsDirect) return;
+    try {
+      videoPlayer?.pause?.();
+    } catch {
+      /* expo-video already torn down */
+    }
+  }, [videoPlayer, playerResult?.source]);
+
   // Load the source when directStreamUrl becomes available
   const streamReferer = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.referer ?? "" : "";
   const directStreamType = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.streamType ?? "" : "";
@@ -998,7 +1122,6 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       uri: directStreamUrl,
       headers: {
         ...(streamReferer ? { Referer: streamReferer } : {}),
-        ...(streamReferer ? { Origin: new URL(streamReferer).origin } : {}),
         "User-Agent": PLAYER_WEBVIEW_USER_AGENT
       },
       contentType
@@ -1035,12 +1158,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             setLoadError(null);
             return { url: prev.webViewFallbackUrl, source: "hdfilm" };
           }
-          // Dizipal: native or nothing. The Dizipal embed/page WebView does
-          // not reliably render its <video> on Android (Cloudflare cookies
-          // for the stream host aren't acquired in-page), so swapping to it
-          // surfaces an error-state player that's worse than honest "Not
-          // Available". Mark not_found and let the user back out.
-          if (prev?.source === "dizipal_direct") {
+          if (prev?.source === "dizipal_direct" && prev.streamUrl) {
+            setLoadError(null);
+            return { ...prev, source: "dizipal_html5" };
+          }
+          if (prev?.source === "direct") {
             setLoadError(null);
             return { url: "", source: "not_found" };
           }
@@ -1237,6 +1359,34 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const isNotAvailable = playerResult?.source === "not_found";
 
   const isDirectStream = playerResult?.source === "dizipal_direct" || playerResult?.source === "direct";
+  const isHlsWebViewStream = playerResult?.source === "dizipal_html5";
+
+  if (isHlsWebViewStream && playerResult?.streamUrl) {
+    return (
+      <View style={styles.root}>
+        <HlsWebPlayer
+          streamUrl={playerResult.streamUrl}
+          embedUrl={playerResult.embedUrl ?? null}
+          pageUrl={playerResult.url}
+          referer={playerResult.referer ?? null}
+          subtitles={playerResult.subtitles ?? []}
+          onEvent={handleHlsWebPlayerEvent}
+        />
+        {isLoading && (
+          <PlayerLoadingOverlay
+            title={route.params.title}
+            seasonNumber={route.params.seasonNumber}
+            episodeNumber={route.params.episodeNumber}
+          />
+        )}
+        <Animated.View style={[styles.closeButton, { zIndex: 20 }]}>
+          <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
+            <Feather name="x" size={18} color="#FFFFFF" />
+          </TouchableOpacity>
+        </Animated.View>
+      </View>
+    );
+  }
 
   // Direct stream: completely isolated render tree
   if (isDirectStream && directStreamUrl) {

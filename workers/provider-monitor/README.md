@@ -1,11 +1,15 @@
 # StreamBox Provider Monitor
 
-Cloudflare Worker Cron monitor for streaming provider domains. It reads the current Dizipal URL from the Supabase `provider_configs` table, checks its home/search endpoints every 12 hours, stores status in KV, and sends Telegram alerts only when a provider changes from healthy to down or from down to recovered.
+Cloudflare Worker Cron monitor for streaming provider domains. It reads the current provider URLs from the Supabase `provider_configs` table, checks the endpoints consumed by the app every 12 hours, stores status in KV, and sends Telegram alerts only when a provider changes from healthy to down or from down to recovered.
 
 ## What It Checks
 
 - Dizipal home: `base_url/`
 - Dizipal search: `base_url/ajax-search?q=breaking%20bad`
+- Dizibal site-config API: `base_url/api/site-config/maintenance`
+- Dizibal movie-search response shape: `base_url/api/movies?search=shawshank&limit=3`
+
+Dizibal's browser homepage is intentionally not checked because it rejects Cloudflare Worker egress with HTTP 403 even while the JSON APIs used by StreamBox are healthy.
 
 An endpoint is marked down after `FAILURE_THRESHOLD` consecutive failures, default `3`.
 

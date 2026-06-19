@@ -11,7 +11,6 @@
  */
 
 import axios from "axios";
-import { resolveDirectLink } from "./DirectLinkService";
 import { getProviderConfig, isProviderConfigReady, recordObservedBaseUrl, refreshProviderConfigs } from "./providerConfigService";
 
 // Pulls the post-redirect origin out of an axios response so the caller can
@@ -36,10 +35,16 @@ function getResponseFinalOrigin(response: any): string | null {
 import { getTurkishAlternativeTitle } from "../api/tmdb";
 
 // Maximum time we'll spend resolving before giving up and showing "Not Available".
-// 15s — the happy paths (HDFilm native, Dizipal native, DirectLink) all return
-// in 1-3s. The 15s ceiling exists for pathological cases where multiple
+// 15s — the happy paths (HDFilm native, Dizipal native, Dizibal scraper) all
+// return in 1-3s. The 15s ceiling exists for pathological cases where multiple
 // providers stall in series; the user sees "Not Available" instead of spinning.
 const RESOLVER_TOTAL_TIMEOUT_MS = 15_000;
+
+// Dizibal third-tier scraper budget. The chain is 3 sequential HTTP calls
+// (search → season → stream/m3u8); on a healthy network each is ~150-400ms,
+// so 8s is plenty for the worst case and keeps "Not Available" from ever
+// exceeding the user's patience.
+const DIRECT_FALLBACK_TIMEOUT_MS = 8_000;
 
 // Best-effort wait before resolution: if provider config hasn't loaded yet,
 // give it a brief window (Supabase fetch is ~500ms typical) so we don't run
@@ -73,7 +78,7 @@ export type WebPlayerRequest = {
 
 export type WebPlayerResult = {
   url: string;
-  source: "hdfilm" | "dizipal" | "dizipal_embed" | "dizipal_direct" | "youtube_embed" | "direct" | "not_found";
+  source: "hdfilm" | "dizipal" | "dizipal_embed" | "dizipal_direct" | "dizipal_html5" | "youtube_embed" | "direct" | "not_found";
   streamUrl?: string;
   streamType?: string;
   poster?: string;
@@ -1652,7 +1657,7 @@ async function resolveViaGetVideoApi(embedUrl: string, html: string): Promise<Di
       streamUrl: m3u8,
       streamType: m3u8.includes(".m3u8") ? "m3u8" : "mp4",
       poster: "",
-      referer: embedOrigin + "/",
+      referer: embedUrl,
       subtitles: uniqueSubs
     };
   } catch (e) {
@@ -1676,12 +1681,11 @@ async function resolveEmbedToM3u8(embedUrl: string, referer: string): Promise<Di
     const m3u8 = extractM3u8FromEmbedHtml(html);
     if (m3u8) {
       const subs = extractSubtitlesFromEmbedHtml(html);
-      const embedOrigin = new URL(embedUrl).origin + "/";
       return {
         streamUrl: m3u8,
         streamType: "m3u8",
         poster: "",
-        referer: embedOrigin,
+        referer: embedUrl,
         subtitles: subs
       };
     }
@@ -1757,7 +1761,7 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
           streamUrl: config.v,
           streamType,
           poster: config.p ?? "",
-          referer: `${baseUrl}/`,
+          referer: pageUrl,
           subtitles: []
         },
         embedUrl: null
@@ -2036,39 +2040,13 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
     } catch { /* silent */ }
   }
 
-  // 3. Direct scrapers (Consumet & Stremio addons) — last source of real streams.
-  try {
-    const directResult = await resolveDirectLink({
-      title: request.title,
-      mediaType: request.mediaType,
-      tmdbId: request.imdbId?.startsWith("tt") ? undefined : request.imdbId ? String(request.imdbId) : undefined,
-      imdbId: request.imdbId?.startsWith("tt") ? request.imdbId : undefined,
-      seasonNumber: request.seasonNumber,
-      episodeNumber: request.episodeNumber
-    });
-
-    if (directResult && directResult.primary) {
-      const { primary } = directResult;
-      // Extract referer from headers if available
-      const referer = primary.headers?.Referer || primary.headers?.referer || "";
-
-      return {
-        url: primary.url,
-        source: "direct",
-        streamUrl: primary.url,
-        streamType: primary.format === "hls" ? "m3u8" : "mp4",
-        referer,
-        subtitles: (primary.subtitles || []).map((s: any) => ({
-          url: s.url,
-          label: s.label,
-          lang: s.language
-        })),
-        qualityOptions: primary.qualityOptions
-      };
-    }
-  } catch (error) {
-    debugLog("[WebPlayerService] Direct resolution skipped:", error);
-  }
+  // 3. Dizibal scraper — third source of native streams, used when both
+  //    HDFilm and Dizipal couldn't yield a playable URL (typical case:
+  //    Dizipal resolved an imagestoo m3u8 whose underlying media was
+  //    deleted). Dizibal serves m3u8 over its own CDN (uk-traffic / cdn77)
+  //    which is reachable from networks that blocked cloudnestra/embed.su.
+  const directFallback = await resolveDirectWebPlayerFallback(request);
+  if (directFallback.source !== "not_found") return directFallback;
 
   // 4. Last resort: HDFilm WebView. Only reached when no provider produced
   //    a native stream — better than not_found, even if the JS injection in
@@ -2076,6 +2054,307 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
   if (hdfilmWebViewFallback) return hdfilmWebViewFallback;
 
   return { url: "", source: "not_found" };
+}
+
+// ===========================================================================
+// Tier 3 — Dizibal scraper (on-device, residential IP)
+// ===========================================================================
+//
+// dizibal.com is a Turkish content platform with a clean public REST API.
+// On-device axios passes Cloudflare bot management because the user's mobile
+// carrier IP looks residential. The CDN serving the m3u8 (uk-traffic-076 /
+// cdn77 family) is mainstream commercial infrastructure that's not on the
+// Azerbaijani ISP block lists that killed cloudnestra/embed.su.
+//
+// Endpoint chain (3 sequential HTTP calls):
+//   1. GET /api/<series|movies>?search={title}&limit=10
+//        → returns array of { _id, id (TMDB), slug, src* (movies only), ... }
+//   2a. (movies)  src is already in the search result
+//   2b. (series)  GET /api/series/{slug}/seasons/{N}
+//        → returns { episodes: [{ id, episode_number, src, ... }] }
+//   3. GET /api/stream/m3u8?code={src}
+//        → returns { success, m3u8Url, subtitles: [{url,label,lang}] }
+//
+// We match by TMDB id (`id` field on the result). If the TMDB id is missing
+// (e.g. caller only has imdbId), fall back to the first result whose name
+// matches the requested title — Dizibal's search is already title-relevant.
+//
+// Result is a regular source:"direct" WebPlayerResult so it flows through
+// the existing PlayerScreen native-video path with no special-casing.
+
+const DIZIBAL_HEADERS = {
+  Accept: "application/json,text/plain,*/*",
+  "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
+  "User-Agent":
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+};
+
+type DizibalSearchHit = {
+  _id?: string;
+  id?: number;            // TMDB id
+  imdb_id?: string;
+  slug?: string;
+  src?: string;
+  name?: string;
+  name_tr?: string;
+  name_en?: string;
+  title?: string;
+  title_tr?: string;
+  title_en?: string;
+  original_name?: string;
+  original_title?: string;
+};
+
+type DizibalSearchResponse = { success?: boolean; data?: DizibalSearchHit[] };
+
+type DizibalEpisode = {
+  id?: number;
+  episode_number?: number;
+  name?: string;
+  src?: string;
+};
+type DizibalSeasonResponse = {
+  success?: boolean;
+  data?: { season_number?: number; episodes?: DizibalEpisode[] };
+};
+
+type DizibalStreamResponse = {
+  success?: boolean;
+  m3u8Url?: string;
+  subtitles?: Array<{ url?: string; label?: string; lang?: string }>;
+};
+
+type DizibalEmbedResponse = {
+  success?: boolean;
+  embedUrl?: string;
+};
+
+function dizibalBaseUrl(): string {
+  return getProviderConfig("dizibal").baseUrl.replace(/\/+$/, "");
+}
+function dizibalReferer(): string {
+  return getProviderConfig("dizibal").referer || `${dizibalBaseUrl()}/`;
+}
+
+/** Pick the search hit whose TMDB id (preferred), then imdb id, then title matches. */
+function pickDizibalHit(
+  hits: DizibalSearchHit[],
+  request: WebPlayerRequest,
+): DizibalSearchHit | null {
+  if (hits.length === 0) return null;
+
+  // 1. Strong match: TMDB numeric id.
+  const tmdbNumeric = request.tmdbId ? Number(request.tmdbId) : NaN;
+  if (Number.isFinite(tmdbNumeric)) {
+    const byTmdb = hits.find((h) => h.id === tmdbNumeric);
+    if (byTmdb) return byTmdb;
+  }
+
+  // 2. IMDb id (movies only — series records don't always carry imdb_id).
+  if (request.imdbId && request.imdbId.startsWith("tt")) {
+    const byImdb = hits.find((h) => h.imdb_id === request.imdbId);
+    if (byImdb) return byImdb;
+  }
+
+  // 3. Title score: pick the highest-scoring against the requested title.
+  let bestHit: DizibalSearchHit | null = null;
+  let bestScore = 0;
+  for (const hit of hits) {
+    const variants = [
+      hit.name_en,
+      hit.title_en,
+      hit.original_name,
+      hit.original_title,
+      hit.name_tr,
+      hit.title_tr,
+      hit.name,
+      hit.title,
+    ].filter((v): v is string => Boolean(v));
+    for (const variant of variants) {
+      const score = scoreMatch(variant, request.title, request.year ?? null);
+      if (score > bestScore) {
+        bestScore = score;
+        bestHit = hit;
+      }
+      if (request.originalTitle) {
+        const altScore = scoreMatch(variant, request.originalTitle, request.year ?? null);
+        if (altScore > bestScore) {
+          bestScore = altScore;
+          bestHit = hit;
+        }
+      }
+    }
+  }
+  // Only accept if the title actually matches reasonably — refuse junk fallbacks.
+  return bestScore >= 70 ? bestHit : null;
+}
+
+async function searchDizibal(
+  request: WebPlayerRequest,
+): Promise<DizibalSearchHit | null> {
+  const base = dizibalBaseUrl();
+  const path = request.mediaType === "movie" ? "/api/movies" : "/api/series";
+  const queries = [request.title];
+  if (request.originalTitle && request.originalTitle !== request.title) {
+    queries.push(request.originalTitle);
+  }
+
+  for (const q of queries) {
+    try {
+      const response = await axios.get<DizibalSearchResponse>(`${base}${path}`, {
+        timeout: 6_000,
+        headers: { ...DIZIBAL_HEADERS, Referer: dizibalReferer() },
+        params: { search: q, limit: 10 },
+      });
+      recordObservedBaseUrl("dizibal", getResponseFinalOrigin(response));
+      const hits = response.data?.data ?? [];
+      if (hits.length === 0) continue;
+      const hit = pickDizibalHit(hits, request);
+      if (hit) return hit;
+    } catch (error: any) {
+      debugLog(
+        `[WebPlayer:dizibal] search "${q}" failed: ${error?.code ?? "?"} ${error?.message ?? error}`,
+      );
+    }
+  }
+  return null;
+}
+
+async function fetchDizibalEpisodeSrc(
+  slug: string,
+  seasonNumber: number,
+  episodeNumber: number,
+): Promise<string | null> {
+  const base = dizibalBaseUrl();
+  try {
+    const response = await axios.get<DizibalSeasonResponse>(
+      `${base}/api/series/${encodeURIComponent(slug)}/seasons/${seasonNumber}`,
+      {
+        timeout: 6_000,
+        headers: { ...DIZIBAL_HEADERS, Referer: dizibalReferer() },
+      },
+    );
+    recordObservedBaseUrl("dizibal", getResponseFinalOrigin(response));
+    const episodes = response.data?.data?.episodes ?? [];
+    const ep = episodes.find((e) => e.episode_number === episodeNumber);
+    return ep?.src ?? null;
+  } catch (error: any) {
+    debugLog(
+      `[WebPlayer:dizibal] season ${slug}/${seasonNumber} failed: ${error?.code ?? "?"} ${error?.message ?? error}`,
+    );
+    return null;
+  }
+}
+
+async function fetchDizibalStreamForSrc(src: string): Promise<{
+  m3u8Url: string;
+  referer: string;
+  subtitles: Array<{ url: string; label: string; lang: string }>;
+} | null> {
+  const base = dizibalBaseUrl();
+  try {
+    const requestConfig = {
+      timeout: 6_000,
+      headers: { ...DIZIBAL_HEADERS, Referer: dizibalReferer() },
+    };
+    const [streamResponse, embedResponse] = await Promise.all([
+      axios.get<DizibalStreamResponse>(`${base}/api/stream/m3u8`, {
+        ...requestConfig,
+        params: { code: src },
+      }),
+      axios.get<DizibalEmbedResponse>(`${base}/api/stream/embed`, {
+        ...requestConfig,
+        params: { code: src, autoplay: 1 },
+      }),
+    ]);
+    recordObservedBaseUrl("dizibal", getResponseFinalOrigin(streamResponse));
+
+    const m3u8Url = streamResponse.data?.m3u8Url;
+    const embedUrl = embedResponse.data?.embedUrl;
+    if (
+      !streamResponse.data?.success
+      || !m3u8Url
+      || !embedResponse.data?.success
+      || !embedUrl
+      || !/^https?:\/\//i.test(embedUrl)
+    ) {
+      return null;
+    }
+
+    const subtitles = (streamResponse.data.subtitles ?? [])
+      .filter((s): s is { url: string; label?: string; lang?: string } => Boolean(s?.url))
+      .map((s) => ({
+        url: s.url,
+        label: s.label || s.lang || "Subtitle",
+        lang: s.lang || "und",
+      }));
+    return { m3u8Url, referer: embedUrl, subtitles };
+  } catch (error: any) {
+    debugLog(
+      `[WebPlayer:dizibal] stream code=${src.slice(0, 12)} failed: ${error?.code ?? "?"} ${error?.message ?? error}`,
+    );
+    return null;
+  }
+}
+
+async function resolveDizibalStream(
+  request: WebPlayerRequest,
+): Promise<WebPlayerResult | null> {
+  const hit = await searchDizibal(request);
+  if (!hit) {
+    debugLog("[WebPlayer:dizibal] no matching hit");
+    return null;
+  }
+
+  let src: string | null = null;
+  if (request.mediaType === "movie") {
+    src = hit.src ?? null;
+  } else if (
+    request.mediaType === "tv" &&
+    hit.slug &&
+    request.seasonNumber &&
+    request.episodeNumber
+  ) {
+    src = await fetchDizibalEpisodeSrc(hit.slug, request.seasonNumber, request.episodeNumber);
+  }
+
+  if (!src) {
+    debugLog(`[WebPlayer:dizibal] no src for ${hit.slug ?? hit._id}`);
+    return null;
+  }
+
+  const stream = await fetchDizibalStreamForSrc(src);
+  if (!stream) return null;
+
+  debugLog(
+    `[WebPlayer:dizibal] resolved m3u8 (referer=${stream.referer}) for ${request.title} via slug=${hit.slug} code=${src.slice(0, 12)}`,
+  );
+  return {
+    url: stream.m3u8Url,
+    source: "direct",
+    streamUrl: stream.m3u8Url,
+    streamType: "m3u8",
+    referer: stream.referer,
+    subtitles: stream.subtitles,
+  };
+}
+
+/** Resolve a third-source stream after the Dizipal CDN fails (or for proactive prefetch). */
+export async function resolveDirectWebPlayerFallback(
+  request: WebPlayerRequest,
+): Promise<WebPlayerResult> {
+  try {
+    const result = await Promise.race<WebPlayerResult | null>([
+      resolveDizibalStream(request),
+      new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), DIRECT_FALLBACK_TIMEOUT_MS),
+      ),
+    ]);
+    return result ?? { url: "", source: "not_found" };
+  } catch (error) {
+    debugLog("[WebPlayerService] Dizibal resolution skipped:", error);
+    return { url: "", source: "not_found" };
+  }
 }
 
 export const __internal = {
@@ -2087,7 +2366,8 @@ export const __internal = {
   inspectRapidramePlaylist,
   isAlternateTitleSafeForDizipal,
   isDizipalUrlTitleCompatible,
+  pickDizibalHit,
   scoreDizipalResult,
   scoreHdFilmResult,
-  scoreStrictDizipalTitle
+  scoreStrictDizipalTitle,
 };

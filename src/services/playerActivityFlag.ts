@@ -1,7 +1,7 @@
 /**
  * Lightweight global flag for whether the user is currently inside the native
- * playback screen. Read by the silent-OTA-reload logic in LiveOpsHost: we MUST
- * NOT call `Updates.reloadAsync()` while a movie is playing, because that would
+ * playback screen. Read by the prompted OTA flow in LiveOpsHost: we MUST NOT
+ * offer `Updates.reloadAsync()` while a movie is playing, because that would
  * yank the user out of the player mid-playback when they return from briefly
  * locking the screen.
  *

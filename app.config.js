@@ -21,13 +21,10 @@ const baseConfig = {
   },
   updates: {
     url: "https://u.expo.dev/0671c444-de91-4f8f-b705-179036f310f3",
-    checkAutomatically: "ON_LOAD",
-    // Block cold-start render up to 3s while expo-updates checks for and
-    // downloads a new bundle. If a fresh OTA is available, the user lands
-    // directly on it instead of seeing the old bundle first. If the network
-    // is slow or there's no update, we fall back to cache after 3s — so the
-    // cold-start cost is bounded.
-    fallbackToCacheTimeout: 3000,
+    // LiveOpsHost owns update checks so every downloaded update is presented
+    // with the explicit Restart now / Later modal before reloadAsync runs.
+    checkAutomatically: "NEVER",
+    fallbackToCacheTimeout: 0,
   },
   ios: {
     supportsTablet: true,

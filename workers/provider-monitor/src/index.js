@@ -201,22 +201,22 @@ async function fetchProviderConfigs(env) {
     throw new Error("Provider config response is missing dizipal.");
   }
 
+  // Backfill optional providers so callers can always dereference
+  // providers.dizibal without null checks. The Supabase row exists once
+  // supabase/migrations/20260619_… has been applied; the in-code default
+  // covers the gap if a deployment landed first.
+  if (!providers.dizibal?.baseUrl) {
+    providers.dizibal = { baseUrl: "https://dizibal.com", referer: "https://dizibal.com/" };
+  }
+
   return providers;
-}
-
-async function fetchCurrentDizipalConfig(env) {
-  const providers = await fetchProviderConfigs(env);
-  const baseUrl = normalizeBaseUrl(providers.dizipal.baseUrl);
-
-  return {
-    baseUrl,
-    referer: providers.dizipal.referer || `${baseUrl}/`,
-  };
 }
 
 function buildProviderChecks(providers) {
   const dizipalBaseUrl = normalizeBaseUrl(providers.dizipal.baseUrl);
   const dizipalReferer = providers.dizipal.referer || `${dizipalBaseUrl}/`;
+  const dizibalBaseUrl = normalizeBaseUrl(providers.dizibal.baseUrl);
+  const dizibalReferer = providers.dizibal.referer || `${dizibalBaseUrl}/`;
 
   return [
     {
@@ -241,6 +241,65 @@ function buildProviderChecks(providers) {
           return { ok, reason: ok ? "ok" : "Dizipal search JSON has no results" };
         } catch {
           return { ok: false, reason: "Dizipal search did not return JSON" };
+        }
+      },
+    },
+    // ─── Dizibal ─────────────────────────────────────────────────
+    // The app consumes Dizibal's JSON APIs, not its browser homepage. The
+    // homepage rejects Cloudflare Worker egress with HTTP 403 while these API
+    // endpoints remain healthy, so probing `/` creates a permanent false
+    // alarm and must not participate in provider health.
+    {
+      id: "dizibal_api",
+      label: "Dizibal site-config API",
+      // Canary endpoint that always exists and is fast. If this stops being
+      // success:true, the API contract has changed and the on-device
+      // scraper needs an OTA push.
+      url: `${dizibalBaseUrl}/api/site-config/maintenance`,
+      referer: dizibalReferer,
+      validator: (response, body) => {
+        if (response.status !== 200) {
+          return { ok: false, reason: `HTTP ${response.status}` };
+        }
+        try {
+          const parsed = JSON.parse(body);
+          const ok = parsed?.success === true;
+          return { ok, reason: ok ? "ok" : "site-config no longer returns success:true — push OTA" };
+        } catch {
+          return { ok: false, reason: "site-config did not return JSON" };
+        }
+      },
+    },
+    {
+      id: "dizibal_search_shape",
+      label: "Dizibal search shape",
+      // Search for The Shawshank Redemption — universal catalog coverage.
+      // We're checking that the response is a JSON array with the slug + src
+      // fields the on-device scraper depends on.
+      url: `${dizibalBaseUrl}/api/movies?search=shawshank&limit=3`,
+      referer: dizibalReferer,
+      validator: (response, body) => {
+        if (response.status !== 200) {
+          return { ok: false, reason: `HTTP ${response.status}` };
+        }
+        try {
+          const parsed = JSON.parse(body);
+          const hits = Array.isArray(parsed?.data) ? parsed.data : null;
+          if (!hits || hits.length === 0) {
+            return { ok: false, reason: "search returned no hits — push OTA" };
+          }
+          const first = hits[0];
+          const hasSlug = typeof first.slug === "string" && first.slug.length > 0;
+          const hasSrc = typeof first.src === "string" && first.src.length > 0;
+          if (!hasSlug || !hasSrc) {
+            return {
+              ok: false,
+              reason: `search shape changed (slug=${hasSlug} src=${hasSrc}) — push OTA`,
+            };
+          }
+          return { ok: true, reason: "ok" };
+        } catch {
+          return { ok: false, reason: "search did not return JSON" };
         }
       },
     },
@@ -298,14 +357,29 @@ function buildAlerts(previous, next, result) {
   const alerts = [];
 
   // A URL rotation is a separate, lower-severity signal from "down" — the
-  // provider is still reachable, just at a new domain. Treat it as its own
-  // alert so the operator can run /set_dizipal without first seeing a noisy
-  // "down" page that's actually working through the redirect.
+  // provider is still reachable, just at a new domain. Use the check's id
+  // prefix to derive the correct /set_* command so the same code path
+  // covers dizipal + vidsrc + embedsu rotations.
   if (result.rotated && (previous.lastRotatedOrigin ?? null) !== result.latestBaseUrl) {
+    const setCommand = setCommandForCheck(result.id);
     alerts.push({
       type: "rotated",
       title: `${result.label} URL rotated`,
-      message: `${result.label} rotated to a new domain.\n\nConfigured: ${result.url}\nLatest: ${result.latestBaseUrl}\n\nUpdate with:\n/set_dizipal ${result.latestBaseUrl}`,
+      message: setCommand
+        ? `${result.label} rotated to a new domain.\n\nConfigured: ${result.url}\nLatest: ${result.latestBaseUrl}\n\nUpdate with:\n${setCommand} ${result.latestBaseUrl}`
+        : `${result.label} rotated to a new domain.\n\nConfigured: ${result.url}\nLatest: ${result.latestBaseUrl}\n\nNo /set_ command available for this host — the new domain needs to be added to the on-device scraper (OTA push).`,
+    });
+  }
+
+  // Scraper-shape change — distinct from URL rotation. The hop is still
+  // reachable but no longer emits the expected markup (e.g. vsembed stops
+  // emitting data-hash divs). The fix is a code change in
+  // src/services/DirectLinkService.ts followed by an OTA push.
+  if (!result.ok && !result.rotated && /push OTA/i.test(result.reason ?? "") && previous.lastReason !== result.reason) {
+    alerts.push({
+      type: "shape_change",
+      title: `${result.label} scraper-shape change`,
+      message: `${result.label} markup changed at ${result.url}.\n\n${result.reason}\n\nNext step: open the URL in a browser, inspect the new pattern, update the matching regex in src/services/DirectLinkService.ts, then \`eas update --branch preview\`.`,
     });
   }
 
@@ -425,52 +499,76 @@ function isAllowedTelegramChat(chatId, env) {
   return Boolean(env.TELEGRAM_CHAT_ID) && String(chatId) === String(env.TELEGRAM_CHAT_ID);
 }
 
-function normalizeCandidateDizipalUrl(rawUrl) {
+// Provider registry — single source of truth for host validation rules,
+// the /set_ command name, and which check ids belong to a given provider.
+const PROVIDER_DEFINITIONS = {
+  dizipal: {
+    setCommand: "/set_dizipal",
+    hostMatch: (host) => host.toLowerCase().includes("dizipal"),
+    hostExample: "https://dizipal2070.com",
+    checkIdPrefixes: ["dizipal_"],
+  },
+  dizibal: {
+    setCommand: "/set_dizibal",
+    hostMatch: (host) => host.toLowerCase().includes("dizibal"),
+    hostExample: "https://dizibal.com",
+    checkIdPrefixes: ["dizibal_"],
+  },
+};
+
+function setCommandForCheck(checkId) {
+  for (const def of Object.values(PROVIDER_DEFINITIONS)) {
+    if (def.checkIdPrefixes.some((prefix) => checkId.startsWith(prefix))) {
+      return def.setCommand;
+    }
+  }
+  return null;
+}
+
+function normalizeCandidateProviderUrl(rawUrl, providerId) {
+  const def = PROVIDER_DEFINITIONS[providerId];
+  if (!def) throw new Error(`Unknown provider: ${providerId}`);
+
   let parsed;
   try {
     parsed = new URL(String(rawUrl ?? "").trim());
   } catch {
-    throw new Error("Invalid URL. Use: /set_dizipal https://dizipal2070.com");
+    throw new Error(`Invalid URL. Use: ${def.setCommand} ${def.hostExample}`);
   }
-
   if (parsed.protocol !== "https:") {
     throw new Error("URL must start with https://");
   }
-
   if (parsed.username || parsed.password) {
     throw new Error("URL must not include username or password.");
   }
-
-  if (!parsed.hostname.toLowerCase().includes("dizipal")) {
-    throw new Error("URL host must look like a Dizipal domain.");
+  if (!def.hostMatch(parsed.hostname)) {
+    throw new Error(`URL host does not look like a ${providerId} domain.`);
   }
-
   return parsed.origin;
 }
 
-async function validateDizipalCandidate(env, baseUrl) {
-  const providers = {
-    dizipal: {
-      baseUrl,
-      referer: `${baseUrl}/`,
-    },
-  };
-  const results = await runProviderChecks(env, providers);
-  const failed = results.filter((result) => !result.ok);
+// Run the full monitor with one provider's base URL substituted, so we can
+// dry-run a candidate before persisting. Other providers retain their
+// current configured URLs (so a /set_vidsrc never accidentally re-checks
+// against a stale Dizipal config).
+async function validateProviderCandidate(env, providerId, candidateBaseUrl) {
+  const providers = await fetchProviderConfigs(env);
+  providers[providerId] = { baseUrl: candidateBaseUrl, referer: `${candidateBaseUrl}/` };
 
-  return {
-    ok: failed.length === 0,
-    results,
-    failed,
-  };
+  const allResults = await runProviderChecks(env, providers);
+  const ownResults = allResults.filter((r) =>
+    PROVIDER_DEFINITIONS[providerId].checkIdPrefixes.some((prefix) => r.id.startsWith(prefix)),
+  );
+  const failed = ownResults.filter((r) => !r.ok);
+  return { ok: failed.length === 0, results: ownResults, failed };
 }
 
-async function updateDizipalConfig(env, baseUrl) {
+async function updateProviderConfig(env, providerId, baseUrl) {
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error("Supabase service role secret is not configured.");
   }
 
-  const endpoint = `${normalizeBaseUrl(env.SUPABASE_URL)}/rest/v1/provider_configs?id=eq.dizipal`;
+  const endpoint = `${normalizeBaseUrl(env.SUPABASE_URL)}/rest/v1/provider_configs?id=eq.${encodeURIComponent(providerId)}`;
   const response = await fetchWithTimeout(endpoint, {
     method: "PATCH",
     headers: {
@@ -483,7 +581,7 @@ async function updateDizipalConfig(env, baseUrl) {
     body: JSON.stringify({
       base_url: baseUrl,
       referer: `${baseUrl}/`,
-      notes: `Fallback source - updated via Telegram bot at ${new Date().toISOString()}`,
+      notes: `Updated via Telegram bot at ${new Date().toISOString()}`,
     }),
   }, getTimeoutMs(env));
 
@@ -517,47 +615,61 @@ function summariseRotation(results) {
 }
 
 async function handleTelegramStatus(env, chatId) {
-  const current = await fetchCurrentDizipalConfig(env);
-  const results = await validateDizipalCandidate(env, current.baseUrl);
+  const providers = await fetchProviderConfigs(env);
+  const results = await runProviderChecks(env, providers);
   const state = await loadState(env);
-  const rotatedOrigins = summariseRotation(results.results);
 
-  const lines = [
-    "StreamBox Dizipal status",
-    "",
-    `Configured URL: ${current.baseUrl}`,
-    `Monitor state:  ${state.checks?.dizipal_search?.status ?? "unknown"}`,
-  ];
+  const lines = ["StreamBox provider status", ""];
 
-  if (rotatedOrigins) {
-    const latest = rotatedOrigins[0];
-    lines.push(
-      "",
-      "⚠ URL rotation detected.",
-      `Latest URL: ${latest}`,
-      "",
-      `Update with:`,
-      `/set_dizipal ${latest}`,
+  for (const providerId of Object.keys(PROVIDER_DEFINITIONS)) {
+    const def = PROVIDER_DEFINITIONS[providerId];
+    const cfg = providers[providerId];
+    if (!cfg) continue;
+    const own = results.filter((r) =>
+      def.checkIdPrefixes.some((prefix) => r.id.startsWith(prefix)),
     );
-    if (rotatedOrigins.length > 1) {
-      lines.push("", `Multiple final origins observed: ${rotatedOrigins.join(", ")}`);
+    const rotatedOrigins = summariseRotation(own);
+    const shapeIssue = own.find((r) => !r.ok && !r.rotated && /push OTA/i.test(r.reason ?? ""));
+    const failedChecks = own.filter((r) => !r.ok && !r.rotated);
+
+    lines.push(`── ${providerId} ──`);
+    lines.push(`Configured: ${normalizeBaseUrl(cfg.baseUrl)}`);
+
+    const stateKey = own.find((r) => state.checks?.[r.id])?.id ?? own[0]?.id;
+    if (stateKey) {
+      lines.push(`Monitor:    ${state.checks?.[stateKey]?.status ?? "unknown"}`);
     }
-  } else {
-    lines.push("", "No rotation detected — configured URL is current.");
+
+    if (rotatedOrigins) {
+      const latest = rotatedOrigins[0];
+      lines.push(`⚠ URL rotated → ${latest}`);
+      lines.push(`Update:     ${def.setCommand} ${latest}`);
+    }
+    if (shapeIssue) {
+      lines.push(`⚠ Shape change: ${shapeIssue.reason}`);
+    }
+    if (!rotatedOrigins && !shapeIssue) {
+      lines.push(
+        failedChecks.length === 0
+          ? "Up to date."
+          : `${failedChecks.length} health check(s) failing.`,
+      );
+    }
+    lines.push("", formatCheckResults(own), "");
   }
 
-  lines.push("", formatCheckResults(results.results));
   await sendTelegramMessage(env, chatId, lines.join("\n"));
 }
 
-async function handleTelegramSetDizipal(env, chatId, args) {
-  const candidateUrl = normalizeCandidateDizipalUrl(args[0]);
-  const validation = await validateDizipalCandidate(env, candidateUrl);
+async function handleTelegramSetProvider(env, chatId, providerId, args) {
+  const def = PROVIDER_DEFINITIONS[providerId];
+  const candidateUrl = normalizeCandidateProviderUrl(args[0], providerId);
+  const validation = await validateProviderCandidate(env, providerId, candidateUrl);
 
   if (!validation.ok) {
     const rotatedOrigins = summariseRotation(validation.results);
     const lines = [
-      "Dizipal update rejected.",
+      `${providerId} update rejected.`,
       "",
       `Candidate: ${candidateUrl}`,
     ];
@@ -566,7 +678,7 @@ async function handleTelegramSetDizipal(env, chatId, args) {
       lines.push(
         "",
         `Candidate redirects to ${latest}.`,
-        `Use:  /set_dizipal ${latest}`,
+        `Use:  ${def.setCommand} ${latest}`,
       );
     }
     lines.push("", formatCheckResults(validation.results));
@@ -574,19 +686,19 @@ async function handleTelegramSetDizipal(env, chatId, args) {
     return;
   }
 
-  await updateDizipalConfig(env, candidateUrl);
+  await updateProviderConfig(env, providerId, candidateUrl);
   await sendTelegramMessage(
     env,
     chatId,
     [
-      "Dizipal updated successfully.",
+      `${providerId} updated successfully.`,
       "",
       `New URL: ${candidateUrl}`,
       "",
       formatCheckResults(validation.results),
       "",
-      "Released APKs will pick this up through provider-config refresh/cache.",
-    ].join("\n")
+      "Active app installs will pick this up on next provider-config refresh.",
+    ].join("\n"),
   );
 }
 
@@ -624,7 +736,12 @@ async function handleTelegramWebhook(request, env) {
     }
 
     if (command === "/set_dizipal") {
-      await handleTelegramSetDizipal(env, chatId, args);
+      await handleTelegramSetProvider(env, chatId, "dizipal", args);
+      return jsonResponse({ ok: true });
+    }
+
+    if (command === "/set_dizibal") {
+      await handleTelegramSetProvider(env, chatId, "dizibal", args);
       return jsonResponse({ ok: true });
     }
 
@@ -636,7 +753,8 @@ async function handleTelegramWebhook(request, env) {
         "",
         "Use:",
         "/status",
-        "/set_dizipal https://dizipal2070.com",
+        "/set_dizipal https://dizipal2080.com",
+        "/set_dizibal https://dizibal.com",
       ].join("\n")
     );
     return jsonResponse({ ok: true });

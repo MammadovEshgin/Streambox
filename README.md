@@ -21,7 +21,7 @@ A high-performance mobile streaming app for discovering, watching, and tracking 
 - **Multi-provider stream resolver** — HDFilmCehennemi native decoder, Dizipal, NuvioStreams/Stremify (Stremio addons). No WebView fallback unless every native source fails. See [Stream Resolver](#stream-resolver-architecture).
 - **Native expo-video player** — landscape lock, HLS quality picker, subtitle tracks parsed from master playlists, headers (Referer) forwarded for hot-link-protected CDNs.
 - **Cross-device sync** — Supabase-backed watchlist, favorites, watched-state, profile.
-- **Silent OTA updates** — EAS Update channels (`preview` / `production`), reload triggered on background→foreground while the player is idle, 3s cold-start update window for new installs.
+- **Prompted OTA updates** — EAS Update channels (`preview` / `production`) download in the background, then show an explicit restart modal while the player is idle.
 - **Live ops** — Supabase-backed announcements + remote provider config (rotate `hdfilmcehennemi.nl` / `dizipal2079.com` without a release).
 
 ## Tech Stack
@@ -105,7 +105,7 @@ The resolver lives in [`src/services/WebPlayerService.ts`](src/services/WebPlaye
 2. **Dizipal (native)** — search → resolve `data-cfg` → `getVideoApi` → `.m3u8`.
 3. **Dizipal embed** — when the direct stream isn't extractable but the embed URL is.
 4. **Turkish-title retry** — fetch the TMDB `/translations` localized title (e.g. *Dune* → *Dune: Çöl Gezegeni*) and re-search both providers. Handles cross-language matching plus a Turkish-dotless-i fold so `Yadigârları` matches the ASCII slug `yadigarlari`.
-5. **Stremio addons** — NuvioStreams (`nuviostreams.hayd.uk`) + Stremify (`stremify.hayd.uk`) via the standard `/stream/{movie|series}/{imdbId}.json` protocol.
+5. **Dizibal (native)** — third-source REST scraper at `dizibal.com`: search → slug → `/api/series/{slug}/seasons/{N}` (or movies `src`) → `/api/stream/m3u8?code={src}`. Serves m3u8 over CDN77 commercial infrastructure that's not on the Azerbaijani ISP block lists that took out cloudnestra/embed.su. Telegram bot rotates the base URL via `/set_dizibal` when it moves.
 6. **HDFilm WebView (last resort)** — only when *every* native source failed.
 
 Hardening guarantees that have a dedicated regression test:
@@ -140,7 +140,7 @@ The app ships behind two EAS Update channels:
 | `preview` | Internal devices / EAS Build dev | Every fix as it lands on `main` |
 | `production` | Public APK on streamboxapp.stream | After preview soaks |
 
-Updates apply silently: a background→foreground transition with `LiveOpsHost` checking `updateReady && !playerActive` calls `applyFetchedAppUpdate()` and reloads the bundle. Cold-start has a 3-second `fallbackToCacheTimeout` so first-launch installs jump to the latest bundle before render.
+`LiveOpsHost` checks and downloads updates, then shows a visible **Restart now / Later** modal when no player is active. `Updates.reloadAsync()` runs only after the user chooses **Restart now**; updates are never silently applied from the JavaScript startup path.
 
 ## Documentation
 
