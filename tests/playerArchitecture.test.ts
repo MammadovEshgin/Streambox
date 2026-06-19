@@ -6,6 +6,7 @@ import test from "node:test";
 const rootPath = path.resolve(process.cwd());
 const playerScreenPath = path.join(rootPath, "src", "screens", "PlayerScreen.tsx");
 const webviewInjectionPath = path.join(rootPath, "src", "screens", "player", "webviewInjection.ts");
+const hlsWebPlayerPath = path.join(rootPath, "src", "screens", "player", "HlsWebPlayer.tsx");
 
 test("player screen keeps direct playback native and cleans provider web fallbacks", () => {
   const playerScreenSource = fs.readFileSync(playerScreenPath, "utf8");
@@ -30,4 +31,19 @@ test("HDFilm runtime stream discovery is wired to native playback handoff", () =
 
   assert.equal(playerScreenSource.includes("shouldAcceptDiscoveredHdFilmStream"), true);
   assert.equal(playerScreenSource.includes("switchToDiscoveredHdFilmStream"), true);
+});
+
+test("Dizipal HTML5 recovery refreshes the stream in-session and keeps a direct fallback", () => {
+  const hlsSource = fs.readFileSync(hlsWebPlayerPath, "utf8");
+  const playerScreenSource = fs.readFileSync(playerScreenPath, "utf8");
+
+  assert.equal(hlsSource.includes("/player/index.php?data="), true);
+  assert.equal(hlsSource.includes("data.videoSource || data.securedLink"), true);
+  assert.equal(hlsSource.includes("headers: pageUrl ? { Referer: pageUrl }"), true);
+  assert.equal(hlsSource.includes("userAgent={PLAYER_WEBVIEW_USER_AGENT}"), false);
+
+  assert.equal(playerScreenSource.includes("resolveDirectWebPlayerFallback"), true);
+  assert.equal(playerScreenSource.includes("recoverFromDizipalFailure"), true);
+  assert.equal(playerScreenSource.includes('referer:${fallback.referer ?? "none"}'), true);
+  assert.equal(playerScreenSource.includes("isImagestooStream(playerResult.streamUrl)"), true);
 });

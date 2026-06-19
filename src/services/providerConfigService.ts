@@ -24,6 +24,13 @@ export type ProviderEntry = {
 export type ProviderConfigMap = {
   hdfilm: ProviderEntry;
   dizipal: ProviderEntry;
+  // Tier-3 direct scraper — Dizibal (dizibal.com). Different site than
+  // Dizipal: clean REST API at /api/series, /api/movies, /api/stream/m3u8
+  // serving m3u8 URLs on commercial CDN77 infrastructure (uk-traffic-076)
+  // that is not on Azerbaijani ISP block lists. Telegram bot rotates the
+  // base URL via /set_dizibal; app reads this getter every scraper call
+  // so host rotations need zero OTA.
+  dizibal: ProviderEntry;
 };
 
 type RemoteResponse = {
@@ -60,6 +67,14 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     // to every search; a 6s axios timeout chokes after ~6 hops).
     baseUrl: "https://dizipal2079.com",
     referer: "https://dizipal2079.com/",
+  },
+  dizibal: {
+    // dizibal.com — Turkish content platform with clean REST API; the m3u8
+    // CDN it serves (uk-traffic-076 / cdn77 family) is reachable from
+    // Azerbaijani ISPs that blocked cloudnestra / embed.su. Bot rotates
+    // this when dizibal cycles its base URL (rare so far but planned for).
+    baseUrl: "https://dizibal.com",
+    referer: "https://dizibal.com/",
   },
 };
 
@@ -199,6 +214,7 @@ function sameProviderFamily(provider: keyof ProviderConfigMap, observedOrigin: s
   if (!host) return false;
   if (provider === "dizipal") return host.includes("dizipal");
   if (provider === "hdfilm") return host.includes("hdfilm");
+  if (provider === "dizibal") return host.includes("dizibal");
   return false;
 }
 
@@ -274,5 +290,5 @@ async function loadFromStorage(): Promise<ProviderConfigMap | null> {
 }
 
 function summarise(c: ProviderConfigMap): string {
-  return `hdfilm=${c.hdfilm.baseUrl} dizipal=${c.dizipal.baseUrl}`;
+  return `hdfilm=${c.hdfilm.baseUrl} dizipal=${c.dizipal.baseUrl} dizibal=${c.dizibal.baseUrl}`;
 }

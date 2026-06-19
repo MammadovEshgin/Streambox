@@ -62,47 +62,6 @@ function summariseStack(stack: string | undefined, maxLines = 3): string {
 
 void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
-// Cold-start update gate.
-//
-// With expo-updates' default config (checkAutomatically: ON_LOAD,
-// fallbackToCacheTimeout: 0) a published OTA takes TWO cold launches to
-// land on the device — launch 1 downloads it in the background, launch 2
-// actually uses it. That two-step is invisible and surprising: a user
-// who's been told "your bug is fixed, restart the app" relaunches once,
-// nothing changes, and concludes the fix never shipped.
-//
-// Here we explicitly check + fetch + reload during the splash window so a
-// single relaunch is always enough. After this gate either:
-//   - there is no update              → resolve immediately
-//   - an update is detected           → fetch + reload (process restarts)
-//
-// 6s hard cap so a slow network can't strand the app on splash.
-// Errors are swallowed: we'd rather boot with the cached bundle than
-// block app launch on an update path that's broken.
-const UPDATE_GATE_TIMEOUT_MS = 6_000;
-
-async function applyAnyPendingOtaBeforeBoot(): Promise<void> {
-  if (__DEV__ || !Updates.isEnabled) return;
-
-  const work = (async () => {
-    try {
-      const result = await Updates.checkForUpdateAsync();
-      if (!result.isAvailable) return;
-      await Updates.fetchUpdateAsync();
-      await Updates.reloadAsync(); // never returns — process restarts
-    } catch (error) {
-      console.warn("[OTA gate] cold-start update apply failed:", error);
-    }
-  })();
-
-  await Promise.race([
-    work,
-    new Promise<void>((resolve) => setTimeout(resolve, UPDATE_GATE_TIMEOUT_MS)),
-  ]);
-}
-
-void applyAnyPendingOtaBeforeBoot();
-
 type LaunchPhase = "loading" | "welcome" | "auth" | "app";
 type AuthFlow = "main" | "otp" | "forgot" | "reset";
 

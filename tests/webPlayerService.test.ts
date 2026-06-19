@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import axios from "axios";
 
-import { __internal } from "../src/services/WebPlayerService";
+import {
+  __internal,
+  resolveDirectWebPlayerFallback,
+} from "../src/services/WebPlayerService";
 
 const dizipalBase = "https://dizipal2078.com";
 
@@ -169,6 +173,83 @@ test("HDFilm buildHdFilmResult goes native for the legacy preferNative=true shap
   const result = __internal.buildHdFilmResult(pageUrl, undefined, nativeFallback);
   assert.equal(result.source, "direct");
   assert.equal(result.webViewFallbackUrl, pageUrl);
+});
+
+test("pickDizibalHit prefers an exact TMDB-id match over higher-scoring titles", () => {
+  // tmdbId-driven match short-circuits the title scorer. The first hit has
+  // the same TMDB id we asked for; the second has a fuzzier but technically
+  // higher title-score. We expect the TMDB match to win.
+  const hits = [
+    { id: 76479, slug: "the-boys", name_en: "The Boys" },
+    { id: 99999, slug: "the-boyz", name_en: "The Boyz", name_tr: "The Boys (Korean drama)" },
+  ];
+  const picked = __internal.pickDizibalHit(hits, {
+    title: "The Boys",
+    mediaType: "tv",
+    tmdbId: "76479",
+    year: "2019",
+  });
+  assert.equal(picked?.slug, "the-boys");
+});
+
+test("pickDizibalHit rejects junk matches when no TMDB/IMDB and title scores too low", () => {
+  // None of the candidates look like the requested title — refuse to return
+  // a fallback rather than play random content.
+  const hits = [
+    { id: 1, slug: "completely-different", name_en: "Completely Different Show" },
+  ];
+  const picked = __internal.pickDizibalHit(hits, {
+    title: "The Boys",
+    mediaType: "tv",
+    tmdbId: "76479",
+  });
+  assert.equal(picked, null);
+});
+
+test("Dizibal resolver uses the rotating embed URL as the native HLS referer", async () => {
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  const calls: Array<{ url: string; config: any }> = [];
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string, config: any) => {
+    calls.push({ url, config });
+    if (url.endsWith("/api/series")) {
+      return { data: { success: true, data: [{ id: 76479, slug: "the-boys" }] } };
+    }
+    if (url.endsWith("/api/series/the-boys/seasons/1")) {
+      return { data: { success: true, data: { episodes: [{ episode_number: 4, src: "2ibfbt9ftb6d" }] } } };
+    }
+    if (url.endsWith("/api/stream/m3u8")) {
+      return { data: { success: true, m3u8Url: "https://cdn.example/master.m3u8", subtitles: [] } };
+    }
+    if (url.endsWith("/api/stream/embed")) {
+      return { data: { success: true, embedUrl: "https://x.ag2m4.cfd/embed-2ibfbt9ftb6d.html?autoplay=1" } };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await resolveDirectWebPlayerFallback({
+      mediaType: "tv",
+      title: "The Boys",
+      tmdbId: "76479",
+      seasonNumber: 1,
+      episodeNumber: 4,
+    });
+
+    assert.equal(result.source, "direct");
+    assert.equal(result.streamUrl, "https://cdn.example/master.m3u8");
+    assert.equal(result.referer, "https://x.ag2m4.cfd/embed-2ibfbt9ftb6d.html?autoplay=1");
+    assert.equal(calls.some((call) => call.url.endsWith("/api/stream/embed")), true);
+    assert.equal(
+      calls.find((call) => call.url.endsWith("/api/stream/embed"))?.config.params.autoplay,
+      1,
+    );
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
 });
 
 test("HDFilm buildHdFilmResult falls back to WebView only when no stream was decoded", () => {
