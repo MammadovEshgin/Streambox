@@ -4,6 +4,7 @@
   "private": true,
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
+    "eas-build-pre-install": "npm install --package-lock-only --no-audit --no-fund",
     "start": "expo start --lan --clear --port 8081",
     "start:lan": "expo start --lan --clear --port 8081",
     "start:localhost": "expo start --localhost --clear --port 8081",
