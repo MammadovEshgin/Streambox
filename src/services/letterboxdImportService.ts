@@ -25,8 +25,8 @@ const DIARY_CSV = "diary.csv";
 // Letterboxd is movies-only, but resolving a title to a TMDB id (search) and
 // then hydrating full details (genres, cast, runtime…) are both network-bound,
 // so we cap concurrency to stay friendly to the TMDB proxy.
-const MATCH_CONCURRENCY = 8;
-const DETAILS_CONCURRENCY = 6;
+const MATCH_CONCURRENCY = 12;
+const DETAILS_CONCURRENCY = 8;
 
 export type LetterboxdImportPhase = "reading" | "matching" | "details" | "saving";
 
