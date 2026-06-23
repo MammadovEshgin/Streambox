@@ -3,26 +3,18 @@ import axios from "axios";
 
 import { LruMap } from "../utils/LruMap";
 
-// The upstream GitHub dataset has rotated its schema over time. Older revisions
-// used string fields with "Movie Name"/"Movie Link"; the current one uses
-// numeric Rank/"IMDb Rating" with "name"/"link". Accept both shapes so a future
-// rotation doesn't silently drop us back to the bundled fallback list.
 type ImdbTop250MovieEntry = {
-  Rank?: string | number;
-  "Movie Name"?: string;
-  name?: string;
-  "IMDb Rating"?: string | number;
-  "Movie Link"?: string;
-  link?: string;
+  Rank: string;
+  "Movie Name": string;
+  "IMDb Rating": string;
+  "Movie Link": string;
 };
 
 type ImdbTop250ShowEntry = {
-  Rank?: string | number;
-  "Show Name"?: string;
-  name?: string;
-  "IMDb Rating"?: string | number;
-  "Show Link"?: string;
-  link?: string;
+  Rank: string;
+  "Show Name": string;
+  "IMDb Rating": string;
+  "Show Link": string;
 };
 
 export type ImdbTop250Item = {
@@ -97,34 +89,27 @@ function extractImdbId(link: string): string | null {
   return match?.[1] ?? null;
 }
 
-function toRank(value: unknown, fallbackIndex: number): number {
-  const rank = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
-  return Number.isFinite(rank) && rank > 0 ? rank : fallbackIndex + 1;
-}
-
-function parseMovieEntry(entry: ImdbTop250MovieEntry, index: number): ImdbTop250Item | null {
-  const imdbId = extractImdbId(entry["Movie Link"] ?? entry.link ?? "");
-  const title = entry["Movie Name"] ?? entry.name;
-  if (!imdbId || !title) return null;
+function parseMovieEntry(entry: ImdbTop250MovieEntry): ImdbTop250Item | null {
+  const imdbId = extractImdbId(entry["Movie Link"]);
+  if (!imdbId) return null;
 
   return {
-    rank: toRank(entry.Rank, index),
-    title: decodeHtmlEntities(title),
+    rank: parseInt(entry.Rank, 10),
+    title: decodeHtmlEntities(entry["Movie Name"]),
     imdbId,
-    imdbRating: toRating(entry["IMDb Rating"]),
+    imdbRating: parseFloat(entry["IMDb Rating"]) || 0,
   };
 }
 
-function parseShowEntry(entry: ImdbTop250ShowEntry, index: number): ImdbTop250Item | null {
-  const imdbId = extractImdbId(entry["Show Link"] ?? entry.link ?? "");
-  const title = entry["Show Name"] ?? entry.name;
-  if (!imdbId || !title) return null;
+function parseShowEntry(entry: ImdbTop250ShowEntry): ImdbTop250Item | null {
+  const imdbId = extractImdbId(entry["Show Link"]);
+  if (!imdbId) return null;
 
   return {
-    rank: toRank(entry.Rank, index),
-    title: decodeHtmlEntities(title),
+    rank: parseInt(entry.Rank, 10),
+    title: decodeHtmlEntities(entry["Show Name"]),
     imdbId,
-    imdbRating: toRating(entry["IMDb Rating"]),
+    imdbRating: parseFloat(entry["IMDb Rating"]) || 0,
   };
 }
 
