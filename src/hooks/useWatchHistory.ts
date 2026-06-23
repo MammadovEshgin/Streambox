@@ -146,7 +146,7 @@ function normalizeStoredEntry(entry: StoredEntry): WatchHistoryEntry {
   };
 }
 
-function buildMovieWatchEntry(
+export function buildMovieWatchEntry(
   details: MovieDetails,
   watchedAt: number,
   watchPrecision: WatchPrecision
