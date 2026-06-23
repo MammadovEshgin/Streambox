@@ -38,6 +38,10 @@ import {
   type WebPlayerResult
 } from "../services/WebPlayerService";
 import { setPlayerActive } from "../services/playerActivityFlag";
+import {
+  hideSystemNavigationBar,
+  showSystemNavigationBar,
+} from "../utils/systemNavigationBar";
 import { getProviderConfig } from "../services/providerConfigService";
 import { useAppSettings } from "../settings/AppSettingsContext";
 import {
@@ -461,6 +465,18 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const playerResultRef = useRef<WebPlayerResult | null>(null);
   const directFallbackPromiseRef = useRef<Promise<WebPlayerResult> | null>(null);
   const dizipalRecoveryTriggeredRef = useRef(false);
+  // Latest native source descriptor + a throttle for recovering from transient
+  // ExoPlayer errors (e.g. a burst of progress-bar seeks) without tearing the
+  // already-playing stream down to a "not available" state.
+  const currentSourceRef = useRef<{
+    uri: string;
+    headers: Record<string, string>;
+    contentType: ContentType | undefined;
+  } | null>(null);
+  const seekRecoveryRef = useRef<{ attempts: number; lastAt: number }>({
+    attempts: 0,
+    lastAt: 0,
+  });
 
   const buildWebPlayerRequest = useCallback((): WebPlayerRequest => ({
     mediaType: route.params.mediaType,
@@ -753,6 +769,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     if (!playerResult || playerResult.source === "not_found") return;
 
     StatusBar.setHidden(true, "fade");
+    // Hide the Android system navigation bar too (immersive). Without this the
+    // button-style nav bar stays painted over the bottom of the video on phones
+    // configured for 3-button navigation. Gesture-nav devices benefit as well.
+    void hideSystemNavigationBar();
 
     if (playerResult.source !== "youtube_embed") {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
@@ -762,6 +782,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
     return () => {
       StatusBar.setHidden(false, "fade");
+      void showSystemNavigationBar();
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
   }, [playerResult]);
@@ -1126,6 +1147,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       },
       contentType
     };
+    // Remember the active source so a transient seek error can re-prepare it.
+    currentSourceRef.current = source;
+    // A brand-new source load resets the transient-error budget.
+    seekRecoveryRef.current = { attempts: 0, lastAt: 0 };
     void videoPlayer.replaceAsync(source);
     // Don't call play() here â€” wait for readyToPlay status so play() doesn't silently fail
   }, [videoPlayer, directStreamUrl, streamReferer, directStreamType]);
@@ -1138,6 +1163,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     const statusSub = videoPlayer.addListener("statusChange", (ev: any) => {
       if (ev.status === "readyToPlay" && !hasStarted) {
         hasStarted = true;
+        // A successful start clears any transient-error budget spent earlier.
+        seekRecoveryRef.current = { attempts: 0, lastAt: 0 };
         debugLog("[Player] Ready - starting playback");
         debugLog("[Player] Available subtitle tracks:", JSON.stringify(videoPlayer.availableSubtitleTracks));
         setAvailableSubtitleTracks(videoPlayer.availableSubtitleTracks);
@@ -1147,6 +1174,49 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       }
       if (ev.status === "error") {
         debugLog("[Player] Video error:", ev.error?.message);
+
+        // Once the stream has actually started, an "error" is almost always a
+        // transient ExoPlayer hiccup — most commonly a burst of progress-bar
+        // seeks outrunning the buffer. Re-resolving or switching source here is
+        // what made rapid seeking dump the user back to "no movie available".
+        // Instead, re-prepare the SAME source at the current position and keep
+        // the player up. We never flip isPlaybackReady off (no spinner) unless
+        // recovery genuinely keeps failing.
+        if (hasStarted) {
+          const now = Date.now();
+          const recovery = seekRecoveryRef.current;
+          // Forgive past attempts once playback has been stable for a while.
+          if (now - recovery.lastAt > 15_000) recovery.attempts = 0;
+          recovery.lastAt = now;
+
+          const source = currentSourceRef.current;
+          if (recovery.attempts >= 3 || !source) {
+            debugLog("[Player] Repeated post-start errors — surfacing soft error");
+            setLoadError("Playback was interrupted. Please try again.");
+            return;
+          }
+
+          recovery.attempts += 1;
+          const resumeAt = videoPlayer.currentTime ?? 0;
+          debugLog("[Player] Transient post-start error — re-preparing at", resumeAt);
+          videoPlayer
+            .replaceAsync(source)
+            .then(() => {
+              try {
+                if (resumeAt > 0) videoPlayer.currentTime = resumeAt;
+                videoPlayer.play();
+              } catch {
+                /* player torn down mid-recovery */
+              }
+            })
+            .catch(() => {
+              /* recovery replace failed; budget guards against a loop */
+            });
+          return;
+        }
+
+        // Pre-start failure (expired token, geo block, dead CDN): the original
+        // fallback chain still applies — try a WebView/alt source or give up.
         setIsPlaybackReady(false);
         setPlayerResult((prev) => {
           // HDFilm-derived direct streams carry the original page URL so we can
@@ -1173,9 +1243,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     });
 
     const playingSub = videoPlayer.addListener("playingChange", (ev: any) => {
-      if (ev.isPlaying && !hasStarted) {
-        hasStarted = true;
-        setIsPlaybackReady(true);
+      if (ev.isPlaying) {
+        if (!hasStarted) {
+          hasStarted = true;
+          setIsPlaybackReady(true);
+        }
+        // Playback resumed (including right after a transient-error recovery),
+        // so refill the recovery budget. It only stays exhausted when the
+        // stream never comes back — i.e. a genuinely dead source.
+        seekRecoveryRef.current.attempts = 0;
       }
     });
 
