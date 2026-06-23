@@ -2586,6 +2586,98 @@ async function searchActorCredits(query: string, page: number): Promise<ActorCre
   };
 }
 
+/* ------------------------------------------------------------------ */
+/*  Title + year movie lookup (used by external imports, e.g. Letterboxd) */
+/* ------------------------------------------------------------------ */
+
+const movieByTitleYearCache = new LruMap<string, number | null>(4000);
+
+function normalizeTitleForMatch(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "") // strip combining diacritics (Çöl -> Col)
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function scoreMovieMatch(targetTitle: string, targetYear: number | null, candidate: TmdbMediaRecord): number {
+  const candidateTitle = normalizeTitleForMatch(candidate.title ?? candidate.original_title ?? "");
+  if (!candidateTitle) return -Infinity;
+
+  let titleScore: number;
+  if (candidateTitle === targetTitle) titleScore = 100;
+  else if (candidateTitle.startsWith(targetTitle) || targetTitle.startsWith(candidateTitle)) titleScore = 45;
+  else if (candidateTitle.includes(targetTitle) || targetTitle.includes(candidateTitle)) titleScore = 18;
+  else return -Infinity; // no title overlap — never match purely on year
+
+  const candidateYear = candidate.release_date ? parseInt(candidate.release_date.slice(0, 4), 10) : null;
+  let yearScore = 0;
+  if (targetYear && candidateYear) {
+    const diff = Math.abs(candidateYear - targetYear);
+    if (diff === 0) yearScore = 50;
+    else if (diff === 1) yearScore = 20; // festival vs wide-release year can differ by one
+    else yearScore = -diff * 8;
+  }
+
+  const popularityTiebreak = Math.min((candidate.popularity ?? 0) / 100, 8);
+  return titleScore + yearScore + popularityTiebreak;
+}
+
+/**
+ * Resolve a movie title + release year to a TMDB movie id. Returns null when no
+ * confident match exists (the caller reports these as "not matched"). Results
+ * are cached so the same film appearing across multiple imported lists only
+ * costs one lookup.
+ */
+export async function findMovieByTitleAndYear(
+  title: string,
+  year: string | number | null
+): Promise<number | null> {
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle) return null;
+
+  const parsedYear = year != null && String(year).trim().length > 0 ? parseInt(String(year), 10) : NaN;
+  const targetYear = Number.isFinite(parsedYear) ? parsedYear : null;
+  const normalizedTitle = normalizeTitleForMatch(trimmedTitle);
+  const cacheKey = `${normalizedTitle}|${targetYear ?? ""}`;
+
+  if (movieByTitleYearCache.has(cacheKey)) {
+    return movieByTitleYearCache.get(cacheKey) ?? null;
+  }
+
+  try {
+    const baseParams: Record<string, unknown> = { query: trimmedTitle, include_adult: false, page: 1 };
+    let { data } = await tmdbClient.get<TmdbListResponse>("/search/movie", {
+      params: targetYear ? { ...baseParams, primary_release_year: targetYear } : baseParams,
+    });
+
+    // A year filter can hide re-releases or films with off-by-some metadata —
+    // retry without it before giving up.
+    if (data.results.length === 0 && targetYear) {
+      data = (await tmdbClient.get<TmdbListResponse>("/search/movie", { params: baseParams })).data;
+    }
+
+    let best: TmdbMediaRecord | null = null;
+    let bestScore = -Infinity;
+    for (const candidate of data.results) {
+      const score = scoreMovieMatch(normalizedTitle, targetYear, candidate);
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+
+    const id = best && bestScore > -Infinity ? best.id : null;
+    movieByTitleYearCache.set(cacheKey, id);
+    return id;
+  } catch {
+    // Don't cache transient failures — a later retry can still resolve it.
+    return null;
+  }
+}
+
 export async function searchMulti(
   query: string,
   page: number = 1
