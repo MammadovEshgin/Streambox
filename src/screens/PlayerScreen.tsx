@@ -38,6 +38,10 @@ import {
   type WebPlayerResult
 } from "../services/WebPlayerService";
 import { setPlayerActive } from "../services/playerActivityFlag";
+import {
+  hideSystemNavigationBar,
+  showSystemNavigationBar,
+} from "../utils/systemNavigationBar";
 import { getProviderConfig } from "../services/providerConfigService";
 import { useAppSettings } from "../settings/AppSettingsContext";
 import {
@@ -753,6 +757,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     if (!playerResult || playerResult.source === "not_found") return;
 
     StatusBar.setHidden(true, "fade");
+    // Hide the Android system navigation bar too (immersive). Without this the
+    // button-style nav bar stays painted over the bottom of the video on phones
+    // configured for 3-button navigation; gesture-nav devices benefit as well.
+    // Fully guarded — a no-op on builds/platforms without the native module.
+    void hideSystemNavigationBar();
 
     if (playerResult.source !== "youtube_embed") {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
@@ -762,6 +771,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
     return () => {
       StatusBar.setHidden(false, "fade");
+      void showSystemNavigationBar();
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
   }, [playerResult]);
