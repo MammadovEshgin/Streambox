@@ -919,22 +919,36 @@ export async function bootstrapSupabaseUserData() {
     return;
   }
   let rb: RemoteBootstrap; try { rb = await fetchRemoteBootstrap(); } catch { const a = await resolveProfileAssetUris(); if (a.profileImageUri) local.settings.profileImageUri = a.profileImageUri; if (a.bannerImageUri) local.settings.bannerImageUri = a.bannerImageUri; await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(local.settings)); return; }
+  // Did this device hold any data the cloud might not have yet? After a sign-out
+  // the local store is wiped, so on the next sign-in there's nothing local-only
+  // to push and the merged snapshot equals what we just downloaded.
+  const hadLocalDataToPush =
+    local.movieWatchlist.length > 0 ||
+    local.seriesWatchlist.length > 0 ||
+    local.likedMovies.length > 0 ||
+    local.likedSeries.length > 0 ||
+    local.watchHistory.length > 0 ||
+    local.recentlyViewed.length > 0 ||
+    Object.keys(local.watchedEpisodes).length > 0;
+
   const merged = await mergeInitialSnapshot(local, rb); await writeLocalUserSnapshot(merged);
   // Local data is ready here — return so the UI renders it immediately instead
-  // of waiting on the re-upload below. That backfill just pushes the merged
-  // snapshot (which already lives in Supabase, minus any offline-only local
-  // additions) back up, so it must not block first paint. Run it in the
-  // background and only flag the bootstrap complete once it actually succeeds;
-  // if it doesn't, the next launch simply bootstraps again (idempotent).
+  // of blocking on the work below. Only push the snapshot back up when the
+  // device actually had local-only data to contribute; otherwise we'd be
+  // re-uploading exactly what we just downloaded (normal edits are pushed by
+  // the sync queue anyway). Flag bootstrap complete once it succeeds; if it
+  // doesn't, the next launch simply bootstraps again (idempotent).
   void (async () => {
     try {
-      await backfillSnapshotToRemote(uid, merged);
+      if (hadLocalDataToPush) {
+        await backfillSnapshotToRemote(uid, merged);
+      }
       await queueInitialAssetUploads(uid, merged.settings);
       await flushSupabaseUserDataSync(uid);
       await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, uid);
       await AsyncStorage.setItem(getBootstrapCompleteKey(uid), "1");
     } catch (error) {
-      console.warn("[bootstrap] background backfill failed:", error);
+      console.warn("[bootstrap] background sync failed:", error);
     }
   })();
 }
