@@ -4,6 +4,7 @@ import { type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ActivityIndicator,
   Alert,
   Dimensions,
   FlatList,
@@ -286,6 +287,19 @@ const RailCardWrap = styled.View`
 `;
 
 const EmptySection = styled.View`
+  height: 140px;
+  border-radius: 5px;
+  border-width: 1px;
+  border-color: rgba(255, 255, 255, 0.06);
+  background-color: rgba(255, 255, 255, 0.02);
+  align-items: center;
+  justify-content: center;
+`;
+
+// Shown when a section's data is still loading (the id/count is already known
+// from local storage, but the poster cards are still hydrating). Mirrors the
+// EmptySection box so the layout doesn't jump.
+const LoadingSection = styled.View`
   height: 140px;
   border-radius: 5px;
   border-width: 1px;
@@ -1007,6 +1021,17 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const watchlistCount = movieWatchlist.length + seriesWatchlist.length;
   const likedCount = likedMovies.length + likedSeries.length;
   const watchedCount = watchHistory.length;
+
+  // Counts known from local storage the instant sign-in writes it — before the
+  // poster cards finish hydrating. When a section has items but none are
+  // displayed yet, show a loader instead of a misleading "empty" state.
+  const watchedExpected = useMemo(
+    () => watchHistory.filter((entry) => entry.mediaType === (watchedFilter === "tv" ? "tv" : "movie")).length,
+    [watchHistory, watchedFilter]
+  );
+  const watchlistExpected = watchlistFilter === "movie" ? movieWatchlist.length : seriesWatchlist.length;
+  const likedExpected = likedFilter === "movie" ? likedMovies.length : likedSeries.length;
+
   const joinedText = formatJoinedDate(joinedDate);
   const birthdayText = formatBirthday(profileBirthday);
 
@@ -1113,12 +1138,18 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </ToggleChip>
           </ToggleRow>
           {watchedItems.length === 0 ? (
-            <EmptySection>
-              <EmptyIcon>
-                <Feather name="play-circle" size={24} color={currentTheme.colors.textSecondary} />
-              </EmptyIcon>
-              <EmptyText>{watchedFilter === "movie" ? t("profile.noMoviesWatchedYet") : t("profile.noSeriesWatchedYet")}</EmptyText>
-            </EmptySection>
+            watchedExpected > 0 ? (
+              <LoadingSection>
+                <ActivityIndicator color={currentTheme.colors.primary} />
+              </LoadingSection>
+            ) : (
+              <EmptySection>
+                <EmptyIcon>
+                  <Feather name="play-circle" size={24} color={currentTheme.colors.textSecondary} />
+                </EmptyIcon>
+                <EmptyText>{watchedFilter === "movie" ? t("profile.noMoviesWatchedYet") : t("profile.noSeriesWatchedYet")}</EmptyText>
+              </EmptySection>
+            )
           ) : (
             <RailWrap>
               <FlatList
@@ -1154,12 +1185,18 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </ToggleChip>
           </ToggleRow>
           {watchlistItems.length === 0 ? (
-            <EmptySection>
-              <EmptyIcon>
-                <Feather name="bookmark" size={24} color={currentTheme.colors.textSecondary} />
-              </EmptyIcon>
-              <EmptyText>{watchlistFilter === "movie" ? t("profile.noMoviesInWatchlist") : t("profile.noSeriesInWatchlist")}</EmptyText>
-            </EmptySection>
+            watchlistExpected > 0 ? (
+              <LoadingSection>
+                <ActivityIndicator color={currentTheme.colors.primary} />
+              </LoadingSection>
+            ) : (
+              <EmptySection>
+                <EmptyIcon>
+                  <Feather name="bookmark" size={24} color={currentTheme.colors.textSecondary} />
+                </EmptyIcon>
+                <EmptyText>{watchlistFilter === "movie" ? t("profile.noMoviesInWatchlist") : t("profile.noSeriesInWatchlist")}</EmptyText>
+              </EmptySection>
+            )
           ) : (
             <RailWrap>
               <FlatList
@@ -1195,12 +1232,18 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </ToggleChip>
           </ToggleRow>
           {likedItems.length === 0 ? (
-            <EmptySection>
-              <EmptyIcon>
-                <Feather name="heart" size={24} color={currentTheme.colors.textSecondary} />
-              </EmptyIcon>
-              <EmptyText>{likedFilter === "movie" ? t("profile.noMoviesLikedYet") : t("profile.noSeriesLikedYet")}</EmptyText>
-            </EmptySection>
+            likedExpected > 0 ? (
+              <LoadingSection>
+                <ActivityIndicator color={currentTheme.colors.primary} />
+              </LoadingSection>
+            ) : (
+              <EmptySection>
+                <EmptyIcon>
+                  <Feather name="heart" size={24} color={currentTheme.colors.textSecondary} />
+                </EmptyIcon>
+                <EmptyText>{likedFilter === "movie" ? t("profile.noMoviesLikedYet") : t("profile.noSeriesLikedYet")}</EmptyText>
+              </EmptySection>
+            )
           ) : (
             <RailWrap>
               <FlatList
