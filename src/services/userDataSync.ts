@@ -240,15 +240,43 @@ function buildWatchHistoryRows(userId: string, entries: WatchHistoryEntry[]) {
   });
 }
 
+// Supabase/PostgREST rejects (or times out on) very large upserts, and the JS
+// client returns the failure as `{ error }` rather than throwing — so a single
+// giant upsert can silently drop everything. Upsert in bounded chunks, check
+// the error every time, retry transient failures, and surface a persistent one
+// so callers know the data didn't reach the cloud. A small list is one chunk,
+// i.e. unchanged behavior.
+const SUPABASE_UPSERT_CHUNK = 100;
+const SUPABASE_UPSERT_MAX_RETRIES = 2;
+
+async function upsertRowsInChunks(table: string, rows: any[], onConflict: string) {
+  for (let start = 0; start < rows.length; start += SUPABASE_UPSERT_CHUNK) {
+    const chunk = rows.slice(start, start + SUPABASE_UPSERT_CHUNK);
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= SUPABASE_UPSERT_MAX_RETRIES; attempt += 1) {
+      const { error } = await supabase.from(table).upsert(chunk, { onConflict });
+      if (!error) {
+        lastError = null;
+        break;
+      }
+      lastError = error;
+      if (attempt < SUPABASE_UPSERT_MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+      }
+    }
+    if (lastError) throw lastError;
+  }
+}
+
 async function batchUpsertRows(table: string, rows: any[], conflictKeys: string) {
   if (rows.length === 0) return;
   const tmdb = rows.filter((row) => row.tmdb_id);
   const internal = rows.filter((row) => row.internal_id);
   if (tmdb.length > 0) {
-    await supabase.from(table).upsert(tmdb, { onConflict: `${conflictKeys},tmdb_id` });
+    await upsertRowsInChunks(table, tmdb, `${conflictKeys},tmdb_id`);
   }
   if (internal.length > 0) {
-    await supabase.from(table).upsert(internal, { onConflict: `${conflictKeys},internal_id` });
+    await upsertRowsInChunks(table, internal, `${conflictKeys},internal_id`);
   }
 }
 
