@@ -4,6 +4,7 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import type { MediaType } from "../api/tmdb";
 import type { WatchHistoryEntry, WatchPrecision } from "../hooks/useWatchHistory";
+import { buildWatchHistorySyncArrays, clampIntOrNull } from "../utils/watchHistoryRows";
 import { normalizeAppLanguage } from "../localization/types";
 import {
   APP_SETTINGS_STORAGE_KEY,
@@ -187,24 +188,6 @@ function normalizeMediaSnapshot(details?: UserMediaSyncDetails | null): SyncMeta
   return snapshot;
 }
 
-function sanitizeParallelArray<T>(values: T[] | null | undefined, targetLength: number): T[] {
-  if (!Array.isArray(values) || targetLength <= 0) return [];
-  return values.slice(0, targetLength);
-}
-
-function buildWatchHistorySyncArrays(entry: WatchHistoryEntry) {
-  const castIds = Array.isArray(entry.castIds) ? entry.castIds : [];
-  const directorIds = Array.isArray(entry.directorIds) ? entry.directorIds : [];
-  return {
-    castIds,
-    castNames: sanitizeParallelArray(entry.castNames, castIds.length),
-    castProfilePaths: sanitizeParallelArray(entry.castProfilePaths, castIds.length),
-    castGenders: sanitizeParallelArray(entry.castGenders, castIds.length),
-    directorIds,
-    directorNames: sanitizeParallelArray(entry.directorNames, directorIds.length),
-    directorProfilePaths: sanitizeParallelArray(entry.directorProfilePaths, directorIds.length),
-  };
-}
 
 function buildWatchHistoryRows(userId: string, entries: WatchHistoryEntry[]) {
   return entries.map((entry) => {
@@ -218,13 +201,13 @@ function buildWatchHistoryRows(userId: string, entries: WatchHistoryEntry[]) {
     return {
       user_id: userId,
       media_type: entry.mediaType,
-      title: entry.title,
+      title: (entry.title ?? "").slice(0, 500),
       poster_path: entry.posterPath,
-      genres: entry.genres,
-      runtime_minutes: entry.runtimeMinutes,
-      episode_count: entry.episodeCount,
-      vote_average: entry.voteAverage,
-      release_year: entry.year ? Number(entry.year) : null,
+      genres: (Array.isArray(entry.genres) ? entry.genres : []).slice(0, 25),
+      runtime_minutes: clampIntOrNull(entry.runtimeMinutes, 1, 5000),
+      episode_count: clampIntOrNull(entry.episodeCount, 1, 50000),
+      vote_average: Math.min(10, Math.max(0, Number.isFinite(entry.voteAverage) ? entry.voteAverage : 0)),
+      release_year: clampIntOrNull(entry.year, 1878, 2100),
       cast_ids: arrays.castIds,
       cast_names: arrays.castNames,
       cast_profile_paths: arrays.castProfilePaths,
@@ -344,7 +327,7 @@ function normalizeWatchHistory(raw: string | null): WatchHistoryEntry[] {
       castIds: coerceNumberArray(entry.castIds),
       castNames: coerceStringArray(entry.castNames),
       castProfilePaths: Array.isArray(entry.castProfilePaths) ? entry.castProfilePaths.map(v => typeof v === "string" ? v : null) : [],
-      castGenders: Array.isArray(entry.castGenders) ? entry.castGenders.filter(v => v === "male" || v === "female") : [],
+      castGenders: Array.isArray(entry.castGenders) ? entry.castGenders.map(v => (v === "male" || v === "female" ? v : null)) : [],
       directorIds: coerceNumberArray(entry.directorIds),
       directorNames: coerceStringArray(entry.directorNames),
       directorProfilePaths: Array.isArray(entry.directorProfilePaths) ? entry.directorProfilePaths.map(v => typeof v === "string" ? v : null) : [],
