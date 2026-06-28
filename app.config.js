@@ -3,13 +3,15 @@ const baseConfig = {
   slug: "streambox",
   scheme: "streambox",
   version: "1.1.0",
-  // Pinned to "1.0.2" because that's the runtime baked into the APK that all
-  // installed users currently have. EAS Update only delivers a bundle to apps
-  // running the matching runtime, so every OTA we publish MUST target 1.0.2
-  // until a new APK with a bumped runtime ships from the website. Bump this
-  // (and rebuild + redistribute the APK) when you intentionally cut a new
-  // native release that drops compatibility with older installs.
-  runtimeVersion: "1.0.2",
+  // "1.1.0" is the runtime for the native release that bundles the
+  // expo-navigation-bar module (immersive nav-bar hide during playback). It is
+  // DELIBERATELY a different runtime from the legacy "1.0.2" APKs: those don't
+  // ship the native module, so an OTA carrying nav-bar code would crash them.
+  // EAS Update only delivers a bundle to apps on the matching runtime, so this
+  // build is isolated — it never receives the nav-bar-free 1.0.2 OTAs, and the
+  // 1.0.2 fleet never receives nav-bar code. Publish OTAs for THIS APK with
+  // runtime 1.1.0; keep publishing the legacy fleet's fixes on 1.0.2.
+  runtimeVersion: "1.1.0",
   orientation: "portrait",
   userInterfaceStyle: "dark",
   icon: "./assets/app-icons/app-icon-1024.png",
