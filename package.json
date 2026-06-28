@@ -4,6 +4,7 @@
   "private": true,
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
+    "eas-build-pre-install": "npm install --package-lock-only --no-audit --no-fund",
     "start": "expo start --lan --clear --port 8081",
     "start:lan": "expo start --lan --clear --port 8081",
     "start:localhost": "expo start --localhost --clear --port 8081",
@@ -42,6 +43,7 @@
     "expo-image": "~3.0.11",
     "expo-image-picker": "~17.0.11",
     "expo-linear-gradient": "~15.0.8",
+    "expo-navigation-bar": "~5.0.10",
     "expo-screen-orientation": "~9.0.9",
     "expo-sharing": "~14.0.8",
     "expo-splash-screen": "~31.0.13",
