@@ -1,0 +1,47 @@
+insert into public.app_announcements (
+  slug,
+  priority,
+  is_active,
+  requires_auth,
+  display_version,
+  title_en,
+  title_tr,
+  body_en,
+  body_tr,
+  eyebrow_en,
+  eyebrow_tr,
+  accent_hex,
+  starts_at,
+  platforms
+)
+values (
+  'streambox-letterboxd-import-2026-06',
+  2600,
+  true,
+  false,
+  1,
+  'Import your Letterboxd library',
+  'Letterboxd kutuphaneni ice aktar',
+  'You can now bring your Letterboxd history into StreamBox. Open Settings, choose "Import from Letterboxd", and pick the .zip you exported from Letterboxd. Your watched films, watchlist and likes are matched and added automatically — watched titles get marked and counted in your stats.',
+  'Artik Letterboxd gecmisini StreamBox''a tasiyabilirsin. Ayarlar bolumunde "Letterboxd''dan ice aktar" secenegini ac ve Letterboxd''dan disa aktardigin .zip dosyasini sec. Izledigin filmler, izleme listen ve begenilerin otomatik olarak eklenir; izlenen basliklar isaretlenir ve istatistiklerine sayilir.',
+  'New feature',
+  'Yeni ozellik',
+  '#FF8000',
+  timezone('utc', now()),
+  array['android', 'ios']::text[]
+)
+on conflict (slug) do update
+  set priority = excluded.priority,
+      is_active = excluded.is_active,
+      requires_auth = excluded.requires_auth,
+      display_version = public.app_announcements.display_version + 1,
+      title_en = excluded.title_en,
+      title_tr = excluded.title_tr,
+      body_en = excluded.body_en,
+      body_tr = excluded.body_tr,
+      eyebrow_en = excluded.eyebrow_en,
+      eyebrow_tr = excluded.eyebrow_tr,
+      accent_hex = excluded.accent_hex,
+      starts_at = excluded.starts_at,
+      platforms = excluded.platforms,
+      updated_at = timezone('utc', now());
