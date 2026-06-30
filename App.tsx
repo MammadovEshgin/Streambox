@@ -503,9 +503,7 @@ function AppShell() {
   return (
     <ThemeProvider theme={activeTheme}>
       <StatusBar style="light" />
-      {shouldShowAppLoader ? (
-        <LaunchSplash variant={launchPhase === "app" ? "sync" : "launch"} />
-      ) : null}
+      {shouldShowAppLoader ? <LaunchSplash /> : null}
       {!shouldShowAppLoader && launchPhase === "welcome" ? <WelcomeScreen onContinue={handleContinueFromWelcome} /> : null}
       {!shouldShowAppLoader && launchPhase === "auth" ? (
         <>

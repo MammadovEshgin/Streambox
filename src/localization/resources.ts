@@ -38,8 +38,6 @@ export const resources = {
       loaders: {
         syncingData: "Syncing your StreamBox data",
         preparingCinemaRoom: "Preparing your cinema room",
-        launchPhrases: ["Rolling…", "Dimming the lights", "Cueing the reels", "Finding your seat", "Focusing the projector"],
-        syncPhrases: ["Cueing your library", "Rewinding your list", "Loading the reels", "Syncing your collection"],
         loadingReels: "Loading reels",
         loadingMovies: "Loading movies",
         loadingSeries: "Loading series",
@@ -407,7 +405,7 @@ export const resources = {
       common: {
         movie: "Film", movies: "Filmler", series: "Diziler", all: "Tümü", male: "Erkek", female: "Kadın", watchNow: "Şimdi izle", watchedOn: "{{date}} tarihinde izlendi", readMore: "Devamını oku", readLess: "Daha az göster", seeAll: "Tümünü gör", retry: "Tekrar dene", cancel: "İptal", save: "Kaydet", update: "Güncelle", remove: "Kaldır", confirm: "Onayla", goBack: "Geri dön", edit: "Düzenle", searching: "Aranıyor...", loading: "Yükleniyor...", noImage: "Görsel yok", noStill: "Kare yok", noPoster: "Yakında", soon: "Yakında", unknown: "Bilinmiyor", unknownYear: "Bilinmeyen yıl", today: "Bugün", yesterday: "Dün", oneWeekAgo: "1 hafta önce", justWatched: "Sadece izlendi",
       },
-      loaders: { syncingData: "StreamBox verilerin senkronize ediliyor", preparingCinemaRoom: "Senin için sinema odası hazırlanıyor", launchPhrases: ["Makara dönüyor…", "Işıklar kısılıyor", "Perde açılıyor", "Yerine geçiliyor", "Projektör ayarlanıyor"], syncPhrases: ["Kütüphanen yükleniyor", "Listen geri sarılıyor", "Makaralar yükleniyor", "Koleksiyonun eşitleniyor"], loadingReels: "İçerik yükleniyor", loadingMovies: "Filmler yükleniyor", loadingSeries: "Diziler yükleniyor", loadingMovieDetail: "Detay yükleniyor", loadingSeriesDetail: "Dizi yükleniyor", loadingJourneys: "Yolculuklar yükleniyor", loadingProfile: "Profil yükleniyor..." },
+      loaders: { syncingData: "StreamBox verilerin senkronize ediliyor", preparingCinemaRoom: "Senin için sinema odası hazırlanıyor", loadingReels: "İçerik yükleniyor", loadingMovies: "Filmler yükleniyor", loadingSeries: "Diziler yükleniyor", loadingMovieDetail: "Detay yükleniyor", loadingSeriesDetail: "Dizi yükleniyor", loadingJourneys: "Yolculuklar yükleniyor", loadingProfile: "Profil yükleniyor..." },
       player: {
         didYouKnow: "Bunu biliyor muydun?",
         a11y: {
