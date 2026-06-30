@@ -21,7 +21,7 @@ const MARK = require("../../../assets/app-icons/streambox-logo.png");
 const LOGO_H = 66;
 const LOGO_ASPECT = 374 / 514; // cropped mark dimensions (taller than wide)
 const LOGO_W = Math.round(LOGO_H * LOGO_ASPECT);
-const GAP = 4;
+const GAP = 10;
 // How far the wordmark travels in from the right before settling.
 const WORD_FROM_RIGHT = 56;
 
