@@ -13,9 +13,14 @@ import Animated, {
 } from "react-native-reanimated";
 import styled from "styled-components/native";
 
-const MARK = require("../../../assets/app-icons/adaptive-foreground.png");
+// Tight-cropped wallet mark (the adaptive-icon foreground has ~30% transparent
+// safe-zone padding baked in, which otherwise reads as a big gap to the
+// wordmark). streambox-logo.png is that mark with the padding removed.
+const MARK = require("../../../assets/app-icons/streambox-logo.png");
 
-const LOGO = 72;
+const LOGO_H = 66;
+const LOGO_ASPECT = 374 / 514; // cropped mark dimensions (taller than wide)
+const LOGO_W = Math.round(LOGO_H * LOGO_ASPECT);
 const GAP = 4;
 // How far the wordmark travels in from the right before settling.
 const WORD_FROM_RIGHT = 56;
@@ -47,8 +52,8 @@ const Lockup = styled.View`
 `;
 
 const LogoImage = styled(Animated.Image)`
-  width: ${LOGO}px;
-  height: ${LOGO}px;
+  width: ${LOGO_W}px;
+  height: ${LOGO_H}px;
 `;
 
 const Wordmark = styled(Animated.Text)`
