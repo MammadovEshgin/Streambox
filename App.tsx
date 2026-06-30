@@ -16,7 +16,7 @@ import { I18nextProvider, useTranslation } from "react-i18next";
 import { ThemeProvider } from "styled-components/native";
 import styled from "styled-components/native";
 
-import { LaunchSplash } from "./src/components/common/LaunchSplash";
+import { LaunchSplash, SplashLoading } from "./src/components/common/LaunchSplash";
 import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
@@ -235,6 +235,10 @@ function AppShell() {
   const { isReady: isUserDataReady } = useUserDataSync();
   const { t } = useTranslation();
   const [launchPhase, setLaunchPhase] = useState<LaunchPhase>("loading");
+  // The launch splash plays its full reveal regardless of how fast data loads;
+  // only once it finishes do we hand off to real content (or, if content still
+  // isn't ready, a plain Loading spinner).
+  const [splashComplete, setSplashComplete] = useState(false);
   const [authFlow, setAuthFlow] = useState<AuthFlow>("main");
   const [pendingEmail, setPendingEmail] = useState("");
   const [startupRetryNonce, setStartupRetryNonce] = useState(0);
@@ -495,17 +499,26 @@ function AppShell() {
     },
   }), [activeTheme]);
 
-  const shouldShowAppLoader =
+  const handleSplashComplete = useCallback(() => setSplashComplete(true), []);
+
+  // What the splash hands off to. The app phase additionally needs its synced
+  // data + hub caches; welcome/auth need nothing. Until the launch phase
+  // resolves we keep waiting too. Content loads *during* the splash, so this is
+  // usually already false by the time the splash finishes — no spinner shown.
+  const isContentPending =
     launchPhase === "loading"
     || (launchPhase === "app" && (!isUserDataReady || !hubCachesHydrated));
+  const showLoadingFallback = splashComplete && isContentPending;
+  const showResolvedScreen = splashComplete && !isContentPending;
   const startupBoundaryResetKey = `${session?.user.id ?? "guest"}:${startupRetryNonce}`;
 
   return (
     <ThemeProvider theme={activeTheme}>
       <StatusBar style="light" />
-      {shouldShowAppLoader ? <LaunchSplash /> : null}
-      {!shouldShowAppLoader && launchPhase === "welcome" ? <WelcomeScreen onContinue={handleContinueFromWelcome} /> : null}
-      {!shouldShowAppLoader && launchPhase === "auth" ? (
+      {!splashComplete ? <LaunchSplash onComplete={handleSplashComplete} /> : null}
+      {showLoadingFallback ? <SplashLoading /> : null}
+      {showResolvedScreen && launchPhase === "welcome" ? <WelcomeScreen onContinue={handleContinueFromWelcome} /> : null}
+      {showResolvedScreen && launchPhase === "auth" ? (
         <>
           {authFlow === "main" ? (
             <AuthScreen
@@ -536,7 +549,7 @@ function AppShell() {
           ) : null}
         </>
       ) : null}
-      {!shouldShowAppLoader && launchPhase === "app" ? (
+      {showResolvedScreen && launchPhase === "app" ? (
         <StartupErrorBoundary
           resetKey={startupBoundaryResetKey}
           title={t("startupError.title")}

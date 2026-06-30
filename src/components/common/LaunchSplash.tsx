@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { type LayoutChangeEvent } from "react-native";
 import Animated, {
   Easing,
@@ -9,7 +10,6 @@ import Animated, {
   withRepeat,
   withSequence,
   withTiming,
-  type SharedValue,
 } from "react-native-reanimated";
 import styled from "styled-components/native";
 
@@ -20,18 +20,20 @@ const GAP = 14;
 // How far the wordmark travels in from the right before settling.
 const WORD_FROM_RIGHT = 56;
 
-const EASE_OUT = Easing.out(Easing.cubic);
-const EASE_IN_OUT = Easing.inOut(Easing.quad);
-
 // ── Timeline (ms) ───────────────────────────────────────────────────────────
-const APPEAR_MS = 300;       // logo fades in at center
-const PULSE_HALF = 220;      // grow, then shrink — one half each
-const PULSE_COUNT = 3;       // heartbeat ×3
-const SETTLE_PAUSE = 140;    // beat before the slide
-const MOVE_MS = 720;         // spin-left + wordmark-from-right
+const APPEAR_MS = 220;       // logo fades in at center
+const BEAT_GROW = 200;       // heartbeat: scale up
+const BEAT_SHRINK = 250;     // heartbeat: scale back
+const BEAT_COUNT = 3;        // heartbeat ×3
+const SETTLE_PAUSE = 150;    // pause before the slide
+const MOVE_MS = 700;         // spin-left + wordmark-from-right
+const HOLD_MS = 240;         // hold the formed lockup before handing off
 
-const PULSE_END = APPEAR_MS + PULSE_HALF * 2 * PULSE_COUNT;
+const BEAT_MS = BEAT_GROW + BEAT_SHRINK;
+const PULSE_END = APPEAR_MS + BEAT_MS * BEAT_COUNT;
 const MOVE_START = PULSE_END + SETTLE_PAUSE;
+/** Total time from mount to the moment the lockup is fully settled. */
+export const LAUNCH_SPLASH_DURATION_MS = MOVE_START + MOVE_MS + HOLD_MS;
 
 const Root = styled.View`
   flex: 1;
@@ -59,60 +61,36 @@ const Wordmark = styled(Animated.Text)`
   letter-spacing: -0.4px;
 `;
 
-const Dots = styled(Animated.View)`
-  position: absolute;
-  bottom: 12%;
-  flex-direction: row;
-`;
+type LaunchSplashProps = {
+  /** Fires once the full reveal has finished (logo settled into the lockup). */
+  onComplete?: () => void;
+};
 
-const Dot = styled(Animated.View)<{ $color: string }>`
-  width: 6px;
-  height: 6px;
-  border-radius: 3px;
-  margin: 0 4px;
-  background-color: ${({ $color }) => $color};
-`;
-
-function LoadingDot({ index, loop, color }: { index: number; loop: SharedValue<number>; color: string }) {
-  const style = useAnimatedStyle(() => {
-    "worklet";
-    // A soft highlight travels across the three dots.
-    const phase = (loop.value - index / 3 + 1) % 1;
-    const lift = Math.max(0, 1 - Math.abs(phase - 0.5) * 3);
-    return { opacity: 0.32 + lift * 0.6, transform: [{ scale: 0.9 + lift * 0.25 }] };
-  });
-  return <Dot $color={color} style={style} />;
-}
-
-export function LaunchSplash() {
+export function LaunchSplash({ onComplete }: LaunchSplashProps) {
   const enter = useSharedValue(0);
   const scale = useSharedValue(1);
   const move = useSharedValue(0);
-  const dotsFade = useSharedValue(0);
-  const dotsLoop = useSharedValue(0);
   // Measured wordmark width so the logo can rest at the true screen center
   // (the lockup reserves logo + gap + word; the logo sits left of that center
   // by half the gap+word, so we offset it right by that amount until it slides).
   const wordWidth = useSharedValue(150);
 
   useEffect(() => {
-    enter.value = withTiming(1, { duration: APPEAR_MS, easing: EASE_OUT });
+    enter.value = withTiming(1, { duration: APPEAR_MS, easing: Easing.out(Easing.cubic) });
 
-    const grow = withTiming(2, { duration: PULSE_HALF, easing: EASE_OUT });
-    const shrink = withTiming(1, { duration: PULSE_HALF, easing: EASE_IN_OUT });
+    // Smooth heartbeat: a soft pop up, an eased settle back — repeated.
+    const grow = withTiming(2, { duration: BEAT_GROW, easing: Easing.out(Easing.quad) });
+    const shrink = withTiming(1, { duration: BEAT_SHRINK, easing: Easing.inOut(Easing.quad) });
     scale.value = withDelay(
       APPEAR_MS,
       withSequence(grow, shrink, grow, shrink, grow, shrink)
     );
 
-    move.value = withDelay(MOVE_START, withTiming(1, { duration: MOVE_MS, easing: EASE_OUT }));
+    move.value = withDelay(MOVE_START, withTiming(1, { duration: MOVE_MS, easing: Easing.out(Easing.cubic) }));
 
-    dotsFade.value = withDelay(MOVE_START + MOVE_MS - 120, withTiming(1, { duration: 360, easing: EASE_OUT }));
-    dotsLoop.value = withDelay(
-      MOVE_START + MOVE_MS,
-      withRepeat(withTiming(1, { duration: 1300, easing: Easing.linear }), -1, false)
-    );
-  }, [enter, scale, move, dotsFade, dotsLoop]);
+    const doneTimer = setTimeout(() => onComplete?.(), LAUNCH_SPLASH_DURATION_MS);
+    return () => clearTimeout(doneTimer);
+  }, [enter, scale, move, onComplete]);
 
   const onWordLayout = (event: LayoutChangeEvent) => {
     const width = event.nativeEvent.layout.width;
@@ -135,14 +113,9 @@ export function LaunchSplash() {
   const wordStyle = useAnimatedStyle(() => {
     "worklet";
     return {
-      opacity: interpolate(move.value, [0, 0.25, 1], [0, 0, 1]),
+      opacity: interpolate(move.value, [0, 0.3, 1], [0, 0, 1]),
       transform: [{ translateX: interpolate(move.value, [0, 1], [WORD_FROM_RIGHT, 0]) }],
     };
-  });
-
-  const dotsStyle = useAnimatedStyle(() => {
-    "worklet";
-    return { opacity: dotsFade.value };
   });
 
   return (
@@ -153,21 +126,49 @@ export function LaunchSplash() {
           StreamBox
         </Wordmark>
       </Lockup>
-
-      <Dots style={dotsStyle} pointerEvents="none">
-        <LoadingDotRow loop={dotsLoop} />
-      </Dots>
     </Root>
   );
 }
 
-function LoadingDotRow({ loop }: { loop: SharedValue<number> }) {
-  const color = "rgba(255,255,255,0.55)";
+// ── Loading fallback ─────────────────────────────────────────────────────────
+// Shown only if content still isn't ready after the splash finishes. Same dark
+// canvas so the handoff from the splash is seamless.
+const SpinnerRing = styled(Animated.View)`
+  width: 38px;
+  height: 38px;
+  border-radius: 19px;
+  border-width: 2.5px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
+  border-top-color: ${({ theme }) => theme.colors.primary};
+`;
+
+const LoadingText = styled.Text`
+  margin-top: 16px;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_500Medium;
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+`;
+
+export function SplashLoading() {
+  const { t } = useTranslation();
+  const spin = useSharedValue(0);
+
+  useEffect(() => {
+    spin.value = withRepeat(withTiming(1, { duration: 850, easing: Easing.linear }), -1, false);
+  }, [spin]);
+
+  const spinStyle = useAnimatedStyle(() => {
+    "worklet";
+    return { transform: [{ rotate: `${spin.value * 360}deg` }] };
+  });
+
   return (
-    <>
-      <LoadingDot index={0} loop={loop} color={color} />
-      <LoadingDot index={1} loop={loop} color={color} />
-      <LoadingDot index={2} loop={loop} color={color} />
-    </>
+    <Root>
+      <SpinnerRing style={spinStyle} />
+      <LoadingText>{t("loaders.loading")}</LoadingText>
+    </Root>
   );
 }
