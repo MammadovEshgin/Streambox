@@ -16,7 +16,7 @@ import styled from "styled-components/native";
 const MARK = require("../../../assets/app-icons/adaptive-foreground.png");
 
 const LOGO = 72;
-const GAP = 14;
+const GAP = 7;
 // How far the wordmark travels in from the right before settling.
 const WORD_FROM_RIGHT = 56;
 
