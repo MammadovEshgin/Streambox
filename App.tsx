@@ -7,7 +7,6 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { NavigationContainer, type Theme as NavigationTheme } from "@react-navigation/native";
 import * as SplashScreen from "expo-splash-screen";
 import * as Updates from "expo-updates";
-import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
 import { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Platform } from "react-native";
@@ -17,7 +16,7 @@ import { I18nextProvider, useTranslation } from "react-i18next";
 import { ThemeProvider } from "styled-components/native";
 import styled from "styled-components/native";
 
-import { MovieLoader } from "./src/components/common/MovieLoader";
+import { LaunchSplash } from "./src/components/common/LaunchSplash";
 import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
@@ -64,66 +63,6 @@ void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 type LaunchPhase = "loading" | "welcome" | "auth" | "app";
 type AuthFlow = "main" | "otp" | "forgot" | "reset";
-
-const LoaderScreen = styled.View`
-  flex: 1;
-  background-color: ${({ theme }) => theme.colors.background};
-  align-items: center;
-  justify-content: center;
-`;
-
-const LoaderGradient = styled(LinearGradient)`
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-`;
-
-const LoaderGlow = styled.View<{ $color: string }>`
-  position: absolute;
-  width: 240px;
-  height: 240px;
-  border-radius: 120px;
-  background-color: ${({ $color }) => $color};
-  opacity: 0.24;
-  top: 18%;
-`;
-
-const LoaderBrandShell = styled.View`
-  width: 112px;
-  height: 112px;
-  border-radius: 30px;
-  background-color: rgba(255, 255, 255, 0.07);
-  border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.1);
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 20px;
-`;
-
-const LoaderBrandIcon = styled.Image`
-  width: 68px;
-  height: 68px;
-`;
-
-const LoaderBrandTitle = styled.Text`
-  color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: Outfit_700Bold;
-  font-size: 24px;
-  line-height: 28px;
-  letter-spacing: -0.6px;
-`;
-
-const LoaderBrandSubtitle = styled.Text`
-  margin-top: 8px;
-  margin-bottom: 20px;
-  color: ${({ theme }) => theme.colors.textSecondary};
-  font-family: Outfit_400Regular;
-  font-size: 12px;
-  line-height: 17px;
-  letter-spacing: 0.2px;
-`;
 
 const StartupErrorShell = styled.View`
   flex: 1;
@@ -559,28 +498,13 @@ function AppShell() {
   const shouldShowAppLoader =
     launchPhase === "loading"
     || (launchPhase === "app" && (!isUserDataReady || !hubCachesHydrated));
-  const loaderSubtitle = launchPhase === "app"
-    ? t("loaders.syncingData")
-    : t("loaders.preparingCinemaRoom");
   const startupBoundaryResetKey = `${session?.user.id ?? "guest"}:${startupRetryNonce}`;
 
   return (
     <ThemeProvider theme={activeTheme}>
       <StatusBar style="light" />
       {shouldShowAppLoader ? (
-        <LoaderScreen>
-          <LoaderGradient
-            colors={[activeTheme.colors.background, activeTheme.colors.primaryGlow, activeTheme.colors.background]}
-            locations={[0, 0.5, 1]}
-          />
-          <LoaderGlow $color={activeTheme.colors.primary} />
-          <LoaderBrandShell>
-            <LoaderBrandIcon source={require("./assets/app-icons/adaptive-foreground.png")} resizeMode="contain" />
-          </LoaderBrandShell>
-          <LoaderBrandTitle>StreamBox</LoaderBrandTitle>
-          <LoaderBrandSubtitle>{loaderSubtitle}</LoaderBrandSubtitle>
-          <MovieLoader size={42} />
-        </LoaderScreen>
+        <LaunchSplash variant={launchPhase === "app" ? "sync" : "launch"} />
       ) : null}
       {!shouldShowAppLoader && launchPhase === "welcome" ? <WelcomeScreen onContinue={handleContinueFromWelcome} /> : null}
       {!shouldShowAppLoader && launchPhase === "auth" ? (
