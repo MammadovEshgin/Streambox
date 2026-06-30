@@ -707,7 +707,19 @@ async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
     const available = hasRapidrame || hasAlternativeLink || hasPlayerIframe || html.includes('kePlayerTitle');
     if (!available) return { available: false };
 
-    const nativeFallback = hasRapidrame ? await getCachedHdFilmNativeFallback(pageUrl, html) : null;
+    // Attempt native extraction whenever the page carries a trusted HDFilm
+    // embed iframe — NOT only when the literal "rapidrame" string is present.
+    // Many titles (e.g. "Obsession") embed hdfilmcehennemi.mobi/video/embed/…
+    // without that word yet still decode to a native HLS stream via the same
+    // Rapidrame decoder. Gating on the literal string sent those titles to the
+    // WebView player even though native playback was fully available.
+    // extractHdFilmEmbedUrl is a pure regex on the already-fetched HTML, and
+    // resolveHdFilmNativeFallback returns null cleanly when nothing decodes, so
+    // pages with no real native stream still fall through to the WebView path.
+    const hasExtractableEmbed = extractHdFilmEmbedUrl(html, pageUrl) !== null;
+    const nativeFallback = (hasRapidrame || hasExtractableEmbed)
+      ? await getCachedHdFilmNativeFallback(pageUrl, html)
+      : null;
 
     // Check server/source buttons for low-quality markers (CAM Sürüm, TS, etc.)
     const linkButtons = html.match(/<button[^>]*class=["'][^"']*alternative-link[^"']*["'][^>]*>[\s\S]*?<\/button>/gi) || [];
@@ -1102,15 +1114,36 @@ function reverseString(value: string): string {
 
 /**
  * Final byte de-scramble shared by every Rapidrame obfuscation scheme:
- * each char is shifted back by `399756995 % (i + 5)`.
+ * each char is shifted back by `<modConstant> % (i + 5)`.
+ *
+ * The provider rotates `modConstant` inside the inline `dc_*()` helper on the
+ * embed page (observed: 399756995 → 112511818). We parse the live value from
+ * the embed HTML at runtime (see parseRapidrameUnmixConstant) so a rotation of
+ * just this number can no longer break playback; the known values below are
+ * fallbacks for the rare case the parse misses.
  */
-function unmixRapidrameBytes(value: string): string {
+const KNOWN_RAPIDRAME_UNMIX_CONSTANTS = [112511818, 399756995];
+
+function unmixRapidrameBytes(value: string, modConstant = KNOWN_RAPIDRAME_UNMIX_CONSTANTS[0]): string {
   let unmix = "";
   for (let index = 0; index < value.length; index += 1) {
-    const nextCode = (value.charCodeAt(index) - (399756995 % (index + 5)) + 256) % 256;
+    const nextCode = (value.charCodeAt(index) - (modConstant % (index + 5)) + 256) % 256;
     unmix += String.fromCharCode(nextCode);
   }
   return unmix;
+}
+
+/**
+ * Read the unmix constant straight out of the embed page's `dc_*()` body, e.g.
+ * `charCode - (112511818 % (i + 5))`. Returns null when the page shape changed
+ * enough that the number isn't where we expect — the caller then falls back to
+ * the known constants.
+ */
+function parseRapidrameUnmixConstant(embedHtml: string): number | null {
+  const match = embedHtml.match(/(\d{6,})\s*%\s*\(\s*[A-Za-z_$][\w$]*\s*\+\s*5\s*\)/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 /**
@@ -1140,16 +1173,33 @@ const RAPIDRAME_PRE_UNMIX_TRANSFORMS: Array<(joined: string) => string> = [
  * Decode the Rapidrame `s_*` parts array into the underlying stream URL.
  * Returns every scheme's candidate so the caller can pick the valid URL;
  * an unrecognised/garbage decode simply fails the http(s) check upstream.
+ *
+ * `modConstant` is the value parsed from the live embed page when available.
+ * We try it first, then the known constants, so playback survives a rotation
+ * of just the unmix number even if the parse fails.
  */
-function decodeRapidrameValueCandidates(valueParts: string[]): string[] {
+function decodeRapidrameValueCandidates(valueParts: string[], modConstant?: number | null): string[] {
   const joined = valueParts.join("");
-  return RAPIDRAME_PRE_UNMIX_TRANSFORMS.map((transform) => {
+  const constants = Array.from(
+    new Set([...(modConstant ? [modConstant] : []), ...KNOWN_RAPIDRAME_UNMIX_CONSTANTS])
+  );
+  const candidates: string[] = [];
+  for (const transform of RAPIDRAME_PRE_UNMIX_TRANSFORMS) {
+    let transformed: string;
     try {
-      return unmixRapidrameBytes(transform(joined));
+      transformed = transform(joined);
     } catch {
-      return "";
+      continue;
     }
-  });
+    for (const constant of constants) {
+      try {
+        candidates.push(unmixRapidrameBytes(transformed, constant));
+      } catch {
+        /* skip this constant */
+      }
+    }
+  }
+  return candidates;
 }
 
 function extractJsonArrayLiteral(value: string): string | null {
@@ -1285,6 +1335,10 @@ function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
   const arrayLiteral = extractJsonArrayLiteral(variableSnippet);
   if (!arrayLiteral) return null;
 
+  // Read the live unmix constant from the dc_*() body so a rotation of just
+  // that number (the provider's most common change) self-heals without a release.
+  const unmixConstant = parseRapidrameUnmixConstant(embedHtml);
+
   try {
     const parts = JSON.parse(arrayLiteral);
     if (!Array.isArray(parts) || parts.some((part) => typeof part !== "string")) {
@@ -1293,7 +1347,7 @@ function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
 
     // Try every known Rapidrame obfuscation scheme and keep the first candidate
     // that normalizes to a real http(s) URL (the provider rotates the scheme).
-    for (const candidate of decodeRapidrameValueCandidates(parts)) {
+    for (const candidate of decodeRapidrameValueCandidates(parts, unmixConstant)) {
       const normalized = normalizeExtractedMediaUrl(candidate);
       if (normalized) return normalized;
     }
