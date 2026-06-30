@@ -21,16 +21,15 @@ const GAP = 14;
 const WORD_FROM_RIGHT = 56;
 
 // ── Timeline (ms) ───────────────────────────────────────────────────────────
-const APPEAR_MS = 220;       // logo fades in at center
-const BEAT_GROW = 200;       // heartbeat: scale up
-const BEAT_SHRINK = 250;     // heartbeat: scale back
-const BEAT_COUNT = 3;        // heartbeat ×3
-const SETTLE_PAUSE = 150;    // pause before the slide
-const MOVE_MS = 700;         // spin-left + wordmark-from-right
-const HOLD_MS = 240;         // hold the formed lockup before handing off
+// Deliberately slow (~4.5s total) so the reveal reads as premium, not rushed.
+const APPEAR_MS = 700;       // logo fades in at center
+const BEAT_GROW = 750;       // heartbeat: scale up (once)
+const BEAT_SHRINK = 850;     // heartbeat: scale back
+const SETTLE_PAUSE = 450;    // pause before the slide
+const MOVE_MS = 1150;        // spin-left + wordmark-from-right
+const HOLD_MS = 650;         // hold the formed lockup before handing off
 
-const BEAT_MS = BEAT_GROW + BEAT_SHRINK;
-const PULSE_END = APPEAR_MS + BEAT_MS * BEAT_COUNT;
+const PULSE_END = APPEAR_MS + BEAT_GROW + BEAT_SHRINK;
 const MOVE_START = PULSE_END + SETTLE_PAUSE;
 /** Total time from mount to the moment the lockup is fully settled. */
 export const LAUNCH_SPLASH_DURATION_MS = MOVE_START + MOVE_MS + HOLD_MS;
@@ -78,13 +77,10 @@ export function LaunchSplash({ onComplete }: LaunchSplashProps) {
   useEffect(() => {
     enter.value = withTiming(1, { duration: APPEAR_MS, easing: Easing.out(Easing.cubic) });
 
-    // Smooth heartbeat: a soft pop up, an eased settle back — repeated.
-    const grow = withTiming(2, { duration: BEAT_GROW, easing: Easing.out(Easing.quad) });
-    const shrink = withTiming(1, { duration: BEAT_SHRINK, easing: Easing.inOut(Easing.quad) });
-    scale.value = withDelay(
-      APPEAR_MS,
-      withSequence(grow, shrink, grow, shrink, grow, shrink)
-    );
+    // Smooth single heartbeat: a slow eased pop up, then an eased settle back.
+    const grow = withTiming(2, { duration: BEAT_GROW, easing: Easing.inOut(Easing.cubic) });
+    const shrink = withTiming(1, { duration: BEAT_SHRINK, easing: Easing.inOut(Easing.cubic) });
+    scale.value = withDelay(APPEAR_MS, withSequence(grow, shrink));
 
     move.value = withDelay(MOVE_START, withTiming(1, { duration: MOVE_MS, easing: Easing.out(Easing.cubic) }));
 
