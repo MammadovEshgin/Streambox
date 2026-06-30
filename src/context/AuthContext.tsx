@@ -50,6 +50,13 @@ function isInvalidRefreshTokenError(error: unknown) {
     || (message.includes("invalid refresh token") && message.includes("refresh token"));
 }
 
+// True when the session's access token has already expired. supabase-js stores
+// expires_at in SECONDS.
+function isAccessTokenExpired(session: Session): boolean {
+  if (!session.expires_at) return false;
+  return session.expires_at * 1000 <= Date.now();
+}
+
 export function AuthProvider({ children }: PropsWithChildren) {
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -132,19 +139,38 @@ export function AuthProvider({ children }: PropsWithChildren) {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, nextSession) => {
-      setSession(nextSession);
+      try {
+        // Cold start can recover a stale session from storage whose access
+        // token already expired and whose refresh token is dead. With
+        // autoRefreshToken disabled, supabase-js still emits it as SIGNED_IN
+        // without refreshing or removing it. Accepting it would render the app
+        // as logged-in and make the next Supabase call emit
+        // "Invalid Refresh Token: Refresh Token Not Found". Drop it instead —
+        // init()'s getSession() purges the stored token, and a genuinely
+        // refreshable session is re-delivered here as TOKEN_REFRESHED.
+        if (nextSession && event !== "SIGNED_OUT" && isAccessTokenExpired(nextSession)) {
+          setSession(null);
+          return;
+        }
 
-      if (nextSession) {
-        await stampActivity();
-      }
+        setSession(nextSession);
 
-      if (event === "SIGNED_IN" && nextSession) {
-        await logSupabaseUserEvent(
-          "auth",
-          "signed_in",
-          { source: "auth_state_change" },
-          { entityType: "session", entityKey: nextSession.user.id }
-        ).catch(() => undefined);
+        if (nextSession) {
+          await stampActivity();
+        }
+
+        if (event === "SIGNED_IN" && nextSession) {
+          await logSupabaseUserEvent(
+            "auth",
+            "signed_in",
+            { source: "auth_state_change" },
+            { entityType: "session", entityKey: nextSession.user.id }
+          ).catch(() => undefined);
+        }
+      } catch (err) {
+        // A throw here propagates back into supabase-js's subscriber loop,
+        // which console.errors it. Keep auth-state handling self-contained.
+        if (__DEV__) console.warn("Auth state change handler failed:", err);
       }
     });
 
