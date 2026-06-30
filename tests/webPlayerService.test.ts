@@ -112,6 +112,46 @@ test("HDFilm Rapidrame decoder still accepts a legacy-scheme value", () => {
   assert.ok(candidates.includes(url));
 });
 
+test("HDFilm Rapidrame decoder self-heals when the provider rotates ONLY the unmix constant", () => {
+  // The provider's most common change is bumping the unmix modulus inside the
+  // inline dc_*() body (observed 399756995 → 112511818) while keeping the
+  // reverse→base64→rot13 wrapping. We parse that number live, so even a brand
+  // new constant the app has never seen must decode. Use one NOT in the known
+  // list to prove the rescue comes from the parsed value, not a baked-in guess.
+  const url = "https://rotated.example/hls/movie.mp4/txt/master.txt";
+  const NOVEL_CONSTANT = 271828182;
+
+  // Build the parts with the CURRENT scheme: inverse of
+  // rot13(atob(reverse(joined))) then unmix(C) ⇒ reverse(btoa(rot13(mix(url)))).
+  let mixed = "";
+  for (let i = 0; i < url.length; i += 1) {
+    mixed += String.fromCharCode((url.charCodeAt(i) + (NOVEL_CONSTANT % (i + 5))) % 256);
+  }
+  const rot13 = mixed.replace(/[a-zA-Z]/g, (ch) => {
+    const code = ch.charCodeAt(0);
+    const base = code <= 90 ? 65 : 97;
+    return String.fromCharCode(((code - base + 13) % 26) + base);
+  });
+  const b64 = Buffer.from(rot13, "binary").toString("base64");
+  const encoded = b64.split("").reverse().join("");
+
+  // Without the parsed constant the known list can't recover it…
+  assert.ok(!__internal.decodeRapidrameValueCandidates([encoded]).includes(url));
+  // …but passing the live-parsed constant does.
+  assert.ok(__internal.decodeRapidrameValueCandidates([encoded], NOVEL_CONSTANT).includes(url));
+
+  // End-to-end: extractRapidrameStreamUrl reads the constant from the dc_*()
+  // body in the embed HTML, so the whole flow self-heals with no release.
+  const embedHtml = [
+    `function dc_TESTROT(value_parts){let v=value_parts.join('');v=v.split('').reverse().join('');v=atob(v);`,
+    `let unmix='';for(let i=0;i<v.length;i++){let charCode=v.charCodeAt(i);charCode=(charCode-(${NOVEL_CONSTANT} % (i + 5))+256)%256;unmix+=String.fromCharCode(charCode)}return unmix}`,
+    `var s_TESTROT = dc_TESTROT(${JSON.stringify([encoded])});`,
+    'jwplayer("player").setup({ sources: [{file: s_TESTROT, type: "hls"}] });'
+  ].join("\n");
+
+  assert.equal(__internal.extractRapidrameStreamUrl(embedHtml), url);
+});
+
 test("HDFilm Rapidrame inspection follows master playlists before deciding native playback", () => {
   const masterPlaylist = [
     "#EXTM3U",
