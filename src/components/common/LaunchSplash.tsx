@@ -7,11 +7,12 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withDelay,
-  withRepeat,
   withSequence,
   withTiming,
 } from "react-native-reanimated";
 import styled from "styled-components/native";
+
+import { MovieLoader } from "./MovieLoader";
 
 // Tight-cropped wallet mark (the adaptive-icon foreground has ~30% transparent
 // safe-zone padding baked in, which otherwise reads as a big gap to the
@@ -134,42 +135,12 @@ export function LaunchSplash({ onComplete }: LaunchSplashProps) {
 // ── Loading fallback ─────────────────────────────────────────────────────────
 // Shown only if content still isn't ready after the splash finishes. Same dark
 // canvas so the handoff from the splash is seamless.
-const SpinnerRing = styled(Animated.View)`
-  width: 38px;
-  height: 38px;
-  border-radius: 19px;
-  border-width: 2.5px;
-  border-color: ${({ theme }) => theme.colors.glassBorder};
-  border-top-color: ${({ theme }) => theme.colors.primary};
-`;
-
-const LoadingText = styled.Text`
-  margin-top: 16px;
-  color: ${({ theme }) => theme.colors.textSecondary};
-  font-family: Outfit_500Medium;
-  font-size: 12px;
-  line-height: 16px;
-  letter-spacing: 1.4px;
-  text-transform: uppercase;
-`;
-
 export function SplashLoading() {
   const { t } = useTranslation();
-  const spin = useSharedValue(0);
-
-  useEffect(() => {
-    spin.value = withRepeat(withTiming(1, { duration: 850, easing: Easing.linear }), -1, false);
-  }, [spin]);
-
-  const spinStyle = useAnimatedStyle(() => {
-    "worklet";
-    return { transform: [{ rotate: `${spin.value * 360}deg` }] };
-  });
 
   return (
     <Root>
-      <SpinnerRing style={spinStyle} />
-      <LoadingText>{t("loaders.loading")}</LoadingText>
+      <MovieLoader size={40} label={t("loaders.loading")} />
     </Root>
   );
 }
