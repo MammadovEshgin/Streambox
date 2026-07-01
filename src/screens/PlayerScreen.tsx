@@ -22,7 +22,6 @@ import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webvie
 
 import { MovieLoader } from "../components/common/MovieLoader";
 import { QualityWarningModal } from "../components/common/QualityWarningModal";
-import { getRandomCinemaInsight } from "../constants/cinemaInsights";
 import { useRecentlyWatched } from "../hooks/useRecentlyWatched";
 
 import { HomeStackParamList } from "../navigation/types";
@@ -43,7 +42,6 @@ import {
   showSystemNavigationBar,
 } from "../utils/systemNavigationBar";
 import { getProviderConfig } from "../services/providerConfigService";
-import { useAppSettings } from "../settings/AppSettingsContext";
 import {
   normalizeSubtitleUrl,
   parseSubtitleDocument,
@@ -103,7 +101,7 @@ function getSubtitleTrackLabel(track: SubtitleTrack): string {
 
 
 // ---------------------------------------------------------------------------
-// Loading overlay with cinema facts
+// Loading overlay
 // ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
   root: {
@@ -136,36 +134,6 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     letterSpacing: 0.2,
     textAlign: "center"
-  },
-  factContainer: {
-    flexDirection: "row",
-    alignItems: "stretch",
-    marginTop: 40,
-    maxWidth: 300
-  },
-  factAccent: {
-    width: 2.5,
-    borderRadius: 2,
-    marginRight: 14,
-    opacity: 0.6
-  },
-  factBody: {
-    flex: 1
-  },
-  factLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 1.2,
-    textTransform: "uppercase",
-    marginBottom: 6,
-    opacity: 0.7
-  },
-  factText: {
-    color: "rgba(255,255,255,0.55)",
-    fontSize: 13.5,
-    lineHeight: 20,
-    letterSpacing: 0.1,
-    fontWeight: "400"
   },
   loaderText: {
     marginTop: 14,
@@ -396,17 +364,6 @@ function PlayerLoadingOverlay({
   seasonNumber?: number;
   episodeNumber?: number
 }) {
-  const { t } = useTranslation();
-  const theme = useTheme();
-  const { language } = useAppSettings();
-  const [showFact, setShowFact] = useState(false);
-  const [fact] = useState(() => getRandomCinemaInsight(language));
-
-  useEffect(() => {
-    const timer = setTimeout(() => setShowFact(true), 2500);
-    return () => clearTimeout(timer);
-  }, []);
-
   return (
     <View style={styles.loaderOverlay}>
       <View style={styles.loaderContent}>
@@ -417,16 +374,6 @@ function PlayerLoadingOverlay({
           </Text>
         </Reanimated.View>
       </View>
-
-      {showFact && (
-        <Reanimated.View entering={FadeIn.duration(800).delay(100)} style={styles.factContainer}>
-          <View style={[styles.factAccent, { backgroundColor: theme.colors.primary }]} />
-          <View style={styles.factBody}>
-            <Text style={[styles.factLabel, { color: theme.colors.primary }]}>{t("player.didYouKnow")}</Text>
-            <Text style={styles.factText}>{fact}</Text>
-          </View>
-        </Reanimated.View>
-      )}
     </View>
   );
 }
@@ -1602,7 +1549,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         </>
       )}
 
-      {/* Loading overlay with facts */}
+      {/* Loading overlay */}
       {isLoading && (
         <PlayerLoadingOverlay
           title={route.params.title}

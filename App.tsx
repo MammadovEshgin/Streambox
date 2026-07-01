@@ -31,6 +31,7 @@ import { initialiseProviderConfigs } from "./src/services/providerConfigService"
 import { flushTelemetry, initialiseTelemetry, trackAppError, trackEvent, trackPerformance } from "./src/services/telemetryService";
 import { AppSettingsProvider, useAppSettings } from "./src/settings/AppSettingsContext";
 import { migrateLegacyContentImageCaches } from "./src/services/remoteImageCache";
+import { preloadPersistedMediaHydration } from "./src/services/mediaHydration";
 import { clearPersistedRuntimeCaches, hydratePersistedRuntimeCachesIntoMemory } from "./src/services/runtimeCache";
 import { runStorageMigrationsIfNeeded } from "./src/services/storageMigrations";
 
@@ -296,6 +297,9 @@ function AppShell() {
 
   useEffect(() => {
     let active = true;
+    // Warm the poster-hydration cache from disk so the profile shelves can paint
+    // synchronously the first time they open (no spinner flash on a warm cache).
+    void preloadPersistedMediaHydration();
     void hydratePersistedRuntimeCachesIntoMemory().finally(() => {
       if (active) {
         setHubCachesHydrated(true);
