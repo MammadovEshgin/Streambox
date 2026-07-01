@@ -894,6 +894,70 @@ async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<S
   }
 }
 
+/**
+ * Slugify a title the way Dizipal builds its page URLs: lowercase, fold the
+ * Turkish dotless-i, strip diacritics, and collapse every non-alphanumeric run
+ * to a single dash (e.g. "From" → "from", "Alcatraz'dan Kaçış" → "alcatrazdan-kacis").
+ */
+export function slugifyForDizipal(title: string): string {
+  return foldTurkishDotlessI(title.toLowerCase())
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    // Apostrophes are removed (not dashed) — Dizipal slugs "Alcatraz'dan" as
+    // "alcatrazdan" and "Don't" as "dont", matching how it drops them entirely.
+    .replace(/['’‘`´]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Dizipal's `/ajax-search` caps at ~10 fuzzy results and buries short
+ * common-word titles: e.g. searching "from" returns "Notes from the Last Row",
+ * "Agent From Above", … but never the actual series "From", even though its
+ * page exists at `/dizi/from`. When the normal search finds nothing, hit the
+ * deterministic slug URL directly. Gated on HTTP 200 (Dizipal returns a real
+ * 404 for missing pages) plus the same title-compatibility check the search
+ * path uses, so a wrong slug fails closed rather than mismatching.
+ */
+async function probeDizipalDirectSlug(
+  title: string,
+  mediaType: "movie" | "tv",
+  year?: string | null,
+  originalTitle?: string,
+): Promise<MatchResult | null> {
+  const kind = mediaType === "movie" ? "film" : "dizi";
+  const base = getDizipalBaseUrl();
+  const slugs = Array.from(
+    new Set(
+      [title, originalTitle]
+        .filter((value): value is string => Boolean(value))
+        .map((value) => slugifyForDizipal(value))
+        .filter((slug) => slug.length > 0)
+    )
+  );
+
+  for (const slug of slugs) {
+    const url = `${base}/${kind}/${slug}`;
+    try {
+      const response = await axios.get<string>(url, {
+        timeout: 6000,
+        maxRedirects: 5,
+        headers: { "User-Agent": UA, Referer: getDizipalReferer() },
+        validateStatus: (status) => status === 200,
+      });
+      recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
+
+      if (!isDizipalUrlTitleCompatible(url, title, originalTitle)) continue;
+
+      debugLog(`[WebPlayer] Dizipal direct-slug hit ${url} for "${title}"`);
+      return { url, title, resultYear: year ?? "" };
+    } catch {
+      // Missing page (404) or network error — try the next slug candidate.
+    }
+  }
+  return null;
+}
+
 async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: string | null, originalTitle?: string): Promise<MatchResult | null> {
   const safeOriginalTitle = isAlternateTitleSafeForDizipal(title, originalTitle) ? originalTitle : undefined;
   const queries = generateSearchQueries(title, year, safeOriginalTitle);
@@ -917,7 +981,9 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
     if (qi >= 4) break;
   }
 
-  if (allResults.size === 0) return null;
+  if (allResults.size === 0) {
+    return probeDizipalDirectSlug(title, mediaType, year, safeOriginalTitle);
+  }
 
   const scored = [...allResults.entries()]
     .map(([href, result]) => ({
@@ -941,7 +1007,11 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
     })
     .sort((a, b) => b.score - a.score);
 
-  if (scored.length === 0) return null;
+  if (scored.length === 0) {
+    // Fuzzy search returned candidates but none matched (e.g. short
+    // common-word titles like "From" drowned out by "…from…" results).
+    return probeDizipalDirectSlug(title, mediaType, year, safeOriginalTitle);
+  }
   return {
     url: scored[0].href,
     qualityWarning: scored[0].qualityWarning,
@@ -2424,4 +2494,5 @@ export const __internal = {
   scoreDizipalResult,
   scoreHdFilmResult,
   scoreStrictDizipalTitle,
+  slugifyForDizipal,
 };
