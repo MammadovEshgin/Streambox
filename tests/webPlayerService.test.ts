@@ -9,6 +9,21 @@ import {
 
 const dizipalBase = "https://dizipal2078.com";
 
+test("Dizipal direct-slug builds the page slug the way Dizipal does", () => {
+  // "From" (2022) exists at /dizi/from but Dizipal's ajax-search never surfaces
+  // it (buried under multi-word "…from…" titles), so the resolver falls back to
+  // the deterministic slug. These must match Dizipal's own slug convention.
+  assert.equal(__internal.slugifyForDizipal("From"), "from");
+  assert.equal(__internal.slugifyForDizipal("Stranger Things"), "stranger-things");
+  assert.equal(__internal.slugifyForDizipal("Alcatraz'dan Kaçış"), "alcatrazdan-kacis");
+  assert.equal(__internal.slugifyForDizipal("  Notes from the Last Row  "), "notes-from-the-last-row");
+  // The slug-built URL must still pass the title-compatibility guard for "From".
+  assert.equal(
+    __internal.isDizipalUrlTitleCompatible("https://dizipal2083.com/dizi/from", "From"),
+    true
+  );
+});
+
 test("Dizipal matching rejects unrelated pages for acronym titles", () => {
   const result = {
     href: `${dizipalBase}/dizi/malcolm-in-the-middle-life-s-still-unfair`,
