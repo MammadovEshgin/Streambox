@@ -3,11 +3,12 @@ import * as DocumentPicker from "expo-document-picker";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useTranslation } from "react-i18next";
 import { useCallback, useState } from "react";
-import { ActivityIndicator, Alert, Modal, ScrollView, TextInput } from "react-native";
+import { Alert, Modal, ScrollView, TextInput } from "react-native";
 import { BlurView } from "expo-blur";
 import Animated, { FadeOut, FadeIn } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
 
+import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { useAuth } from "../context/AuthContext";
 import { sendUserFeedback } from "../services/feedbackService";
@@ -676,7 +677,7 @@ export function ProfileSettingsScreen({ navigation }: Props) {
       <Modal visible={isImporting} transparent animationType="fade" statusBarTranslucent>
         <SignOutOverlay entering={FadeIn.duration(250)} exiting={FadeOut.duration(200)}>
           <SignOutContent entering={FadeIn.duration(220)}>
-            <ActivityIndicator size="large" color={currentTheme.colors.primary} />
+            <MovieLoader />
             <SignOutTitle>{importStatusLabel}</SignOutTitle>
           </SignOutContent>
         </SignOutOverlay>
@@ -685,7 +686,7 @@ export function ProfileSettingsScreen({ navigation }: Props) {
       <Modal visible={signingOut} transparent animationType="fade" statusBarTranslucent>
         <SignOutOverlay entering={FadeIn.duration(300)} exiting={FadeOut.duration(200)}>
           <SignOutContent entering={FadeIn.duration(250)}>
-            <ActivityIndicator size="large" color={currentTheme.colors.primary} />
+            <MovieLoader />
             <SignOutTitle>{t("settings.signingOut")}</SignOutTitle>
           </SignOutContent>
         </SignOutOverlay>

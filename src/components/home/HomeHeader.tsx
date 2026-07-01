@@ -2,7 +2,6 @@ import { Feather } from "@expo/vector-icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ActivityIndicator,
   Dimensions,
   Image,
   Keyboard,
@@ -16,6 +15,7 @@ import styled, { useTheme } from "styled-components/native";
 
 import { MediaItem, getTmdbImageUrl, searchMulti } from "../../api/tmdb";
 import { formatRating } from "../../api/mediaFormatting";
+import { MovieLoader } from "../common/MovieLoader";
 
 /* ------------------------------------------------------------------ */
 /*  Styled Components                                                 */
@@ -437,7 +437,7 @@ export function HomeHeader({
         >
           {isSearching && results.length === 0 ? (
             <LoadingRow>
-              <ActivityIndicator color={currentTheme.colors.primary} size="small" />
+              <MovieLoader size={28} />
             </LoadingRow>
           ) : hasSearched && results.length === 0 ? (
             <EmptyRow>
@@ -466,7 +466,7 @@ export function HomeHeader({
               ))}
               {isLoadingMore && (
                 <LoadingRow>
-                  <ActivityIndicator color={currentTheme.colors.primary} size="small" />
+                  <MovieLoader size={28} />
                 </LoadingRow>
               )}
               {query.trim().length >= 2 && (

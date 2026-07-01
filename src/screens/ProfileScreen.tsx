@@ -4,7 +4,6 @@ import { type NativeStackScreenProps } from "@react-navigation/native-stack";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ActivityIndicator,
   Alert,
   Dimensions,
   FlatList,
@@ -22,6 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
 import { GENRE_ID_MAP, type MediaItem, type MediaType } from "../api/tmdb";
+import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
 import { useLikedMovies } from "../hooks/useLikedMovies";
@@ -32,7 +32,12 @@ import { useWatchlist } from "../hooks/useWatchlist";
 import type { ProfileSeeAllSection, ProfileStackParamList } from "../navigation/types";
 import { normalizeAppLanguage } from "../localization/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
-import { getSharedHydratedMediaCache, hydrateMediaIds, type HydratedMediaCache } from "../services/mediaHydration";
+import {
+  getHydratedMediaItemsFromCache,
+  getSharedHydratedMediaCache,
+  hydrateMediaIds,
+  type HydratedMediaCache,
+} from "../services/mediaHydration";
 import { searchLocationSuggestions } from "../services/locationSearch";
 import { storeBannerImageFromUri, storeProfileImageFromUri } from "../services/profileImageService";
 import { formatLocalizedDate } from "../localization/format";
@@ -297,10 +302,11 @@ const EmptySection = styled.View`
 `;
 
 // Shown when a section's data is still loading (the id/count is already known
-// from local storage, but the poster cards are still hydrating). Mirrors the
-// EmptySection box so the layout doesn't jump.
+// from local storage, but the poster cards are still hydrating). Matches the
+// loaded rail height (RailWrap) so the section doesn't collapse to a short box
+// and then jump taller once the posters appear.
 const LoadingSection = styled.View`
-  height: 140px;
+  height: 282px;
   border-radius: 5px;
   border-width: 1px;
   border-color: rgba(255, 255, 255, 0.06);
@@ -544,12 +550,9 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const { likedSeries, isLoading: lsLoading } = useLikedSeries();
   const { history: watchHistory, rawHistory: fullWatchHistory, isLoading: whLoading } = useWatchHistory();
 
-  const [watchlistMovieItems, setWatchlistMovieItems] = useState<MediaItem[]>([]);
-  const [watchlistSeriesItems, setWatchlistSeriesItems] = useState<MediaItem[]>([]);
-  const [likedMovieItems, setLikedMovieItems] = useState<MediaItem[]>([]);
-  const [likedSeriesItems, setLikedSeriesItems] = useState<MediaItem[]>([]);
-  const [watchedMovieItems, setWatchedMovieItems] = useState<MediaItem[]>([]);
-  const [watchedSeriesItems, setWatchedSeriesItems] = useState<MediaItem[]>([]);
+  // Bumped whenever an async hydrate pass warms the cache, so the memoised
+  // shelf items below re-read the (now warmer) cache and fill in cold entries.
+  const [hydrationTick, setHydrationTick] = useState(0);
 
   const [watchedFilter, setWatchedFilter] = useState<"movie" | "tv">("movie");
   const [watchlistFilter, setWatchlistFilter] = useState<"movie" | "tv">("movie");
@@ -727,36 +730,27 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
     if (!hasListsToHydrate) {
       lastHydrationKeyRef.current = hydrationKey;
-      startTransition(() => {
-        setWatchlistMovieItems([]);
-        setWatchlistSeriesItems([]);
-        setLikedMovieItems([]);
-        setLikedSeriesItems([]);
-        setWatchedMovieItems([]);
-        setWatchedSeriesItems([]);
-      });
       return;
     }
 
     async function hydrate() {
       const cache = cacheRef.current;
-      const hydrateSection = async (
-        task: Promise<MediaItem[]>,
-        apply: (items: MediaItem[]) => void
-      ) => {
-        const items = await task;
+      // Warm the shared cache; each section that resolves bumps the tick so the
+      // memoised shelf items re-read the cache and reveal any cold entries.
+      const hydrateSection = async (task: Promise<MediaItem[]>) => {
+        await task;
         if (!cancelled) {
-          startTransition(() => apply(items));
+          startTransition(() => setHydrationTick((tick) => tick + 1));
         }
       };
 
       await Promise.all([
-        hydrateSection(hydrateMediaIds(movieWatchlist, [], cache), setWatchlistMovieItems),
-        hydrateSection(hydrateMediaIds([], seriesWatchlist, cache), setWatchlistSeriesItems),
-        hydrateSection(hydrateMediaIds(likedMovies, [], cache), setLikedMovieItems),
-        hydrateSection(hydrateMediaIds([], likedSeries, cache), setLikedSeriesItems),
-        hydrateSection(hydrateMediaIds(watchedMovieHydrationIds, [], cache), setWatchedMovieItems),
-        hydrateSection(hydrateMediaIds([], watchedSeriesHydrationIds, cache), setWatchedSeriesItems),
+        hydrateSection(hydrateMediaIds(movieWatchlist, [], cache)),
+        hydrateSection(hydrateMediaIds([], seriesWatchlist, cache)),
+        hydrateSection(hydrateMediaIds(likedMovies, [], cache)),
+        hydrateSection(hydrateMediaIds([], likedSeries, cache)),
+        hydrateSection(hydrateMediaIds(watchedMovieHydrationIds, [], cache)),
+        hydrateSection(hydrateMediaIds([], watchedSeriesHydrationIds, cache)),
       ]);
 
       if (!cancelled) {
@@ -776,6 +770,35 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     watchedMovieHydrationIds,
     watchedSeriesHydrationIds,
   ]);
+
+  // Shelf posters read straight from the shared cache during render, so a warm
+  // cache paints instantly instead of flashing a spinner. `hydrationTick` and
+  // `resolvedContentLanguage` force a re-read as the async hydrate warms cold
+  // entries or the language changes.
+  const watchlistMovieItems = useMemo(
+    () => getHydratedMediaItemsFromCache(movieWatchlist, [], cacheRef.current),
+    [movieWatchlist, hydrationTick, resolvedContentLanguage]
+  );
+  const watchlistSeriesItems = useMemo(
+    () => getHydratedMediaItemsFromCache([], seriesWatchlist, cacheRef.current),
+    [seriesWatchlist, hydrationTick, resolvedContentLanguage]
+  );
+  const likedMovieItems = useMemo(
+    () => getHydratedMediaItemsFromCache(likedMovies, [], cacheRef.current),
+    [likedMovies, hydrationTick, resolvedContentLanguage]
+  );
+  const likedSeriesItems = useMemo(
+    () => getHydratedMediaItemsFromCache([], likedSeries, cacheRef.current),
+    [likedSeries, hydrationTick, resolvedContentLanguage]
+  );
+  const watchedMovieItems = useMemo(
+    () => getHydratedMediaItemsFromCache(watchedMovieHydrationIds, [], cacheRef.current),
+    [watchedMovieHydrationIds, hydrationTick, resolvedContentLanguage]
+  );
+  const watchedSeriesItems = useMemo(
+    () => getHydratedMediaItemsFromCache([], watchedSeriesHydrationIds, cacheRef.current),
+    [watchedSeriesHydrationIds, hydrationTick, resolvedContentLanguage]
+  );
 
   // â”€â”€ Image pickers â”€â”€
 
@@ -1140,7 +1163,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           {watchedItems.length === 0 ? (
             watchedExpected > 0 ? (
               <LoadingSection>
-                <ActivityIndicator color={currentTheme.colors.primary} />
+                <MovieLoader />
               </LoadingSection>
             ) : (
               <EmptySection>
@@ -1187,7 +1210,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           {watchlistItems.length === 0 ? (
             watchlistExpected > 0 ? (
               <LoadingSection>
-                <ActivityIndicator color={currentTheme.colors.primary} />
+                <MovieLoader />
               </LoadingSection>
             ) : (
               <EmptySection>
@@ -1234,7 +1257,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           {likedItems.length === 0 ? (
             likedExpected > 0 ? (
               <LoadingSection>
-                <ActivityIndicator color={currentTheme.colors.primary} />
+                <MovieLoader />
               </LoadingSection>
             ) : (
               <EmptySection>
