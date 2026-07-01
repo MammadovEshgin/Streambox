@@ -253,6 +253,42 @@ export function getSharedHydratedMediaCache() {
   return sharedHydratedMediaCache;
 }
 
+/**
+ * Synchronously returns whatever is already in the in-memory hydrated cache for
+ * the given ids (respecting TTL + active language). No network, no disk, no
+ * awaiting — this is what lets the profile shelves paint instantly on a warm
+ * cache instead of flashing a spinner while an async hydrate resolves. Ids that
+ * aren't cached yet are simply omitted (the async `hydrateMediaIds` pass fills
+ * them in afterwards).
+ */
+export function getHydratedMediaItemsFromCache(
+  movieIds: (number | string)[],
+  seriesIds: (number | string)[],
+  cache: HydratedMediaCache = sharedHydratedMediaCache
+): MediaItem[] {
+  const language = getActiveLanguage();
+
+  const collect = (ids: (number | string)[], mediaType: "movie" | "tv") =>
+    ids
+      .map((id) => getCachedMediaItem(cache, getLocalizedCacheKey(language, mediaType, id)))
+      .filter((item): item is MediaItem => item !== null);
+
+  return [...collect(movieIds, "movie"), ...collect(seriesIds, "tv")];
+}
+
+/**
+ * Warms the in-memory hydrated cache from disk at app boot so the profile can
+ * read posters synchronously the first time it opens (instead of only after a
+ * screen has already triggered an async hydrate this session).
+ */
+export async function preloadPersistedMediaHydration(): Promise<void> {
+  try {
+    await ensurePersistedHydrationLoaded(getActiveLanguage(), sharedHydratedMediaCache);
+  } catch {
+    // Best-effort warm-up.
+  }
+}
+
 export async function hydrateMediaIds(
   movieIds: (number | string)[],
   seriesIds: (number | string)[],

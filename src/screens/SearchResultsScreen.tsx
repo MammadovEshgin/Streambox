@@ -3,7 +3,7 @@ import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ActivityIndicator, Image, Pressable, View } from "react-native";
+import { Image, Pressable, View } from "react-native";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
 
@@ -17,6 +17,7 @@ import {
   searchMulti
 } from "../api/tmdb";
 import { formatRating } from "../api/mediaFormatting";
+import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { HomeStackParamList } from "../navigation/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
@@ -371,7 +372,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
           <HeaderTitle>{t("common.searching")}</HeaderTitle>
         </Header>
         <LoadingContainer>
-          <ActivityIndicator color={currentTheme.colors.primary} size="large" />
+          <MovieLoader />
         </LoadingContainer>
       </SafeContainer>
     );
@@ -434,7 +435,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
             ListFooterComponent={
               isLoadingMore ? (
                 <LoadingFooter>
-                  <ActivityIndicator color={currentTheme.colors.primary} size="small" />
+                  <MovieLoader size={28} />
                 </LoadingFooter>
               ) : (
                 <View style={{ height: 24 }} />
