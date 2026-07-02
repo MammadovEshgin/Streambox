@@ -911,6 +911,42 @@ export function slugifyForDizipal(title: string): string {
 }
 
 /**
+ * Extract the production year from a Dizipal title page. Deliberately
+ * conservative: only structured spots count — JSON-LD release dates, a
+ * year/yıl-classed element, the "Yapım Yılı" label, or a "(YYYY)" suffix in
+ * the page/og title. A bare 4-digit number anywhere in the HTML is NOT
+ * trusted. Returns null when nothing reliable is found so callers can decide
+ * how to fail.
+ */
+export function extractDizipalPageYear(html: string): string | null {
+  if (!html) return null;
+
+  const jsonLd = html.match(
+    /"(?:datePublished|dateCreated|releaseDate|startDate)"\s*:\s*"((?:19|20)\d{2})/i
+  );
+  if (jsonLd?.[1]) return jsonLd[1];
+
+  const yearNode = html.match(
+    /class=["'][^"']*\b(?:year|yil)\b[^"']*["'][^>]*>\s*((?:19|20)\d{2})\b/i
+  );
+  if (yearNode?.[1]) return yearNode[1];
+
+  // Label and value may sit in adjacent tags (<td>Yapım Yılı</td><td>1984</td>),
+  // so the gap may cross tag boundaries — but stays short to keep the match local.
+  const yapimYili = html.match(/yap[ıi]m\s*y[ıi]l[ıi][^0-9]{0,60}?((?:19|20)\d{2})\b/i);
+  if (yapimYili?.[1]) return yapimYili[1];
+
+  const titleTag = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] ?? "";
+  const ogTitle = html.match(/property=["']og:title["'][^>]*content=["']([^"']*)["']/i)?.[1] ?? "";
+  for (const candidate of [titleTag, ogTitle]) {
+    const inParens = candidate.match(/\(((?:19|20)\d{2})\)/);
+    if (inParens?.[1]) return inParens[1];
+  }
+
+  return null;
+}
+
+/**
  * Dizipal's `/ajax-search` caps at ~10 fuzzy results and buries short
  * common-word titles: e.g. searching "from" returns "Notes from the Last Row",
  * "Agent From Above", … but never the actual series "From", even though its
@@ -918,6 +954,15 @@ export function slugifyForDizipal(title: string): string {
  * deterministic slug URL directly. Gated on HTTP 200 (Dizipal returns a real
  * 404 for missing pages) plus the same title-compatibility check the search
  * path uses, so a wrong slug fails closed rather than mismatching.
+ *
+ * Year disambiguation: Dizipal hosts same-title remakes at year-suffixed
+ * slugs (extractDizipalTitleFromUrl strips a `-YYYY` suffix for exactly this
+ * reason), so when the target year is known we probe `slug-year` first — a
+ * hit there is year-verified by construction. A plain-slug movie hit is then
+ * checked against the year printed on the page itself: /film/dune can be
+ * Dune 1984 while the user tapped the 2021 poster, and title compatibility
+ * alone can't tell them apart. TV keeps failing open on an unreadable page
+ * year (regional premiere years drift), which preserves the "From" fix.
  */
 async function probeDizipalDirectSlug(
   title: string,
@@ -927,13 +972,12 @@ async function probeDizipalDirectSlug(
 ): Promise<MatchResult | null> {
   const kind = mediaType === "movie" ? "film" : "dizi";
   const base = getDizipalBaseUrl();
+  const baseSlugs = [title, originalTitle]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => slugifyForDizipal(value))
+    .filter((slug) => slug.length > 0);
   const slugs = Array.from(
-    new Set(
-      [title, originalTitle]
-        .filter((value): value is string => Boolean(value))
-        .map((value) => slugifyForDizipal(value))
-        .filter((slug) => slug.length > 0)
-    )
+    new Set(baseSlugs.flatMap((slug) => (year ? [`${slug}-${year}`, slug] : [slug])))
   );
 
   for (const slug of slugs) {
@@ -949,8 +993,28 @@ async function probeDizipalDirectSlug(
 
       if (!isDizipalUrlTitleCompatible(url, title, originalTitle)) continue;
 
+      const isYearVerifiedSlug = Boolean(year) && slug.endsWith(`-${year}`);
+      const pageYear = isYearVerifiedSlug
+        ? year ?? null
+        : extractDizipalPageYear(typeof response.data === "string" ? response.data : "");
+      if (year && pageYear && pageYear !== year) {
+        debugLog(
+          `[WebPlayer] Dizipal direct-slug ${url} is year ${pageYear}, wanted ${year} — rejected`
+        );
+        continue;
+      }
+      // Movies with a known target year must positively confirm the page year:
+      // same-title remakes share the plain slug, so an unreadable year is not
+      // safe to play. (TV stays fail-open — see doc comment.)
+      if (mediaType === "movie" && year && !pageYear) {
+        debugLog(
+          `[WebPlayer] Dizipal direct-slug ${url} has no readable year, wanted ${year} — rejected`
+        );
+        continue;
+      }
+
       debugLog(`[WebPlayer] Dizipal direct-slug hit ${url} for "${title}"`);
-      return { url, title, resultYear: year ?? "" };
+      return { url, title, resultYear: pageYear ?? "" };
     } catch {
       // Missing page (404) or network error — try the next slug candidate.
     }
@@ -2484,6 +2548,7 @@ export async function resolveDirectWebPlayerFallback(
 export const __internal = {
   buildHdFilmResult,
   decodeRapidrameValueCandidates,
+  extractDizipalPageYear,
   extractHdFilmEmbedUrl,
   extractRapidrameStreamUrl,
   hasStrictTitleIdentity,
@@ -2491,6 +2556,7 @@ export const __internal = {
   isAlternateTitleSafeForDizipal,
   isDizipalUrlTitleCompatible,
   pickDizibalHit,
+  probeDizipalDirectSlug,
   scoreDizipalResult,
   scoreHdFilmResult,
   scoreStrictDizipalTitle,
