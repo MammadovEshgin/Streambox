@@ -263,10 +263,6 @@ async function batchUpsertRows(table: string, rows: any[], conflictKeys: string)
   }
 }
 
-function getWatchHistoryRemoteKey(mediaType: MediaType, tmdbId: number | null, internalId: string | null) {
-  return `${mediaType}:${internalId ?? tmdbId ?? "missing"}`;
-}
-
 function formatBirthdayForDatabase(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -436,11 +432,20 @@ function getQueueOperationKey(op: PendingSyncOperation): string | null {
 }
 
 async function enqueuePendingOperation(op: PendingSyncOperation) {
+  await enqueuePendingOperations([op]);
+}
+
+// One queue read + one write for a whole batch — a multi-season save enqueues
+// dozens of ops, and doing a read-modify-write per op made the save visibly slow.
+async function enqueuePendingOperations(ops: PendingSyncOperation[]) {
+  if (ops.length === 0) return;
   const queue = await readPendingQueue();
-  const key = getQueueOperationKey(op);
-  if (!key) { queue.push(op); await writePendingQueue(queue); return; }
-  const idx = queue.findIndex(q => getQueueOperationKey(q) === key);
-  if (idx >= 0) queue[idx] = op; else queue.push(op);
+  for (const op of ops) {
+    const key = getQueueOperationKey(op);
+    if (!key) { queue.push(op); continue; }
+    const idx = queue.findIndex(q => getQueueOperationKey(q) === key);
+    if (idx >= 0) queue[idx] = op; else queue.push(op);
+  }
   await writePendingQueue(queue);
 }
 
@@ -707,53 +712,13 @@ async function backfillSnapshotToRemote(userId: string, snapshot: LocalUserSnaps
   if (recRows.length > 0) await batchUpsertRows("user_daily_recommendations", recRows, "user_id,recommendation_kind,recommendation_date");
 }
 
-export async function syncCurrentWatchHistoryToSupabase(entries?: WatchHistoryEntry[]) {
-  const userId = await getCurrentUserId();
-  if (!userId) return;
-
-  const watchHistory = entries ?? (await readLocalUserSnapshot()).watchHistory;
-  const watchHistoryRows = buildWatchHistoryRows(userId, watchHistory);
-  await batchUpsertRows("user_watch_history", watchHistoryRows, "user_id,media_type");
-
-  const { data: remoteRows, error } = await supabase
-    .from("user_watch_history")
-    .select("media_type, tmdb_id, internal_id")
-    .eq("user_id", userId);
-
-  if (error) {
-    throw error;
-  }
-
-  const localKeys = new Set(
-    watchHistoryRows.map((row) => getWatchHistoryRemoteKey(row.media_type, row.tmdb_id, row.internal_id))
-  );
-
-  for (const row of remoteRows || []) {
-    const rowKey = getWatchHistoryRemoteKey(row.media_type, row.tmdb_id, row.internal_id);
-    if (localKeys.has(rowKey)) {
-      continue;
-    }
-
-    let query = supabase
-      .from("user_watch_history")
-      .delete()
-      .eq("user_id", userId)
-      .eq("media_type", row.media_type);
-
-    if (row.tmdb_id) {
-      query = query.eq("tmdb_id", row.tmdb_id);
-    } else if (row.internal_id) {
-      query = query.eq("internal_id", row.internal_id);
-    } else {
-      continue;
-    }
-
-    const { error: deleteError } = await query;
-    if (deleteError) {
-      throw deleteError;
-    }
-  }
-}
+// NOTE: there is deliberately NO "sync the full local list and prune remote
+// rows" function anymore. The old syncCurrentWatchHistoryToSupabase deleted
+// every remote user_watch_history row missing from the in-memory list it was
+// handed — so a save that ran against a stale/partial list (e.g. a freshly
+// mounted hook that hadn't finished loading) silently wiped watched movies
+// from the cloud. Upserts and deletions each flow through the durable queue
+// (enqueueWatchHistoryBatch below) as explicit per-entry operations instead.
 
 export async function syncCurrentLocalUserSnapshotToSupabase(targetId?: string) {
   const userId = targetId || await getCurrentUserId();
@@ -955,20 +920,37 @@ export async function enqueueMediaLibrarySync(i: { operation: "upsert" | "delete
 }
 
 export async function enqueueWatchHistoryUpsert(e: WatchHistoryEntry, a: SyncMetadata = {}) {
-  const uid = await getCurrentUserId(); if (!uid) return;
-  await enqueuePendingOperation({ kind: "watch_history_upsert", userId: uid, entry: e, auditMetadata: normalizeSyncMetadata(a) });
-  scheduleSupabaseUserDataSync(uid);
+  await enqueueWatchHistoryBatch([{ operation: "upsert", entry: e, audit: a }]);
 }
 
 export async function enqueueWatchHistoryDelete(t: MediaType, id: number | string, a: SyncMetadata = {}) {
-  const uid = await getCurrentUserId(); if (!uid) return;
-  await enqueuePendingOperation({ kind: "watch_history_delete", userId: uid, mediaType: t, tmdbId: id, auditMetadata: normalizeSyncMetadata(a) });
+  await enqueueWatchHistoryBatch([{ operation: "delete", mediaType: t, tmdbId: id, audit: a }]);
+}
+
+export type WatchHistoryQueueItem =
+  | { operation: "upsert"; entry: WatchHistoryEntry; audit?: SyncMetadata }
+  | { operation: "delete"; mediaType: MediaType; tmdbId: number | string; audit?: SyncMetadata };
+
+export async function enqueueWatchHistoryBatch(items: WatchHistoryQueueItem[]) {
+  const uid = await getCurrentUserId(); if (!uid || items.length === 0) return;
+  await enqueuePendingOperations(items.map((item): PendingSyncOperation =>
+    item.operation === "upsert"
+      ? { kind: "watch_history_upsert", userId: uid, entry: item.entry, auditMetadata: normalizeSyncMetadata(item.audit) }
+      : { kind: "watch_history_delete", userId: uid, mediaType: item.mediaType, tmdbId: item.tmdbId, auditMetadata: normalizeSyncMetadata(item.audit) }
+  ));
   scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueEpisodeProgressSync(t: number, s: number, e: number, w: boolean, a: SyncMetadata = {}) {
-  const uid = await getCurrentUserId(); if (!uid) return;
-  await enqueuePendingOperation({ kind: "episode_progress", userId: uid, seriesTmdbId: t, seasonNumber: s, episodeNumber: e, isWatched: w, watchedAt: new Date().toISOString(), auditMetadata: normalizeSyncMetadata(a) });
+  await enqueueEpisodeProgressBatch([{ seriesTmdbId: t, seasonNumber: s, episodeNumber: e, isWatched: w, audit: a }]);
+}
+
+export type EpisodeProgressQueueItem = { seriesTmdbId: number; seasonNumber: number; episodeNumber: number; isWatched: boolean; audit?: SyncMetadata };
+
+export async function enqueueEpisodeProgressBatch(items: EpisodeProgressQueueItem[]) {
+  const uid = await getCurrentUserId(); if (!uid || items.length === 0) return;
+  const watchedAt = new Date().toISOString();
+  await enqueuePendingOperations(items.map((item): PendingSyncOperation => ({ kind: "episode_progress", userId: uid, seriesTmdbId: item.seriesTmdbId, seasonNumber: item.seasonNumber, episodeNumber: item.episodeNumber, isWatched: item.isWatched, watchedAt, auditMetadata: normalizeSyncMetadata(item.audit) })));
   scheduleSupabaseUserDataSync(uid);
 }
 
