@@ -12,13 +12,13 @@ import {
 } from "../api/tmdb";
 import { useAppSettings } from "../settings/AppSettingsContext";
 import {
-  enqueueWatchHistoryDelete,
-  enqueueWatchHistoryUpsert,
-  syncCurrentWatchHistoryToSupabase,
+  enqueueWatchHistoryBatch,
+  type WatchHistoryQueueItem,
   type UserMediaSyncDetails,
 } from "../services/userDataSync";
 import { WATCH_HISTORY_STORAGE_KEY } from "../services/userDataStorage";
 import { mapWithConcurrency } from "../utils/concurrency";
+import { applyWatchHistoryOps, type WatchHistoryListOp } from "../utils/watchHistoryOps";
 
 const METADATA_VERSION = 5;
 const LEGACY_METADATA_MIGRATION_CONCURRENCY = 4;
@@ -233,9 +233,45 @@ function sortEntries(entries: WatchHistoryEntry[]) {
   return [...entries].sort((left, right) => getSortTimestamp(right) - getSortTimestamp(left));
 }
 
+async function readEntriesFromStorage(): Promise<WatchHistoryEntry[]> {
+  try {
+    const raw = await AsyncStorage.getItem(WATCH_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as StoredEntry[];
+    if (!Array.isArray(parsed)) return [];
+    return sortEntries(parsed.map(normalizeStoredEntry));
+  } catch {
+    return [];
+  }
+}
+
+type WatchHistoryMutation =
+  | { kind: "upsert"; entry: WatchHistoryEntry; auditDetails?: UserMediaSyncDetails | null }
+  | { kind: "remove"; id: number | string; mediaType: MediaType; auditDetails?: UserMediaSyncDetails | null };
+
+export type SeriesSeasonWatchedSave = {
+  season: SeriesSeason;
+  watchedAt: number;
+  precision: Extract<WatchPrecision, "month" | "none">;
+};
+
+export type SeriesWatchedBatchInput = {
+  seasonsToSave: SeriesSeasonWatchedSave[];
+  seasonNumbersToRemove: number[];
+  titleAction: "save" | "remove" | "none";
+  titleWatchedAt?: number;
+};
+
 export function useWatchHistory() {
   const [entries, setEntries] = useState<WatchHistoryEntry[]>([]);
   const entriesRef = useRef<WatchHistoryEntry[]>([]);
+  // Guards against mutating from a stale in-memory list: until the first load
+  // (or persist) completes, entriesRef is [] and using it as the mutation base
+  // would overwrite storage with a partial set (the movies-vanished bug).
+  const hasLoadedRef = useRef(false);
+  // Serializes mutations so two overlapping saves can't interleave their
+  // read-modify-write cycles.
+  const mutationChainRef = useRef<Promise<void>>(Promise.resolve());
   const [isLoading, setIsLoading] = useState(true);
   const { notifyStorageChanged, storageRevision } = useAppSettings();
 
@@ -317,22 +353,9 @@ export function useWatchHistory() {
 
   const loadEntries = useCallback(async () => {
     try {
-      const raw = await AsyncStorage.getItem(WATCH_HISTORY_STORAGE_KEY);
-      if (!raw) {
-        entriesRef.current = [];
-        setEntries([]);
-        return;
-      }
-
-      const parsed = JSON.parse(raw) as StoredEntry[];
-      if (!Array.isArray(parsed)) {
-        entriesRef.current = [];
-        setEntries([]);
-        return;
-      }
-
-      const normalized = sortEntries(parsed.map(normalizeStoredEntry));
+      const normalized = await readEntriesFromStorage();
       entriesRef.current = normalized;
+      hasLoadedRef.current = true;
       setEntries(normalized);
       void enrichLegacyEntries(normalized);
     } finally {
@@ -355,18 +378,45 @@ export function useWatchHistory() {
     [notifyStorageChanged]
   );
 
-  const upsertWatchHistoryEntry = useCallback(
-    async (nextEntry: WatchHistoryEntry, auditDetails?: UserMediaSyncDetails | null) => {
-      const currentEntries = entriesRef.current;
-      const filtered = currentEntries.filter(
-        (entry) => !(entry.id === nextEntry.id && entry.mediaType === nextEntry.mediaType)
-      );
-      const nextEntries = [nextEntry, ...filtered];
-      await persistEntries(nextEntries);
-      await enqueueWatchHistoryUpsert(nextEntry, auditDetails ?? {});
-      await syncCurrentWatchHistoryToSupabase(nextEntries);
+  // Local-first: apply the whole batch to the authoritative entry list, write
+  // AsyncStorage once, and hand Supabase work to the debounced sync queue.
+  // No network round-trip happens on the save path anymore.
+  const applyWatchHistoryMutations = useCallback(
+    async (mutations: WatchHistoryMutation[]) => {
+      if (mutations.length === 0) {
+        return;
+      }
+
+      const run = mutationChainRef.current.then(async () => {
+        const currentEntries = hasLoadedRef.current
+          ? entriesRef.current
+          : await readEntriesFromStorage();
+        const listOps: WatchHistoryListOp[] = mutations.map((mutation) =>
+          mutation.kind === "upsert"
+            ? { kind: "upsert", entry: mutation.entry }
+            : { kind: "remove", id: mutation.id, mediaType: mutation.mediaType }
+        );
+        const nextEntries = applyWatchHistoryOps(currentEntries, listOps);
+        await persistEntries(nextEntries);
+        hasLoadedRef.current = true;
+        const queueItems: WatchHistoryQueueItem[] = mutations.map((mutation) =>
+          mutation.kind === "upsert"
+            ? { operation: "upsert", entry: mutation.entry, audit: mutation.auditDetails ?? {} }
+            : { operation: "delete", mediaType: mutation.mediaType, tmdbId: mutation.id, audit: mutation.auditDetails ?? {} }
+        );
+        await enqueueWatchHistoryBatch(queueItems);
+      });
+      mutationChainRef.current = run.catch(() => undefined);
+      await run;
     },
     [persistEntries]
+  );
+
+  const upsertWatchHistoryEntry = useCallback(
+    async (nextEntry: WatchHistoryEntry, auditDetails?: UserMediaSyncDetails | null) => {
+      await applyWatchHistoryMutations([{ kind: "upsert", entry: nextEntry, auditDetails }]);
+    },
+    [applyWatchHistoryMutations]
   );
 
   const saveMovieToWatchHistory = useCallback(
@@ -427,15 +477,59 @@ export function useWatchHistory() {
     [upsertWatchHistoryEntry]
   );
 
+  // One-shot save for the season-log modal: every season upsert/removal plus
+  // the series title entry lands in a single local write and a single queued
+  // sync batch, instead of N sequential awaited round-trips.
+  const saveSeriesWatchedBatch = useCallback(
+    async (
+      details: SeriesDetails,
+      input: SeriesWatchedBatchInput,
+      auditDetails?: UserMediaSyncDetails | null
+    ) => {
+      const baseAudit: UserMediaSyncDetails = {
+        title: details.title,
+        imdbId: details.imdbId,
+        posterPath: details.posterPath,
+        year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
+        ...auditDetails,
+      };
+
+      const mutations: WatchHistoryMutation[] = [];
+      for (const seasonNumber of input.seasonNumbersToRemove) {
+        mutations.push({
+          kind: "remove",
+          id: buildSeriesSeasonInternalId(details.id, seasonNumber),
+          mediaType: "tv",
+          auditDetails: baseAudit,
+        });
+      }
+
+      for (const { season, watchedAt, precision } of input.seasonsToSave) {
+        const entry = buildSeriesSeasonWatchEntry(details, season, watchedAt, precision);
+        mutations.push({
+          kind: "upsert",
+          entry,
+          auditDetails: { ...baseAudit, title: entry.title, posterPath: entry.posterPath },
+        });
+      }
+
+      if (input.titleAction === "save") {
+        const entry = buildSeriesWatchEntry(details, input.titleWatchedAt ?? Date.now(), "none");
+        mutations.push({ kind: "upsert", entry, auditDetails: baseAudit });
+      } else if (input.titleAction === "remove") {
+        mutations.push({ kind: "remove", id: details.id, mediaType: "tv", auditDetails: baseAudit });
+      }
+
+      await applyWatchHistoryMutations(mutations);
+    },
+    [applyWatchHistoryMutations]
+  );
+
   const removeFromWatchHistory = useCallback(
     async (id: number | string, mediaType: MediaType, auditDetails?: UserMediaSyncDetails | null) => {
-      const currentEntries = entriesRef.current;
-      const filtered = currentEntries.filter((entry) => !(entry.id === id && entry.mediaType === mediaType));
-      await persistEntries(filtered);
-      await enqueueWatchHistoryDelete(mediaType, id, auditDetails ?? {});
-      await syncCurrentWatchHistoryToSupabase(filtered);
+      await applyWatchHistoryMutations([{ kind: "remove", id, mediaType, auditDetails }]);
     },
-    [persistEntries]
+    [applyWatchHistoryMutations]
   );
 
   const removeSeriesSeasonFromWatchHistory = useCallback(
@@ -533,6 +627,7 @@ export function useWatchHistory() {
       saveMovieToWatchHistory,
       saveSeriesToWatchHistory,
       saveSeriesSeasonToWatchHistory,
+      saveSeriesWatchedBatch,
       removeFromWatchHistory,
       removeSeriesSeasonFromWatchHistory,
       reload: loadEntries,
@@ -551,6 +646,7 @@ export function useWatchHistory() {
       saveMovieToWatchHistory,
       saveSeriesSeasonToWatchHistory,
       saveSeriesToWatchHistory,
+      saveSeriesWatchedBatch,
       titleHistory,
     ]
   );
