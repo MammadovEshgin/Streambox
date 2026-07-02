@@ -582,6 +582,181 @@ test("Dizipal matching still scores English title low against Turkish-only resul
   assert.ok(score < 80, `English-title match against Turkish-only result must stay below the 80 cutoff, got ${score}`);
 });
 
+test("Dizipal scoring prefers the correct-year Dune among two same-title candidates", () => {
+  // Two "Dune" entries from ajax-search, 1984 and 2021, target year 2021.
+  // The 2021 candidate must win AND the 1984 one must fall below the
+  // searchDizipal 80-point cutoff (exact title 100 − 55 wrong-year = 45),
+  // so even alone it cannot be returned.
+  const dune1984 = { href: `${dizipalBase}/film/dune-1984`, text: "dune 1984", title: "Dune", resultYear: "1984" };
+  const dune2021 = { href: `${dizipalBase}/film/dune`, text: "dune 2021", title: "Dune", resultYear: "2021" };
+
+  const score1984 = __internal.scoreDizipalResult(dune1984, "Dune", "2021");
+  const score2021 = __internal.scoreDizipalResult(dune2021, "Dune", "2021");
+
+  assert.ok(score2021 > score1984, `2021 must outscore 1984: 2021=${score2021}, 1984=${score1984}`);
+  assert.ok(score1984 < 80, `lone wrong-year Dune must stay below the 80 cutoff, got ${score1984}`);
+  assert.ok(score2021 >= 80, `correct-year Dune must clear the 80 cutoff, got ${score2021}`);
+});
+
+test("extractDizipalPageYear reads only structured year markers", () => {
+  // JSON-LD
+  assert.equal(
+    __internal.extractDizipalPageYear('<script type="application/ld+json">{"datePublished":"1984-12-14"}</script>'),
+    "1984"
+  );
+  // year-classed element
+  assert.equal(
+    __internal.extractDizipalPageYear('<span class="year">2021</span>'),
+    "2021"
+  );
+  // "Yapım Yılı" label (Turkish info table)
+  assert.equal(
+    __internal.extractDizipalPageYear('<td>Yapım Yılı</td><td>1984</td>'),
+    "1984"
+  );
+  // (YYYY) in the document title
+  assert.equal(
+    __internal.extractDizipalPageYear("<title>Dune izle (1984) | dizipal</title>"),
+    "1984"
+  );
+  // A bare 4-digit number anywhere else is NOT trusted (resolutions, ids, …)
+  assert.equal(__internal.extractDizipalPageYear("<p>video 1080p bitrate 2021 kbps</p>"), null);
+  assert.equal(__internal.extractDizipalPageYear(""), null);
+});
+
+test("Dizipal direct-slug probe rejects the wrong-year movie behind the plain slug (Dune 2021 ≠ 1984)", async () => {
+  // The exact reported failure: Dune (2021) resolves through the direct-slug
+  // fallback (search missed), /film/dune serves Dune 1984, and the old probe
+  // matched on title compatibility alone and played the wrong film. The
+  // probe must now read the page year and reject.
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/film/dune-2021")) {
+      throw new Error("404"); // Dizipal has no year-suffixed page for 2021 here
+    }
+    if (url.endsWith("/film/dune")) {
+      return { data: "<title>Dune izle (1984) - dizipal</title><h1>Dune</h1>" };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await __internal.probeDizipalDirectSlug("Dune", "movie", "2021");
+    assert.equal(result, null, "wrong-year page behind the plain slug must not play");
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizipal direct-slug probe prefers the year-suffixed slug and reports the verified year", async () => {
+  // Remakes live at slug-year pages; when the year-suffixed page exists it is
+  // year-correct by construction and must be picked before the plain slug.
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/film/dune-1984")) {
+      return { data: "<title>Dune izle (1984)</title>" };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await __internal.probeDizipalDirectSlug("Dune", "movie", "1984");
+    assert.ok(result, "year-suffixed slug hit must resolve");
+    assert.ok(result!.url.endsWith("/film/dune-1984"));
+    assert.equal(result!.resultYear, "1984");
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizipal direct-slug probe accepts the plain movie slug when the page year matches", async () => {
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/film/dune-2021")) {
+      throw new Error("404");
+    }
+    if (url.endsWith("/film/dune")) {
+      return { data: '<span class="year">2021</span><h1>Dune</h1>' };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await __internal.probeDizipalDirectSlug("Dune", "movie", "2021");
+    assert.ok(result, "correct-year plain slug must resolve");
+    assert.ok(result!.url.endsWith("/film/dune"));
+    assert.equal(result!.resultYear, "2021");
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizipal direct-slug probe keeps TV fail-open on an unreadable page year (the 'From' fix)", async () => {
+  // TV premiere years drift between regions, and the probe exists precisely
+  // because /dizi/from is unfindable via search — a page without a readable
+  // year must still play for series.
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/dizi/from-2022")) {
+      throw new Error("404");
+    }
+    if (url.endsWith("/dizi/from")) {
+      return { data: "<h1>From</h1><div>1. Sezon</div>" };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await __internal.probeDizipalDirectSlug("From", "tv", "2022");
+    assert.ok(result, "TV plain-slug hit without a readable year must still resolve");
+    assert.ok(result!.url.endsWith("/dizi/from"));
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizipal direct-slug probe rejects a wrong-year movie page even when a movie has no readable year", async () => {
+  // Movies with a known target year must positively confirm the page year:
+  // same-title remakes share the plain slug, so "no year found" is not safe.
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/film/dune-2021")) {
+      throw new Error("404");
+    }
+    if (url.endsWith("/film/dune")) {
+      return { data: "<h1>Dune</h1>" }; // no year anywhere
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await __internal.probeDizipalDirectSlug("Dune", "movie", "2021");
+    assert.equal(result, null, "ambiguous-year movie page must not play");
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
 test("HDFilm Rapidrame inspection prefers native for disguised image media segments", () => {
   const mediaPlaylist = [
     "#EXTM3U",
