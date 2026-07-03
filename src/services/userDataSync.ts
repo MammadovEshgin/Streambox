@@ -23,6 +23,7 @@ import {
   buildProfileRowPayload,
   isLocalFileUri,
 } from "../utils/profileSyncPayload";
+import { reconcileQueueAfterFlush } from "../utils/syncQueue";
 import { supabase } from "./supabase";
 import { trackNetworkFailure } from "./telemetryService";
 import {
@@ -410,6 +411,17 @@ async function getCurrentUserId() { const { data: { session } } = await supabase
 async function readPendingQueue(): Promise<PendingSyncOperation[]> { try { const raw = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; } }
 async function writePendingQueue(queue: PendingSyncOperation[]) { if (queue.length === 0) await AsyncStorage.removeItem(SYNC_QUEUE_STORAGE_KEY); else await AsyncStorage.setItem(SYNC_QUEUE_STORAGE_KEY, JSON.stringify(queue)); }
 
+// Serializes every read-modify-write of the pending queue. Enqueues and the
+// flush's final reconciliation both go through here so no path can overwrite
+// the queue from a stale snapshot (an op enqueued while a slow flush was
+// executing used to be silently erased by the flush's closing write).
+let queueMutationChain: Promise<void> = Promise.resolve();
+function withQueueLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = queueMutationChain.then(task, task);
+  queueMutationChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 function getQueueOperationKey(op: PendingSyncOperation): string | null {
   switch (op.kind) {
     case "profile_settings": return `${op.userId}:profile_settings`;
@@ -431,14 +443,16 @@ async function enqueuePendingOperation(op: PendingSyncOperation) {
 // dozens of ops, and doing a read-modify-write per op made the save visibly slow.
 async function enqueuePendingOperations(ops: PendingSyncOperation[]) {
   if (ops.length === 0) return;
-  const queue = await readPendingQueue();
-  for (const op of ops) {
-    const key = getQueueOperationKey(op);
-    if (!key) { queue.push(op); continue; }
-    const idx = queue.findIndex(q => getQueueOperationKey(q) === key);
-    if (idx >= 0) queue[idx] = op; else queue.push(op);
-  }
-  await writePendingQueue(queue);
+  await withQueueLock(async () => {
+    const queue = await readPendingQueue();
+    for (const op of ops) {
+      const key = getQueueOperationKey(op);
+      if (!key) { queue.push(op); continue; }
+      const idx = queue.findIndex(q => getQueueOperationKey(q) === key);
+      if (idx >= 0) queue[idx] = op; else queue.push(op);
+    }
+    await writePendingQueue(queue);
+  });
 }
 
 function scheduleSupabaseUserDataSync(userId: string, delayMs = SYNC_FLUSH_DEBOUNCE_MS) {
@@ -793,8 +807,12 @@ async function executePendingOperation(op: PendingSyncOperation) {
     case "asset_upload": {
       // The source file can disappear between enqueue and flush (cleared
       // document dir). Treat that as a completed no-op instead of failing —
-      // a failed op is re-queued and would retry forever.
-      if (!(await isUsableLocalImageUri(op.localUri))) break;
+      // a failed op is re-queued and would retry forever. Warn so a skipped
+      // upload is diagnosable rather than silently absent from Supabase.
+      if (!(await isUsableLocalImageUri(op.localUri))) {
+        console.warn(`[sync] asset_upload skipped — ${op.assetKind} source file missing:`, op.localUri);
+        break;
+      }
       const ext = inferAssetExtension(op.localUri); const folder = op.assetKind === "avatar" ? "avatars" : "banners"; const path = `${op.userId}/${folder}/${op.assetKind}-${Date.now()}.${ext}`;
       const base64 = await FileSystem.readAsStringAsync(op.localUri, { encoding: FileSystem.EncodingType.Base64 });
       const { error } = await supabase.storage.from(PROFILE_ASSETS_BUCKET).upload(path, decode(base64), { contentType: inferAssetContentType(op.localUri) });
@@ -862,14 +880,15 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
     }
 
     const q = await readPendingQueue(); if (q.length === 0) return;
-    const r = q.filter(e => e.userId !== uid);
     const a = q.filter(e => e.userId === uid);
     const batch = a.slice(0, MAX_SYNC_OPERATIONS_PER_FLUSH);
     const remaining = a.slice(MAX_SYNC_OPERATIONS_PER_FLUSH);
     const f: PendingSyncOperation[] = [];
+    const succeeded: PendingSyncOperation[] = [];
     for (const op of batch) {
       try {
         await executePendingOperation(op);
+        succeeded.push(op);
       } catch (e) {
         console.warn("Sync failed", e);
         trackNetworkFailure("supabase", {
@@ -879,7 +898,15 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
         f.push(op);
       }
     }
-    await writePendingQueue([...r, ...remaining, ...f]);
+    // Executing a batch can take seconds (asset uploads), and ops enqueued in
+    // that window live only in the LATEST queue state — writing back the
+    // stale pre-execution snapshot silently erased them (a banner upload
+    // enqueued while the avatar was uploading never reached Supabase). So:
+    // re-read under the queue lock and remove ONLY what actually executed.
+    await withQueueLock(async () => {
+      const latest = await readPendingQueue();
+      await writePendingQueue(reconcileQueueAfterFlush(latest, succeeded));
+    });
     if (remaining.length > 0 || f.length > 0) {
       scheduleSupabaseUserDataSync(uid, SYNC_RETRY_DEBOUNCE_MS);
     }
@@ -964,7 +991,11 @@ export async function enqueueProfileSettingsSync(settings: PersistedSettings, au
 export async function enqueueProfileAssetSync(kind: SyncAssetKind, uri: string | null, prev: string | null, ver: number) {
   const uid = await getCurrentUserId(); if (!uid || !uri || !isLocalFileUri(uri)) return;
   await enqueuePendingOperation({ kind: "asset_upload", userId: uid, assetKind: kind, localUri: uri, previousPath: prev, nextVersion: Math.max(ver, 0) + 1 });
-  scheduleSupabaseUserDataSync(uid);
+  // Media uploads shouldn't sit behind the 30s debounce: the user often
+  // backgrounds the app right after picking an image (JS timers stop firing
+  // on Android), leaving the upload stranded until the next launch. 1s still
+  // coalesces an avatar+banner picked back-to-back into one flush.
+  scheduleSupabaseUserDataSync(uid, 1_000);
 }
 
 export async function enqueueMediaLibrarySync(i: { operation: "upsert" | "delete"; listKind: SyncListKind; mediaType: MediaType; tmdbId: number | string; details?: UserMediaSyncDetails | null; occurredAt?: string; }) {
