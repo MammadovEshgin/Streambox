@@ -18,6 +18,11 @@ import {
   cacheBannerImageFromRemoteUri,
   cacheProfileImageFromRemoteUri,
 } from "./profileImageService";
+import {
+  buildProfileRpcPayload,
+  buildProfileRowPayload,
+  isLocalFileUri,
+} from "../utils/profileSyncPayload";
 import { supabase } from "./supabase";
 import { trackNetworkFailure } from "./telemetryService";
 import {
@@ -174,7 +179,6 @@ function resolveThemeId(value: unknown): ThemeId { return typeof value === "stri
 function coerceMediaType(value: unknown): MediaType { return value === "tv" ? "tv" : "movie"; }
 function coerceStringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : []; }
 function coerceNumberArray(value: unknown): number[] { return Array.isArray(value) ? value.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry)) : []; }
-function isLocalFileUri(uri: string | null | undefined): uri is string { return typeof uri === "string" && uri.startsWith("file://"); }
 function normalizeSyncMetadata(value: SyncMetadata | null | undefined): SyncMetadata { return isRecord(value) ? value : {}; }
 
 function normalizeMediaSnapshot(details?: UserMediaSyncDetails | null): SyncMetadata {
@@ -261,18 +265,6 @@ async function batchUpsertRows(table: string, rows: any[], conflictKeys: string)
   if (internal.length > 0) {
     await upsertRowsInChunks(table, internal, `${conflictKeys},internal_id`);
   }
-}
-
-function formatBirthdayForDatabase(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const parts = trimmed.split("/");
-  if (parts.length !== 3) return null;
-  const day = Number(parts[0]); const month = Number(parts[1]); const year = Number(parts[2]);
-  if (!Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year)) return null;
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
-  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function formatBirthdayForLocal(value: string | null | undefined): string {
@@ -547,9 +539,89 @@ async function fetchProfileAssetsFromDB() {
   return { avatarPath: data.avatar_path, bannerPath: data.banner_path, avatarVersion: data.avatar_version || 0, bannerVersion: data.banner_version || 0 };
 }
 
+// A settings image URI is only usable if it points at a file that still
+// exists. Reinstalls / dev-client switches wipe the document directory but
+// AsyncStorage keeps the dead file:// pointer, so without this check the
+// profile images silently render blank forever.
+async function isUsableLocalImageUri(uri: string | null | undefined) {
+  if (!isLocalFileUri(uri)) return false;
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists;
+  } catch {
+    return false;
+  }
+}
+
+// Uploaded assets live at `${userId}/${folder}/${kind}-${Date.now()}.${ext}`
+// and are never deleted except when replaced — so even if the user_profiles
+// pointers were lost, the newest object in the folder IS the user's image.
+// Names embed a fixed-width ms timestamp, so a lexicographic sort is
+// chronological.
+async function findNewestProfileAssetPath(userId: string, folder: "avatars" | "banners") {
+  try {
+    const { data, error } = await supabase.storage
+      .from(PROFILE_ASSETS_BUCKET)
+      .list(`${userId}/${folder}`, { limit: 100 });
+    if (error || !data) return null;
+    const newest = data
+      .map((object) => object?.name)
+      .filter((name): name is string => Boolean(name))
+      .sort()
+      .pop();
+    return newest ? `${userId}/${folder}/${newest}` : null;
+  } catch {
+    return null;
+  }
+}
+
+// Write recovered pointers back to user_profiles so every device (and the
+// bootstrap RPC) heals, not just this one. Only the recovered keys are sent —
+// the RPC leaves absent keys untouched.
+async function repairRemoteProfileAssetPaths(paths: { avatarPath: string | null; bannerPath: string | null }) {
+  const payload: Record<string, unknown> = {};
+  if (paths.avatarPath) payload.avatarPath = paths.avatarPath;
+  if (paths.bannerPath) payload.bannerPath = paths.bannerPath;
+  if (Object.keys(payload).length === 0) return;
+  try {
+    await supabase.rpc("sync_streambox_profile_and_settings", {
+      profile_payload: payload,
+      settings_payload: {},
+      audit_metadata: { source: "asset_path_recovery" },
+    });
+  } catch {
+    // Non-fatal: the next launch retries the recovery.
+  }
+}
+
 async function resolveProfileAssetUris(overrides?: any) {
   let { avatarPath, bannerPath, avatarVersion, bannerVersion } = overrides || {};
-  if (!avatarPath && !bannerPath) { const db = await fetchProfileAssetsFromDB(); if (db) { avatarPath = db.avatarPath; bannerPath = db.bannerPath; avatarVersion = db.avatarVersion; bannerVersion = db.bannerVersion; } }
+  if (!avatarPath || !bannerPath) {
+    const db = await fetchProfileAssetsFromDB();
+    if (db) {
+      if (!avatarPath && db.avatarPath) { avatarPath = db.avatarPath; avatarVersion = db.avatarVersion; }
+      if (!bannerPath && db.bannerPath) { bannerPath = db.bannerPath; bannerVersion = db.bannerVersion; }
+    }
+  }
+
+  // Last resort: the pointers are gone everywhere but the bucket still holds
+  // the uploaded files. Adopt the newest object per folder and repair the
+  // remote pointers in the background.
+  if (!avatarPath || !bannerPath) {
+    const userId = await getCurrentUserId();
+    if (userId) {
+      const [recoveredAvatar, recoveredBanner] = await Promise.all([
+        avatarPath ? null : findNewestProfileAssetPath(userId, "avatars"),
+        bannerPath ? null : findNewestProfileAssetPath(userId, "banners"),
+      ]);
+      if (recoveredAvatar || recoveredBanner) {
+        avatarPath = avatarPath ?? recoveredAvatar;
+        bannerPath = bannerPath ?? recoveredBanner;
+        void repairRemoteProfileAssetPaths({ avatarPath: recoveredAvatar, bannerPath: recoveredBanner });
+      }
+    }
+  }
+
   const [remoteProfileImageUri, remoteBannerImageUri] = await Promise.all([avatarPath ? resolveStorageUrl(avatarPath) : null, bannerPath ? resolveStorageUrl(bannerPath) : null]);
   const [profileImageUri, bannerImageUri] = await Promise.all([
     cacheProfileImageFromRemoteUri(remoteProfileImageUri).catch(() => remoteProfileImageUri),
@@ -605,50 +677,13 @@ async function mergeInitialSnapshot(local: LocalUserSnapshot, remoteB: RemoteBoo
   } satisfies LocalUserSnapshot;
 }
 
-function buildProfileRpcPayload(s: PersistedSettings) {
-  const payload: Record<string, unknown> = {
-    displayName: s.profileName,
-    bio: s.profileBio,
-    location: s.profileLocation,
-    birthday: formatBirthdayForDatabase(s.profileBirthday),
-    joinedAt: s.joinedDate || new Date().toISOString(),
-  };
-
-  if (!isLocalFileUri(s.profileImageUri) || s.profileImageStoragePath) {
-    payload.avatarPath = s.profileImageStoragePath;
-    payload.avatarVersion = s.profileImageVersion;
-  }
-
-  if (!isLocalFileUri(s.bannerImageUri) || s.bannerImageStoragePath) {
-    payload.bannerPath = s.bannerImageStoragePath;
-    payload.bannerVersion = s.bannerImageVersion;
-  }
-
-  return payload;
-}
-
-function buildProfileRowPayload(s: PersistedSettings) {
-  const payload: Record<string, unknown> = {
-    display_name: s.profileName,
-    bio: s.profileBio,
-    location: s.profileLocation,
-    location_text: s.profileLocation,
-    birthday: formatBirthdayForDatabase(s.profileBirthday),
-    joined_at: s.joinedDate || new Date().toISOString(),
-  };
-
-  if (!isLocalFileUri(s.profileImageUri) || s.profileImageStoragePath) {
-    payload.avatar_path = s.profileImageStoragePath;
-    payload.avatar_version = s.profileImageVersion;
-  }
-
-  if (!isLocalFileUri(s.bannerImageUri) || s.bannerImageStoragePath) {
-    payload.banner_path = s.bannerImageStoragePath;
-    payload.banner_version = s.bannerImageVersion;
-  }
-
-  return payload;
-}
+// buildProfileRpcPayload / buildProfileRowPayload moved to
+// src/utils/profileSyncPayload.ts. They now OMIT avatarPath/bannerPath unless
+// a storage path is actually held — the sync RPC treats a present-but-null
+// key as "set NULL", so the old `!isLocalFileUri(uri) || storagePath` guard
+// let a device with degraded local image state (cleared cache, fresh install)
+// wipe the remote pointers on any ordinary settings sync. That is how profile
+// avatars/banners vanished across devices.
 
 function buildSettingsPayload(s: PersistedSettings) {
   return {
@@ -732,7 +767,13 @@ export async function syncCurrentLocalUserSnapshotToSupabase(targetId?: string) 
 
 async function queueInitialAssetUploads(userId: string, settings: PersistedSettings) {
   const images = [{ u: settings.profileImageUri, k: "avatar" as const, p: settings.profileImageStoragePath, v: settings.profileImageVersion }, { u: settings.bannerImageUri, k: "banner" as const, p: settings.bannerImageStoragePath, v: settings.bannerImageVersion }];
-  for (const img of images) { if (isLocalFileUri(img.u) && !img.p) await enqueuePendingOperation({ kind: "asset_upload", userId, assetKind: img.k, localUri: img.u, previousPath: null, nextVersion: Math.max(img.v, 0) + 1 }); }
+  for (const img of images) {
+    if (!isLocalFileUri(img.u) || img.p) continue;
+    // A dead file:// pointer would enqueue an upload that can never succeed
+    // and would retry forever on the 5s failure loop.
+    if (!(await isUsableLocalImageUri(img.u))) continue;
+    await enqueuePendingOperation({ kind: "asset_upload", userId, assetKind: img.k, localUri: img.u, previousPath: null, nextVersion: Math.max(img.v, 0) + 1 });
+  }
 }
 
 function inferAssetExtension(uri: string) { const m = uri.toLowerCase().match(/\.([a-z0-9]+)(?:\?|$)/); return m?.[1] || "jpg"; }
@@ -750,6 +791,10 @@ async function executePendingOperation(op: PendingSyncOperation) {
       break;
     }
     case "asset_upload": {
+      // The source file can disappear between enqueue and flush (cleared
+      // document dir). Treat that as a completed no-op instead of failing —
+      // a failed op is re-queued and would retry forever.
+      if (!(await isUsableLocalImageUri(op.localUri))) break;
       const ext = inferAssetExtension(op.localUri); const folder = op.assetKind === "avatar" ? "avatars" : "banners"; const path = `${op.userId}/${folder}/${op.assetKind}-${Date.now()}.${ext}`;
       const base64 = await FileSystem.readAsStringAsync(op.localUri, { encoding: FileSystem.EncodingType.Base64 });
       const { error } = await supabase.storage.from(PROFILE_ASSETS_BUCKET).upload(path, decode(base64), { contentType: inferAssetContentType(op.localUri) });
@@ -858,10 +903,19 @@ export async function bootstrapSupabaseUserData() {
     await queueInitialAssetUploads(uid, local.settings);
     await flushSupabaseUserDataSync(uid); await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, uid);
     local = await readLocalUserSnapshot();
-    if (!isLocalFileUri(local.settings.profileImageUri) || !isLocalFileUri(local.settings.bannerImageUri)) {
+    // Health check goes beyond "is it a file:// URI": the file must actually
+    // exist. A dead pointer (wiped document dir) previously passed the old
+    // isLocalFileUri gate and the images stayed blank forever.
+    const [profileImageHealthy, bannerImageHealthy] = await Promise.all([
+      isUsableLocalImageUri(local.settings.profileImageUri),
+      isUsableLocalImageUri(local.settings.bannerImageUri),
+    ]);
+    if (!profileImageHealthy || !bannerImageHealthy) {
       const a = await resolveProfileAssetUris({ avatarPath: local.settings.profileImageStoragePath, bannerPath: local.settings.bannerImageStoragePath, avatarVersion: local.settings.profileImageVersion, bannerVersion: local.settings.bannerImageVersion });
-      if (a.profileImageUri && !isLocalFileUri(local.settings.profileImageUri)) local.settings.profileImageUri = a.profileImageUri;
-      if (a.bannerImageUri && !isLocalFileUri(local.settings.bannerImageUri)) local.settings.bannerImageUri = a.bannerImageUri;
+      if (a.profileImageUri && !profileImageHealthy) local.settings.profileImageUri = a.profileImageUri;
+      if (a.bannerImageUri && !bannerImageHealthy) local.settings.bannerImageUri = a.bannerImageUri;
+      if (a.profileImageStoragePath && !local.settings.profileImageStoragePath) local.settings.profileImageStoragePath = a.profileImageStoragePath;
+      if (a.bannerImageStoragePath && !local.settings.bannerImageStoragePath) local.settings.bannerImageStoragePath = a.bannerImageStoragePath;
       await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(local.settings));
     }
     return;
