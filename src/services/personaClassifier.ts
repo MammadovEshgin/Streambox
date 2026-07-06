@@ -10,6 +10,7 @@ export type ViewerPersonaId =
   | "thrillSeeker"
   | "dreamer"
   | "romantic"
+  | "dramaDevotee"
   | "laughHunter"
   | "detective"
   | "cultureBuff"
@@ -42,10 +43,11 @@ const GENRE_PERSONA_PAIRS: [string, ViewerPersonaId][] = [
   // romantic
   ["Romance", "romantic"],
   ["Romantik", "romantic"],
-  ["Drama", "romantic"],
-  ["Dram", "romantic"],
   ["Soap", "romantic"],
   ["Pembe Dizi", "romantic"],
+  // dramaDevotee
+  ["Drama", "dramaDevotee"],
+  ["Dram", "dramaDevotee"],
   // laughHunter
   ["Comedy", "laughHunter"],
   ["Komedi", "laughHunter"],
