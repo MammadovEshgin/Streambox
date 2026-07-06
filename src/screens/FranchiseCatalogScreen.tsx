@@ -13,7 +13,7 @@ import {
 } from "../api/franchises";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
-import { franchiseCardBackgroundImage } from "../constants/imageAssets";
+import { getFranchisePosterImage } from "../constants/imageAssets";
 import { useAuth } from "../context/AuthContext";
 import { useUserDataSync } from "../context/UserDataSyncContext";
 import { HomeStackParamList } from "../navigation/types";
@@ -268,7 +268,7 @@ export function FranchiseCatalogScreen({ navigation }: FranchiseCatalogProps) {
           onPressIn={() => handlePressInCard(item.id)}
         >
           <PosterFrame>
-            <FranchisePosterImage source={franchiseCardBackgroundImage} resizeMode="cover" />
+            <FranchisePosterImage source={getFranchisePosterImage(item.slug)} resizeMode="cover" />
           </PosterFrame>
           <CardTitle>{formatFranchiseCollectionTitle(item.title, language)}</CardTitle>
         </CardPressable>

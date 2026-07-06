@@ -248,7 +248,7 @@ function TimelineNodeComponent({
       >
         {entry.posterUrl ? (
           <PosterImage
-            uri={entry.cachedPosterUrl ?? entry.posterUrl}
+            uri={entry.posterUrl}
             contentFit="cover"
             recyclingKey={entry.id}
           />
