@@ -15,8 +15,6 @@ export type FranchiseCollection = {
   slug: string;
   title: string;
   description: string | null;
-  logoUrl: string | null;
-  cachedLogoUrl?: string | null;
   backdropUrl: string | null;
   accentColor: string | null;
   totalEntries: number;
@@ -33,7 +31,6 @@ export type FranchiseEntry = {
   watchOrder: number;
   phase: string | null;
   posterUrl: string | null;
-  cachedPosterUrl?: string | null;
   tagline: string | null;
   note: string | null;
   runtimeMinutes: number | null;
@@ -70,8 +67,6 @@ function normalizeCachedCollections(rawValue: string | null): FranchiseCollectio
         slug: String(item.slug ?? ""),
         title: String(item.title ?? ""),
         description: typeof item.description === "string" ? item.description : null,
-        logoUrl: typeof item.logoUrl === "string" ? item.logoUrl : null,
-        cachedLogoUrl: null,
         backdropUrl: typeof item.backdropUrl === "string" ? item.backdropUrl : null,
         accentColor: typeof item.accentColor === "string" ? item.accentColor : null,
         totalEntries: typeof item.totalEntries === "number" ? item.totalEntries : 0,
@@ -109,7 +104,6 @@ function normalizeCachedEntries(rawValue: string | null): FranchiseEntry[] {
           typeof item.posterUrl === "string" && item.posterUrl.includes("image.tmdb.org")
             ? item.posterUrl
             : null,
-        cachedPosterUrl: null,
         tagline: typeof item.tagline === "string" ? item.tagline : null,
         note: typeof item.note === "string" ? item.note : null,
         runtimeMinutes: typeof item.runtimeMinutes === "number" ? item.runtimeMinutes : null,
@@ -144,22 +138,6 @@ function normalizeCachedProgress(rawValue: string | null): UserFranchiseProgress
     return [];
   }
 }
-
-function hydrateCollectionsWithCachedImages(collections: FranchiseCollection[]) {
-  return collections.map((collection) => ({
-    ...collection,
-    cachedLogoUrl: null,
-  }));
-}
-
-function hydrateEntriesWithCachedImages(entries: FranchiseEntry[]) {
-  return entries.map((entry) => ({
-    ...entry,
-    cachedPosterUrl: null,
-  }));
-}
-
-function warmCollectionImages(_collections: FranchiseCollection[]) {}
 
 function warmEntryImages(entries: FranchiseEntry[]) {
   void prefetchRemoteImages(
@@ -226,8 +204,6 @@ async function fetchFranchisesFromSupabase(): Promise<FranchiseCollection[]> {
     slug: row.slug,
     title: row.title,
     description: row.description,
-    logoUrl: null,
-    cachedLogoUrl: null,
     backdropUrl: row.backdrop_url,
     accentColor: row.accent_color,
     totalEntries: row.total_entries,
@@ -266,7 +242,6 @@ async function fetchFranchiseEntriesFromSupabase(franchiseId: string): Promise<F
     watchOrder: row.watch_order,
     phase: row.phase,
     posterUrl: null,
-    cachedPosterUrl: null,
     tagline: row.tagline,
     note: row.note,
     runtimeMinutes: row.runtime_minutes,
@@ -345,12 +320,10 @@ export async function getFranchiseCollections(): Promise<FranchiseCollection[]> 
       void fetchFreshFranchises()
         .then(async (fresh) => {
           await AsyncStorage.setItem(FRANCHISE_CATALOG_CACHE_KEY, JSON.stringify(fresh));
-          warmCollectionImages(fresh);
         })
         .catch(() => undefined);
 
-      warmCollectionImages(cached);
-      return hydrateCollectionsWithCachedImages(cached);
+      return cached;
     }
   } catch {
     // Cache miss.
@@ -358,15 +331,13 @@ export async function getFranchiseCollections(): Promise<FranchiseCollection[]> 
 
   const fresh = await fetchFreshFranchises();
   AsyncStorage.setItem(FRANCHISE_CATALOG_CACHE_KEY, JSON.stringify(fresh)).catch(() => undefined);
-  warmCollectionImages(fresh);
-  return hydrateCollectionsWithCachedImages(fresh);
+  return fresh;
 }
 
 export async function refreshFranchiseCollections(): Promise<FranchiseCollection[]> {
   const fresh = await fetchFreshFranchises();
   await AsyncStorage.setItem(FRANCHISE_CATALOG_CACHE_KEY, JSON.stringify(fresh));
-  warmCollectionImages(fresh);
-  return hydrateCollectionsWithCachedImages(fresh);
+  return fresh;
 }
 
 export async function getFranchiseEntries(franchiseId: string): Promise<FranchiseEntry[]> {
@@ -383,7 +354,7 @@ export async function getFranchiseEntries(franchiseId: string): Promise<Franchis
         .catch(() => undefined);
 
       warmEntryImages(cached);
-      return hydrateEntriesWithCachedImages(cached);
+      return cached;
     }
   } catch {
     // Cache miss.
@@ -392,7 +363,7 @@ export async function getFranchiseEntries(franchiseId: string): Promise<Franchis
   const fresh = await fetchFreshFranchiseEntries(franchiseId);
   AsyncStorage.setItem(cacheKey, JSON.stringify(fresh)).catch(() => undefined);
   warmEntryImages(fresh);
-  return hydrateEntriesWithCachedImages(fresh);
+  return fresh;
 }
 
 export async function refreshFranchiseEntries(franchiseId: string): Promise<FranchiseEntry[]> {
@@ -400,7 +371,7 @@ export async function refreshFranchiseEntries(franchiseId: string): Promise<Fran
   const fresh = await fetchFreshFranchiseEntries(franchiseId);
   await AsyncStorage.setItem(cacheKey, JSON.stringify(fresh));
   warmEntryImages(fresh);
-  return hydrateEntriesWithCachedImages(fresh);
+  return fresh;
 }
 
 export async function getUserFranchiseProgress(

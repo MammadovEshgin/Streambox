@@ -1,8 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image as ExpoImage } from "expo-image";
 
-import { clearFranchiseImageCache } from "./franchisePosterCache";
-
 const LEGACY_IMAGE_CACHE_MIGRATION_KEY = "@streambox/legacy-image-cache-migration-v1";
 const PREFETCH_BATCH_SIZE = 4;
 
@@ -60,7 +58,6 @@ export async function migrateLegacyContentImageCaches() {
   }
 
   await Promise.allSettled([
-    clearFranchiseImageCache(),
     clearManagedRemoteImageCaches(),
   ]);
 
