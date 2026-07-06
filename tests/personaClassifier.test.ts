@@ -29,6 +29,17 @@ describe("personaClassifier", () => {
     assert.equal(result, "dreamer");
   });
 
+  it("drama-dominant history gets the Drama Devotee card in either language", () => {
+    assert.equal(
+      classifyViewerPersona(entries(["Drama"], ["Drama", "Romance"], ["Drama"])),
+      "dramaDevotee"
+    );
+    assert.equal(
+      classifyViewerPersona(entries(["Dram"], ["Dram", "Romantik"], ["Dram"])),
+      "dramaDevotee"
+    );
+  });
+
   it("the most watched genre wins over less watched ones", () => {
     const result = classifyViewerPersona(
       entries(["Komedi"], ["Komedi"], ["Komedi"], ["Korku"], ["Korku"])

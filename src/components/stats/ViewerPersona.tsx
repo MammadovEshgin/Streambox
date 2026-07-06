@@ -243,6 +243,17 @@ const PERSONAS = {
     traits: ["feeling", "intimacy", "yearning"],
     accent: "#FF855C",
   },
+  dramaDevotee: {
+    id: "dramaDevotee",
+    name: "The Drama Devotee",
+    description:
+      "You watch for the human core - grief, triumph, and the quiet moments where a life changes direction. Spectacle fades; what stays with you is truth.",
+    arcana: "Arcana X",
+    cardTitle: "The Weeping Mask",
+    motto: "You know the heaviest stories are the ones that feel true.",
+    traits: ["depth", "truth", "catharsis"],
+    accent: "#9FB2C8",
+  },
   laughHunter: {
     id: "laughHunter",
     name: "The Laugh Hunter",
@@ -316,6 +327,7 @@ const LOCALIZED_PERSONA_COPY: Record<"tr", Record<PersonaId, Pick<Persona, "name
     thrillSeeker: { name: "Heyecan avcısı", description: "Hızın, riskin ve keskin dönüşlerin peşindesin. İzlediğin her şeyde hareket ve gerilim arıyorsun.", motto: "Hız pusulan, gerilim ise nefesindir.", traits: ["adrenalin", "gerilim", "etki"] },
     dreamer: { name: "Hayalperest", description: "Seni imkansız gelecekler, mitik dünyalar ve gerçekliği genişleten hikayeler çekiyor. Sıradan olandan uzaklaşmak için izliyorsun.", motto: "Var olmayan ufukları biriktiriyorsun.", traits: ["merak", "mit", "kaçış"] },
     romantic: { name: "Romantik", description: "Duygusal ağırlığı, özlemi ve jenerikten sonra bile kalan yumuşak anları seviyorsun. Bağ kurmak senin için gösteriden daha önemli.", motto: "İnsanın içine işleyen hikayelere güveniyorsun.", traits: ["duygu", "yakınlık", "özlem"] },
+    dramaDevotee: { name: "Dram tutkunu", description: "İnsan hikayelerinin özünü arıyorsun: keder, zafer ve bir hayatın yön değiştirdiği sessiz anlar. Gösteri geçer, sende kalan gerçekliktir.", motto: "En ağır hikayelerin gerçek hissettiren hikayeler olduğunu biliyorsun.", traits: ["derinlik", "gerçeklik", "arınma"] },
     laughHunter: { name: "Kahkaha avcısı", description: "Ritmi, cazibeyi ve rahatlamayı seviyorsun. Dünya ağırlaştığında bile zevkin mizaha ve parlaklığa dönüyor.", motto: "Zamanlamanın da bir zeka biçimi olduğunu biliyorsun.", traits: ["mizah", "ışık", "kıvılcım"] },
     detective: { name: "Dedektif", description: "Gölgelerle sabırlısın ve saklı düzeni arıyorsun. Şüphe, ipuçları ve gri alanlar dikkatini keskinleştiriyor.", motto: "Cevaplar için değil, eksik parçayı bulmak için izliyorsun.", traits: ["ipuçları", "belirsizlik", "keskinlik"] },
     cultureBuff: { name: "Kültür meraklısı", description: "Film ve dizileri birer hafıza taşıyıcısı gibi görüyorsun. Gerçek hayatlar ve tarihsel izler seni daha uzun süre tutuyor.", motto: "Zamanın geride bıraktığını anlamak için izliyorsun.", traits: ["hafıza", "bağlam", "içgörü"] },
