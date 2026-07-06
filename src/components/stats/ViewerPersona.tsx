@@ -9,6 +9,7 @@ import ViewShot from "react-native-view-shot";
 
 import { getPersonaCardImage } from "../../constants/imageAssets";
 import type { WatchHistoryEntry } from "../../hooks/useWatchHistory";
+import { classifyViewerPersona, type ViewerPersonaId } from "../../services/personaClassifier";
 import { normalizeAppLanguage } from "../../localization/types";
 import { useAppSettings } from "../../settings/AppSettingsContext";
 import { withAlpha } from "../../theme/Theme";
@@ -195,16 +196,7 @@ type Props = {
   itemLabelPlural: string;
 };
 
-type PersonaId =
-  | "thrillSeeker"
-  | "dreamer"
-  | "romantic"
-  | "laughHunter"
-  | "detective"
-  | "cultureBuff"
-  | "horrorFanatic"
-  | "blockbusterFan"
-  | "eclecticExplorer";
+type PersonaId = ViewerPersonaId;
 
 type Persona = {
   id: PersonaId;
@@ -319,16 +311,6 @@ const PERSONAS = {
   },
 } satisfies Record<PersonaId, Persona>;
 
-const PERSONA_RULES: { genres: string[]; persona: Persona }[] = [
-  { genres: ["Action", "Thriller"], persona: PERSONAS.thrillSeeker },
-  { genres: ["Science Fiction", "Fantasy"], persona: PERSONAS.dreamer },
-  { genres: ["Romance", "Drama"], persona: PERSONAS.romantic },
-  { genres: ["Comedy"], persona: PERSONAS.laughHunter },
-  { genres: ["Crime", "Mystery"], persona: PERSONAS.detective },
-  { genres: ["Documentary", "History"], persona: PERSONAS.cultureBuff },
-  { genres: ["Horror"], persona: PERSONAS.horrorFanatic },
-];
-
 const LOCALIZED_PERSONA_COPY: Record<"tr", Record<PersonaId, Pick<Persona, "name" | "description" | "motto" | "traits">>> = {
   tr: {
     thrillSeeker: { name: "Heyecan avcısı", description: "Hızın, riskin ve keskin dönüşlerin peşindesin. İzlediğin her şeyde hareket ve gerilim arıyorsun.", motto: "Hız pusulan, gerilim ise nefesindir.", traits: ["adrenalin", "gerilim", "etki"] },
@@ -354,51 +336,7 @@ function localizePersona(persona: Persona, language: string): Persona {
 }
 
 function classifyPersona(history: WatchHistoryEntry[]): Persona {
-  const genreCounts: Record<string, number> = {};
-  let totalGenreHits = 0;
-
-  // Tally all genres across history
-  for (const entry of history) {
-    for (const genre of entry.genres) {
-      genreCounts[genre] = (genreCounts[genre] ?? 0) + 1;
-      totalGenreHits++;
-    }
-  }
-
-  if (totalGenreHits === 0) {
-    return PERSONAS.eclecticExplorer;
-  }
-
-  // Find the highest counted genre overall
-  let topGenre = "";
-  let topCount = 0;
-  for (const [genre, count] of Object.entries(genreCounts)) {
-    if (count > topCount) {
-      topCount = count;
-      topGenre = genre;
-    }
-  }
-
-  // Find a specific persona rule matching the absolute top genre
-  for (const rule of PERSONA_RULES) {
-    if (rule.genres.includes(topGenre)) {
-      return rule.persona;
-    }
-  }
-
-  // Fallback to average score check to assign blockbuster/eclectic
-  const avgRating = history.reduce((sum, entry) => sum + entry.voteAverage, 0) / history.length;
-  const popularGenres = ["Action", "Adventure", "Comedy", "Drama"];
-  const hasPopularGenre = popularGenres.some((genre) => (genreCounts[genre] ?? 0) > 0);
-  
-  if (avgRating >= 7 && hasPopularGenre) {
-    const topRatio = topCount / totalGenreHits;
-    if (topRatio < 0.4) {
-      return PERSONAS.blockbusterFan;
-    }
-  }
-
-  return PERSONAS.eclecticExplorer;
+  return PERSONAS[classifyViewerPersona(history)];
 }
 
 export function ViewerPersona({ history, itemLabelPlural }: Props) {
