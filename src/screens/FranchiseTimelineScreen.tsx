@@ -15,6 +15,7 @@ import {
   toggleFranchiseEntryWatched,
 } from "../api/franchises";
 import { getMovieDetails, getSeriesDetails } from "../api/tmdb";
+import { buildWatchedMediaKeySet, collectWatchedFranchiseEntryIds } from "../services/franchiseProgress";
 import { prefetchRemoteImages } from "../services/remoteImageCache";
 import { TimelinePath, NodeRect } from "../components/franchise/TimelinePath";
 import { TimelineNode, POSTER_WIDTH, POSTER_HEIGHT, NODE_FULL_WIDTH } from "../components/franchise/TimelineNode";
@@ -245,7 +246,7 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
   const { t } = useTranslation();
   const { user } = useAuth();
   const { language } = useAppSettings();
-  const { saveMovieToWatchHistory, saveSeriesToWatchHistory, removeFromWatchHistory } = useWatchHistory();
+  const { history, saveMovieToWatchHistory, saveSeriesToWatchHistory, removeFromWatchHistory } = useWatchHistory();
   const accent = theme.colors.primary;
 
   const [entries, setEntries] = useState<FranchiseEntry[]>([]);
@@ -263,7 +264,13 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_COUNT);
   const visibleEntries = useMemo(() => entries.slice(0, visibleCount), [entries, visibleCount]);
 
-  const watchedEntryIds = useMemo(() => new Set(progress.map((p) => p.entryId)), [progress]);
+  // Watched = explicit franchise progress ∪ titles already in the global
+  // watch history (manual logs and Letterboxd imports included).
+  const watchedMediaKeys = useMemo(() => buildWatchedMediaKeySet(history), [history]);
+  const watchedEntryIds = useMemo(
+    () => collectWatchedFranchiseEntryIds(entries, progress, watchedMediaKeys),
+    [entries, progress, watchedMediaKeys]
+  );
   const watchedIndices = useMemo(() => {
     const set = new Set<number>();
     visibleEntries.forEach((entry, index) => {
