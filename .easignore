@@ -31,10 +31,11 @@ coverage/**
 *.aab
 
 # Workspace-only media and source material
+# (root-anchored: bundled card art in assets/images/franchise/posters/ must ship)
 content-sources/
 content-sources/**
-posters/
-posters/**
+/posters/
+/posters/**
 Classic Azerbaijan movies/
 Classic Azerbaijan movies/**
 roadmap timeline.webp
