@@ -153,7 +153,9 @@ test("HDFilm Rapidrame decoder self-heals when the provider rotates ONLY the unm
   // Without the parsed constant the known list can't recover it…
   assert.ok(!__internal.decodeRapidrameValueCandidates([encoded]).includes(url));
   // …but passing the live-parsed constant does.
-  assert.ok(__internal.decodeRapidrameValueCandidates([encoded], NOVEL_CONSTANT).includes(url));
+  assert.ok(
+    __internal.decodeRapidrameValueCandidates([encoded], { constant: NOVEL_CONSTANT, offset: 5 }).includes(url)
+  );
 
   // End-to-end: extractRapidrameStreamUrl reads the constant from the dc_*()
   // body in the embed HTML, so the whole flow self-heals with no release.
@@ -164,6 +166,56 @@ test("HDFilm Rapidrame decoder self-heals when the provider rotates ONLY the unm
     'jwplayer("player").setup({ sources: [{file: s_TESTROT, type: "hls"}] });'
   ].join("\n");
 
+  assert.equal(__internal.extractRapidrameStreamUrl(embedHtml), url);
+});
+
+test("HDFilm decoder interprets a per-request randomized dc_*() body (reverse count, caesar shift, unmix constant + offset all novel)", () => {
+  // The provider now randomizes the decoder on EVERY embed request: the number
+  // of reverses, the Caesar shift amount, the unmix constant and the `(i + N)`
+  // offset all change. No static scheme can match, so the extractor interprets
+  // the live dc_*() body. This fixture uses parameters absent from every static
+  // scheme (shift 7, offset 13, novel constant) to prove the decode is driven
+  // by the parsed body, not a baked-in guess. Mirrors "The Big Short" breakage.
+  const url = "https://srv10.cdnimages40.shop/hls/randomized-scheme.mp4/txt/master.txt";
+  const CONSTANT = 3708627584;
+  const OFFSET = 13;
+  const SHIFT = 7;
+
+  const caesar = (value: string, shift: number) => {
+    const n = ((shift % 26) + 26) % 26;
+    return value.replace(/[a-zA-Z]/g, (ch) => {
+      const code = ch.charCodeAt(0);
+      const base = code <= 90 ? 65 : 97;
+      return String.fromCharCode(((code - base + n) % 26) + base);
+    });
+  };
+  const btoaBin = (value: string) => Buffer.from(value, "binary").toString("base64");
+
+  // Scheme to replay on decode: join → reverse → atob → caesar(+SHIFT) → atob → unmix.
+  // Build the parts by inverting it end-to-end.
+  let mixed = "";
+  for (let i = 0; i < url.length; i += 1) {
+    mixed += String.fromCharCode((url.charCodeAt(i) + (CONSTANT % (i + OFFSET))) % 256);
+  }
+  const joined = btoaBin(caesar(btoaBin(mixed), -SHIFT)).split("").reverse().join("");
+  const parts = [joined.slice(0, 12), joined.slice(12)];
+
+  const embedHtml = [
+    `function dc_RANDO(value_parts){`,
+    `let result = value_parts.join('');`,
+    `result = result.split('').reverse().join('');`,
+    `result = atob(result);`,
+    `result = result.replace(/[a-zA-Z]/g, function(c){var o=c.charCodeAt(0),base=(o<=90)?65:97;return String.fromCharCode((o - base + ${SHIFT}) % 26 + base);});`,
+    `result = atob(result);`,
+    `let unmix='';for(let i=0;i<result.length;i++){let charCode=result.charCodeAt(i);charCode=((charCode-(${CONSTANT} % (i + ${OFFSET}))) % 256 + 256) % 256;unmix+=String.fromCharCode(charCode);}return unmix;}`,
+    `var s_RANDO = dc_RANDO(${JSON.stringify(parts)});`,
+    'jwplayer("player").setup({ sources: [{file: s_RANDO, type: "hls"}] });'
+  ].join("\n");
+
+  // The static schemes can't produce it (novel shift + offset)…
+  assert.ok(!__internal.decodeRapidrameValueCandidates(parts).includes(url));
+  // …but interpreting the live dc_*() body does, end to end.
+  assert.equal(__internal.decodeRapidrameByInterpretingDcBody(embedHtml, "s_RANDO", parts), url);
   assert.equal(__internal.extractRapidrameStreamUrl(embedHtml), url);
 });
 
