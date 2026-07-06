@@ -24,6 +24,9 @@ import { GENRE_ID_MAP, type MediaItem, type MediaType } from "../api/tmdb";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
+import { BadgeStrip } from "../components/badges/BadgeStrip";
+import { BadgesModal } from "../components/badges/BadgesModal";
+import { evaluateBadges, selectStripBadgeIds } from "../services/badgeEngine";
 import { useLikedMovies } from "../hooks/useLikedMovies";
 import { useLikedSeries } from "../hooks/useLikedSeries";
 import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
@@ -112,6 +115,14 @@ const BannerIconButton = styled.Pressable`
 const AvatarArea = styled.View`
   margin-top: -${AVATAR_OVERLAP}px;
   padding-horizontal: 16px;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+`;
+
+/* Pushes the strip just below the banner edge (the row's top half overlaps it). */
+const BadgeStripWrap = styled.View`
+  margin-top: ${AVATAR_OVERLAP + 9}px;
 `;
 
 const AvatarButton = styled.Pressable``;
@@ -1045,6 +1056,10 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const likedCount = likedMovies.length + likedSeries.length;
   const watchedCount = watchHistory.length;
 
+  const badgeProgress = useMemo(() => evaluateBadges(fullWatchHistory), [fullWatchHistory]);
+  const stripBadgeIds = useMemo(() => selectStripBadgeIds(badgeProgress), [badgeProgress]);
+  const [showBadgesModal, setShowBadgesModal] = useState(false);
+
   // Counts known from local storage the instant sign-in writes it — before the
   // poster cards finish hydrating. When a section has items but none are
   // displayed yet, show a loader instead of a misleading "empty" state.
@@ -1082,7 +1097,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </BannerIconButton>
           </BannerTopActions>
 
-          {/* Avatar */}
+          {/* Avatar + achievement badges */}
           <AvatarArea>
             <AvatarButton onPress={() => setFullViewType("avatar")}>
               <AvatarCircle>
@@ -1095,6 +1110,9 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 </AvatarInner>
               </AvatarCircle>
             </AvatarButton>
+            <BadgeStripWrap>
+              <BadgeStrip badgeIds={stripBadgeIds} onPress={() => setShowBadgesModal(true)} />
+            </BadgeStripWrap>
           </AvatarArea>
 
           {/* Name, Bio, Meta info */}
@@ -1405,6 +1423,13 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           </FullViewActions>
         </FullViewOverlay>
       </Modal>
+
+      {/* Badges modal */}
+      <BadgesModal
+        visible={showBadgesModal}
+        progress={badgeProgress}
+        onClose={() => setShowBadgesModal(false)}
+      />
 
       {/* â”€â”€ Edit profile modal â”€â”€ */}
       <Modal visible={showEditModal} animationType="slide" statusBarTranslucent>
