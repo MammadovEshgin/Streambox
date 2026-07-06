@@ -117,7 +117,7 @@ async function urlServesHlsManifest(url: string, referer: string): Promise<boole
 
 // ─── Embed parsing (mirrors WebPlayerService, kept local on purpose) ─────────
 
-type EmbedParts = { parts: string[]; embedUrl: string };
+type EmbedParts = { parts: string[]; embedUrl: string; embedHtml: string };
 
 function extractPartsArray(embedHtml: string): string[] | null {
   const varName = embedHtml.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*(s_[A-Za-z0-9_]+)/)?.[1];
@@ -147,7 +147,7 @@ async function fetchEmbedParts(title: string): Promise<EmbedParts | null> {
   if (!embedHtml) return null;
   const parts = extractPartsArray(embedHtml);
   if (!parts) return null;
-  return { parts, embedUrl };
+  return { parts, embedUrl, embedHtml };
 }
 
 // ─── Brute-force scheme recovery (primitives + self-validating oracle) ───────
@@ -285,12 +285,12 @@ async function main() {
     process.exit(2);
   }
 
-  // 1. Health check with the CURRENT shipped decoder.
+  // 1. Health check with the CURRENT shipped decoder. Uses the full extractor
+  //    (dc_*() interpreter + static-scheme fallback), matching the app path, so
+  //    the check reflects real playback rather than only the static schemes.
   let healthy = 0;
-  for (const { parts, embedUrl } of probes) {
-    const candidate = __internal
-      .decodeRapidrameValueCandidates(parts)
-      .find((v) => /^https?:\/\//i.test(v));
+  for (const { embedHtml, embedUrl } of probes) {
+    const candidate = __internal.extractRapidrameStreamUrl(embedHtml);
     const ok = candidate ? await urlServesHlsManifest(candidate, embedUrl) : false;
     if (ok) healthy += 1;
   }
