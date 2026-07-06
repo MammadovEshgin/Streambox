@@ -10,7 +10,6 @@ import {
   syncCurrentLocalUserSnapshotToSupabase,
 } from "../services/userDataSync";
 import { clearFranchiseCache } from "../api/franchises";
-import { clearFranchiseImageCache } from "../services/franchisePosterCache";
 import { clearManagedRemoteImageCaches } from "../services/remoteImageCache";
 import { clearPersistedRuntimeCaches } from "../services/runtimeCache";
 import { signOutFromGoogle } from "../services/auth";
@@ -71,7 +70,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
       AsyncStorage.removeItem(LAST_ACTIVE_KEY),
       clearLocalUserDataCache(),
       clearFranchiseCache(),
-      clearFranchiseImageCache(),
       clearManagedRemoteImageCaches(),
       clearPersistedRuntimeCaches(),
       reloadPersistedSettings(),

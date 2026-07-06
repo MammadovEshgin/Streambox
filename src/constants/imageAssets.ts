@@ -3,7 +3,40 @@ import type { AppLanguage } from "../localization/types";
 import type { PersonaPresentation } from "../settings/settingsStorage";
 
 export const onboardingPreviewImage = require("../../assets/images/onboarding/app-preview.jpeg");
-export const franchiseCardBackgroundImage = require("../../assets/images/franchise/frenchise-poster-card-v2.jpg");
+
+const franchisePosterFallbackImage = require("../../assets/images/franchise/frenchise-poster-card-v2.jpg");
+
+// Keyed by franchise_collections.slug. Bundled so cards render instantly with
+// no network dependency; unknown slugs (added remotely before an app update)
+// fall back to the generic card artwork.
+const franchisePosterImages = {
+  "marvel-cinematic-universe": require("../../assets/images/franchise/posters/marvel-cinematic-universe.webp"),
+  "dc-universe": require("../../assets/images/franchise/posters/dc-universe.webp"),
+  "x-men-collection": require("../../assets/images/franchise/posters/x-men-collection.webp"),
+  "star-wars-collection": require("../../assets/images/franchise/posters/star-wars-collection.webp"),
+  "harry-potter-collection": require("../../assets/images/franchise/posters/harry-potter-collection.webp"),
+  "middle-earth-collection": require("../../assets/images/franchise/posters/middle-earth-collection.webp"),
+  "james-bond-collection": require("../../assets/images/franchise/posters/james-bond-collection.webp"),
+  "mission-impossible-collection": require("../../assets/images/franchise/posters/mission-impossible-collection.webp"),
+  "the-fast-and-the-furious-collection": require("../../assets/images/franchise/posters/the-fast-and-the-furious-collection.webp"),
+  "transformers-collection": require("../../assets/images/franchise/posters/transformers-collection.webp"),
+  "jurassic-park-collection": require("../../assets/images/franchise/posters/jurassic-park-collection.webp"),
+  "the-twilight-collection": require("../../assets/images/franchise/posters/the-twilight-collection.webp"),
+  "rocky-collection": require("../../assets/images/franchise/posters/rocky-collection.webp"),
+  "john-wick-collection": require("../../assets/images/franchise/posters/john-wick-collection.webp"),
+  "the-bourne-collection": require("../../assets/images/franchise/posters/the-bourne-collection.webp"),
+  "dune-collection": require("../../assets/images/franchise/posters/dune-collection.webp"),
+  "indiana-jones-collection": require("../../assets/images/franchise/posters/indiana-jones-collection.webp"),
+  "the-hunger-games-collection": require("../../assets/images/franchise/posters/the-hunger-games-collection.webp"),
+  "saw-collection": require("../../assets/images/franchise/posters/saw-collection.webp"),
+  "scream-collection": require("../../assets/images/franchise/posters/scream-collection.webp"),
+  "the-conjuring-collection": require("../../assets/images/franchise/posters/the-conjuring-collection.webp"),
+  "insidious-collection": require("../../assets/images/franchise/posters/insidious-collection.webp"),
+} satisfies Record<string, ImageSourcePropType>;
+
+export function getFranchisePosterImage(slug: string): ImageSourcePropType {
+  return franchisePosterImages[slug as keyof typeof franchisePosterImages] ?? franchisePosterFallbackImage;
+}
 
 const watchedStampImages = {
   en: require("../../assets/images/stamps/watched-stamp-eng.png"),
