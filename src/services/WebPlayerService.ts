@@ -1234,12 +1234,17 @@ function decodeBase64Binary(value: string): string {
   return output;
 }
 
-function rot13(value: string): string {
+function caesarShift(value: string, shift: number): string {
+  const normalized = ((shift % 26) + 26) % 26;
   return value.replace(/[a-zA-Z]/g, (char) => {
     const code = char.charCodeAt(0);
     const base = code <= 90 ? 65 : 97;
-    return String.fromCharCode(((code - base + 13) % 26) + base);
+    return String.fromCharCode(((code - base + normalized) % 26) + base);
   });
+}
+
+function rot13(value: string): string {
+  return caesarShift(value, 13);
 }
 
 function reverseString(value: string): string {
@@ -1256,28 +1261,41 @@ function reverseString(value: string): string {
  * just this number can no longer break playback; the known values below are
  * fallbacks for the rare case the parse misses.
  */
-const KNOWN_RAPIDRAME_UNMIX_CONSTANTS = [112511818, 399756995];
+const KNOWN_RAPIDRAME_UNMIX_CONSTANTS = [3708627584, 112511818, 399756995];
+// The `(i + N)` divisor offset inside the unmix loop. The provider rotated it
+// from 5 to 10; both are tried so an embed on either scheme still decodes.
+const KNOWN_RAPIDRAME_UNMIX_OFFSETS = [10, 5];
 
-function unmixRapidrameBytes(value: string, modConstant = KNOWN_RAPIDRAME_UNMIX_CONSTANTS[0]): string {
+type RapidrameUnmixParams = { constant: number; offset: number };
+
+function unmixRapidrameBytes(
+  value: string,
+  modConstant = KNOWN_RAPIDRAME_UNMIX_CONSTANTS[0],
+  offset = KNOWN_RAPIDRAME_UNMIX_OFFSETS[0]
+): string {
   let unmix = "";
   for (let index = 0; index < value.length; index += 1) {
-    const nextCode = (value.charCodeAt(index) - (modConstant % (index + 5)) + 256) % 256;
+    const nextCode = (value.charCodeAt(index) - (modConstant % (index + offset)) + 256) % 256;
     unmix += String.fromCharCode(nextCode);
   }
   return unmix;
 }
 
 /**
- * Read the unmix constant straight out of the embed page's `dc_*()` body, e.g.
- * `charCode - (112511818 % (i + 5))`. Returns null when the page shape changed
- * enough that the number isn't where we expect — the caller then falls back to
- * the known constants.
+ * Read the unmix constant AND the divisor offset straight out of the embed
+ * page's `dc_*()` body, e.g. `charCode - (3708627584 % (i + 10))`. Both numbers
+ * are rotated by the provider (offset seen: 5 → 10), so we parse whatever is
+ * live. Returns null when the shape changed enough that the numbers aren't
+ * where we expect — the caller then falls back to the known values.
  */
-function parseRapidrameUnmixConstant(embedHtml: string): number | null {
-  const match = embedHtml.match(/(\d{6,})\s*%\s*\(\s*[A-Za-z_$][\w$]*\s*\+\s*5\s*\)/);
+function parseRapidrameUnmixConstant(embedHtml: string): RapidrameUnmixParams | null {
+  const match = embedHtml.match(/(\d{6,})\s*%\s*\(\s*[A-Za-z_$][\w$]*\s*\+\s*(\d+)\s*\)/);
   if (!match) return null;
-  const parsed = Number(match[1]);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  const constant = Number(match[1]);
+  const offset = Number(match[2]);
+  if (!Number.isSafeInteger(constant) || constant <= 0) return null;
+  if (!Number.isSafeInteger(offset) || offset <= 0) return null;
+  return { constant, offset };
 }
 
 /**
@@ -1294,6 +1312,9 @@ function parseRapidrameUnmixConstant(embedHtml: string): number | null {
  * If the provider flips between these, playback keeps working with no release.
  */
 const RAPIDRAME_PRE_UNMIX_TRANSFORMS: Array<(joined: string) => string> = [
+  // Current scheme (Aug 2026): reverse → base64 → caesar(+18) → base64.
+  // The dc_*() body applies three reverses (net one) before the first base64.
+  (joined) => decodeBase64Binary(caesarShift(decodeBase64Binary(reverseString(joined)), 18)),
   (joined) => rot13(decodeBase64Binary(reverseString(joined))), // auto-derived by check-hdfilm-resolver
   (joined) => reverseString(decodeBase64Binary(rot13(joined))), // auto-derived by check-hdfilm-resolver
   (joined) => decodeBase64Binary(rot13(reverseString(joined))), // auto-derived by check-hdfilm-resolver
@@ -1312,10 +1333,16 @@ const RAPIDRAME_PRE_UNMIX_TRANSFORMS: Array<(joined: string) => string> = [
  * We try it first, then the known constants, so playback survives a rotation
  * of just the unmix number even if the parse fails.
  */
-function decodeRapidrameValueCandidates(valueParts: string[], modConstant?: number | null): string[] {
+function decodeRapidrameValueCandidates(
+  valueParts: string[],
+  unmixParams?: RapidrameUnmixParams | null
+): string[] {
   const joined = valueParts.join("");
   const constants = Array.from(
-    new Set([...(modConstant ? [modConstant] : []), ...KNOWN_RAPIDRAME_UNMIX_CONSTANTS])
+    new Set([...(unmixParams ? [unmixParams.constant] : []), ...KNOWN_RAPIDRAME_UNMIX_CONSTANTS])
+  );
+  const offsets = Array.from(
+    new Set([...(unmixParams ? [unmixParams.offset] : []), ...KNOWN_RAPIDRAME_UNMIX_OFFSETS])
   );
   const candidates: string[] = [];
   for (const transform of RAPIDRAME_PRE_UNMIX_TRANSFORMS) {
@@ -1326,10 +1353,12 @@ function decodeRapidrameValueCandidates(valueParts: string[], modConstant?: numb
       continue;
     }
     for (const constant of constants) {
-      try {
-        candidates.push(unmixRapidrameBytes(transformed, constant));
-      } catch {
-        /* skip this constant */
+      for (const offset of offsets) {
+        try {
+          candidates.push(unmixRapidrameBytes(transformed, constant, offset));
+        } catch {
+          /* skip this constant/offset pair */
+        }
       }
     }
   }
@@ -1450,6 +1479,82 @@ function tryUnpackInlinePackerJs(html: string): string {
   return html.slice(0, startIdx) + expanded + html.slice(endIdx + 1);
 }
 
+/**
+ * Interpret the live `dc_*()` decoder body instead of matching it to a fixed
+ * scheme. HDFilm now RANDOMIZES the decoder per request — the reverse count,
+ * the Caesar shift amount, the unmix constant and the `(i + N)` offset all
+ * change on every embed fetch — so no static transform list can keep up.
+ *
+ * The body is plain, un-obfuscated JS composed only of the provider's four
+ * primitives (join → [reverse|base64|caesar]* → unmix). We read the ordered
+ * operations and their parameters straight out of the source and replay them.
+ * Returns null if the body isn't shaped the way we expect, so the caller can
+ * fall back to the static schemes.
+ */
+function decodeRapidrameByInterpretingDcBody(embedHtml: string, sourceVariable: string, valueParts: string[]): string | null {
+  const assignmentIndex = embedHtml.indexOf(`var ${sourceVariable}`);
+  if (assignmentIndex === -1) return null;
+
+  const decoderName = embedHtml
+    .slice(assignmentIndex, assignmentIndex + 120)
+    .match(/=\s*(dc_[A-Za-z0-9_]+)\s*\(/)?.[1];
+  if (!decoderName) return null;
+
+  const fnStart = embedHtml.indexOf(`function ${decoderName}`);
+  if (fnStart === -1) return null;
+
+  const braceStart = embedHtml.indexOf("{", fnStart);
+  if (braceStart === -1) return null;
+
+  let depth = 0;
+  let braceEnd = -1;
+  for (let i = braceStart; i < embedHtml.length; i += 1) {
+    const ch = embedHtml[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) { braceEnd = i; break; }
+    }
+  }
+  if (braceEnd === -1) return null;
+
+  const body = embedHtml.slice(braceStart, braceEnd);
+  const unmixLoopIndex = body.search(/for\s*\(/);
+  const head = unmixLoopIndex >= 0 ? body.slice(0, unmixLoopIndex) : body;
+
+  // Collect the pre-unmix operations in source order.
+  const operations: Array<{ index: number; apply: (value: string) => string }> = [];
+  for (const match of head.matchAll(/\.reverse\s*\(\s*\)/g)) {
+    operations.push({ index: match.index ?? 0, apply: reverseString });
+  }
+  for (const match of head.matchAll(/atob\s*\(/g)) {
+    operations.push({ index: match.index ?? 0, apply: decodeBase64Binary });
+  }
+  for (const match of head.matchAll(/\+\s*(\d+)\s*\)\s*%\s*26\b/g)) {
+    const shift = Number(match[1]);
+    if (Number.isFinite(shift)) {
+      operations.push({ index: match.index ?? 0, apply: (value) => caesarShift(value, shift) });
+    }
+  }
+  operations.sort((left, right) => left.index - right.index);
+
+  const unmixMatch = body.match(/(\d{6,})\s*%\s*\(\s*[A-Za-z_$][\w$]*\s*\+\s*(\d+)\s*\)/);
+  if (!unmixMatch) return null;
+  const constant = Number(unmixMatch[1]);
+  const offset = Number(unmixMatch[2]);
+  if (!Number.isSafeInteger(constant) || !Number.isSafeInteger(offset) || offset <= 0) return null;
+
+  try {
+    let result = valueParts.join("");
+    for (const operation of operations) {
+      result = operation.apply(result);
+    }
+    return unmixRapidrameBytes(result, constant, offset);
+  } catch {
+    return null;
+  }
+}
+
 function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
   // Unpack any inline packer.js block first. For the older /video/embed/ flow
   // this is a no-op (no packed block). For the newer /rplayer/ flow it's what
@@ -1469,9 +1574,10 @@ function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
   const arrayLiteral = extractJsonArrayLiteral(variableSnippet);
   if (!arrayLiteral) return null;
 
-  // Read the live unmix constant from the dc_*() body so a rotation of just
-  // that number (the provider's most common change) self-heals without a release.
-  const unmixConstant = parseRapidrameUnmixConstant(embedHtml);
+  // Read the live unmix constant + divisor offset from the dc_*() body so a
+  // rotation of just those numbers (the provider's most common change)
+  // self-heals without a release.
+  const unmixParams = parseRapidrameUnmixConstant(embedHtml);
 
   try {
     const parts = JSON.parse(arrayLiteral);
@@ -1479,9 +1585,15 @@ function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
       return null;
     }
 
-    // Try every known Rapidrame obfuscation scheme and keep the first candidate
-    // that normalizes to a real http(s) URL (the provider rotates the scheme).
-    for (const candidate of decodeRapidrameValueCandidates(parts, unmixConstant)) {
+    // Primary path: interpret the live dc_*() body (handles the per-request
+    // randomized schemes). Falls through to the static schemes on any mismatch.
+    const interpreted = decodeRapidrameByInterpretingDcBody(embedHtml, sourceVariable, parts);
+    const normalizedInterpreted = interpreted ? normalizeExtractedMediaUrl(interpreted) : null;
+    if (normalizedInterpreted) return normalizedInterpreted;
+
+    // Fallback: try every known static Rapidrame scheme and keep the first
+    // candidate that normalizes to a real http(s) URL.
+    for (const candidate of decodeRapidrameValueCandidates(parts, unmixParams)) {
       const normalized = normalizeExtractedMediaUrl(candidate);
       if (normalized) return normalized;
     }
@@ -2547,10 +2659,12 @@ export async function resolveDirectWebPlayerFallback(
 
 export const __internal = {
   buildHdFilmResult,
+  decodeRapidrameByInterpretingDcBody,
   decodeRapidrameValueCandidates,
   extractDizipalPageYear,
   extractHdFilmEmbedUrl,
   extractRapidrameStreamUrl,
+  tryUnpackInlinePackerJs,
   hasStrictTitleIdentity,
   inspectRapidramePlaylist,
   isAlternateTitleSafeForDizipal,
