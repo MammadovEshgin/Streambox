@@ -24,7 +24,7 @@ import {
 import { SpotlightCarousel } from "../components/home/SpotlightCarousel";
 import { HomeHeader } from "../components/home/HomeHeader";
 import { MediaCard } from "../components/home/MediaCard";
-import { franchiseCardBackgroundImage } from "../constants/imageAssets";
+import { getFranchisePosterImage } from "../constants/imageAssets";
 import { useAuth } from "../context/AuthContext";
 import { useUserDataSync } from "../context/UserDataSyncContext";
 import { useRuntimeCacheAutoRefresh } from "../hooks/useRuntimeCacheAutoRefresh";
@@ -479,6 +479,7 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
         year: t("franchise.titleCount", { count: item.totalEntries }),
         originalTitle: item.title,
         accentColor: item.accentColor,
+        slug: item.slug,
       })),
     [franchises, language, t]
   );
@@ -497,7 +498,7 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
           style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}
         >
           <FranchiseArtworkFrame>
-            <FranchisePosterImage source={franchiseCardBackgroundImage} resizeMode="cover" />
+            <FranchisePosterImage source={getFranchisePosterImage(item.slug)} resizeMode="cover" />
           </FranchiseArtworkFrame>
           <FranchiseCardTitle numberOfLines={1}>{item.title}</FranchiseCardTitle>
           <FranchiseCardMeta>{item.year}</FranchiseCardMeta>
