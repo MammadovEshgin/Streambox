@@ -88,21 +88,14 @@ const ProgressFill = styled.View<{ $ratio: number }>`
 `;
 
 const ContinueButton = styled.Pressable`
-  flex-direction: row;
+  width: 38px;
+  height: 38px;
+  border-radius: 19px;
   align-items: center;
-  min-height: 38px;
-  border-radius: 10px;
-  padding: 9px 13px;
+  justify-content: center;
   border-width: 1px;
   border-color: ${({ theme }) => theme.colors.primary};
   background-color: ${({ theme }) => theme.colors.primarySoftStrong};
-`;
-
-const ContinueLabel = styled.Text`
-  margin-left: 6px;
-  color: ${({ theme }) => theme.colors.primary};
-  font-family: Outfit_600SemiBold;
-  font-size: 13px;
 `;
 
 type Props = {
@@ -174,11 +167,11 @@ export function ContinueWatchingCard({ entry, onContinue, onPressCard }: Props) 
 
       <ContinueButton
         onPress={onContinue}
+        hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel={t("continueWatching.cta")}
       >
-        <Feather name="play" size={14} color={theme.colors.primary} />
-        <ContinueLabel>{t("continueWatching.cta")}</ContinueLabel>
+        <Feather name="play" size={16} color={theme.colors.primary} />
       </ContinueButton>
     </CardRoot>
   );
