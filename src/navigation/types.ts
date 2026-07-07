@@ -50,6 +50,7 @@ export type HomeStackParamList = {
     trailerUrl?: string,
     year?: string | null;
     videoId?: string | null;
+    resumeAtSeconds?: number;
   };
 };
 
@@ -88,6 +89,7 @@ export type ProfileStackParamList = {
     trailerUrl?: string;
     year?: string | null;
     videoId?: string | null;
+    resumeAtSeconds?: number;
   };
 };
 
@@ -136,6 +138,7 @@ export type StatsStackParamList = {
     trailerUrl?: string;
     year?: string | null;
     videoId?: string | null;
+    resumeAtSeconds?: number;
   };
 };
 

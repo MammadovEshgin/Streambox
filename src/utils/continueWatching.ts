@@ -41,6 +41,13 @@ export type ContinueWatchingEntry = ContinueWatchingTarget & {
   positionSeconds: number;
   durationSeconds: number; // 0 when the stream never reported a duration
   updatedAt: number;
+  // Launch metadata captured from the player's route params so the
+  // continue-watching card can reopen the exact same playback request
+  // (title/year/imdbId feed the provider match scoring).
+  originalTitle?: string;
+  imdbId?: string | null;
+  year?: string | null;
+  castNames?: string[];
 };
 
 export type ContinueWatchingState = {
@@ -56,6 +63,10 @@ export type PlaybackSnapshot = ContinueWatchingTarget & {
   /** Real playback seconds accumulated this session (not wall clock, not seeks). */
   watchedSeconds: number;
   now?: number;
+  originalTitle?: string;
+  imdbId?: string | null;
+  year?: string | null;
+  castNames?: string[];
 };
 
 export function createEmptyContinueWatchingState(): ContinueWatchingState {
@@ -77,6 +88,12 @@ function isValidEntry(value: unknown): value is ContinueWatchingEntry {
   if (!isFiniteNonNegative(entry.updatedAt)) return false;
   if (entry.seasonNumber !== undefined && !isFiniteNonNegative(entry.seasonNumber)) return false;
   if (entry.episodeNumber !== undefined && !isFiniteNonNegative(entry.episodeNumber)) return false;
+  // Launch metadata is optional and only informative — tolerate any absence,
+  // but reject wrong types so a corrupt entry can't reach the player request.
+  if (entry.originalTitle !== undefined && typeof entry.originalTitle !== "string") return false;
+  if (entry.imdbId !== undefined && entry.imdbId !== null && typeof entry.imdbId !== "string") return false;
+  if (entry.year !== undefined && entry.year !== null && typeof entry.year !== "string") return false;
+  if (entry.castNames !== undefined && (!Array.isArray(entry.castNames) || entry.castNames.some((name) => typeof name !== "string"))) return false;
   return true;
 }
 
@@ -173,6 +190,10 @@ export function applyPlaybackSnapshot(
     positionSeconds: Math.round(position),
     durationSeconds: Math.round(duration),
     updatedAt: snapshot.now ?? Date.now(),
+    originalTitle: snapshot.originalTitle,
+    imdbId: snapshot.imdbId,
+    year: snapshot.year,
+    castNames: snapshot.castNames,
   };
   return { state: { ...state, [slotKey]: entry }, changed: true };
 }
@@ -193,6 +214,21 @@ export function clearFinishedTarget(
   const next: ContinueWatchingState = { ...state };
   delete next[slotKey];
   return { state: next, changed: true };
+}
+
+/**
+ * Whatever the slot for this media kind currently holds, if it is worth
+ * resuming — drives the continue-watching card on the hub screens.
+ */
+export function getResumableSlotEntry(
+  state: ContinueWatchingState,
+  mediaType: MediaType
+): ContinueWatchingEntry | null {
+  const slot = state[slotKeyFor(mediaType)];
+  if (!slot) return null;
+  if (slot.positionSeconds < CONTINUE_WATCHING_MIN_POSITION_SECONDS) return null;
+  if (isCompleted(slot.positionSeconds, slot.durationSeconds)) return null;
+  return slot;
 }
 
 /** The saved entry to offer a resume prompt for, or null. Exact-episode match for series. */
