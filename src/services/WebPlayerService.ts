@@ -2170,6 +2170,44 @@ async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<Diz
   return null;
 }
 
+// A result carries a real playable native stream (as opposed to a WebView
+// fallback or "Not Available"). This is the only outcome worth stopping at.
+export function isNativeResult(result: WebPlayerResult): boolean {
+  return Boolean(result.streamUrl) && (result.source === "direct" || result.source === "dizipal_direct");
+}
+
+// Pick the better of two resolutions so a retry never returns something worse
+// than the first attempt already found: native > any watchable page (WebView
+// fallback / embed) > "Not Available".
+export function preferResolution(a: WebPlayerResult, b: WebPlayerResult): WebPlayerResult {
+  const rank = (r: WebPlayerResult) => (isNativeResult(r) ? 2 : r.source === "not_found" ? 0 : 1);
+  return rank(b) > rank(a) ? b : a;
+}
+
+// Ceiling for a single pipeline pass, and for the whole resolve including the
+// one retry. The common path (first pass returns native) is unaffected; only
+// a degraded first pass pays for the refresh + retry, and never beyond the
+// total ceiling — so the "Not Available" spinner stays bounded.
+const RESOLVER_ATTEMPT_TIMEOUT_MS = RESOLVER_TOTAL_TIMEOUT_MS;
+const RESOLVER_MAX_TOTAL_MS = 20_000;
+const RESOLVER_RETRY_REFRESH_TIMEOUT_MS = 3_000;
+
+async function attemptResolveWebPlayerUrl(
+  request: WebPlayerRequest,
+  timeoutMs: number
+): Promise<WebPlayerResult> {
+  // Race the full pipeline against a hard timeout. Without this, a combination
+  // of slow provider failures can stack to 60-90 seconds and the user sees an
+  // unbounded spinner. On timeout we return not_found so the UI shows the
+  // "Not Available" message instead of hanging.
+  return Promise.race([
+    resolveWebPlayerUrlInner(request),
+    new Promise<WebPlayerResult>((resolve) =>
+      setTimeout(() => resolve({ url: "", source: "not_found" }), timeoutMs)
+    ),
+  ]);
+}
+
 export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {
   if (request.videoId) {
     return {
@@ -2181,16 +2219,34 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   // Wait briefly for provider config so we don't run against stale hardcoded URLs.
   await ensureProviderConfigReady();
 
-  // Race the full pipeline against a hard timeout. Without this, a combination
-  // of slow provider failures can stack to 60-90 seconds and the user sees an
-  // unbounded spinner. On timeout we return not_found so the UI shows the
-  // "Not Available" message instead of hanging.
-  return Promise.race([
-    resolveWebPlayerUrlInner(request),
-    new Promise<WebPlayerResult>((resolve) =>
-      setTimeout(() => resolve({ url: "", source: "not_found" }), RESOLVER_TOTAL_TIMEOUT_MS)
+  const deadline = Date.now() + RESOLVER_MAX_TOTAL_MS;
+  const first = await attemptResolveWebPlayerUrl(request, RESOLVER_ATTEMPT_TIMEOUT_MS);
+  if (isNativeResult(first)) return first;
+
+  // The first pass degraded to the provider WebView page or "Not Available".
+  // In practice this is almost always transient: the Dizipal domain rotates
+  // every few days, so the first request runs against a stale host and either
+  // times out chasing the redirect chain or completes and self-heals the host
+  // (recordObservedBaseUrl pins the post-redirect origin). Either way, a moment
+  // later the providers resolve where they wouldn't before — which is exactly
+  // why a manual "tap again" lands on the native player. Automate that: force a
+  // fresh provider config (covers the timed-out case), then retry the native
+  // pipeline once before accepting the fallback. Keep whichever result is best.
+  const remaining = deadline - Date.now();
+  if (remaining < 3_000) return first;
+
+  await Promise.race([
+    refreshProviderConfigs(),
+    new Promise<void>((resolve) =>
+      setTimeout(resolve, Math.min(RESOLVER_RETRY_REFRESH_TIMEOUT_MS, remaining))
     ),
-  ]);
+  ]).catch(() => undefined);
+
+  const retryBudget = deadline - Date.now();
+  if (retryBudget <= 0) return first;
+
+  const retry = await attemptResolveWebPlayerUrl(request, retryBudget);
+  return preferResolution(first, retry);
 }
 
 async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebPlayerResult> {

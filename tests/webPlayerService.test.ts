@@ -4,7 +4,10 @@ import axios from "axios";
 
 import {
   __internal,
+  isNativeResult,
+  preferResolution,
   resolveDirectWebPlayerFallback,
+  type WebPlayerResult,
 } from "../src/services/WebPlayerService";
 
 const dizipalBase = "https://dizipal2078.com";
@@ -55,6 +58,49 @@ test("Dizipal matching keeps legitimate acronym pages playable", () => {
     __internal.isDizipalUrlTitleCompatible(`${dizipalBase}/bolum/mia-1-sezon-1-bolum`, "M.I.A."),
     true
   );
+});
+
+// ---------------------------------------------------------------------------
+// Native-retry decision logic — the resolver retries the native pipeline after
+// a degraded first pass and must (a) recognise a real native stream to stop on,
+// and (b) never return something worse than the first pass already found.
+// ---------------------------------------------------------------------------
+
+function nativeResult(overrides: Partial<WebPlayerResult> = {}): WebPlayerResult {
+  return { url: "https://provider/page", source: "dizipal_direct", streamUrl: "https://cdn/x.m3u8", ...overrides };
+}
+
+const webViewFallback: WebPlayerResult = { url: "https://hdfilmcehennemi/page", source: "hdfilm" };
+const notFound: WebPlayerResult = { url: "", source: "not_found" };
+
+test("isNativeResult accepts only a real playable stream", () => {
+  assert.equal(isNativeResult(nativeResult()), true);
+  assert.equal(isNativeResult(nativeResult({ source: "direct" })), true);
+
+  // The degraded outcomes the retry exists to escape.
+  assert.equal(isNativeResult(webViewFallback), false);
+  assert.equal(isNativeResult(notFound), false);
+  assert.equal(isNativeResult({ url: "https://embed", source: "dizipal_embed" }), false);
+  // dizipal_html5 is a WebView HLS retry, not a native expo-video stream.
+  assert.equal(isNativeResult({ url: "https://e", source: "dizipal_html5", streamUrl: "https://cdn/y.m3u8" }), false);
+  // dizipal_direct with no stream URL isn't playable natively.
+  assert.equal(isNativeResult({ url: "https://p", source: "dizipal_direct" }), false);
+});
+
+test("preferResolution keeps the retry from ever downgrading the first pass", () => {
+  // Retry found native — always take it.
+  assert.equal(isNativeResult(preferResolution(webViewFallback, nativeResult())), true);
+  assert.equal(isNativeResult(preferResolution(notFound, nativeResult())), true);
+
+  // Retry came back worse than the first pass — keep the first pass.
+  assert.equal(preferResolution(webViewFallback, notFound), webViewFallback);
+  assert.equal(preferResolution(nativeResult(), notFound).streamUrl, "https://cdn/x.m3u8");
+  assert.equal(preferResolution(nativeResult(), webViewFallback).streamUrl, "https://cdn/x.m3u8");
+
+  // A watchable page still beats "Not Available".
+  assert.equal(preferResolution(notFound, webViewFallback), webViewFallback);
+  // Two equal-rank results: keep the first (no pointless churn).
+  assert.equal(preferResolution(webViewFallback, { url: "https://other", source: "hdfilm" }), webViewFallback);
 });
 
 test("Dizipal matching allows safe acronym expansions", () => {
