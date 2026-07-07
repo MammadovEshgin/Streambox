@@ -6,6 +6,7 @@ import type { VideoPlayer } from "expo-video";
 import type { MediaType } from "../api/tmdb";
 import { CONTINUE_WATCHING_STORAGE_KEY } from "../services/userDataStorage";
 import {
+  CONTINUE_WATCHING_RESUME_REWIND_SECONDS,
   CONTINUE_WATCHING_SAVE_INTERVAL_MS,
   accumulateWatchedDelta,
   applyPlaybackSnapshot,
@@ -25,6 +26,17 @@ type UseContinueWatchingParams = {
   title: string;
   seasonNumber?: number;
   episodeNumber?: number;
+  // Launch metadata persisted with the entry so the continue-watching card
+  // can rebuild the same playback request later.
+  originalTitle?: string;
+  imdbId?: string | null;
+  year?: string | null;
+  castNames?: string[];
+  /**
+   * Saved position handed over by the continue-watching card. When set, the
+   * session resumes there directly — no prompt is shown.
+   */
+  resumeAtSeconds?: number;
 };
 
 // "none" — no saved position for this title, playback starts normally.
@@ -45,6 +57,11 @@ export function useContinueWatching({
   title,
   seasonNumber,
   episodeNumber,
+  originalTitle,
+  imdbId,
+  year,
+  castNames,
+  resumeAtSeconds,
 }: UseContinueWatchingParams) {
   // Saved position to show in the prompt; non-null means the modal is open.
   const [promptPositionSeconds, setPromptPositionSeconds] = useState<number | null>(null);
@@ -55,12 +72,20 @@ export function useContinueWatching({
   targetRef.current = { mediaType, tmdbId, seasonNumber, episodeNumber };
   const titleRef = useRef(title);
   titleRef.current = title;
+  const metaRef = useRef({ originalTitle, imdbId, year, castNames });
+  metaRef.current = { originalTitle, imdbId, year, castNames };
   const enabledRef = useRef(enabled);
 
+  // A card handoff resolves the resume choice before the player is even
+  // ready — no prompt, straight to the saved position.
+  const directResume = typeof resumeAtSeconds === "number" && Number.isFinite(resumeAtSeconds) && resumeAtSeconds > 0;
+
   const stateRef = useRef<ContinueWatchingState | null>(null);
-  const choiceRef = useRef<ResumeChoice>("none");
-  const promptShownRef = useRef(false);
-  const resumePositionRef = useRef<number | null>(null);
+  const choiceRef = useRef<ResumeChoice>(directResume ? "resume" : "none");
+  const promptShownRef = useRef(directResume);
+  const resumePositionRef = useRef<number | null>(
+    directResume ? Math.max(0, resumeAtSeconds - CONTINUE_WATCHING_RESUME_REWIND_SECONDS) : null
+  );
   const playbackReadyRef = useRef(false);
   const playbackStartedRef = useRef(false);
   const finishedRef = useRef(false);
@@ -83,6 +108,7 @@ export function useContinueWatching({
 
     const { state: next, changed } = applyPlaybackSnapshot(state, {
       ...targetRef.current,
+      ...metaRef.current,
       title: titleRef.current,
       positionSeconds: position,
       durationSeconds: durationRef.current,
