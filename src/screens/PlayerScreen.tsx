@@ -21,7 +21,9 @@ import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
 
 import { MovieLoader } from "../components/common/MovieLoader";
+import { ContinueWatchingModal } from "../components/common/ContinueWatchingModal";
 import { QualityWarningModal } from "../components/common/QualityWarningModal";
+import { useContinueWatching } from "../hooks/useContinueWatching";
 import { useRecentlyWatched } from "../hooks/useRecentlyWatched";
 
 import { HomeStackParamList } from "../navigation/types";
@@ -1041,6 +1043,23 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     }
   }, [videoPlayer, playerResult?.source]);
 
+  // ── Continue watching (native player only) ──
+  const isNativeStreamSource = playerResult?.source === "dizipal_direct" || playerResult?.source === "direct";
+  const {
+    promptPositionSeconds: resumePromptPosition,
+    chooseResume: handleResumeChoice,
+    chooseStartOver: handleStartOverChoice,
+    handlePlaybackReady: handleContinueWatchingReady,
+  } = useContinueWatching({
+    player: videoPlayer,
+    enabled: isNativeStreamSource && !route.params.trailerUrl,
+    mediaType: route.params.mediaType,
+    tmdbId: Number(route.params.tmdbId),
+    title: route.params.title,
+    seasonNumber: route.params.seasonNumber,
+    episodeNumber: route.params.episodeNumber,
+  });
+
   // Load the source when directStreamUrl becomes available
   const streamReferer = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.referer ?? "" : "";
   const directStreamType = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.streamType ?? "" : "";
@@ -1089,7 +1108,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         debugLog("[Player] Available subtitle tracks:", JSON.stringify(videoPlayer.availableSubtitleTracks));
         setAvailableSubtitleTracks(videoPlayer.availableSubtitleTracks);
         setSelectedSubtitleTrack(videoPlayer.subtitleTrack ?? null);
-        videoPlayer.play();
+        // Continue-watching may hold playback for the resume prompt, or seek
+        // to the saved position and start itself.
+        if (!handleContinueWatchingReady()) {
+          videoPlayer.play();
+        }
         setIsPlaybackReady(true);
       }
       if (ev.status === "error") {
@@ -1141,7 +1164,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       subtitleSub.remove();
       subtitleTrackSub.remove();
     };
-  }, [videoPlayer]);
+  }, [videoPlayer, handleContinueWatchingReady]);
 
   useEffect(() => {
     if (!selectedExternalSubtitle || selectedExternalSubtitle.url.includes(".m3u8")) {
@@ -1514,6 +1537,12 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             </View>
           </View>
         )}
+        <ContinueWatchingModal
+          visible={resumePromptPosition != null}
+          positionSeconds={resumePromptPosition ?? 0}
+          onResume={handleResumeChoice}
+          onStartOver={handleStartOverChoice}
+        />
       </View>
     );
   }

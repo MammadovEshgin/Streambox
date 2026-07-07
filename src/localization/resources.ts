@@ -49,6 +49,10 @@ export const resources = {
       },
       player: {
         didYouKnow: "Did you know?",
+        resumeTitle: "Continue watching?",
+        resumeBody: "You left off at {{time}}. Pick up where you stopped or start from the beginning.",
+        resumeConfirm: "Resume",
+        resumeStartOver: "Start over",
         a11y: {
           close: "Close player",
           toggleFit: "Toggle video fit",
@@ -440,6 +444,10 @@ export const resources = {
       loaders: { loading: "Yükleniyor", syncingData: "StreamBox verilerin senkronize ediliyor", preparingCinemaRoom: "Senin için sinema odası hazırlanıyor", loadingReels: "İçerik yükleniyor", loadingMovies: "Filmler yükleniyor", loadingSeries: "Diziler yükleniyor", loadingMovieDetail: "Detay yükleniyor", loadingSeriesDetail: "Dizi yükleniyor", loadingJourneys: "Yolculuklar yükleniyor", loadingProfile: "Profil yükleniyor..." },
       player: {
         didYouKnow: "Bunu biliyor muydun?",
+        resumeTitle: "Kaldığın yerden devam edelim mi?",
+        resumeBody: "{{time}} noktasında kalmıştın. Kaldığın yerden sürdürebilir ya da baştan başlayabilirsin.",
+        resumeConfirm: "Devam et",
+        resumeStartOver: "Baştan başlat",
         a11y: {
           close: "Oynatıcıyı kapat",
           toggleFit: "Video boyutunu değiştir",
