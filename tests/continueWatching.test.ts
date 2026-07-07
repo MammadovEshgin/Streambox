@@ -12,6 +12,7 @@ import {
   createEmptyContinueWatchingState,
   findResumeEntry,
   formatPlaybackTime,
+  getResumableSlotEntry,
   getResumePositionSeconds,
   parseContinueWatchingState,
   type ContinueWatchingEntry,
@@ -153,8 +154,33 @@ test("a movie crossing the watch-time threshold earns the movie slot", () => {
     positionSeconds: 300,
     durationSeconds: 8880,
     updatedAt: NOW,
+    originalTitle: undefined,
+    imdbId: undefined,
+    year: undefined,
+    castNames: undefined,
   });
   assert.equal(result.state.series, undefined);
+});
+
+test("launch metadata survives the save + serialize round-trip for the hub card", () => {
+  const saved = applyPlaybackSnapshot(
+    createEmptyContinueWatchingState(),
+    movieSnapshot({
+      originalTitle: "Inception",
+      imdbId: "tt1375666",
+      year: "2010",
+      castNames: ["Leonardo DiCaprio", "Joseph Gordon-Levitt"],
+    })
+  ).state;
+
+  const reloaded = parseContinueWatchingState(JSON.stringify(saved));
+  assert.equal(reloaded.movie?.imdbId, "tt1375666");
+  assert.equal(reloaded.movie?.year, "2010");
+  assert.deepEqual(reloaded.movie?.castNames, ["Leonardo DiCaprio", "Joseph Gordon-Levitt"]);
+
+  // Entries written before the metadata existed must still parse.
+  const legacy = stateWith({ movie: savedMovie() });
+  assert.equal(parseContinueWatchingState(JSON.stringify(legacy)).movie?.title, "Inception");
 });
 
 test("positions below the save floor never persist, even past the threshold", () => {
@@ -317,6 +343,25 @@ test("resume position rewinds for context and clamps at zero", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Hub card slot lookup
+// ---------------------------------------------------------------------------
+
+test("the hub card gets whatever resumable entry owns the slot for its media kind", () => {
+  const state = stateWith({ movie: savedMovie(), series: savedSeries() });
+  assert.equal(getResumableSlotEntry(state, "movie")?.title, "Inception");
+  assert.equal(getResumableSlotEntry(state, "tv")?.title, "Breaking Bad");
+  assert.equal(getResumableSlotEntry(createEmptyContinueWatchingState(), "movie"), null);
+});
+
+test("the hub card hides stale slots (completed or below the floor)", () => {
+  const completed = stateWith({ movie: savedMovie({ positionSeconds: 8800 }) });
+  assert.equal(getResumableSlotEntry(completed, "movie"), null);
+
+  const shallow = stateWith({ series: savedSeries({ positionSeconds: 10 }) });
+  assert.equal(getResumableSlotEntry(shallow, "tv"), null);
+});
+
+// ---------------------------------------------------------------------------
 // Prompt time formatting
 // ---------------------------------------------------------------------------
 
@@ -353,4 +398,22 @@ test("sign-out wipes the continue-watching slots", () => {
   const source = fs.readFileSync(path.join(rootPath, "src", "services", "userDataSync.ts"), "utf8");
   const clearBlock = source.slice(source.indexOf("clearLocalUserDataCache"));
   assert.equal(clearBlock.includes("CONTINUE_WATCHING_STORAGE_KEY"), true);
+});
+
+test("the hub screens render the card above Top New and hand off a direct resume", () => {
+  for (const screen of ["MoviesScreen.tsx", "SeriesScreen.tsx"]) {
+    const source = fs.readFileSync(path.join(rootPath, "src", "screens", screen), "utf8");
+    assert.equal(source.includes("useContinueWatchingSlot"), true, `${screen} reads the slot`);
+    assert.equal(source.includes("<ContinueWatchingCard"), true, `${screen} renders the card`);
+    assert.equal(source.includes("resumeAtSeconds: continueWatchingEntry.positionSeconds"), true, `${screen} hands off the position`);
+    // The card must sit ABOVE the Top New rail (the first rail) in the render tree.
+    assert.equal(
+      source.indexOf("<ContinueWatchingCard") < source.indexOf("<RailSection"),
+      true,
+      `${screen} places the card before the Top New rail`
+    );
+  }
+
+  const playerSource = fs.readFileSync(path.join(rootPath, "src", "screens", "PlayerScreen.tsx"), "utf8");
+  assert.equal(playerSource.includes("resumeAtSeconds: route.params.resumeAtSeconds"), true);
 });

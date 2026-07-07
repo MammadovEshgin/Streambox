@@ -22,7 +22,9 @@ import {
 import { formatRating, isValidMediaItem, isValidMediaItemArray } from "../api/mediaFormatting";
 import { HubHeroSkeleton, HubRailSkeleton } from "../components/common/HubSkeletons";
 import { SafeContainer } from "../components/common/SafeContainer";
+import { ContinueWatchingCard } from "../components/home/ContinueWatchingCard";
 import { MediaCard } from "../components/home/MediaCard";
+import { useContinueWatchingSlot } from "../hooks/useContinueWatchingSlot";
 import { useRuntimeCacheAutoRefresh } from "../hooks/useRuntimeCacheAutoRefresh";
 import { useWatchHistory } from "../hooks/useWatchHistory";
 import { useLikedMovies } from "../hooks/useLikedMovies";
@@ -410,6 +412,7 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
   const { user } = useAuth();
   const { likedMovies, isLoading: isLikedMoviesLoading } = useLikedMovies();
   const { history, isLoading: isWatchHistoryLoading } = useWatchHistory();
+  const continueWatchingEntry = useContinueWatchingSlot("movie");
   const [movieOfDay, setMovieOfDay] = useState<MediaItem | null>(cachedHub?.movieOfDay ?? null);
   const [topNewMovies, setTopNewMovies] = useState<MediaItem[]>(cachedHub?.topNewMovies ?? []);
   const [imdbTopMovies, setImdbTopMovies] = useState<MediaItem[]>(cachedHub?.imdbTopMovies ?? []);
@@ -681,6 +684,29 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
           </Animated.View>
 
           {errorMessage ? <ErrorText>{errorMessage}</ErrorText> : null}
+
+          {continueWatchingEntry ? (
+            <Animated.View entering={FadeInDown.duration(200)}>
+              <ContinueWatchingCard
+                entry={continueWatchingEntry}
+                onContinue={() => {
+                  navigation.navigate("Player", {
+                    mediaType: "movie",
+                    tmdbId: String(continueWatchingEntry.tmdbId),
+                    title: continueWatchingEntry.title,
+                    originalTitle: continueWatchingEntry.originalTitle,
+                    imdbId: continueWatchingEntry.imdbId,
+                    year: continueWatchingEntry.year,
+                    castNames: continueWatchingEntry.castNames,
+                    resumeAtSeconds: continueWatchingEntry.positionSeconds,
+                  });
+                }}
+                onPressCard={() => {
+                  navigation.navigate("MovieDetail", { movieId: String(continueWatchingEntry.tmdbId) });
+                }}
+              />
+            </Animated.View>
+          ) : null}
 
           <Animated.View entering={FadeInDown.duration(200)}>
             <RailSection

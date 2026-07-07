@@ -1068,6 +1068,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     title: route.params.title,
     seasonNumber: route.params.seasonNumber,
     episodeNumber: route.params.episodeNumber,
+    originalTitle: route.params.originalTitle,
+    imdbId: route.params.imdbId,
+    year: route.params.year,
+    castNames: route.params.castNames,
+    resumeAtSeconds: route.params.resumeAtSeconds,
   });
 
   // Load the source when directStreamUrl becomes available
