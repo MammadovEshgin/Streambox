@@ -61,6 +61,12 @@ export const resources = {
           retry: "Retry playback"
         }
       },
+      continueWatching: {
+        label: "Continue watching",
+        leftAt: "Left at {{time}}",
+        episodeTag: "S{{season}} E{{episode}}",
+        cta: "Continue",
+      },
       liveOps: {
         gotIt: "Got it",
         learnMore: "Learn more",
@@ -455,6 +461,12 @@ export const resources = {
           quality: "Video kalitesi",
           retry: "Tekrar oynat"
         }
+      },
+      continueWatching: {
+        label: "İzlemeye devam et",
+        leftAt: "{{time}} noktasında kaldın",
+        episodeTag: "S{{season}} B{{episode}}",
+        cta: "Devam et",
       },
       liveOps: {
         gotIt: "Tamam",
