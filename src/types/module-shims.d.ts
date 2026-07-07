@@ -39,6 +39,15 @@ declare module "expo-video" {
     label?: string;
     language?: string | null;
   };
+  export type VideoPlayer = {
+    currentTime: number;
+    duration: number;
+    timeUpdateEventInterval: number;
+    play(): void;
+    pause(): void;
+    addListener(event: string, listener: (ev: any) => void): { remove(): void };
+    [key: string]: any;
+  };
   export const VideoView: any;
-  export function useVideoPlayer(source: any, initializer?: (player: any) => void): any;
+  export function useVideoPlayer(source: any, initializer?: (player: any) => void): VideoPlayer;
 }
