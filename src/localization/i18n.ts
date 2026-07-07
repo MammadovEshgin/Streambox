@@ -16,6 +16,14 @@ if (!i18n.isInitialized) {
       },
       returnNull: false,
     });
+} else {
+  // Fast Refresh re-evaluates this module with updated resources while the
+  // i18next singleton stays initialized with the bundle it captured at app
+  // start — without re-registering, strings added mid-session render as raw
+  // key ids until the next cold start.
+  Object.entries(resources).forEach(([language, bundle]) => {
+    i18n.addResourceBundle(language, "translation", bundle.translation, true, true);
+  });
 }
 
 export default i18n;

@@ -226,6 +226,26 @@ test("the owning title updates its position without re-earning the threshold", (
   assert.equal(result.state.movie?.positionSeconds, 2430);
 });
 
+test("resuming from the card and watching further moves the saved position each session", () => {
+  // Session 1 earned the slot and left at 1:00:00.
+  let state = stateWith({ movie: savedMovie({ positionSeconds: 3600 }) });
+
+  // Session 2: Continue pressed on the card, ~10 more minutes watched.
+  state = applyPlaybackSnapshot(
+    state,
+    movieSnapshot({ positionSeconds: 4200, watchedSeconds: 600 })
+  ).state;
+  assert.equal(getResumableSlotEntry(state, "movie")?.positionSeconds, 4200);
+  assert.equal(findResumeEntry(state, { mediaType: "movie", tmdbId: 27205 })?.positionSeconds, 4200);
+
+  // Session 3: even a short continuation (under the 2-minute threshold) advances it.
+  state = applyPlaybackSnapshot(
+    state,
+    movieSnapshot({ positionSeconds: 4290, watchedSeconds: 80 })
+  ).state;
+  assert.equal(getResumableSlotEntry(state, "movie")?.positionSeconds, 4290);
+});
+
 test("an accidental restart in the first seconds does not wipe a deep position", () => {
   const state = stateWith({ movie: savedMovie({ positionSeconds: 2400 }) });
   const result = applyPlaybackSnapshot(
