@@ -1,12 +1,19 @@
 import { Feather } from "@expo/vector-icons";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { FlatList, Modal, Text, TextInput, TouchableOpacity, View } from "react-native";
-import Reanimated, { FadeIn, FadeOut, FadeOutUp } from "react-native-reanimated";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Dimensions, FlatList, Modal, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Reanimated, {
+  Easing,
+  FadeIn,
+  FadeOut,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated";
 import * as Sharing from "expo-sharing";
 import { captureRef } from "react-native-view-shot";
 import ViewShot from "react-native-view-shot";
-import styled from "styled-components/native";
-import { useTheme } from "styled-components/native";
+import styled, { useTheme } from "styled-components/native";
 import type { VideoPlayer } from "expo-video";
 
 import { FaceCamOverlay } from "./FaceCamOverlay";
@@ -16,9 +23,11 @@ import { getWebRtc } from "../../services/webrtcCompat";
 import { uploadCameraStill, uploadPolaroid, saveWatchMemory } from "../../services/watchMemories";
 
 const STILL_STREAM_STYLE = { width: "100%" as const, height: "100%" as const };
-
-const REACTION_EMOJIS = ["😂", "❤️", "😮", "😢", "🔥", "👏"];
+const REACTION_EMOJIS = ["😂", "❤️", "🔥", "😮"];
 const PARTNER_STILL_TIMEOUT_MS = 5000;
+
+const RAIL_WIDTH = 54;
+const HANDLE_WIDTH = 22;
 
 export type WatchRoomLayerProps = {
   player: VideoPlayer | null;
@@ -26,6 +35,24 @@ export type WatchRoomLayerProps = {
   nickname: string;
   onExit: () => void;
 };
+
+// A single emoji that floats up and fades, TikTok/IG-live style.
+function FloatingReaction({ emoji }: { emoji: string }) {
+  const progress = useSharedValue(0);
+  const drift = useMemo(() => (Math.random() - 0.5) * 46, []);
+  useEffect(() => {
+    progress.value = withTiming(1, { duration: 2000, easing: Easing.out(Easing.quad) });
+  }, [progress]);
+  const style = useAnimatedStyle(() => ({
+    opacity: 1 - progress.value,
+    transform: [
+      { translateY: -progress.value * 150 },
+      { translateX: drift * progress.value },
+      { scale: 0.7 + 0.3 * progress.value },
+    ],
+  }));
+  return <Reanimated.Text style={[{ fontSize: 22, position: "absolute", bottom: 0 }, style]}>{emoji}</Reanimated.Text>;
+}
 
 export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLayerProps) {
   const theme = useTheme();
@@ -44,9 +71,32 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
 
   const partnerNickname = session.partner?.nickname ?? null;
 
-  // Best-effort still from the local camera tile. On devices where the native
-  // video surface can't be rasterized this returns null and the polaroid is
-  // composed without a face — it still looks intentional.
+  // ── Right rail slide (swipe from the right edge reveals it) ──
+  const railProgress = useSharedValue(0); // 0 hidden, 1 shown
+  const railStart = useSharedValue(0);
+  const pan = Gesture.Pan()
+    .onBegin(() => {
+      railStart.value = railProgress.value;
+    })
+    .onUpdate((event) => {
+      const next = railStart.value - event.translationX / RAIL_WIDTH;
+      railProgress.value = Math.min(1, Math.max(0, next));
+    })
+    .onEnd((event) => {
+      const open = railProgress.value > 0.5 || event.velocityX < -400;
+      railProgress.value = withTiming(open ? 1 : 0, { duration: 180 });
+    });
+  // A plain tap on the handle toggles the rail (races with the drag gesture).
+  const tap = Gesture.Tap().onEnd(() => {
+    railProgress.value = withTiming(railProgress.value > 0.5 ? 0 : 1, { duration: 180 });
+  });
+  const railGesture = Gesture.Race(pan, tap);
+
+  const railStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: (1 - railProgress.value) * RAIL_WIDTH }],
+  }));
+
+  // ── Polaroid capture ──
   const captureOwnStill = useCallback(async (): Promise<string | null> => {
     try {
       return await captureRef(selfStillShotRef, { format: "jpg", quality: 0.85 });
@@ -64,7 +114,6 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
     }
   }, [captureOwnStill, nickname, session]);
 
-  // Local user taps capture → become the author, ask the partner, contribute.
   const initiateCapture = useCallback(() => {
     if (capturing) return;
     authorRef.current = true;
@@ -73,7 +122,6 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
     void contributeStill();
   }, [capturing, contributeStill, session]);
 
-  // Partner asked for a capture → contribute a still (they author the polaroid).
   useEffect(() => {
     if (session.captureRequestedBy && !authorRef.current) {
       setCapturing(true);
@@ -85,11 +133,9 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.captureRequestedBy]);
 
-  // Author composes the polaroid once both stills are in (or after a timeout).
   useEffect(() => {
     if (!authorRef.current || polaroidPreview || !capturing) return;
     const build = async () => {
-      // small delay so the still <Image>s inside the polaroid have loaded
       await new Promise((resolve) => setTimeout(resolve, 700));
       try {
         const uri = await captureRef(polaroidShotRef, { format: "png", quality: 1 });
@@ -114,7 +160,6 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         setCapturing(false);
       }
     };
-
     const timer = setTimeout(() => void build(), session.partnerStill ? 0 : PARTNER_STILL_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [session.partnerStill, capturing, polaroidPreview, nickname, partnerNickname, player, session.room, session.members]);
@@ -137,9 +182,18 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
     onExit();
   }, [onExit, session]);
 
+  // Fit the polaroid preview within the (often landscape) player bounds.
+  const preview = useMemo(() => {
+    const { width, height } = Dimensions.get("window");
+    const ratio = 300 / 430; // polaroid w/h
+    const h = Math.min(height * 0.82, width * 0.55 / ratio);
+    return { w: h * ratio, h };
+  }, []);
+
   return (
     <Root pointerEvents="box-none">
       <FaceCamOverlay
+        visible={session.camerasOn}
         localStream={session.localStream}
         remoteStream={session.remoteStream}
         selfNickname={nickname}
@@ -149,62 +203,58 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
       />
 
       {/* Floating reactions */}
-      <ReactionsLayer pointerEvents="none">
+      <ReactionsAnchor pointerEvents="none">
         {session.reactions.map((reaction) => (
-          <Reanimated.View key={reaction.id} entering={FadeIn.duration(200)} exiting={FadeOutUp.duration(1600)}>
-            <FloatingEmoji>{reaction.emoji}</FloatingEmoji>
-          </Reanimated.View>
+          <FloatingReaction key={reaction.id} emoji={reaction.emoji} />
         ))}
-      </ReactionsLayer>
+      </ReactionsAnchor>
 
       {/* Lobby / waiting state */}
       {!session.bothPresent ? (
-        <Reanimated.View entering={FadeIn} exiting={FadeOut} style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0 }}>
-          <Waiting pointerEvents="box-none">
-            <WaitingCard>
-              <WaitingTitle>Waiting for your partner…</WaitingTitle>
-              <WaitingSub>Share this code</WaitingSub>
-              <CodePill>
-                <CodeText>{code}</CodeText>
-              </CodePill>
-            </WaitingCard>
-          </Waiting>
+        <Reanimated.View entering={FadeIn} exiting={FadeOut} style={waitingWrapStyle} pointerEvents="none">
+          <WaitingCard>
+            <WaitingTitle>Waiting for your partner</WaitingTitle>
+            <CodePill>
+              <CodeText>{code}</CodeText>
+            </CodePill>
+          </WaitingCard>
         </Reanimated.View>
       ) : null}
 
-      {/* Bottom control bar */}
-      <Controls pointerEvents="box-none">
-        <ReactionRow>
-          {REACTION_EMOJIS.map((emoji) => (
-            <TouchableOpacity key={emoji} onPress={() => session.sendReaction(emoji)} activeOpacity={0.7}>
-              <ReactionButton>
-                <ReactionEmoji>{emoji}</ReactionEmoji>
-              </ReactionButton>
-            </TouchableOpacity>
-          ))}
-        </ReactionRow>
-
-        <ActionRow>
-          <CircleButton onPress={session.toggleMic} $active={session.micEnabled}>
-            <Feather name={session.micEnabled ? "mic" : "mic-off"} size={18} color={theme.colors.textOnPrimary} />
-          </CircleButton>
-          <CircleButton onPress={session.toggleCamera} $active={session.cameraEnabled}>
-            <Feather name={session.cameraEnabled ? "video" : "video-off"} size={18} color={theme.colors.textOnPrimary} />
-          </CircleButton>
-          <CircleButton onPress={session.switchCamera} $active>
-            <Feather name="refresh-cw" size={18} color={theme.colors.textOnPrimary} />
-          </CircleButton>
-          <CaptureButton onPress={initiateCapture} disabled={capturing} activeOpacity={0.8}>
-            {capturing ? <Feather name="loader" size={20} color="#fff" /> : <Feather name="camera" size={20} color="#fff" />}
-          </CaptureButton>
-          <CircleButton onPress={() => setChatOpen(true)} $active>
-            <Feather name="message-circle" size={18} color={theme.colors.textOnPrimary} />
-          </CircleButton>
-          <CircleButton onPress={handleExit} $danger>
-            <Feather name="phone-off" size={18} color="#fff" />
-          </CircleButton>
-        </ActionRow>
-      </Controls>
+      {/* Right slide-in control rail */}
+      <Reanimated.View style={[railWrapStyle, railStyle]}>
+        <GestureDetector gesture={railGesture}>
+          <Handle>
+            <Feather name="chevron-left" size={16} color="#EFF2ED" />
+          </Handle>
+        </GestureDetector>
+        <Rail>
+          <EmojiStrip>
+            {REACTION_EMOJIS.map((emoji) => (
+              <TouchableOpacity key={emoji} onPress={() => session.sendReaction(emoji)} hitSlop={6}>
+                <EmojiText>{emoji}</EmojiText>
+              </TouchableOpacity>
+            ))}
+          </EmojiStrip>
+          <RailButton onPress={() => setChatOpen(true)} $tone="surface">
+            <Feather name="message-circle" size={15} color={theme.colors.textPrimary} />
+          </RailButton>
+          <RailButton onPress={() => session.setCamerasOn((on) => !on)} $tone={session.camerasOn ? "primary" : "surface"}>
+            <Feather name="camera" size={15} color={session.camerasOn ? theme.colors.textOnPrimary : theme.colors.textPrimary} />
+          </RailButton>
+          <RailButton onPress={initiateCapture} disabled={capturing} $tone="surface">
+            <Feather name={capturing ? "loader" : "aperture"} size={15} color={theme.colors.primary} />
+          </RailButton>
+          {session.camerasOn ? (
+            <RailButton onPress={session.toggleMic} $tone="surface">
+              <Feather name={session.micEnabled ? "mic" : "mic-off"} size={15} color={theme.colors.textPrimary} />
+            </RailButton>
+          ) : null}
+          <RailButton onPress={handleExit} $tone="danger">
+            <Feather name="phone-off" size={15} color="#FFFFFF" />
+          </RailButton>
+        </Rail>
+      </Reanimated.View>
 
       {/* Hidden capturable local still (source for the polaroid face) */}
       <OffscreenHost pointerEvents="none">
@@ -217,7 +267,6 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
             )}
           </StillTile>
         </ViewShot>
-
         <PolaroidCard
           viewShotRef={polaroidShotRef}
           backdropPath={session.room?.backdropPath ?? null}
@@ -237,8 +286,8 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         <ChatSheet>
           <ChatHeader>
             <ChatTitle>Chat</ChatTitle>
-            <TouchableOpacity onPress={() => setChatOpen(false)}>
-              <Feather name="x" size={20} color={theme.colors.textSecondary} />
+            <TouchableOpacity onPress={() => setChatOpen(false)} hitSlop={8}>
+              <Feather name="x" size={18} color={theme.colors.textSecondary} />
             </TouchableOpacity>
           </ChatHeader>
           <FlatList
@@ -271,7 +320,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
                 setDraft("");
               }}
             >
-              <Feather name="send" size={18} color={theme.colors.textOnPrimary} />
+              <Feather name="send" size={16} color={theme.colors.textOnPrimary} />
             </SendButton>
           </ChatInputRow>
         </ChatSheet>
@@ -280,18 +329,21 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
       {/* Polaroid preview */}
       <Modal visible={Boolean(polaroidPreview)} transparent animationType="fade" onRequestClose={dismissPreview}>
         <PreviewBackdrop>
-          <PreviewCard>
-            {polaroidPreview ? <PreviewImage source={{ uri: polaroidPreview }} /> : null}
-            <PreviewActions>
-              <PreviewButton onPress={sharePolaroid} $primary>
-                <Feather name="share-2" size={18} color="#fff" />
-                <PreviewButtonText>Share</PreviewButtonText>
-              </PreviewButton>
-              <PreviewButton onPress={dismissPreview}>
-                <PreviewButtonText>Done</PreviewButtonText>
-              </PreviewButton>
-            </PreviewActions>
-          </PreviewCard>
+          <PreviewClose onPress={dismissPreview} hitSlop={10}>
+            <Feather name="x" size={22} color="#FFFFFF" />
+          </PreviewClose>
+          {polaroidPreview ? (
+            <PreviewImage source={{ uri: polaroidPreview }} style={{ width: preview.w, height: preview.h }} resizeMode="contain" />
+          ) : null}
+          <PreviewActions>
+            <PreviewButton onPress={sharePolaroid} $primary>
+              <Feather name="share-2" size={16} color="#fff" />
+              <PreviewButtonText>Share</PreviewButtonText>
+            </PreviewButton>
+            <PreviewButton onPress={dismissPreview}>
+              <PreviewButtonText>Done</PreviewButtonText>
+            </PreviewButton>
+          </PreviewActions>
         </PreviewBackdrop>
       </Modal>
     </Root>
@@ -306,112 +358,97 @@ const Root = styled(View)`
   bottom: 0;
 `;
 
-const ReactionsLayer = styled(View)`
+const waitingWrapStyle = {
+  position: "absolute" as const,
+  top: 14,
+  alignSelf: "center" as const,
+};
+
+const railWrapStyle = {
+  position: "absolute" as const,
+  right: 0,
+  top: 0,
+  bottom: 0,
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+};
+
+const ReactionsAnchor = styled(View)`
   position: absolute;
-  left: 24px;
-  bottom: 120px;
-  flex-direction: row;
-  gap: 6px;
-`;
-
-const FloatingEmoji = styled(Text)`
-  font-size: 34px;
-`;
-
-const Waiting = styled(View)`
-  flex: 1;
-  align-items: center;
-  justify-content: center;
+  left: 22px;
+  bottom: 60px;
+  width: 40px;
+  height: 160px;
 `;
 
 const WaitingCard = styled(View)`
+  flex-direction: row;
   align-items: center;
-  padding: 20px 28px;
-  border-radius: 20px;
-  background-color: rgba(13, 16, 15, 0.82);
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background-color: rgba(13, 16, 15, 0.72);
   border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.1);
 `;
 
 const WaitingTitle = styled(Text)`
-  color: #f6f7f4;
-  font-size: 16px;
-  font-weight: 700;
-`;
-
-const WaitingSub = styled(Text)`
-  color: #b2b8b1;
+  color: #eff2ed;
   font-size: 12px;
-  margin-top: 10px;
+  font-weight: 600;
 `;
 
 const CodePill = styled(View)`
-  margin-top: 8px;
-  padding: 8px 18px;
+  padding: 3px 10px;
   border-radius: 999px;
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: rgba(255, 255, 255, 0.1);
 `;
 
 const CodeText = styled(Text)`
   color: #ffffff;
-  font-size: 24px;
+  font-size: 14px;
   font-weight: 800;
-  letter-spacing: 6px;
+  letter-spacing: 3px;
 `;
 
-const Controls = styled(View)`
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 0px 16px 18px 16px;
-  align-items: center;
-`;
-
-const ReactionRow = styled(View)`
-  flex-direction: row;
-  gap: 8px;
-  margin-bottom: 12px;
-`;
-
-const ReactionButton = styled(View)`
-  width: 40px;
-  height: 40px;
-  border-radius: 20px;
+const Handle = styled(View)`
+  width: ${HANDLE_WIDTH}px;
+  height: 56px;
   align-items: center;
   justify-content: center;
+  border-top-left-radius: 12px;
+  border-bottom-left-radius: 12px;
   background-color: rgba(13, 16, 15, 0.6);
 `;
 
-const ReactionEmoji = styled(Text)`
-  font-size: 20px;
-`;
-
-const ActionRow = styled(View)`
-  flex-direction: row;
+const Rail = styled(View)`
+  width: ${RAIL_WIDTH}px;
+  padding: 10px 0;
   align-items: center;
   gap: 12px;
+  background-color: rgba(13, 16, 15, 0.6);
+  border-top-left-radius: 16px;
+  border-bottom-left-radius: 16px;
 `;
 
-const CircleButton = styled(TouchableOpacity)<{ $active?: boolean; $danger?: boolean }>`
-  width: 46px;
-  height: 46px;
-  border-radius: 23px;
+const EmojiStrip = styled(View)`
   align-items: center;
-  justify-content: center;
-  background-color: ${({ $danger, $active, theme }) =>
-    $danger ? "#C0392B" : $active ? theme.colors.primary : "rgba(255,255,255,0.14)"};
+  gap: 8px;
+  margin-bottom: 2px;
 `;
 
-const CaptureButton = styled(TouchableOpacity)`
-  width: 58px;
-  height: 58px;
-  border-radius: 29px;
+const EmojiText = styled(Text)`
+  font-size: 17px;
+`;
+
+const RailButton = styled(TouchableOpacity)<{ $tone: "surface" | "primary" | "danger" }>`
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
   align-items: center;
   justify-content: center;
-  background-color: ${({ theme }) => theme.colors.primary};
-  border-width: 3px;
-  border-color: #ffffff;
+  background-color: ${({ $tone, theme }) =>
+    $tone === "danger" ? "#C0392B" : $tone === "primary" ? theme.colors.primary : "rgba(255,255,255,0.1)"};
 `;
 
 const OffscreenHost = styled(View)`
@@ -437,7 +474,7 @@ const ChatSheet = styled(View)`
   left: 0;
   right: 0;
   bottom: 0;
-  height: 60%;
+  height: 58%;
   background-color: ${({ theme }) => theme.colors.surface};
   border-top-left-radius: 20px;
   border-top-right-radius: 20px;
@@ -447,14 +484,14 @@ const ChatHeader = styled(View)`
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 12px 16px;
   border-bottom-width: 1px;
   border-bottom-color: ${({ theme }) => theme.colors.border};
 `;
 
 const ChatTitle = styled(Text)`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
 `;
 
@@ -464,7 +501,7 @@ const ChatRow = styled(View)<{ $mine: boolean }>`
 
 const ChatBubble = styled(View)<{ $mine: boolean }>`
   max-width: 78%;
-  padding: 8px 12px;
+  padding: 7px 11px;
   border-radius: 14px;
   background-color: ${({ $mine, theme }) => ($mine ? theme.colors.primary : theme.colors.surfaceRaised)};
 `;
@@ -483,17 +520,17 @@ const ChatInputRow = styled(View)`
 
 const ChatInput = styled(TextInput)`
   flex: 1;
-  height: 42px;
-  border-radius: 21px;
+  height: 40px;
+  border-radius: 20px;
   padding: 0px 16px;
   background-color: ${({ theme }) => theme.colors.surfaceRaised};
   color: ${({ theme }) => theme.colors.textPrimary};
 `;
 
 const SendButton = styled(TouchableOpacity)`
-  width: 42px;
-  height: 42px;
-  border-radius: 21px;
+  width: 40px;
+  height: 40px;
+  border-radius: 20px;
   align-items: center;
   justify-content: center;
   background-color: ${({ theme }) => theme.colors.primary};
@@ -503,30 +540,34 @@ const PreviewBackdrop = styled(View)`
   flex: 1;
   align-items: center;
   justify-content: center;
-  background-color: rgba(0, 0, 0, 0.82);
+  background-color: rgba(0, 0, 0, 0.88);
 `;
 
-const PreviewCard = styled(View)`
+const PreviewClose = styled(TouchableOpacity)`
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 38px;
+  height: 38px;
+  border-radius: 19px;
   align-items: center;
+  justify-content: center;
+  background-color: rgba(255, 255, 255, 0.14);
 `;
 
-const PreviewImage = styled.Image`
-  width: 300px;
-  height: 420px;
-  resize-mode: contain;
-`;
+const PreviewImage = styled.Image``;
 
 const PreviewActions = styled(View)`
   flex-direction: row;
   gap: 12px;
-  margin-top: 18px;
+  margin-top: 16px;
 `;
 
 const PreviewButton = styled(TouchableOpacity)<{ $primary?: boolean }>`
   flex-direction: row;
   align-items: center;
   gap: 8px;
-  padding: 12px 22px;
+  padding: 10px 20px;
   border-radius: 999px;
   background-color: ${({ $primary, theme }) => ($primary ? theme.colors.primary : "rgba(255,255,255,0.14)")};
 `;

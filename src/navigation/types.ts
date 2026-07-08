@@ -21,6 +21,8 @@ export type WatchRoomSetupMedia = {
   backdropPath?: string | null;
   imdbId?: string | null;
   year?: string | null;
+  originalTitle?: string | null;
+  castNames?: string[];
   seasonNumber?: number;
   episodeNumber?: number;
 };

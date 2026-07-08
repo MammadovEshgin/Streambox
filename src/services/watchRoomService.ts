@@ -63,6 +63,9 @@ export class WatchRoomService {
       p_backdrop_path: media.backdropPath ?? null,
       p_season_number: media.seasonNumber ?? null,
       p_episode_number: media.episodeNumber ?? null,
+      p_imdb_id: media.imdbId ?? null,
+      p_year: media.year ?? null,
+      p_original_title: media.originalTitle ?? null,
     });
     if (error) throw error;
     return mapWatchRoomRow(data as WatchRoomRow);

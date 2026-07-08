@@ -31,6 +31,9 @@ export function useWatchRoomSession({ player, code, nickname }: Options) {
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
   const [captureRequestedBy, setCaptureRequestedBy] = useState<string | null>(null);
   const [partnerStill, setPartnerStill] = useState<PartnerStill | null>(null);
+  // Cameras are OFF by default (privacy). Turning them on both reveals the face
+  // bubbles and starts the WebRTC capture; nothing streams until then.
+  const [camerasOn, setCamerasOn] = useState(false);
 
   const pushReaction = useCallback((emoji: string) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -70,7 +73,7 @@ export function useWatchRoomSession({ player, code, nickname }: Options) {
   const bothPresent = room.members.length >= 2;
 
   const webrtc = useWebRtcPeers({
-    enabled: bothPresent,
+    enabled: bothPresent && camerasOn,
     isInitiator: room.isHost,
     selfUserId: room.selfUserId,
     sendSignal: room.send,
@@ -127,8 +130,9 @@ export function useWatchRoomSession({ player, code, nickname }: Options) {
     mediaState: webrtc.connectionState,
     micEnabled: webrtc.micEnabled,
     cameraEnabled: webrtc.cameraEnabled,
+    camerasOn,
+    setCamerasOn,
     toggleMic: webrtc.toggleMic,
-    toggleCamera: webrtc.toggleCamera,
     switchCamera: webrtc.switchCamera,
     // reactions
     reactions,

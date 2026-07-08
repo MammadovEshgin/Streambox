@@ -749,6 +749,8 @@ if (!details) {
                           backdropPath: details.backdropPath,
                           imdbId: details.imdbId,
                           year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
+                          originalTitle: details.originalTitle,
+                          castNames: details.cast.slice(0, 4).map((c) => c.name),
                         },
                       });
                     }}
