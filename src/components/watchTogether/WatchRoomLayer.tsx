@@ -225,7 +225,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   // Fit the polaroid preview within the (often landscape) player bounds.
   const preview = useMemo(() => {
     const { width, height } = Dimensions.get("window");
-    const ratio = 320 / 400; // polaroid w/h (template aspect)
+    const ratio = 320 / 430; // polaroid w/h
     const h = Math.min(height * 0.82, (width * 0.55) / ratio);
     return { w: h * ratio, h };
   }, []);
