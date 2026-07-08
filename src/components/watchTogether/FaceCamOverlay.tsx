@@ -1,10 +1,13 @@
 import { Feather } from "@expo/vector-icons";
 import { Text, View } from "react-native";
-import { RTCView, type MediaStream } from "react-native-webrtc";
+import type { MediaStream } from "react-native-webrtc";
 import styled from "styled-components/native";
 
+import { getWebRtc } from "../../services/webrtcCompat";
+
 // Two face tiles pinned to the right edge — partner top-right, you bottom-right
-// — each ~30% of the screen width, leaving the rest for the movie.
+// — each ~30% of the screen width, leaving the rest for the movie. In Expo Go
+// (no native WebRTC) both tiles show placeholders.
 
 export type FaceCamOverlayProps = {
   localStream: MediaStream | null;
@@ -15,6 +18,8 @@ export type FaceCamOverlayProps = {
   partnerConnected: boolean;
 };
 
+const STREAM_STYLE = { width: "100%" as const, height: "100%" as const };
+
 export function FaceCamOverlay({
   localStream,
   remoteStream,
@@ -23,11 +28,13 @@ export function FaceCamOverlay({
   cameraEnabled,
   partnerConnected,
 }: FaceCamOverlayProps) {
+  const RTCView = getWebRtc()?.RTCView;
+
   return (
     <Column pointerEvents="none">
       <Tile>
-        {remoteStream && partnerConnected ? (
-          <Stream streamURL={remoteStream.toURL()} objectFit="cover" mirror={false} />
+        {RTCView && remoteStream && partnerConnected ? (
+          <RTCView streamURL={remoteStream.toURL()} style={STREAM_STYLE} objectFit="cover" mirror={false} />
         ) : (
           <Placeholder>
             <Feather name="user" size={22} color="#8A938B" />
@@ -38,8 +45,8 @@ export function FaceCamOverlay({
       </Tile>
 
       <Tile>
-        {localStream && cameraEnabled ? (
-          <Stream streamURL={localStream.toURL()} objectFit="cover" mirror />
+        {RTCView && localStream && cameraEnabled ? (
+          <RTCView streamURL={localStream.toURL()} style={STREAM_STYLE} objectFit="cover" mirror />
         ) : (
           <Placeholder>
             <Feather name={cameraEnabled ? "user" : "video-off"} size={22} color="#8A938B" />
@@ -70,11 +77,6 @@ const Tile = styled(View)`
   background-color: #10110f;
   border-width: 1px;
   border-color: rgba(255, 255, 255, 0.12);
-`;
-
-const Stream = styled(RTCView)`
-  width: 100%;
-  height: 100%;
 `;
 
 const Placeholder = styled(View)`
