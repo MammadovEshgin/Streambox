@@ -5,7 +5,6 @@ import Reanimated, { FadeIn, FadeOut, FadeOutUp } from "react-native-reanimated"
 import * as Sharing from "expo-sharing";
 import { captureRef } from "react-native-view-shot";
 import ViewShot from "react-native-view-shot";
-import { RTCView } from "react-native-webrtc";
 import styled from "styled-components/native";
 import { useTheme } from "styled-components/native";
 import type { VideoPlayer } from "expo-video";
@@ -13,7 +12,10 @@ import type { VideoPlayer } from "expo-video";
 import { FaceCamOverlay } from "./FaceCamOverlay";
 import { PolaroidCard } from "./PolaroidCard";
 import { useWatchRoomSession } from "../../hooks/useWatchRoomSession";
+import { getWebRtc } from "../../services/webrtcCompat";
 import { uploadCameraStill, uploadPolaroid, saveWatchMemory } from "../../services/watchMemories";
+
+const STILL_STREAM_STYLE = { width: "100%" as const, height: "100%" as const };
 
 const REACTION_EMOJIS = ["😂", "❤️", "😮", "😢", "🔥", "👏"];
 const PARTNER_STILL_TIMEOUT_MS = 5000;
@@ -28,6 +30,7 @@ export type WatchRoomLayerProps = {
 export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLayerProps) {
   const theme = useTheme();
   const session = useWatchRoomSession({ player, code, nickname });
+  const RTCView = getWebRtc()?.RTCView;
 
   const [chatOpen, setChatOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -207,7 +210,11 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
       <OffscreenHost pointerEvents="none">
         <ViewShot ref={selfStillShotRef} options={{ format: "jpg", quality: 0.85 }}>
           <StillTile>
-            {session.localStream ? <StillStream streamURL={session.localStream.toURL()} objectFit="cover" mirror /> : <View />}
+            {RTCView && session.localStream ? (
+              <RTCView streamURL={session.localStream.toURL()} style={STILL_STREAM_STYLE} objectFit="cover" mirror />
+            ) : (
+              <View />
+            )}
           </StillTile>
         </ViewShot>
 
@@ -418,11 +425,6 @@ const StillTile = styled(View)`
   width: 240px;
   height: 320px;
   background-color: #10110f;
-`;
-
-const StillStream = styled(RTCView)`
-  width: 100%;
-  height: 100%;
 `;
 
 const ChatBackdrop = styled(TouchableOpacity)`
