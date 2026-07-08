@@ -5,9 +5,10 @@ import styled from "styled-components/native";
 
 import { getWebRtc } from "../../services/webrtcCompat";
 
-// Two circular face bubbles hugging the right edge (10px margin) — partner on
-// top, you below. Hidden until the user turns the cameras on, and shown as
-// placeholders in Expo Go (no native WebRTC).
+// Two circular face bubbles hugging the left edge (10px margin) — partner on
+// top, you below — kept clear of the controls rail on the right. Hidden until
+// the user turns the cameras on, and shown as placeholders in Expo Go (no
+// native WebRTC).
 
 export type FaceCamOverlayProps = {
   visible: boolean;
@@ -60,11 +61,11 @@ export function FaceCamOverlay({
   );
 }
 
-const BUBBLE_SIZE = 88;
+const BUBBLE_SIZE = 108;
 
 const Column = styled(View)`
   position: absolute;
-  right: 10px;
+  left: 10px;
   top: 0;
   bottom: 0;
   justify-content: center;
