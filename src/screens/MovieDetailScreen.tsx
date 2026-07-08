@@ -188,6 +188,26 @@ const WatchedButton = styled(Pressable)<{ $active: boolean }>`
   justify-content: center;
 `;
 
+const WatchTogetherButton = styled(Pressable)`
+  height: 46px;
+  margin-top: 10px;
+  border-radius: 3px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.primaryMuted};
+  background-color: ${({ theme }) => theme.colors.primarySoft};
+`;
+
+const WatchTogetherText = styled.Text`
+  color: ${({ theme }) => theme.colors.primary};
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+`;
+
 const WatchedMetaText = styled.Text`
   margin-top: 8px;
   color: ${({ theme }) => theme.colors.textSecondary};
@@ -717,6 +737,25 @@ if (!details) {
                       />
                     </WatchedButton>
                   </ActionRow>
+                  <WatchTogetherButton
+                    onPress={() => {
+                      navigation.navigate("WatchRoomSetup", {
+                        mode: "create",
+                        media: {
+                          mediaType: "movie",
+                          tmdbId: details.id,
+                          title: details.title,
+                          posterPath: details.posterPath,
+                          backdropPath: details.backdropPath,
+                          imdbId: details.imdbId,
+                          year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
+                        },
+                      });
+                    }}
+                  >
+                    <Feather name="users" size={18} color={currentTheme.colors.primary} />
+                    <WatchTogetherText>{t("watchTogether.watchTogether")}</WatchTogetherText>
+                  </WatchTogetherButton>
                   {currentWatchedEntry ? (
                     <WatchedMetaText>{formatWatchHistoryEntryLabel(currentWatchedEntry, t)}</WatchedMetaText>
                   ) : null}

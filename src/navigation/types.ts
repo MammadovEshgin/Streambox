@@ -13,6 +13,25 @@ export type SearchResultsParams = {
   };
 };
 
+export type WatchRoomSetupMedia = {
+  mediaType: MediaType;
+  tmdbId: number;
+  title: string;
+  posterPath?: string | null;
+  backdropPath?: string | null;
+  imdbId?: string | null;
+  year?: string | null;
+  seasonNumber?: number;
+  episodeNumber?: number;
+};
+
+export type WatchRoomSetupParams = {
+  mode?: "create" | "join";
+  media?: WatchRoomSetupMedia;
+  // Set when opened from a streambox://room/<code> deep link.
+  code?: string;
+};
+
 export type HomeStackParamList = {
   HomeFeed: undefined;
   MoviesFeed: undefined;
@@ -51,7 +70,10 @@ export type HomeStackParamList = {
     year?: string | null;
     videoId?: string | null;
     resumeAtSeconds?: number;
+    watchRoomCode?: string;
+    watchRoomNickname?: string;
   };
+  WatchRoomSetup: WatchRoomSetupParams;
 };
 
 export type ProfileSeeAllSection = "watchlist" | "liked" | "watched";
@@ -90,7 +112,10 @@ export type ProfileStackParamList = {
     year?: string | null;
     videoId?: string | null;
     resumeAtSeconds?: number;
+    watchRoomCode?: string;
+    watchRoomNickname?: string;
   };
+  WatchRoomSetup: WatchRoomSetupParams;
 };
 
 export type StatsStackParamList = {
@@ -139,7 +164,10 @@ export type StatsStackParamList = {
     year?: string | null;
     videoId?: string | null;
     resumeAtSeconds?: number;
+    watchRoomCode?: string;
+    watchRoomNickname?: string;
   };
+  WatchRoomSetup: WatchRoomSetupParams;
 };
 
 export type RootTabParamList = {

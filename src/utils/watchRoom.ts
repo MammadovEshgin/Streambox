@@ -181,3 +181,40 @@ export const WATCH_ROOM_CHANNEL_PREFIX = "watch-room";
 export function watchRoomChannelName(code: string): string {
   return `${WATCH_ROOM_CHANNEL_PREFIX}:${normalizeRoomCode(code)}`;
 }
+
+// Shape of the watch_rooms row returned by the create/join RPCs.
+export type WatchRoomRow = {
+  id: string;
+  code: string;
+  host_user_id: string;
+  media_type: MediaType;
+  tmdb_id: number;
+  title: string;
+  poster_path: string | null;
+  backdrop_path: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  status: WatchRoomStatus;
+  created_at: string;
+  expires_at: string;
+};
+
+// Pure snake_case row → camelCase domain mapper (kept here, free of native
+// imports, so it stays unit-testable).
+export function mapWatchRoomRow(row: WatchRoomRow): WatchRoom {
+  return {
+    id: row.id,
+    code: row.code,
+    hostUserId: row.host_user_id,
+    mediaType: row.media_type,
+    tmdbId: row.tmdb_id,
+    title: row.title,
+    posterPath: row.poster_path,
+    backdropPath: row.backdrop_path,
+    seasonNumber: row.season_number,
+    episodeNumber: row.episode_number,
+    status: row.status,
+    createdAtEpochMs: Date.parse(row.created_at),
+    expiresAtEpochMs: Date.parse(row.expires_at),
+  };
+}

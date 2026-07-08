@@ -2,6 +2,11 @@ export const resources = {
   en: {
     translation: {
       nav: { discover: "Discover", movies: "Movies", series: "Series", stats: "Stats", profile: "Profile" },
+      watchTogether: {
+        watchTogether: "Watch Together",
+        memories: "Movie Memories",
+        memoriesEmpty: "Polaroids from your Watch Together sessions will appear here.",
+      },
       common: {
         movie: "Movie",
         movies: "Movies",
