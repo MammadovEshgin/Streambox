@@ -46,11 +46,22 @@ export function WatchRoomScreen({ route, navigation }: Props) {
 
   const canSubmit = isValidNickname(nickname) && (mode === "create" ? Boolean(media) : isValidRoomCode(code));
 
-  const goToSession = (roomCode: string, roomMedia: WatchRoomMedia, nick: string) => {
+  const goToSession = (
+    roomCode: string,
+    roomMedia: WatchRoomMedia,
+    nick: string,
+    castNames?: string[]
+  ) => {
     navigation.replace("Player", {
       mediaType: roomMedia.mediaType,
       tmdbId: String(roomMedia.tmdbId),
       title: roomMedia.title,
+      // Thread the resolver's match fields through so the player resolves the
+      // right title (not just by fuzzy title match).
+      imdbId: roomMedia.imdbId ?? undefined,
+      originalTitle: roomMedia.originalTitle ?? undefined,
+      year: roomMedia.year ?? undefined,
+      castNames,
       seasonNumber: roomMedia.seasonNumber ?? undefined,
       episodeNumber: roomMedia.episodeNumber ?? undefined,
       watchRoomCode: roomCode,
@@ -73,7 +84,7 @@ export function WatchRoomScreen({ route, navigation }: Props) {
       if (mode === "create") {
         if (!media) return;
         const room = await service.createRoom(media, nick);
-        goToSession(room.code, media, nick);
+        goToSession(room.code, media, nick, media.castNames);
       } else {
         const room = await service.joinRoom(normalizeRoomCode(code), nick);
         goToSession(
@@ -86,6 +97,9 @@ export function WatchRoomScreen({ route, navigation }: Props) {
             backdropPath: room.backdropPath,
             seasonNumber: room.seasonNumber,
             episodeNumber: room.episodeNumber,
+            imdbId: room.imdbId,
+            year: room.year,
+            originalTitle: room.originalTitle,
           },
           nick
         );

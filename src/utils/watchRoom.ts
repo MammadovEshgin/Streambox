@@ -145,6 +145,12 @@ export type WatchRoomMedia = {
   backdropPath?: string | null;
   seasonNumber?: number | null;
   episodeNumber?: number | null;
+  // Carried into the room so BOTH participants resolve the same title — the
+  // provider match scoring in WebPlayerService needs the IMDb id + year, not
+  // just the title (otherwise "Obsession" 2026 can match "Fear" 1996).
+  imdbId?: string | null;
+  year?: string | null;
+  originalTitle?: string | null;
 };
 
 export type WatchRoomMember = {
@@ -194,6 +200,9 @@ export type WatchRoomRow = {
   backdrop_path: string | null;
   season_number: number | null;
   episode_number: number | null;
+  imdb_id: string | null;
+  year: string | null;
+  original_title: string | null;
   status: WatchRoomStatus;
   created_at: string;
   expires_at: string;
@@ -213,6 +222,9 @@ export function mapWatchRoomRow(row: WatchRoomRow): WatchRoom {
     backdropPath: row.backdrop_path,
     seasonNumber: row.season_number,
     episodeNumber: row.episode_number,
+    imdbId: row.imdb_id,
+    year: row.year,
+    originalTitle: row.original_title,
     status: row.status,
     createdAtEpochMs: Date.parse(row.created_at),
     expiresAtEpochMs: Date.parse(row.expires_at),
