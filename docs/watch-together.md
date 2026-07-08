@@ -180,17 +180,23 @@ message on a room's Realtime channel (`watchRoomChannelName(code)`):
   native plugins/permissions; deps; module shims; backend schema + RLS + RPCs +
   Storage bucket; TURN-credentials Worker; pure sync/code/nickname core with
   unit tests; this doc.
-- [ ] **Phase 2 — Signaling & sync engine (pure-JS, testable):**
-  `WatchRoomService` (Realtime channel: presence + broadcast, token refresh),
-  `useWatchRoom` hook, host-clock heartbeat wired to the existing player.
-- [ ] **Phase 3 — WebRTC media:** `useWebRtcPeers` (getUserMedia, peer
-  connection lifecycle, ICE via the TURN Worker, reconnection), face-cam
-  overlay (top-right + bottom-right, ~30%).
-- [ ] **Phase 4 — UI & polish:** nickname sheet, create/join + lobby, deep
-  links, in-session chat sheet + floating reactions, capture flow + polaroid
-  compositor, "Movie Memories" shelf, badges ("First Watch Room", "Movie
-  Night"). Clean/modern visual pass (Reanimated + SVG; Rive reserved for one or
-  two hero moments).
+- [x] **Phase 2 — Signaling & sync engine (done):** `watchRoomService`
+  (Realtime presence + broadcast, create/join/end RPCs, token-refresh loop),
+  `useWatchRoom`, and `useWatchRoomSession` host-clock heartbeat wired to the
+  player.
+- [x] **Phase 3 — WebRTC media (done):** `useWebRtcPeers` (getUserMedia, host-
+  offers peer connection, ICE via the TURN Worker, mic/camera/switch),
+  `FaceCamOverlay` (partner top-right + you bottom-right, ~30%).
+- [x] **Phase 4 — UI (done):** nickname + create/join setup, lobby "waiting"
+  overlay, chat sheet + floating reactions, capture flow + `PolaroidCard`
+  compositor, "Movie Memories" shelf on Profile, `streambox://room/<code>` deep
+  link, "Watch Together" entry on the movie detail.
+- [ ] **Remaining polish:** series entry point (needs an episode picker),
+  room-completion badges (needs a new event source — the badge engine is
+  history-derived), on-device visual iteration, i18n extraction of the new UI
+  strings, and validating live camera→still capture on real devices (currently
+  best-effort; the polaroid degrades to backdrop + names if a still is black).
+  Rive is available on this native build if we want a hero animation.
 
 ## 10. Open questions
 
