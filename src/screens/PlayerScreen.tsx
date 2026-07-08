@@ -23,6 +23,7 @@ import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webvie
 import { MovieLoader } from "../components/common/MovieLoader";
 import { ContinueWatchingModal } from "../components/common/ContinueWatchingModal";
 import { QualityWarningModal } from "../components/common/QualityWarningModal";
+import { WatchRoomLayer } from "../components/watchTogether/WatchRoomLayer";
 import { useContinueWatching } from "../hooks/useContinueWatching";
 import { useRecentlyWatched } from "../hooks/useRecentlyWatched";
 
@@ -1062,7 +1063,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     handlePlaybackReady: handleContinueWatchingReady,
   } = useContinueWatching({
     player: videoPlayer,
-    enabled: isNativeStreamSource && !route.params.trailerUrl,
+    enabled: isNativeStreamSource && !route.params.trailerUrl && !route.params.watchRoomCode,
     mediaType: route.params.mediaType,
     tmdbId: Number(route.params.tmdbId),
     title: route.params.title,
@@ -1385,6 +1386,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           surfaceType="textureView"
           onTouchEnd={toggleCloseBtn}
         />
+        {route.params.watchRoomCode && route.params.watchRoomNickname ? (
+          <WatchRoomLayer
+            player={videoPlayer}
+            code={route.params.watchRoomCode}
+            nickname={route.params.watchRoomNickname}
+            onExit={handleClose}
+          />
+        ) : null}
         {isLoading && (
           <PlayerLoadingOverlay
             title={route.params.title}

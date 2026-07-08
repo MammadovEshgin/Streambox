@@ -26,6 +26,7 @@ import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
 import { BadgeStrip } from "../components/badges/BadgeStrip";
 import { BadgesModal } from "../components/badges/BadgesModal";
+import { MovieMemoriesShelf } from "../components/watchTogether/MovieMemoriesShelf";
 import { evaluateBadges, selectStripBadgeIds } from "../services/badgeEngine";
 import { useLikedMovies } from "../hooks/useLikedMovies";
 import { useLikedSeries } from "../hooks/useLikedSeries";
@@ -1160,6 +1161,8 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </StatsRow>
           </ProfileInfo>
         </Header>
+
+        <MovieMemoriesShelf />
 
         <SectionWrap>
           <SectionHeader>

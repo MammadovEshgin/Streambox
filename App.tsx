@@ -22,6 +22,21 @@ import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
 import { Navigation } from "./src/navigation/Navigation";
 import i18n from "./src/localization/i18n";
+
+// Deep link: streambox://room/<code> opens the Watch Together join sheet
+// prefilled with the shared room code.
+const watchTogetherLinking: any = {
+  prefixes: ["streambox://"],
+  config: {
+    screens: {
+      Discover: {
+        screens: {
+          WatchRoomSetup: "room/:code",
+        },
+      },
+    },
+  },
+};
 import { ForgotPasswordScreen } from "./src/screens/auth/ForgotPasswordScreen";
 import { AuthScreen } from "./src/screens/auth/AuthScreen";
 import { OtpVerificationScreen } from "./src/screens/auth/OtpVerificationScreen";
@@ -565,7 +580,7 @@ function AppShell() {
           onSignOut={signOut}
           onError={handleStartupError}
         >
-          <NavigationContainer theme={navigationTheme}>
+          <NavigationContainer theme={navigationTheme} linking={watchTogetherLinking}>
             <Navigation />
           </NavigationContainer>
           <LiveOpsHost enabled={isUserDataReady} />
