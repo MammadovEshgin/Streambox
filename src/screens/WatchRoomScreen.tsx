@@ -107,7 +107,6 @@ export function WatchRoomScreen({ route, navigation }: Props) {
     } catch (err: any) {
       const message: string = err?.message ?? "";
       if (message.includes("full")) setError("That room is already full.");
-      else if (message.includes("nickname")) setError("That nickname is taken in this room.");
       else if (message.includes("not found") || message.includes("expired")) setError("Room not found or expired.");
       else setError("Something went wrong. Try again.");
     } finally {
