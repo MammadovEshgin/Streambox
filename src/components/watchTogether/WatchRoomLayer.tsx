@@ -61,6 +61,21 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
 
   const [chatOpen, setChatOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [unread, setUnread] = useState(0);
+  const seenChatCountRef = useRef(0);
+
+  // WhatsApp-style unread badge: count partner messages that land while the
+  // chat sheet is closed; clear when it opens.
+  useEffect(() => {
+    if (chatOpen) {
+      seenChatCountRef.current = session.chatMessages.length;
+      setUnread(0);
+      return;
+    }
+    const fresh = session.chatMessages.slice(seenChatCountRef.current).filter((m) => !m.mine).length;
+    seenChatCountRef.current = session.chatMessages.length;
+    if (fresh > 0) setUnread((count) => count + fresh);
+  }, [session.chatMessages, chatOpen]);
 
   const selfStillShotRef = useRef<ViewShot>(null);
   const polaroidShotRef = useRef<ViewShot>(null);
@@ -238,12 +253,17 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
           </EmojiStrip>
           <RailButton onPress={() => setChatOpen(true)} $tone="surface">
             <Feather name="message-circle" size={15} color={theme.colors.textPrimary} />
-          </RailButton>
-          <RailButton onPress={() => session.setCamerasOn((on) => !on)} $tone={session.camerasOn ? "primary" : "surface"}>
-            <Feather name="camera" size={15} color={session.camerasOn ? theme.colors.textOnPrimary : theme.colors.textPrimary} />
+            {unread > 0 ? (
+              <Badge>
+                <BadgeText>{unread > 9 ? "9+" : unread}</BadgeText>
+              </Badge>
+            ) : null}
           </RailButton>
           <RailButton onPress={initiateCapture} disabled={capturing} $tone="surface">
             <Feather name={capturing ? "loader" : "aperture"} size={15} color={theme.colors.primary} />
+          </RailButton>
+          <RailButton onPress={() => session.setCamerasOn((on) => !on)} $tone={session.camerasOn ? "primary" : "surface"}>
+            <Feather name="camera" size={15} color={session.camerasOn ? theme.colors.textOnPrimary : theme.colors.textPrimary} />
           </RailButton>
           {session.camerasOn ? (
             <RailButton onPress={session.toggleMic} $tone="surface">
@@ -449,6 +469,25 @@ const RailButton = styled(TouchableOpacity)<{ $tone: "surface" | "primary" | "da
   justify-content: center;
   background-color: ${({ $tone, theme }) =>
     $tone === "danger" ? "#C0392B" : $tone === "primary" ? theme.colors.primary : "rgba(255,255,255,0.1)"};
+`;
+
+const Badge = styled(View)`
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  align-items: center;
+  justify-content: center;
+  background-color: #e5484d;
+`;
+
+const BadgeText = styled(Text)`
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 800;
 `;
 
 const OffscreenHost = styled(View)`
