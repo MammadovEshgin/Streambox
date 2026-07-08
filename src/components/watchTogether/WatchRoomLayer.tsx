@@ -18,6 +18,7 @@ import type { VideoPlayer } from "expo-video";
 
 import { FaceCamOverlay } from "./FaceCamOverlay";
 import { PolaroidCard } from "./PolaroidCard";
+import { getMovieDetails, getSeriesDetails } from "../../api/tmdb";
 import { useWatchRoomSession } from "../../hooks/useWatchRoomSession";
 import { getWebRtc } from "../../services/webrtcCompat";
 import { uploadCameraStill, uploadPolaroid, saveWatchMemory } from "../../services/watchMemories";
@@ -83,8 +84,32 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   const [selfStillUri, setSelfStillUri] = useState<string | null>(null);
   const [polaroidPreview, setPolaroidPreview] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
+  const [synopsis, setSynopsis] = useState<string | null>(null);
 
   const partnerNickname = session.partner?.nickname ?? null;
+
+  // Pull the movie overview for the polaroid "notes" once we know the title.
+  const roomId = session.room?.id;
+  const roomTmdbId = session.room?.tmdbId;
+  const roomMediaType = session.room?.mediaType;
+  useEffect(() => {
+    if (!roomId || !roomTmdbId || !roomMediaType) return;
+    let active = true;
+    void (async () => {
+      try {
+        const details =
+          roomMediaType === "movie"
+            ? await getMovieDetails(String(roomTmdbId))
+            : await getSeriesDetails(String(roomTmdbId));
+        if (active) setSynopsis(details.overview ?? null);
+      } catch {
+        /* notes just stay empty */
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [roomId, roomTmdbId, roomMediaType]);
 
   // ── Right rail slide (swipe from the right edge reveals it) ──
   const railProgress = useSharedValue(0); // 0 hidden, 1 shown
@@ -200,8 +225,8 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   // Fit the polaroid preview within the (often landscape) player bounds.
   const preview = useMemo(() => {
     const { width, height } = Dimensions.get("window");
-    const ratio = 300 / 430; // polaroid w/h
-    const h = Math.min(height * 0.82, width * 0.55 / ratio);
+    const ratio = 320 / 400; // polaroid w/h (template aspect)
+    const h = Math.min(height * 0.82, (width * 0.55) / ratio);
     return { w: h * ratio, h };
   }, []);
 
@@ -289,14 +314,15 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         </ViewShot>
         <PolaroidCard
           viewShotRef={polaroidShotRef}
-          backdropPath={session.room?.backdropPath ?? null}
           title={session.room?.title ?? ""}
-          timecodeSeconds={player?.currentTime ?? 0}
-          dateEpochMs={Date.now()}
+          posterPath={session.room?.posterPath ?? null}
+          backdropPath={session.room?.backdropPath ?? null}
           selfStillUri={selfStillUri}
           partnerStillUri={session.partnerStill?.uri ?? null}
           selfNickname={nickname}
           partnerNickname={partnerNickname}
+          dateEpochMs={Date.now()}
+          synopsis={synopsis}
         />
       </OffscreenHost>
 
