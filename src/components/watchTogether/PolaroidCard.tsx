@@ -3,7 +3,7 @@ import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import type { RefObject } from "react";
 import { Text, View } from "react-native";
-import Svg, { Circle, Line, Path, Polygon, Rect } from "react-native-svg";
+import Svg, { Circle, Defs, Line, Path, Pattern, Polygon, RadialGradient, Rect, Stop } from "react-native-svg";
 import ViewShot from "react-native-view-shot";
 import styled from "styled-components/native";
 
@@ -144,6 +144,39 @@ function Popcorn() {
   );
 }
 
+// Gives the instant photos a vintage feel: a warm faded wash, fine film grain,
+// and a soft vignette — so a crisp phone-camera shot reads like a real polaroid.
+const FILL = { position: "absolute" as const, left: 0, right: 0, top: 0, bottom: 0 };
+
+function PhotoTreatment() {
+  return (
+    <>
+      <LinearGradient
+        colors={["rgba(255,226,178,0.12)", "rgba(120,92,60,0.05)", "rgba(38,28,18,0.20)"]}
+        locations={[0, 0.55, 1]}
+        style={FILL}
+        pointerEvents="none"
+      />
+      <Svg style={FILL} width="100%" height="100%" pointerEvents="none">
+        <Defs>
+          <RadialGradient id="vig" cx="50%" cy="42%" r="75%">
+            <Stop offset="0.55" stopColor="#000000" stopOpacity={0} />
+            <Stop offset="1" stopColor="#000000" stopOpacity={0.32} />
+          </RadialGradient>
+          <Pattern id="grain" x="0" y="0" width="3" height="3" patternUnits="userSpaceOnUse">
+            <Rect width={3} height={3} fill="transparent" />
+            <Circle cx={0.6} cy={0.6} r={0.35} fill="#000000" opacity={0.1} />
+            <Circle cx={2.1} cy={1.4} r={0.3} fill="#ffffff" opacity={0.07} />
+            <Circle cx={1.3} cy={2.3} r={0.3} fill="#000000" opacity={0.07} />
+          </Pattern>
+        </Defs>
+        <Rect x={0} y={0} width="100%" height="100%" fill="url(#grain)" />
+        <Rect x={0} y={0} width="100%" height="100%" fill="url(#vig)" />
+      </Svg>
+    </>
+  );
+}
+
 export function PolaroidCard({
   viewShotRef,
   title,
@@ -159,7 +192,7 @@ export function PolaroidCard({
 }: PolaroidCardProps) {
   // Prefer the landscape backdrop for the "screen" frame; fall back to poster.
   const stillSource = backdropPath ?? posterPath ?? null;
-  const still = stillSource ? getTmdbImageUrl(stillSource, "w780") : null;
+  const still = stillSource ? getTmdbImageUrl(stillSource, "original") : null;
 
   return (
     <ViewShot ref={viewShotRef} options={{ format: "png", quality: 1 }}>
@@ -189,7 +222,10 @@ export function PolaroidCard({
         <Polaroid style={{ left: 74, top: 160, transform: [{ rotate: "-4deg" }] }}>
           <PhotoArea>
             {selfStillUri ? (
-              <Image source={{ uri: selfStillUri }} style={{ width: "100%", height: "100%" }} contentFit="cover" />
+              <>
+                <Image source={{ uri: selfStillUri }} style={{ width: "100%", height: "100%" }} contentFit="cover" />
+                <PhotoTreatment />
+              </>
             ) : (
               <PhotoPlaceholder>
                 <Feather name="user" size={18} color="#9aa093" />
@@ -202,7 +238,10 @@ export function PolaroidCard({
         <Polaroid style={{ left: 166, top: 164, transform: [{ rotate: "4deg" }] }}>
           <PhotoArea>
             {partnerStillUri ? (
-              <Image source={{ uri: partnerStillUri }} style={{ width: "100%", height: "100%" }} contentFit="cover" />
+              <>
+                <Image source={{ uri: partnerStillUri }} style={{ width: "100%", height: "100%" }} contentFit="cover" />
+                <PhotoTreatment />
+              </>
             ) : (
               <PhotoPlaceholder>
                 <Feather name="user" size={18} color="#9aa093" />

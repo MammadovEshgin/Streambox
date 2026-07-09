@@ -15,15 +15,25 @@ import {
   getMemoryImageUrl,
   listWatchMemories,
   pruneCachedMemories,
-  type WatchMemory,
+  removeCachedMemoryImage,
 } from "../../services/watchMemories";
+import { listLocalMemories, removeLocalMemory } from "../../services/watchMemoryLocalStore";
 
 // Profile → "Shared Sessions": every polaroid from a watch-together session, in
-// a 3-up grid. Tapping opens the full card to share (a local file, so it works
-// on Android) or delete (per-user: removed from your shelf; the partner keeps
+// a 3-up grid. Memories show instantly from the on-device store (written the
+// moment they are captured) and are reconciled with their cloud row once it
+// syncs. Tapping opens the full card to share (a local file, so it works on
+// Android) or delete (per-user: removed from your shelf; the partner keeps
 // theirs until they delete too).
 
-type Resolved = WatchMemory & { localUri: string | null; remoteUrl: string | null };
+type Item = {
+  key: string;
+  cloudId: string | null;
+  localId: string | null;
+  title: string;
+  uri: string | null;
+  createdAtEpochMs: number;
+};
 
 const POLAROID_RATIO = 430 / 320; // height / width
 const SECTION_PADDING = 16;
@@ -38,42 +48,75 @@ const CARD_HEIGHT = Math.round(CARD_WIDTH * POLAROID_RATIO);
 const FULL_WIDTH = Math.min(320, SCREEN_WIDTH - 48);
 const FULL_HEIGHT = Math.round(FULL_WIDTH * POLAROID_RATIO);
 
-function displayUri(item: Resolved): string | null {
-  return item.localUri ?? item.remoteUrl;
-}
-
 export function SharedSessionsSection() {
   const theme = useTheme();
   const { t } = useTranslation();
   const { user } = useAuth();
   const isFocused = useIsFocused();
 
-  const [memories, setMemories] = useState<Resolved[]>([]);
+  const [memories, setMemories] = useState<Item[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [active, setActive] = useState<Resolved | null>(null);
+  const [active, setActive] = useState<Item | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    if (!user?.id) {
-      setMemories([]);
-      setLoaded(true);
-      return;
-    }
     try {
-      const rows = await listWatchMemories(user.id);
-      // Resolve each to a local file (cached, offline-friendly, shareable);
-      // download from a signed URL on first sight.
-      const resolved = await Promise.all(
-        rows.map(async (row): Promise<Resolved> => {
-          const cached = await getCachedMemoryUri(row.id);
-          if (cached) return { ...row, localUri: cached, remoteUrl: null };
-          const remoteUrl = await getMemoryImageUrl(row.imagePath);
-          const localUri = remoteUrl ? await cacheMemoryFromUrl(row.id, remoteUrl) : null;
-          return { ...row, localUri, remoteUrl };
-        })
+      const [localMems, cloudRows] = await Promise.all([
+        listLocalMemories(),
+        user?.id ? listWatchMemories(user.id) : Promise.resolve([]),
+      ]);
+      const localByCloud = new Map(
+        localMems.filter((m) => m.cloudId).map((m) => [m.cloudId as string, m])
       );
-      setMemories(resolved);
-      void pruneCachedMemories(rows.map((row) => row.id));
+      const cloudIds = new Set(cloudRows.map((row) => row.id));
+      const shownLocalIds = new Set<string>();
+      const items: Item[] = [];
+
+      // Cloud rows are authoritative (both participants see them). Prefer a
+      // local cached file for the image; download + cache on first sight.
+      for (const row of cloudRows) {
+        const local = localByCloud.get(row.id);
+        if (local) shownLocalIds.add(local.localId);
+        let uri: string | null = local?.imageLocalUri ?? (await getCachedMemoryUri(row.id));
+        if (!uri) {
+          const remote = await getMemoryImageUrl(row.imagePath);
+          uri = (remote ? await cacheMemoryFromUrl(row.id, remote) : null) ?? remote;
+        }
+        items.push({
+          key: row.id,
+          cloudId: row.id,
+          localId: local?.localId ?? null,
+          title: row.title,
+          uri,
+          createdAtEpochMs: row.createdAtEpochMs,
+        });
+      }
+
+      // Local memories not yet represented by a visible cloud row (still
+      // uploading, or the cloud row isn't readable to us).
+      for (const m of localMems) {
+        if (shownLocalIds.has(m.localId)) continue;
+        if (m.cloudId && cloudIds.has(m.cloudId)) continue;
+        items.push({
+          key: m.localId,
+          cloudId: m.cloudId,
+          localId: m.localId,
+          title: m.title,
+          uri: m.imageLocalUri,
+          createdAtEpochMs: m.createdAtEpochMs,
+        });
+      }
+
+      items.sort((a, b) => b.createdAtEpochMs - a.createdAtEpochMs);
+      setMemories(items);
+
+      // Keep every still-live image (cloud ids + local ids) in the cache.
+      const activeIds = [
+        ...cloudRows.map((row) => row.id),
+        ...localMems.map((m) => m.localId),
+        ...localMems.flatMap((m) => (m.cloudId ? [m.cloudId] : [])),
+      ];
+      void pruneCachedMemories(activeIds);
     } catch {
       setMemories([]);
     } finally {
@@ -86,7 +129,7 @@ export function SharedSessionsSection() {
   }, [isFocused, load]);
 
   const share = useCallback(async () => {
-    const uri = active ? displayUri(active) : null;
+    const uri = active?.uri ?? null;
     if (!uri) return;
     try {
       if (await Sharing.isAvailableAsync()) {
@@ -97,8 +140,28 @@ export function SharedSessionsSection() {
     }
   }, [active]);
 
+  const runDelete = useCallback(async (item: Item) => {
+    setBusy(true);
+    try {
+      if (item.cloudId) {
+        await deleteWatchMemory(item.cloudId);
+        if (item.localId) await removeLocalMemory(item.localId);
+      } else if (item.localId) {
+        await removeLocalMemory(item.localId);
+        await removeCachedMemoryImage(item.localId);
+      }
+      setMemories((prev) => prev.filter((m) => m.key !== item.key));
+      setActive(null);
+    } catch {
+      Alert.alert(t("common.error", { defaultValue: "Something went wrong" }));
+    } finally {
+      setBusy(false);
+    }
+  }, [t]);
+
   const confirmDelete = useCallback(() => {
     if (!active) return;
+    const target = active;
     Alert.alert(
       t("watchTogether.deleteTitle", { defaultValue: "Remove this memory?" }),
       t("watchTogether.deleteBody", {
@@ -109,24 +172,11 @@ export function SharedSessionsSection() {
         {
           text: t("common.delete", { defaultValue: "Delete" }),
           style: "destructive",
-          onPress: () => void runDelete(active.id),
+          onPress: () => void runDelete(target),
         },
       ]
     );
-  }, [active, t]);
-
-  const runDelete = useCallback(async (id: string) => {
-    setBusy(true);
-    try {
-      await deleteWatchMemory(id);
-      setMemories((prev) => prev.filter((memory) => memory.id !== id));
-      setActive(null);
-    } catch {
-      Alert.alert(t("common.error", { defaultValue: "Something went wrong" }));
-    } finally {
-      setBusy(false);
-    }
-  }, [t]);
+  }, [active, t, runDelete]);
 
   // Stay invisible until we know there is something to show — no empty flash
   // for users who have never had a session, no loading box for those who have.
@@ -147,10 +197,10 @@ export function SharedSessionsSection() {
 
       <Grid>
         {memories.map((item) => {
-          const uri = displayUri(item);
+          const uri = item.uri;
           return (
             <Cell
-              key={item.id}
+              key={item.key}
               onPress={() => setActive(item)}
               style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}
             >
@@ -172,9 +222,9 @@ export function SharedSessionsSection() {
             <Feather name="x" size={22} color="#fff" />
           </CloseButton>
 
-          {active && displayUri(active) ? (
+          {active?.uri ? (
             <FullImage
-              source={{ uri: displayUri(active) as string }}
+              source={{ uri: active.uri }}
               style={{ width: FULL_WIDTH, height: FULL_HEIGHT }}
               contentFit="contain"
             />
