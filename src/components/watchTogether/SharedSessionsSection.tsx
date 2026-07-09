@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useIsFocused } from "@react-navigation/native";
 import { useTranslation } from "react-i18next";
-import { ActivityIndicator, Alert, Dimensions, Modal, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Dimensions, FlatList, Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Image } from "expo-image";
 import * as Sharing from "expo-sharing";
 import { Feather } from "@expo/vector-icons";
@@ -41,6 +42,9 @@ const GRID_GAP = 10;
 const COLUMNS = 3;
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
+// Rail cards match the poster-card width used in the other profile sections.
+const RAIL_CARD_WIDTH = 132;
+const RAIL_CARD_HEIGHT = Math.round(RAIL_CARD_WIDTH * POLAROID_RATIO);
 // Floor so three cards + two gaps always fit one row (never wrap to 2-up).
 const CARD_WIDTH = Math.floor((SCREEN_WIDTH - SECTION_PADDING * 2 - GRID_GAP * (COLUMNS - 1)) / COLUMNS);
 const CARD_HEIGHT = Math.round(CARD_WIDTH * POLAROID_RATIO);
@@ -53,11 +57,13 @@ export function SharedSessionsSection() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const isFocused = useIsFocused();
+  const insets = useSafeAreaInsets();
 
   const [memories, setMemories] = useState<Item[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [active, setActive] = useState<Item | null>(null);
   const [busy, setBusy] = useState(false);
+  const [gridOpen, setGridOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -182,10 +188,12 @@ export function SharedSessionsSection() {
   // for users who have never had a session, no loading box for those who have.
   if (!loaded || memories.length === 0) return null;
 
+  const title = t("watchTogether.sharedSessions", { defaultValue: "Shared Sessions" });
+
   return (
     <Section>
       <Header>
-        <SectionTitle>{t("watchTogether.sharedSessions", { defaultValue: "Shared Sessions" })}</SectionTitle>
+        <SectionTitle>{title}</SectionTitle>
         <Dot />
         <Meta>
           {t("watchTogether.sharedSessionsCount", {
@@ -193,28 +201,67 @@ export function SharedSessionsSection() {
             count: memories.length,
           })}
         </Meta>
+        <SeeAllButton onPress={() => setGridOpen(true)}>
+          <SeeAllText>{t("common.seeAll", { defaultValue: "See all" })}</SeeAllText>
+        </SeeAllButton>
       </Header>
 
-      <Grid>
-        {memories.map((item) => {
-          const uri = item.uri;
-          return (
-            <Cell
-              key={item.key}
-              onPress={() => setActive(item)}
-              style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}
-            >
-              {uri ? (
-                <Thumb source={{ uri }} contentFit="cover" transition={140} />
+      {/* Horizontal rail, matching the other profile sections */}
+      <FlatList
+        data={memories}
+        horizontal
+        keyExtractor={(item) => item.key}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingRight: SECTION_PADDING }}
+        renderItem={({ item }) => (
+          <RailCardWrap>
+            <RailCard onPress={() => setActive(item)} style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1, transform: [{ scale: pressed ? 0.97 : 1 }] }]}>
+              {item.uri ? (
+                <RailThumb source={{ uri: item.uri }} contentFit="cover" transition={140} />
               ) : (
                 <ThumbFallback>
                   <Feather name="camera" size={18} color={theme.colors.textTertiary} />
                 </ThumbFallback>
               )}
-            </Cell>
-          );
-        })}
-      </Grid>
+            </RailCard>
+          </RailCardWrap>
+        )}
+      />
+
+      {/* "See all" → full 3-up grid */}
+      <Modal visible={gridOpen} animationType="slide" onRequestClose={() => setGridOpen(false)}>
+        <GridScreen style={{ paddingTop: insets.top }}>
+          <GridHeader>
+            <Pressable onPress={() => setGridOpen(false)} hitSlop={12}>
+              <Feather name="chevron-left" size={24} color={theme.colors.textPrimary} />
+            </Pressable>
+            <GridTitle>{title}</GridTitle>
+            <View style={{ width: 24 }} />
+          </GridHeader>
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ padding: SECTION_PADDING, paddingBottom: insets.bottom + 24 }}
+          >
+            <Grid>
+              {memories.map((item) => (
+                <Cell
+                  key={item.key}
+                  onPress={() => setActive(item)}
+                  style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}
+                >
+                  {item.uri ? (
+                    <Thumb source={{ uri: item.uri }} contentFit="cover" transition={140} />
+                  ) : (
+                    <ThumbFallback>
+                      <Feather name="camera" size={18} color={theme.colors.textTertiary} />
+                    </ThumbFallback>
+                  )}
+                </Cell>
+              ))}
+            </Grid>
+          </ScrollView>
+        </GridScreen>
+      </Modal>
 
       <Modal visible={Boolean(active)} transparent animationType="fade" onRequestClose={() => setActive(null)}>
         <Backdrop>
@@ -284,6 +331,56 @@ const Meta = styled(Text)`
   color: rgba(255, 255, 255, 0.3);
   font-family: Outfit_500Medium;
   font-size: 13px;
+`;
+
+const SeeAllButton = styled(Pressable)`
+  margin-left: auto;
+  padding: 2px 0;
+`;
+
+const SeeAllText = styled(Text)`
+  color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_600SemiBold;
+  font-size: 13px;
+`;
+
+const RailCardWrap = styled(View)`
+  margin-right: 12px;
+`;
+
+const RailCard = styled(Pressable)`
+  width: ${RAIL_CARD_WIDTH}px;
+  height: ${RAIL_CARD_HEIGHT}px;
+  border-radius: 14px;
+  overflow: hidden;
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.glassBorder};
+`;
+
+const RailThumb = styled(Image)`
+  width: 100%;
+  height: 100%;
+`;
+
+const GridScreen = styled(View)`
+  flex: 1;
+  background-color: ${({ theme }) => theme.colors.background};
+`;
+
+const GridHeader = styled(View)`
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px 14px 16px;
+  border-bottom-width: 1px;
+  border-bottom-color: ${({ theme }) => theme.colors.border};
+`;
+
+const GridTitle = styled(Text)`
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
+  font-size: 18px;
 `;
 
 const Grid = styled(View)`
