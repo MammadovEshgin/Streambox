@@ -144,47 +144,43 @@ function Popcorn() {
   );
 }
 
-// Classic instant-film look. Real Polaroids are faded and warm, not dark: the
-// blacks are lifted (milky), there's a yellow/amber cast, fine grain, a soft
-// warm vignette, and often a light leak glowing in from a corner. Layered as
-// translucent overlays since RN has no colour-grading filters.
+// Vintage Polaroid grade, approximating the Lightroom recipe with translucent
+// overlays (RN has no colour curves/HSL, and overlays are what view-shot can
+// actually capture). The dominant moves — Blacks +32, Whites -25, Contrast -22,
+// Vibrance/Sat down, Temp +11, matte tone curve, soft warm vignette, Grain 35 —
+// read as a warm milky matte, a warm cast with faintly cool shadows, a
+// large-feather warm vignette, and medium grain.
 const FILL = { position: "absolute" as const, left: 0, right: 0, top: 0, bottom: 0 };
 
 function PhotoTreatment() {
   return (
     <>
       {/* Milky fade — lifts the blacks and drops contrast (the polaroid "haze"). */}
-      <View style={[FILL, { backgroundColor: "rgba(246,238,221,0.16)" }]} pointerEvents="none" />
-      {/* Warm amber colour cast, cooler toward the bottom. */}
+      <View style={[FILL, { backgroundColor: "rgba(214,206,188,0.17)" }]} pointerEvents="none" />
+      {/* Warm highlights, faintly cool + desaturated shadows (Temp +11, split-tone). */}
       <LinearGradient
-        colors={["rgba(255,201,133,0.16)", "rgba(255,178,120,0.06)", "rgba(150,150,120,0.10)"]}
-        locations={[0, 0.55, 1]}
+        colors={["rgba(255,201,133,0.13)", "rgba(190,180,150,0.05)", "rgba(96,120,124,0.09)"]}
+        locations={[0, 0.5, 1]}
         style={FILL}
         pointerEvents="none"
       />
       <Svg style={FILL} width="100%" height="100%" pointerEvents="none">
         <Defs>
-          {/* Warm light leak bleeding in from the top-right corner. */}
-          <RadialGradient id="leak" cx="86%" cy="8%" r="75%">
-            <Stop offset="0" stopColor="#ff7a2a" stopOpacity={0.2} />
-            <Stop offset="0.45" stopColor="#ff9a3a" stopOpacity={0.05} />
-            <Stop offset="1" stopColor="#ff9a3a" stopOpacity={0} />
+          {/* Soft, large-feather warm vignette (Vignette -18, Feather 68). */}
+          <RadialGradient id="vig" cx="50%" cy="46%" r="80%">
+            <Stop offset="0.5" stopColor="#2e2416" stopOpacity={0} />
+            <Stop offset="1" stopColor="#2e2416" stopOpacity={0.2} />
           </RadialGradient>
-          {/* Soft, warm (not black) vignette. */}
-          <RadialGradient id="vig" cx="50%" cy="48%" r="72%">
-            <Stop offset="0.6" stopColor="#3a2a16" stopOpacity={0} />
-            <Stop offset="1" stopColor="#3a2a16" stopOpacity={0.24} />
-          </RadialGradient>
-          {/* Fine film grain. */}
-          <Pattern id="grain" x="0" y="0" width="3" height="3" patternUnits="userSpaceOnUse">
-            <Rect width={3} height={3} fill="transparent" />
-            <Circle cx={0.6} cy={0.6} r={0.32} fill="#000000" opacity={0.08} />
-            <Circle cx={2.1} cy={1.4} r={0.28} fill="#ffffff" opacity={0.06} />
-            <Circle cx={1.3} cy={2.3} r={0.28} fill="#000000" opacity={0.06} />
+          {/* Medium film grain (Amount 35, larger + rougher). */}
+          <Pattern id="grain" x="0" y="0" width="4" height="4" patternUnits="userSpaceOnUse">
+            <Rect width={4} height={4} fill="transparent" />
+            <Circle cx={0.8} cy={0.7} r={0.5} fill="#000000" opacity={0.11} />
+            <Circle cx={2.7} cy={1.6} r={0.45} fill="#ffffff" opacity={0.09} />
+            <Circle cx={1.6} cy={3.0} r={0.45} fill="#000000" opacity={0.09} />
+            <Circle cx={3.3} cy={3.4} r={0.4} fill="#ffffff" opacity={0.07} />
           </Pattern>
         </Defs>
         <Rect x={0} y={0} width="100%" height="100%" fill="url(#grain)" />
-        <Rect x={0} y={0} width="100%" height="100%" fill="url(#leak)" />
         <Rect x={0} y={0} width="100%" height="100%" fill="url(#vig)" />
       </Svg>
     </>
@@ -371,10 +367,10 @@ const Polaroid = styled(View)`
   position: absolute;
   width: 80px;
   height: 84px;
-  background-color: #fbfaf6;
+  background-color: #f4efe4;
   padding: 6px 6px 0px 6px;
   border-width: 1px;
-  border-color: #dcd8cc;
+  border-color: #ded9cc;
 `;
 
 const PhotoArea = styled(View)`
