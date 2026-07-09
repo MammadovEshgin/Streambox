@@ -2,6 +2,8 @@ import "react-native-gesture-handler";
 import "react-native-reanimated";
 
 import { useFonts, Outfit_400Regular, Outfit_500Medium, Outfit_600SemiBold, Outfit_700Bold } from "@expo-google-fonts/outfit";
+import { SpecialElite_400Regular } from "@expo-google-fonts/special-elite";
+import { Caveat_500Medium, Caveat_600SemiBold, Caveat_700Bold } from "@expo-google-fonts/caveat";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { NavigationContainer, type Theme as NavigationTheme } from "@react-navigation/native";
@@ -596,6 +598,10 @@ export default function App() {
     Outfit_500Medium,
     Outfit_600SemiBold,
     Outfit_700Bold,
+    SpecialElite_400Regular,
+    Caveat_500Medium,
+    Caveat_600SemiBold,
+    Caveat_700Bold,
   });
   const [fontFallbackReady, setFontFallbackReady] = useState(false);
 

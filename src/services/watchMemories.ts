@@ -3,6 +3,11 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import { supabase } from "./supabase";
 import type { MediaType } from "../api/tmdb";
+import {
+  WATCH_MEMORY_CACHE_DIRNAME,
+  memoryCacheFileName,
+  selectStaleCacheFiles,
+} from "../utils/watchMemoryCache";
 
 // Watch Together "Movie Memories": polaroid PNGs + the raw camera stills they
 // are composed from, stored in the private `watch-memories` bucket under
@@ -39,6 +44,75 @@ export async function getMemoryImageUrl(path: string): Promise<string | null> {
   return data?.signedUrl ?? null;
 }
 
+// ── On-device cache ─────────────────────────────────────────────────────────
+// Every polaroid is mirrored to `${documentDirectory}watch-memories/{id}.png`
+// so the grid paints instantly + offline, and — importantly — Share hands
+// expo-sharing a real local file (sharing a remote https URL is unreliable on
+// Android). The author caches its own capture immediately; the partner's device
+// downloads on first shelf load, so both keep a local copy.
+
+const CACHE_DIR = `${FileSystem.documentDirectory}${WATCH_MEMORY_CACHE_DIRNAME}/`;
+
+async function ensureCacheDir(): Promise<void> {
+  const info = await FileSystem.getInfoAsync(CACHE_DIR);
+  if (!info.exists) {
+    await FileSystem.makeDirectoryAsync(CACHE_DIR, { intermediates: true });
+  }
+}
+
+function localMemoryPath(memoryId: string): string {
+  return `${CACHE_DIR}${memoryCacheFileName(memoryId)}`;
+}
+
+export async function getCachedMemoryUri(memoryId: string): Promise<string | null> {
+  const path = localMemoryPath(memoryId);
+  const info = await FileSystem.getInfoAsync(path);
+  return info.exists ? path : null;
+}
+
+// Author path: copy the freshly captured polaroid into the cache under its id.
+export async function cacheMemoryFromLocalUri(memoryId: string, uri: string): Promise<string | null> {
+  try {
+    await ensureCacheDir();
+    const dest = localMemoryPath(memoryId);
+    await FileSystem.copyAsync({ from: uri, to: dest });
+    return dest;
+  } catch {
+    return null;
+  }
+}
+
+// Partner / cross-device path: pull the polaroid from a signed URL into cache.
+export async function cacheMemoryFromUrl(memoryId: string, url: string): Promise<string | null> {
+  try {
+    await ensureCacheDir();
+    const dest = localMemoryPath(memoryId);
+    const result = await FileSystem.downloadAsync(url, dest);
+    return result.uri ?? dest;
+  } catch {
+    return null;
+  }
+}
+
+async function deleteCachedMemory(memoryId: string): Promise<void> {
+  await FileSystem.deleteAsync(localMemoryPath(memoryId), { idempotent: true }).catch(() => undefined);
+}
+
+// Drop cached files whose memory is no longer on the shelf (removed/expired).
+export async function pruneCachedMemories(activeIds: string[]): Promise<void> {
+  try {
+    const info = await FileSystem.getInfoAsync(CACHE_DIR);
+    if (!info.exists) return;
+    const files = await FileSystem.readDirectoryAsync(CACHE_DIR);
+    const stale = selectStaleCacheFiles(files, activeIds);
+    await Promise.all(
+      stale.map((file) => FileSystem.deleteAsync(`${CACHE_DIR}${file}`, { idempotent: true }).catch(() => undefined))
+    );
+  } catch {
+    /* best-effort cleanup */
+  }
+}
+
 export type WatchMemoryInput = {
   roomId: string;
   mediaType: MediaType;
@@ -51,24 +125,40 @@ export type WatchMemoryInput = {
   participantUserIds: string[];
 };
 
-export async function saveWatchMemory(input: WatchMemoryInput): Promise<void> {
+// Returns the new memory's id so the author can cache the polaroid locally
+// under that id (matching how the shelf later reads it back).
+export async function saveWatchMemory(input: WatchMemoryInput): Promise<string> {
   const { data } = await supabase.auth.getUser();
   const createdBy = data.user?.id;
   if (!createdBy) throw new Error("Not authenticated.");
 
-  const { error } = await supabase.from("watch_room_memories").insert({
-    room_id: input.roomId,
-    created_by: createdBy,
-    media_type: input.mediaType,
-    tmdb_id: input.tmdbId,
-    title: input.title,
-    position_seconds: Math.max(0, Math.round(input.positionSeconds)),
-    image_path: input.imagePath,
-    caption: input.caption ?? null,
-    participant_nicknames: input.participantNicknames,
-    participant_user_ids: input.participantUserIds,
-  });
+  const { data: inserted, error } = await supabase
+    .from("watch_room_memories")
+    .insert({
+      room_id: input.roomId,
+      created_by: createdBy,
+      media_type: input.mediaType,
+      tmdb_id: input.tmdbId,
+      title: input.title,
+      position_seconds: Math.max(0, Math.round(input.positionSeconds)),
+      image_path: input.imagePath,
+      caption: input.caption ?? null,
+      participant_nicknames: input.participantNicknames,
+      participant_user_ids: input.participantUserIds,
+    })
+    .select("id")
+    .single();
   if (error) throw error;
+  return (inserted as { id: string }).id;
+}
+
+// Per-user delete: removes the caller from the memory's participants (the shared
+// row + cloud image are purged server-side once nobody is left) and drops the
+// local cache copy. See migration 20260709120000.
+export async function deleteWatchMemory(memoryId: string): Promise<void> {
+  const { error } = await supabase.rpc("remove_watch_memory", { p_memory_id: memoryId });
+  if (error) throw error;
+  await deleteCachedMemory(memoryId);
 }
 
 export type WatchMemory = {
