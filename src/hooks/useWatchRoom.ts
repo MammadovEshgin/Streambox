@@ -78,6 +78,7 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
           case "webrtc-offer":
           case "webrtc-answer":
           case "webrtc-ice":
+          case "webrtc-ready":
             handlersRef.current.onWebrtcSignal?.(signal);
             break;
         }

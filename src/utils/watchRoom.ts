@@ -176,11 +176,23 @@ export type WatchRoomSignal =
   | { type: "webrtc-offer"; from: string; sdp: string }
   | { type: "webrtc-answer"; from: string; sdp: string }
   | { type: "webrtc-ice"; from: string; candidate: unknown }
+  // Readiness handshake: a peer announces it has a live RTCPeerConnection ready
+  // to negotiate. Prevents the host's offer from racing ahead of the guest's
+  // peer connection (which would silently drop the offer and never connect).
+  | { type: "webrtc-ready"; from: string }
   | { type: "playback"; from: string; state: RemotePlaybackState }
   | { type: "reaction"; from: string; emoji: string; at: number }
   | { type: "chat"; from: string; text: string; at: number }
   | { type: "capture-request"; from: string; at: number }
   | { type: "capture-still"; from: string; nickname: string; imagePath: string; at: number };
+
+// What a peer should do when it hears the other side is "ready": the host
+// (initiator) answers with an SDP offer; the guest re-announces its own
+// readiness so a host that enabled its camera later still learns to offer.
+// Because only the host ever offers, there is no offer glare to arbitrate.
+export function negotiationActionOnPeerReady(isInitiator: boolean): "offer" | "announce-ready" {
+  return isInitiator ? "offer" : "announce-ready";
+}
 
 export const WATCH_ROOM_CHANNEL_PREFIX = "watch-room";
 

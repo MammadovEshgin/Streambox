@@ -20,7 +20,9 @@
     "check:hdfilm": "tsx scripts/check-hdfilm-resolver.ts"
   },
   "dependencies": {
+    "@expo-google-fonts/caveat": "^0.4.2",
     "@expo-google-fonts/outfit": "^0.4.3",
+    "@expo-google-fonts/special-elite": "^0.4.1",
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-native-community/datetimepicker": "8.4.4",

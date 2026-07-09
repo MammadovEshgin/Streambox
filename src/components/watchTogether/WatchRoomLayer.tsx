@@ -21,7 +21,12 @@ import { PolaroidCard } from "./PolaroidCard";
 import { getMovieDetails, getSeriesDetails } from "../../api/tmdb";
 import { useWatchRoomSession } from "../../hooks/useWatchRoomSession";
 import { getWebRtc } from "../../services/webrtcCompat";
-import { uploadCameraStill, uploadPolaroid, saveWatchMemory } from "../../services/watchMemories";
+import {
+  uploadCameraStill,
+  uploadPolaroid,
+  saveWatchMemory,
+  cacheMemoryFromLocalUri,
+} from "../../services/watchMemories";
 
 const STILL_STREAM_STYLE = { width: "100%" as const, height: "100%" as const };
 const REACTION_EMOJIS = ["😂", "❤️", "🔥", "😮"];
@@ -84,11 +89,12 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   const [selfStillUri, setSelfStillUri] = useState<string | null>(null);
   const [polaroidPreview, setPolaroidPreview] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
-  const [synopsis, setSynopsis] = useState<string | null>(null);
+  const [rating, setRating] = useState<number | null>(null);
+  const [genres, setGenres] = useState<string[] | null>(null);
 
   const partnerNickname = session.partner?.nickname ?? null;
 
-  // Pull the movie overview for the polaroid "notes" once we know the title.
+  // Pull the film's rating + genres for the polaroid log once we know the title.
   const roomId = session.room?.id;
   const roomTmdbId = session.room?.tmdbId;
   const roomMediaType = session.room?.mediaType;
@@ -101,9 +107,12 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
           roomMediaType === "movie"
             ? await getMovieDetails(String(roomTmdbId))
             : await getSeriesDetails(String(roomTmdbId));
-        if (active) setSynopsis(details.overview ?? null);
+        if (active) {
+          setRating(details.voteAverage ?? null);
+          setGenres(details.genres ?? null);
+        }
       } catch {
-        /* notes just stay empty */
+        /* rating/genres just stay empty */
       }
     })();
     return () => {
@@ -183,7 +192,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         if (session.room) {
           const path = await uploadPolaroid(session.room.id, uri).catch(() => null);
           if (path) {
-            await saveWatchMemory({
+            const memoryId = await saveWatchMemory({
               roomId: session.room.id,
               mediaType: session.room.mediaType,
               tmdbId: session.room.tmdbId,
@@ -192,7 +201,10 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
               imagePath: path,
               participantNicknames: [nickname, partnerNickname].filter(Boolean) as string[],
               participantUserIds: session.members.map((member) => member.userId),
-            }).catch(() => undefined);
+            }).catch(() => null);
+            // Keep the author's own copy on-device immediately (the partner's
+            // device caches it on first shelf load).
+            if (memoryId) await cacheMemoryFromLocalUri(memoryId, uri).catch(() => undefined);
           }
         }
       } finally {
@@ -322,7 +334,8 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
           selfNickname={nickname}
           partnerNickname={partnerNickname}
           dateEpochMs={Date.now()}
-          synopsis={synopsis}
+          rating={rating}
+          genres={genres}
         />
       </OffscreenHost>
 
