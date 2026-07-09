@@ -1162,8 +1162,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           </ProfileInfo>
         </Header>
 
-        <SharedSessionsSection />
-
         <SectionWrap>
           <SectionHeader>
             <SectionTitle>{t("profile.watched")}</SectionTitle>
@@ -1304,6 +1302,8 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </RailWrap>
           )}
         </SectionWrap>
+
+        <SharedSessionsSection />
 
         <BottomSpacer />
       </Content>
