@@ -42,9 +42,9 @@ const GRID_GAP = 10;
 const COLUMNS = 3;
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
-// Rail cards match the poster-card width used in the other profile sections.
+// Rail cards match the poster cards in the other profile sections exactly (132x198).
 const RAIL_CARD_WIDTH = 132;
-const RAIL_CARD_HEIGHT = Math.round(RAIL_CARD_WIDTH * POLAROID_RATIO);
+const RAIL_CARD_HEIGHT = 198;
 // Floor so three cards + two gaps always fit one row (never wrap to 2-up).
 const CARD_WIDTH = Math.floor((SCREEN_WIDTH - SECTION_PADDING * 2 - GRID_GAP * (COLUMNS - 1)) / COLUMNS);
 const CARD_HEIGHT = Math.round(CARD_WIDTH * POLAROID_RATIO);
@@ -217,7 +217,7 @@ export function SharedSessionsSection() {
           <RailCardWrap>
             <RailCard onPress={() => setActive(item)} style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1, transform: [{ scale: pressed ? 0.97 : 1 }] }]}>
               {item.uri ? (
-                <RailThumb source={{ uri: item.uri }} contentFit="cover" transition={140} />
+                <RailThumb source={{ uri: item.uri }} contentFit="contain" transition={140} />
               ) : (
                 <ThumbFallback>
                   <Feather name="camera" size={18} color={theme.colors.textTertiary} />
