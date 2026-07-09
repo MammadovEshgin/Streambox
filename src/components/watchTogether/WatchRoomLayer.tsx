@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Dimensions, FlatList, Modal, Text, TextInput, TouchableOpacity, View } from "react-native";
-import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
+import { CameraView, useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, {
   Easing,
@@ -21,7 +21,6 @@ import { FaceCamOverlay } from "./FaceCamOverlay";
 import { PolaroidCard } from "./PolaroidCard";
 import { getMovieDetails, getSeriesDetails } from "../../api/tmdb";
 import { useWatchRoomSession } from "../../hooks/useWatchRoomSession";
-import { getWebRtc } from "../../services/webrtcCompat";
 import {
   uploadCameraStill,
   uploadPolaroid,
@@ -29,7 +28,6 @@ import {
   cacheMemoryFromLocalUri,
 } from "../../services/watchMemories";
 
-const STILL_STREAM_STYLE = { width: "100%" as const, height: "100%" as const };
 const REACTION_EMOJIS = ["😂", "❤️", "🔥", "😮"];
 const PARTNER_STILL_TIMEOUT_MS = 5000;
 
@@ -64,7 +62,6 @@ function FloatingReaction({ emoji }: { emoji: string }) {
 export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLayerProps) {
   const theme = useTheme();
   const session = useWatchRoomSession({ player, code, nickname });
-  const RTCView = getWebRtc()?.RTCView;
 
   // Camera + mic access is requested in-app the first time you turn cameras on.
   // The permission hooks remember the granted state, so it never re-prompts once
@@ -113,12 +110,21 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
     if (fresh > 0) setUnread((count) => count + fresh);
   }, [session.chatMessages, chatOpen]);
 
-  const selfStillShotRef = useRef<ViewShot>(null);
   const polaroidShotRef = useRef<ViewShot>(null);
   const authorRef = useRef(false);
+  const cameraViewRef = useRef<CameraView>(null);
+  const photoResolveRef = useRef<((uri: string | null) => void) | null>(null);
+  const [photoMode, setPhotoMode] = useState(false);
   const [selfStillUri, setSelfStillUri] = useState<string | null>(null);
   const [polaroidPreview, setPolaroidPreview] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
+
+  // Mirror the partner's still + presence into refs so the async build flow can
+  // read the latest without re-subscribing (state closures would be stale).
+  const partnerStillRef = useRef(session.partnerStill);
+  partnerStillRef.current = session.partnerStill;
+  const bothPresentRef = useRef(session.bothPresent);
+  bothPresentRef.current = session.bothPresent;
   const [rating, setRating] = useState<number | null>(null);
   const [genres, setGenres] = useState<string[] | null>(null);
 
@@ -176,30 +182,111 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   }));
 
   // ── Polaroid capture ──
-  const captureOwnStill = useCallback(async (): Promise<string | null> => {
+  // WebRTC renders the live face into an Android SurfaceView, which screenshot
+  // APIs capture as black. So the polaroid photo is taken with expo-camera: we
+  // briefly hand the camera from WebRTC to a hidden CameraView, snap a real
+  // photo, then hand it back (the readiness handshake reconnects the video).
+  const onPhotoCameraReady = useCallback(async () => {
+    const resolve = photoResolveRef.current;
     try {
-      return await captureRef(selfStillShotRef, { format: "jpg", quality: 0.85 });
+      // A short settle lets the sensor lock exposure before the shot.
+      await new Promise((r) => setTimeout(r, 350));
+      const photo = await cameraViewRef.current?.takePictureAsync({ quality: 0.85 });
+      photoResolveRef.current = null;
+      resolve?.(photo?.uri ?? null);
     } catch {
-      return null;
+      photoResolveRef.current = null;
+      resolve?.(null);
     }
   }, []);
 
+  const captureSelfPhoto = useCallback(async (): Promise<string | null> => {
+    let cam = cameraPermission;
+    if (!cam?.granted) cam = await requestCameraPermission();
+    if (!cam?.granted) return null;
+
+    const restoreCameras = session.camerasOn;
+    try {
+      if (restoreCameras) {
+        // Release the camera from WebRTC so expo-camera can open it.
+        session.setCamerasOn(false);
+        await new Promise((r) => setTimeout(r, 550));
+      }
+      return await new Promise<string | null>((resolve) => {
+        photoResolveRef.current = resolve;
+        setPhotoMode(true);
+        // Safety net if the camera never signals ready.
+        setTimeout(() => {
+          if (photoResolveRef.current) {
+            photoResolveRef.current = null;
+            resolve(null);
+          }
+        }, 4500);
+      });
+    } finally {
+      setPhotoMode(false);
+      if (restoreCameras) setTimeout(() => session.setCamerasOn(true), 400);
+    }
+  }, [cameraPermission, requestCameraPermission, session]);
+
   const contributeStill = useCallback(async () => {
-    const uri = await captureOwnStill();
+    const uri = await captureSelfPhoto();
     if (uri) setSelfStillUri(uri);
     if (uri && session.room) {
       const path = await uploadCameraStill(session.room.id, uri).catch(() => null);
       if (path) session.sendCaptureStill(nickname, path);
     }
-  }, [captureOwnStill, nickname, session]);
+  }, [captureSelfPhoto, nickname, session]);
 
-  const initiateCapture = useCallback(() => {
+  // Author flow: take my photo, wait briefly for the partner's still (if a
+  // partner is here), then render + upload + save the polaroid. Runs to
+  // completion as one sequence — nothing external can cancel it, so every
+  // capture reliably produces exactly one saved memory.
+  const buildPolaroid = useCallback(async () => {
+    try {
+      if (bothPresentRef.current) {
+        const deadline = Date.now() + PARTNER_STILL_TIMEOUT_MS;
+        while (!partnerStillRef.current && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 150));
+        }
+      }
+      // Let the polaroid re-render with the latest stills before snapshotting.
+      await new Promise((r) => setTimeout(r, 250));
+      const uri = await captureRef(polaroidShotRef, { format: "png", quality: 1 });
+      setPolaroidPreview(uri);
+      const room = session.room;
+      if (room) {
+        const path = await uploadPolaroid(room.id, uri).catch(() => null);
+        if (path) {
+          const memoryId = await saveWatchMemory({
+            roomId: room.id,
+            mediaType: room.mediaType,
+            tmdbId: room.tmdbId,
+            title: room.title,
+            positionSeconds: player?.currentTime ?? 0,
+            imagePath: path,
+            participantNicknames: [nickname, partnerNickname].filter(Boolean) as string[],
+            participantUserIds: session.members.map((member) => member.userId),
+          }).catch(() => null);
+          // Keep the author's own copy on-device immediately (the partner's
+          // device caches it on first shelf load).
+          if (memoryId) await cacheMemoryFromLocalUri(memoryId, uri).catch(() => undefined);
+        }
+      }
+    } finally {
+      authorRef.current = false;
+      setCapturing(false);
+    }
+  }, [session, player, nickname, partnerNickname]);
+
+  const initiateCapture = useCallback(async () => {
     if (capturing) return;
     authorRef.current = true;
     setCapturing(true);
     session.requestCapture();
-    void contributeStill();
-  }, [capturing, contributeStill, session]);
+    await contributeStill();
+    await buildPolaroid();
+  }, [capturing, contributeStill, buildPolaroid, session]);
 
   useEffect(() => {
     if (session.captureRequestedBy && !authorRef.current) {
@@ -211,40 +298,6 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.captureRequestedBy]);
-
-  useEffect(() => {
-    if (!authorRef.current || polaroidPreview || !capturing) return;
-    const build = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      try {
-        const uri = await captureRef(polaroidShotRef, { format: "png", quality: 1 });
-        setPolaroidPreview(uri);
-        if (session.room) {
-          const path = await uploadPolaroid(session.room.id, uri).catch(() => null);
-          if (path) {
-            const memoryId = await saveWatchMemory({
-              roomId: session.room.id,
-              mediaType: session.room.mediaType,
-              tmdbId: session.room.tmdbId,
-              title: session.room.title,
-              positionSeconds: player?.currentTime ?? 0,
-              imagePath: path,
-              participantNicknames: [nickname, partnerNickname].filter(Boolean) as string[],
-              participantUserIds: session.members.map((member) => member.userId),
-            }).catch(() => null);
-            // Keep the author's own copy on-device immediately (the partner's
-            // device caches it on first shelf load).
-            if (memoryId) await cacheMemoryFromLocalUri(memoryId, uri).catch(() => undefined);
-          }
-        }
-      } finally {
-        authorRef.current = false;
-        setCapturing(false);
-      }
-    };
-    const timer = setTimeout(() => void build(), session.partnerStill ? 0 : PARTNER_STILL_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [session.partnerStill, capturing, polaroidPreview, nickname, partnerNickname, player, session.room, session.members]);
 
   const sharePolaroid = useCallback(async () => {
     if (!polaroidPreview) return;
@@ -343,17 +396,16 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         </Rail>
       </Reanimated.View>
 
-      {/* Hidden capturable local still (source for the polaroid face) */}
+      {/* Hidden expo-camera used only to snap the self photo during capture
+          (view-shot of the WebRTC SurfaceView comes back black on Android). */}
+      {photoMode ? (
+        <PhotoCaptureHost pointerEvents="none">
+          <CameraView ref={cameraViewRef} facing="front" onCameraReady={onPhotoCameraReady} style={{ flex: 1 }} />
+        </PhotoCaptureHost>
+      ) : null}
+
+      {/* Offscreen polaroid, snapshotted into the shareable memory image */}
       <OffscreenHost pointerEvents="none">
-        <ViewShot ref={selfStillShotRef} options={{ format: "jpg", quality: 0.85 }}>
-          <StillTile>
-            {RTCView && session.localStream ? (
-              <RTCView streamURL={session.localStream.toURL()} style={STILL_STREAM_STYLE} objectFit="cover" mirror />
-            ) : (
-              <View />
-            )}
-          </StillTile>
-        </ViewShot>
         <PolaroidCard
           viewShotRef={polaroidShotRef}
           title={session.room?.title ?? ""}
@@ -566,10 +618,14 @@ const OffscreenHost = styled(View)`
   opacity: 0;
 `;
 
-const StillTile = styled(View)`
-  width: 240px;
-  height: 320px;
-  background-color: #10110f;
+// Off-screen (but full-opacity, so the sensor actually renders) host for the
+// capture-only CameraView.
+const PhotoCaptureHost = styled(View)`
+  position: absolute;
+  left: -2000px;
+  top: -2000px;
+  width: 220px;
+  height: 300px;
 `;
 
 const ChatBackdrop = styled(TouchableOpacity)`
