@@ -72,8 +72,12 @@ export function useWatchRoomSession({ player, code, nickname }: Options) {
 
   const bothPresent = room.members.length >= 2;
 
+  // Local media starts as soon as YOU turn cameras on (so you see your own
+  // self-view immediately, even before a partner joins). The peer connection
+  // only negotiates once both are present — handled by the readiness handshake
+  // inside the hook, so an early-created connection just waits for the partner.
   const webrtc = useWebRtcPeers({
-    enabled: bothPresent && camerasOn,
+    enabled: camerasOn,
     isInitiator: room.isHost,
     selfUserId: room.selfUserId,
     sendSignal: room.send,

@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Dimensions, FlatList, Modal, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Alert, Dimensions, FlatList, Modal, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, {
   Easing,
@@ -64,6 +65,35 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   const theme = useTheme();
   const session = useWatchRoomSession({ player, code, nickname });
   const RTCView = getWebRtc()?.RTCView;
+
+  // Camera + mic access is requested in-app the first time you turn cameras on.
+  // The permission hooks remember the granted state, so it never re-prompts once
+  // allowed (and turning cameras off/on again won't ask again).
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [micPermission, requestMicPermission] = useMicrophonePermissions();
+
+  const toggleCameras = useCallback(async () => {
+    // Turning off never needs permission.
+    if (session.camerasOn) {
+      session.setCamerasOn(false);
+      return;
+    }
+    let camera = cameraPermission;
+    if (!camera?.granted) camera = await requestCameraPermission();
+    let mic = micPermission;
+    if (!mic?.granted) mic = await requestMicPermission();
+
+    if (!camera?.granted || !mic?.granted) {
+      Alert.alert(
+        "Camera & microphone needed",
+        camera?.canAskAgain === false || mic?.canAskAgain === false
+          ? "Enable camera and microphone for StreamBox in your device Settings to share your face and voice."
+          : "StreamBox needs camera and microphone access so you and your partner can see and hear each other."
+      );
+      return;
+    }
+    session.setCamerasOn(true);
+  }, [session, cameraPermission, micPermission, requestCameraPermission, requestMicPermission]);
 
   const [chatOpen, setChatOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -299,7 +329,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
           <RailButton onPress={initiateCapture} disabled={capturing} $tone="surface">
             <Feather name={capturing ? "loader" : "aperture"} size={15} color={theme.colors.primary} />
           </RailButton>
-          <RailButton onPress={() => session.setCamerasOn((on) => !on)} $tone={session.camerasOn ? "primary" : "surface"}>
+          <RailButton onPress={toggleCameras} $tone={session.camerasOn ? "primary" : "surface"}>
             <Feather name="camera" size={15} color={session.camerasOn ? theme.colors.textOnPrimary : theme.colors.textPrimary} />
           </RailButton>
           {session.camerasOn ? (
