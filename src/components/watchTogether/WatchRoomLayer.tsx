@@ -27,6 +27,7 @@ import {
   saveWatchMemory,
   cacheMemoryFromLocalUri,
 } from "../../services/watchMemories";
+import { addLocalMemory, updateLocalMemory } from "../../services/watchMemoryLocalStore";
 
 const REACTION_EMOJIS = ["😂", "❤️", "🔥", "😮"];
 const PARTNER_STILL_TIMEOUT_MS = 5000;
@@ -252,26 +253,50 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
       }
       // Let the polaroid re-render with the latest stills before snapshotting.
       await new Promise((r) => setTimeout(r, 250));
-      const uri = await captureRef(polaroidShotRef, { format: "png", quality: 1 });
+      // Full-HD portrait polaroid.
+      const uri = await captureRef(polaroidShotRef, { format: "png", quality: 1, width: 1080, height: 1451 });
       setPolaroidPreview(uri);
+
       const room = session.room;
+      const nicknames = [nickname, partnerNickname].filter(Boolean) as string[];
+
+      // Save LOCALLY first — this writes the image + index entry to the device
+      // immediately, so the memory shows in Shared Sessions right away and is
+      // never lost if the session is left before the cloud upload finishes.
+      const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const cachedUri = (await cacheMemoryFromLocalUri(localId, uri).catch(() => null)) ?? uri;
+      await addLocalMemory({
+        localId,
+        cloudId: null,
+        title: room?.title ?? "",
+        participantNicknames: nicknames,
+        createdAtEpochMs: Date.now(),
+        imageLocalUri: cachedUri,
+        imagePath: null,
+      }).catch(() => undefined);
+
+      // Sync to the cloud in the background (detached, so it completes even if
+      // the user leaves the session the instant the preview appears).
       if (room) {
-        const path = await uploadPolaroid(room.id, uri).catch(() => null);
-        if (path) {
-          const memoryId = await saveWatchMemory({
+        void (async () => {
+          const path = await uploadPolaroid(room.id, uri).catch(() => null);
+          if (!path) return;
+          const cloudId = await saveWatchMemory({
             roomId: room.id,
             mediaType: room.mediaType,
             tmdbId: room.tmdbId,
             title: room.title,
             positionSeconds: player?.currentTime ?? 0,
             imagePath: path,
-            participantNicknames: [nickname, partnerNickname].filter(Boolean) as string[],
+            participantNicknames: nicknames,
             participantUserIds: session.members.map((member) => member.userId),
           }).catch(() => null);
-          // Keep the author's own copy on-device immediately (the partner's
-          // device caches it on first shelf load).
-          if (memoryId) await cacheMemoryFromLocalUri(memoryId, uri).catch(() => undefined);
-        }
+          if (cloudId) {
+            await updateLocalMemory(localId, { cloudId, imagePath: path }).catch(() => undefined);
+            // Mirror the cache under the cloud id so cross-device resolve finds it.
+            await cacheMemoryFromLocalUri(cloudId, cachedUri).catch(() => undefined);
+          }
+        })();
       }
     } finally {
       authorRef.current = false;

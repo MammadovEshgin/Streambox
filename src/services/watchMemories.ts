@@ -98,6 +98,12 @@ async function deleteCachedMemory(memoryId: string): Promise<void> {
   await FileSystem.deleteAsync(localMemoryPath(memoryId), { idempotent: true }).catch(() => undefined);
 }
 
+// Public: drop a cached polaroid image by id (used to clean up a local-only
+// memory that never synced to the cloud, so it has no remove RPC to call).
+export async function removeCachedMemoryImage(memoryId: string): Promise<void> {
+  await deleteCachedMemory(memoryId);
+}
+
 // Drop cached files whose memory is no longer on the shelf (removed/expired).
 export async function pruneCachedMemories(activeIds: string[]): Promise<void> {
   try {
