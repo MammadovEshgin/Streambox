@@ -128,6 +128,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   bothPresentRef.current = session.bothPresent;
   const [rating, setRating] = useState<number | null>(null);
   const [genres, setGenres] = useState<string[] | null>(null);
+  const [tagline, setTagline] = useState<string | null>(null);
 
   const partnerNickname = session.partner?.nickname ?? null;
 
@@ -147,6 +148,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         if (active) {
           setRating(details.voteAverage ?? null);
           setGenres(details.genres ?? null);
+          setTagline("tagline" in details ? details.tagline ?? null : null);
         }
       } catch {
         /* rating/genres just stay empty */
@@ -434,6 +436,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         <PolaroidCard
           viewShotRef={polaroidShotRef}
           title={session.room?.title ?? ""}
+          tagline={tagline}
           posterPath={session.room?.posterPath ?? null}
           backdropPath={session.room?.backdropPath ?? null}
           selfStillUri={selfStillUri}

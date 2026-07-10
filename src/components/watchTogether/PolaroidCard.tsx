@@ -3,17 +3,17 @@ import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import type { RefObject } from "react";
 import { Text, View } from "react-native";
-import Svg, { Circle, Defs, Line, Path, Pattern, Polygon, RadialGradient, Rect, Stop } from "react-native-svg";
+import Svg, { Circle, Defs, Path, Pattern, Polygon, RadialGradient, Rect, Stop } from "react-native-svg";
 import ViewShot from "react-native-view-shot";
 import styled from "styled-components/native";
 
 import { getTmdbImageUrl } from "../../api/tmdb";
 
-// A "movie session" memory card rebuilt entirely in code/SVG (no template
-// image). Aged near-white paper, a large framed still, two instant photos
-// resting on its bottom edge, a hand-lettered hero flanked by popcorn + a
-// MOVIE NIGHT ticket, and a typed MOVIE / DATE / RATING / GENRE log on ruled
-// lines.
+// A movie-memory card rebuilt entirely in code/SVG (no template image). Aged
+// near-white paper, a large framed still, two instant photos resting on its
+// bottom edge, the film's tagline hand-lettered in the centre flanked by
+// popcorn + a round cinema seal, and a typed MOVIE / DATE / RATING / GENRE log
+// on ruled lines.
 
 const CARD_W = 320;
 const CARD_H = 430;
@@ -41,6 +41,7 @@ const PALETTE = {
 export type PolaroidCardProps = {
   viewShotRef?: RefObject<ViewShot | null>;
   title: string;
+  tagline?: string | null;
   posterPath?: string | null;
   backdropPath?: string | null;
   selfStillUri?: string | null;
@@ -93,25 +94,23 @@ function Stars({ value }: { value: number }) {
   );
 }
 
-// Classic red cinema ticket with a perforated stub.
-function Ticket() {
+// A round cinema seal / rubber stamp: a red roundel with a dashed inner ring
+// and a cream star — flanked by two tiny stars.
+function RoundStamp({ size = 46 }: { size?: number }) {
   return (
-    <View style={{ width: 64, height: 30 }}>
-      <Svg width={64} height={30} viewBox="0 0 64 30" style={{ position: "absolute" }}>
-        <Rect x={0.6} y={0.6} width={62.8} height={28.8} rx={4} fill={PALETTE.red} stroke={PALETTE.redDeep} strokeWidth={1} />
-        <Line x1={45} y1={4} x2={45} y2={26} stroke="#e7cbc4" strokeWidth={1} strokeDasharray="2 2.5" />
-        <Circle cx={45} cy={0.6} r={2.6} fill={PALETTE.paperTop} />
-        <Circle cx={45} cy={29.4} r={2.6} fill={PALETTE.paperTop} />
-      </Svg>
-      <TicketMain>MOVIE{"\n"}NIGHT</TicketMain>
-      <TicketStub>★</TicketStub>
-    </View>
+    <Svg width={size} height={size} viewBox="0 0 48 48">
+      <Circle cx={24} cy={24} r={22} fill={PALETTE.red} stroke={PALETTE.redDeep} strokeWidth={1.4} />
+      <Circle cx={24} cy={24} r={17.5} fill="none" stroke={PALETTE.cream} strokeWidth={1} strokeDasharray="2 2.4" />
+      <Polygon points={STAR_POINTS} transform="translate(13.2, 13.2) scale(0.9)" fill={PALETTE.cream} />
+      <Polygon points={STAR_POINTS} transform="translate(3.6, 20.4) scale(0.3)" fill={PALETTE.cream} />
+      <Polygon points={STAR_POINTS} transform="translate(37.2, 20.4) scale(0.3)" fill={PALETTE.cream} />
+    </Svg>
   );
 }
 
 // A proper cinema popcorn box: striped tapered tub, a rim, and a heap of
 // buttery kernels spilling over the top.
-function Popcorn() {
+function Popcorn({ w = 40 }: { w?: number }) {
   const kernels: Array<[number, number, number, string]> = [
     [12, 8, 4.6, "#F6ECC0"],
     [19, 4, 4.3, "#ECD888"],
@@ -127,7 +126,7 @@ function Popcorn() {
     [29, 18, 3.7, "#FBF4D6"],
   ];
   return (
-    <Svg width={40} height={46} viewBox="0 0 48 54">
+    <Svg width={w} height={(w * 54) / 48} viewBox="0 0 48 54">
       {/* tub (cream base) */}
       <Polygon points="7,23 41,23 36,52 12,52" fill={PALETTE.cream} stroke={PALETTE.redDeep} strokeWidth={1.1} />
       {/* red stripes tapering with the tub */}
@@ -190,6 +189,7 @@ function PhotoTreatment() {
 export function PolaroidCard({
   viewShotRef,
   title,
+  tagline,
   posterPath,
   backdropPath,
   selfStillUri,
@@ -203,6 +203,11 @@ export function PolaroidCard({
   // Prefer the landscape backdrop for the "screen" frame; fall back to poster.
   const stillSource = backdropPath ?? posterPath ?? null;
   const still = stillSource ? getTmdbImageUrl(stillSource, "original") : null;
+
+  // The film's tagline is the centrepiece — size it down as it gets longer so
+  // it always fits on two lines without crowding the stickers around it.
+  const tag = (tagline ?? "").trim();
+  const heroFont = tag.length <= 20 ? 24 : tag.length <= 34 ? 20 : tag.length <= 52 ? 16.5 : 14;
 
   return (
     <ViewShot ref={viewShotRef} options={{ format: "png", quality: 1 }}>
@@ -225,8 +230,8 @@ export function PolaroidCard({
         </PosterFrame>
 
         {/* Tape on the still's top corners */}
-        <Tape style={{ left: 32, top: 6, transform: [{ rotate: "-22deg" }] }} />
-        <Tape style={{ right: 32, top: 6, transform: [{ rotate: "20deg" }] }} />
+        <Tape style={{ left: 22, top: 6, transform: [{ rotate: "-22deg" }] }} />
+        <Tape style={{ right: 22, top: 6, transform: [{ rotate: "20deg" }] }} />
 
         {/* Viewer instant photos resting on the bottom edge of the still */}
         <Polaroid style={{ left: 74, top: 160, transform: [{ rotate: "-4deg" }] }}>
@@ -261,21 +266,31 @@ export function PolaroidCard({
           <PolaroidLabel numberOfLines={1}>{partnerNickname ?? "Partner"}</PolaroidLabel>
         </Polaroid>
 
-        {/* Hero band: popcorn (left) · script hero · MOVIE NIGHT ticket (right) */}
-        <View style={{ position: "absolute", left: 30, top: 252, transform: [{ rotate: "-6deg" }] }}>
-          <Popcorn />
+        {/* Hero band: popcorn (upper-left corner) · film tagline · cinema seal
+            (upper-right corner). Stickers sit high, in the corners, so the
+            tagline owns the centre with room to breathe. */}
+        <View style={{ position: "absolute", left: 26, top: 232, transform: [{ rotate: "-6deg" }] }}>
+          <Popcorn w={34} />
         </View>
         <Hero>
-          <HeroText numberOfLines={1} adjustsFontSizeToFit>
-            movie session
-          </HeroText>
+          {tag ? (
+            <HeroText numberOfLines={2} adjustsFontSizeToFit style={{ fontSize: heroFont, lineHeight: heroFont + 3 }}>
+              “{tag}”
+            </HeroText>
+          ) : (
+            <Svg width={54} height={12} viewBox="0 0 54 12">
+              <Polygon points={STAR_POINTS} transform="translate(3, 0) scale(0.5)" fill={PALETTE.slate} />
+              <Polygon points={STAR_POINTS} transform="translate(21, -1) scale(0.58)" fill={PALETTE.slate} />
+              <Polygon points={STAR_POINTS} transform="translate(39, 0) scale(0.5)" fill={PALETTE.slate} />
+            </Svg>
+          )}
         </Hero>
-        <View style={{ position: "absolute", right: 18, top: 260, transform: [{ rotate: "8deg" }] }}>
-          <Ticket />
+        <View style={{ position: "absolute", right: 18, top: 232, transform: [{ rotate: "8deg" }] }}>
+          <RoundStamp size={46} />
         </View>
 
-        {/* Divider swash, tucked close under the headline so they read as a pair */}
-        <View style={{ position: "absolute", top: 289, left: 0, right: 0, alignItems: "center" }}>
+        {/* Divider swash, below the tagline, separating it from the log */}
+        <View style={{ position: "absolute", top: 302, left: 0, right: 0, alignItems: "center" }}>
           <Svg width={150} height={12} viewBox="0 0 150 12">
             <Path d="M4 7 Q 40 1, 78 6 T 146 5" stroke={PALETTE.slate} strokeWidth={2.4} fill="none" strokeLinecap="round" />
           </Svg>
@@ -337,9 +352,9 @@ const InnerFrame = styled(View)`
 const PosterFrame = styled(View)`
   position: absolute;
   top: 12px;
-  left: 44px;
-  width: 232px;
-  height: 166px;
+  left: 26px;
+  width: 268px;
+  height: 168px;
   background-color: ${PALETTE.cream};
   padding: 5px;
   border-width: 1px;
@@ -397,19 +412,19 @@ const PolaroidLabel = styled(Text)`
 
 const Hero = styled(View)`
   position: absolute;
-  top: 256px;
+  top: 250px;
   left: 70px;
-  right: 84px;
-  height: 34px;
+  right: 70px;
+  height: 48px;
   align-items: center;
   justify-content: center;
 `;
 
 const HeroText = styled(Text)`
   color: ${PALETTE.ink};
-  font-size: 28px;
   font-family: ${SCRIPT};
   letter-spacing: 0.4px;
+  text-align: center;
 `;
 
 const Log = styled(View)`
@@ -458,24 +473,4 @@ const RatingNum = styled(Text)`
   color: ${PALETTE.ink};
   font-size: 11px;
   font-family: ${TYPEWRITER};
-`;
-
-const TicketMain = styled(Text)`
-  position: absolute;
-  left: 5px;
-  top: 4px;
-  width: 38px;
-  color: #ffffff;
-  font-size: 8px;
-  font-family: ${TYPEWRITER};
-  text-align: center;
-  line-height: 10px;
-`;
-
-const TicketStub = styled(Text)`
-  position: absolute;
-  right: 6px;
-  top: 8px;
-  color: #ffffff;
-  font-size: 11px;
 `;
