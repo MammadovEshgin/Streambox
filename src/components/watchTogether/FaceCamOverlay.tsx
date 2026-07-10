@@ -1,14 +1,16 @@
 import { Feather } from "@expo/vector-icons";
 import { Text, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import type { MediaStream } from "react-native-webrtc";
 import styled from "styled-components/native";
 
 import { getWebRtc } from "../../services/webrtcCompat";
 
-// Two circular face bubbles hugging the left edge (10px margin) — partner on
-// top, you below — kept clear of the controls rail on the right. Hidden until
-// the user turns the cameras on, and shown as placeholders in Expo Go (no
-// native WebRTC).
+// Two square "screen" tiles hugging the left edge — partner on top, you below.
+// Styled like little cinema monitors (warm amber frame, soft glow, a glassy
+// sheen, a LIVE dot + name plate) so they feel like part of a movie room rather
+// than plain webcam bubbles. Hidden until the cameras are on; shown as
+// placeholders in Expo Go (no native WebRTC).
 
 export type FaceCamOverlayProps = {
   visible: boolean;
@@ -20,6 +22,8 @@ export type FaceCamOverlayProps = {
   partnerConnected: boolean;
 };
 
+const GOLD = "#E7C36B";
+const BOX_SIZE = 122;
 const STREAM_STYLE = { width: "100%" as const, height: "100%" as const };
 
 export function FaceCamOverlay({
@@ -34,34 +38,61 @@ export function FaceCamOverlay({
   const RTCView = getWebRtc()?.RTCView;
   if (!visible) return null;
 
+  const partnerLive = Boolean(RTCView && remoteStream && partnerConnected);
+  const selfLive = Boolean(RTCView && localStream && cameraEnabled);
+
   return (
     <Column pointerEvents="none">
-      <Bubble>
-        {RTCView && remoteStream && partnerConnected ? (
-          <RTCView streamURL={remoteStream.toURL()} style={STREAM_STYLE} objectFit="cover" mirror={false} />
-        ) : (
-          <Placeholder>
-            <Feather name="user" size={16} color="#8A938B" />
-          </Placeholder>
-        )}
-        <NameTag numberOfLines={1}>{partnerNickname ?? "Partner"}</NameTag>
-      </Bubble>
+      <Box>
+        <Screen>
+          {RTCView && remoteStream && partnerConnected ? (
+            <RTCView streamURL={remoteStream.toURL()} style={STREAM_STYLE} objectFit="cover" mirror={false} />
+          ) : (
+            <Placeholder>
+              <Feather name="user" size={22} color="#8A938B" />
+            </Placeholder>
+          )}
+          <Sheen colors={["rgba(255,255,255,0.10)", "transparent", "rgba(0,0,0,0.22)"]} locations={[0, 0.42, 1]} />
+        </Screen>
+        {partnerLive ? (
+          <LiveTag>
+            <LiveDot />
+            <LiveLabel>LIVE</LiveLabel>
+          </LiveTag>
+        ) : null}
+        <NamePlate>
+          <NameChip>
+            <NameTag numberOfLines={1}>{partnerNickname ?? "Partner"}</NameTag>
+          </NameChip>
+        </NamePlate>
+      </Box>
 
-      <Bubble>
-        {RTCView && localStream && cameraEnabled ? (
-          <RTCView streamURL={localStream.toURL()} style={STREAM_STYLE} objectFit="cover" mirror />
-        ) : (
-          <Placeholder>
-            <Feather name={cameraEnabled ? "user" : "video-off"} size={16} color="#8A938B" />
-          </Placeholder>
-        )}
-        <NameTag numberOfLines={1}>{selfNickname}</NameTag>
-      </Bubble>
+      <Box>
+        <Screen>
+          {RTCView && localStream && cameraEnabled ? (
+            <RTCView streamURL={localStream.toURL()} style={STREAM_STYLE} objectFit="cover" mirror />
+          ) : (
+            <Placeholder>
+              <Feather name={cameraEnabled ? "user" : "video-off"} size={22} color="#8A938B" />
+            </Placeholder>
+          )}
+          <Sheen colors={["rgba(255,255,255,0.10)", "transparent", "rgba(0,0,0,0.22)"]} locations={[0, 0.42, 1]} />
+        </Screen>
+        {selfLive ? (
+          <LiveTag>
+            <LiveDot />
+            <LiveLabel>LIVE</LiveLabel>
+          </LiveTag>
+        ) : null}
+        <NamePlate>
+          <NameChip>
+            <NameTag numberOfLines={1}>{selfNickname}</NameTag>
+          </NameChip>
+        </NamePlate>
+      </Box>
     </Column>
   );
 }
-
-const BUBBLE_SIZE = 108;
 
 const Column = styled(View)`
   position: absolute;
@@ -71,15 +102,28 @@ const Column = styled(View)`
   justify-content: center;
 `;
 
-const Bubble = styled(View)`
-  width: ${BUBBLE_SIZE}px;
-  height: ${BUBBLE_SIZE}px;
-  border-radius: ${BUBBLE_SIZE / 2}px;
-  margin: 7px 0;
+// The warm amber frame with a soft glow — the "monitor" bezel.
+const Box = styled(View)`
+  width: ${BOX_SIZE}px;
+  height: ${BOX_SIZE}px;
+  margin: 8px 0;
+  padding: 3px;
+  border-radius: 18px;
+  background-color: #0e0f0d;
+  border-width: 2px;
+  border-color: rgba(231, 195, 107, 0.6);
+  shadow-color: ${GOLD};
+  shadow-opacity: 0.32;
+  shadow-radius: 10px;
+  shadow-offset: 0px 4px;
+  elevation: 6;
+`;
+
+const Screen = styled(View)`
+  flex: 1;
+  border-radius: 13px;
   overflow: hidden;
   background-color: #10110f;
-  border-width: 1.5px;
-  border-color: rgba(255, 255, 255, 0.9);
 `;
 
 const Placeholder = styled(View)`
@@ -90,12 +134,60 @@ const Placeholder = styled(View)`
   background-color: #1b211e;
 `;
 
-const NameTag = styled(Text)`
+const Sheen = styled(LinearGradient)`
   position: absolute;
-  bottom: 6px;
-  align-self: center;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+`;
+
+const LiveTag = styled(View)`
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background-color: rgba(0, 0, 0, 0.55);
+`;
+
+const LiveDot = styled(View)`
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background-color: #ff5245;
+`;
+
+const LiveLabel = styled(Text)`
   color: #ffffff;
-  font-size: 9px;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 1px;
+`;
+
+const NamePlate = styled(View)`
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  right: 0;
+  align-items: center;
+`;
+
+const NameChip = styled(View)`
+  max-width: 90%;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background-color: rgba(13, 16, 15, 0.8);
+  border-width: 1px;
+  border-color: rgba(231, 195, 107, 0.4);
+`;
+
+const NameTag = styled(Text)`
+  color: #ffffff;
+  font-size: 10px;
   font-weight: 700;
   text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.85);
 `;
