@@ -201,11 +201,9 @@ export function WatchRoomScreen({ route, navigation }: Props) {
     }
   };
 
-  // Hero = the real portrait poster; ambient spill = the wider backdrop.
-  const posterSrc = media?.posterPath ?? media?.backdropPath ?? null;
-  const posterImg = posterSrc ? getTmdbImageUrl(posterSrc, "w500") : null;
-  const ambientSrc = media?.backdropPath ?? media?.posterPath ?? null;
-  const ambientImg = ambientSrc ? getTmdbImageUrl(ambientSrc, "w780") : null;
+  // Hero = the wide backdrop still (landscape); it also drives the ambient spill.
+  const heroSrc = media?.backdropPath ?? media?.posterPath ?? null;
+  const heroImg = heroSrc ? getTmdbImageUrl(heroSrc, "w780") : null;
 
   // Headline is the movie's title (falls back to the brand); size flexes with length.
   const rawTitle = media?.title ?? "Watch Together";
@@ -218,9 +216,9 @@ export function WatchRoomScreen({ route, navigation }: Props) {
     <Root>
       {/* Theater ambience */}
       <Backdrop colors={["#17120E", "#0D100F", "#070908"]} locations={[0, 0.45, 1]} />
-      {ambientImg ? (
+      {heroImg ? (
         <AmbientWrap pointerEvents="none">
-          <Image source={{ uri: ambientImg }} style={{ flex: 1 }} contentFit="cover" blurRadius={40} />
+          <Image source={{ uri: heroImg }} style={{ flex: 1 }} contentFit="cover" blurRadius={40} />
           <Backdrop
             colors={[withAlpha(theme.colors.background, 0.3), theme.colors.background]}
             locations={[0, 0.9]}
@@ -261,11 +259,11 @@ export function WatchRoomScreen({ route, navigation }: Props) {
           <TitleRule $color={theme.colors.gold} />
         </Animated.View>
 
-        {/* The poster — the hero */}
-        <Animated.View entering={FadeInUp.duration(520).delay(160)} style={{ alignItems: "center" }}>
-          <PosterFrame $border={withAlpha(theme.colors.gold, 0.28)} style={{ aspectRatio: 2 / 3 }}>
-            {posterImg ? (
-              <Image source={{ uri: posterImg }} style={{ flex: 1 }} contentFit="cover" />
+        {/* The screen — the hero */}
+        <Animated.View entering={FadeInUp.duration(520).delay(160)}>
+          <PosterFrame $border={withAlpha(theme.colors.gold, 0.45)} style={{ aspectRatio: 16 / 9 }}>
+            {heroImg ? (
+              <Image source={{ uri: heroImg }} style={{ flex: 1 }} contentFit="cover" />
             ) : (
               <EmptyScreen>
                 <MaterialCommunityIcons name="movie-open-outline" size={30} color={withAlpha(theme.colors.textPrimary, 0.5)} />
@@ -492,17 +490,13 @@ const TitleRule = styled(View)<{ $color: string }>`
 `;
 
 const PosterFrame = styled(View)<{ $border: string }>`
-  width: 62%;
-  border-radius: 18px;
+  width: 100%;
+  border-radius: 3px;
   overflow: hidden;
   background-color: ${({ theme }) => theme.colors.surface};
-  border-width: 1px;
+  border-width: 1.5px;
+  border-style: dotted;
   border-color: ${({ $border }) => $border};
-  shadow-color: #000000;
-  shadow-opacity: 0.5;
-  shadow-radius: 24px;
-  shadow-offset: 0px 16px;
-  elevation: 16;
 `;
 
 const EmptyScreen = styled(View)`
@@ -554,7 +548,7 @@ const Stub = styled(Pressable)<{ $active: boolean; $activeBg: string; $activeBor
   justify-content: center;
   gap: 8px;
   padding: 14px 10px;
-  border-radius: 26px;
+  border-radius: 3px;
   background-color: ${({ $active, $activeBg, theme }) => ($active ? $activeBg : theme.colors.glassFill)};
   border-width: 1.5px;
   border-style: dotted;
