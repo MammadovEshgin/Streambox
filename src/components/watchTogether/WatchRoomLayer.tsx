@@ -19,7 +19,6 @@ import type { VideoPlayer } from "expo-video";
 
 import { FaceCamOverlay } from "./FaceCamOverlay";
 import { PolaroidCard } from "./PolaroidCard";
-import { REACTIONS, ReactionGlyph, isReactionId } from "./ReactionGlyph";
 import { getMovieDetails, getSeriesDetails } from "../../api/tmdb";
 import { useWatchRoomSession } from "../../hooks/useWatchRoomSession";
 import {
@@ -30,6 +29,7 @@ import {
 } from "../../services/watchMemories";
 import { addLocalMemory, updateLocalMemory } from "../../services/watchMemoryLocalStore";
 
+const REACTIONS = ["WTF?", "💖", "LOL:)", "Cringe🔪", "Red flag 🚩"];
 const PARTNER_STILL_TIMEOUT_MS = 5000;
 
 const RAIL_WIDTH = 54;
@@ -45,7 +45,7 @@ export type WatchRoomLayerProps = {
 // A single reaction that floats up and fades, TikTok/IG-live style.
 function FloatingReaction({ emoji }: { emoji: string }) {
   const progress = useSharedValue(0);
-  const drift = useMemo(() => (Math.random() - 0.5) * 46, []);
+  const drift = useMemo(() => (Math.random() - 0.5) * 22, []);
   useEffect(() => {
     progress.value = withTiming(1, { duration: 2000, easing: Easing.out(Easing.quad) });
   }, [progress]);
@@ -59,11 +59,9 @@ function FloatingReaction({ emoji }: { emoji: string }) {
   }));
   return (
     <Reanimated.View style={[{ position: "absolute", bottom: 0 }, style]}>
-      {isReactionId(emoji) ? (
-        <ReactionGlyph id={emoji} size={34} />
-      ) : (
-        <Text style={{ fontSize: 22 }}>{emoji}</Text>
-      )}
+      <FloatChip>
+        <FloatText numberOfLines={1}>{emoji}</FloatText>
+      </FloatChip>
     </Reanimated.View>
   );
 }
@@ -399,7 +397,9 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
             <EmojiPop>
               {REACTIONS.map((reaction) => (
                 <TouchableOpacity key={reaction} onPress={() => session.sendReaction(reaction)} hitSlop={6}>
-                  <ReactionGlyph id={reaction} size={30} />
+                  <ReactionChip>
+                    <ReactionChipText numberOfLines={1}>{reaction}</ReactionChipText>
+                  </ReactionChip>
                 </TouchableOpacity>
               ))}
             </EmojiPop>
@@ -568,7 +568,7 @@ const ReactionsAnchor = styled(View)`
   position: absolute;
   left: 22px;
   bottom: 60px;
-  width: 40px;
+  width: 150px;
   height: 160px;
 `;
 
@@ -622,18 +622,47 @@ const Rail = styled(View)`
   border-bottom-left-radius: 16px;
 `;
 
-// A vertical picker that pops to the left of the rail when the emoji button is
-// tapped. Stays open so you can fire reactions repeatedly; closes on the icon.
+// A vertical picker that pops to the left of the rail when the reaction button
+// is tapped. Stays open so you can fire reactions repeatedly; closes on the
+// icon.
 const EmojiPop = styled(View)`
   flex-direction: column;
-  align-items: center;
-  gap: 14px;
+  align-items: stretch;
+  gap: 8px;
   margin-right: 8px;
-  padding: 13px 10px;
-  border-radius: 22px;
+  padding: 10px;
+  border-radius: 18px;
   background-color: rgba(13, 16, 15, 0.85);
   border-width: 1px;
   border-color: rgba(255, 255, 255, 0.12);
+`;
+
+const ReactionChip = styled(View)`
+  padding: 7px 13px;
+  border-radius: 999px;
+  align-items: center;
+  background-color: rgba(255, 255, 255, 0.08);
+  border-width: 1px;
+  border-color: rgba(255, 255, 255, 0.14);
+`;
+
+const ReactionChipText = styled(Text)`
+  color: #eff2ed;
+  font-size: 13px;
+  font-weight: 700;
+`;
+
+// Floating reaction — the short text drifting up over the video.
+const FloatChip = styled(View)`
+  padding: 5px 11px;
+  border-radius: 999px;
+  background-color: rgba(13, 16, 15, 0.7);
+`;
+
+const FloatText = styled(Text)`
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 800;
 `;
 
 const RailButton = styled(TouchableOpacity)<{ $tone: "surface" | "primary" | "danger" }>`
