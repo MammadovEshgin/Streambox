@@ -751,7 +751,8 @@ if (!details) {
                           year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
                           originalTitle: details.originalTitle,
                           castNames: details.cast.slice(0, 4).map((c) => c.name),
-                          rating: details.voteAverage,
+                          genre: details.genres.slice(0, 2).join(" · ") || null,
+                          tagline: details.tagline ?? null,
                         },
                       });
                     }}
