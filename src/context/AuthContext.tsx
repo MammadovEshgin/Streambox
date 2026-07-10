@@ -5,7 +5,7 @@ import type { Session, User } from "@supabase/supabase-js";
 
 import {
   clearLocalUserDataCache,
-  flushSupabaseUserDataSync,
+  drainSupabaseUserDataSync,
   logSupabaseUserEvent,
   syncCurrentLocalUserSnapshotToSupabase,
 } from "../services/userDataSync";
@@ -63,12 +63,30 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const signOutPromiseRef = useRef<Promise<void> | null>(null);
   const { reloadPersistedSettings } = useAppSettings();
 
+  // Tokens only. Used by every INVOLUNTARY auth loss (dead refresh token,
+  // init failure, inactivity guard): the user did not ask to leave, so their
+  // lists, settings and the pending sync queue stay on-device — whatever the
+  // cloud was missing survives, and it all reconciles when they sign back in.
+  // Wiping user data on these paths is how an auth hiccup after an update
+  // erased a whole liked list that had never fully reached the cloud.
+  const purgeAuthTokensOnly = useCallback(async () => {
+    await Promise.allSettled([
+      clearSupabaseAuthStorage(),
+      signOutFromGoogle(),
+      AsyncStorage.removeItem(LAST_ACTIVE_KEY),
+    ]);
+  }, []);
+
+  // Full device cleanup — EXPLICIT sign-out only. The sync queue is preserved
+  // even here: its ops are tagged per user, so an un-flushed delete survives
+  // the wipe and executes when its owner signs back in (bootstrap drops the
+  // queue if a different account signs in instead).
   const clearDeviceAuthState = useCallback(async () => {
     await Promise.allSettled([
       clearSupabaseAuthStorage(),
       signOutFromGoogle(),
       AsyncStorage.removeItem(LAST_ACTIVE_KEY),
-      clearLocalUserDataCache(),
+      clearLocalUserDataCache({ preserveSyncQueue: true }),
       clearFranchiseCache(),
       clearManagedRemoteImageCaches(),
       clearPersistedRuntimeCaches(),
@@ -87,7 +105,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
       if (sessionError) {
         if (isInvalidRefreshTokenError(sessionError)) {
-          await clearDeviceAuthState();
+          // Involuntary: the token died, the user didn't leave. Keep their data.
+          await purgeAuthTokensOnly();
           if (active) {
             setSession(null);
             setIsLoading(false);
@@ -107,8 +126,12 @@ export function AuthProvider({ children }: PropsWithChildren) {
             { source: "inactivity_guard" },
             { entityType: "session", entityKey: initialSession.user.id, flushImmediately: true }
           ).catch(() => undefined);
+          // Best-effort push, then drop ONLY the session. Data + queue stay:
+          // this fires precisely when someone returns after a month away — the
+          // worst possible moment to gamble their lists on one network call.
+          await drainSupabaseUserDataSync(initialSession.user.id).catch(() => undefined);
           await syncCurrentLocalUserSnapshotToSupabase(initialSession.user.id).catch(() => undefined);
-          await clearDeviceAuthState();
+          await purgeAuthTokensOnly();
           if (active) {
             setSession(null);
             setIsLoading(false);
@@ -127,7 +150,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
     void init().catch(async (error) => {
       console.warn("Auth initialization failed:", error);
-      await clearDeviceAuthState();
+      // A transient init failure must never cost the user their local data —
+      // drop the session only; everything reconciles on the next sign-in.
+      await purgeAuthTokensOnly();
       if (active) {
         setSession(null);
         setIsLoading(false);
@@ -176,7 +201,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       active = false;
       subscription.unsubscribe();
     };
-  }, [clearDeviceAuthState]);
+  }, [purgeAuthTokensOnly]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (nextState) => {
@@ -204,7 +229,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
     signOutPromiseRef.current = (async () => {
       try {
         if (activeSession?.user.id) {
-          await flushSupabaseUserDataSync(activeSession.user.id).catch(() => undefined);
+          // Drain (not a single 25-op flush) so the whole backlog reaches the
+          // cloud before local data is wiped; anything that still can't flush
+          // survives the wipe in the preserved queue.
+          await drainSupabaseUserDataSync(activeSession.user.id).catch(() => undefined);
           await syncCurrentLocalUserSnapshotToSupabase(activeSession.user.id).catch(() => undefined);
           await logSupabaseUserEvent(
             "auth",
