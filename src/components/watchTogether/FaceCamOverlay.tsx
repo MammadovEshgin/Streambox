@@ -5,6 +5,7 @@ import type { MediaStream } from "react-native-webrtc";
 import styled from "styled-components/native";
 
 import { getWebRtc } from "../../services/webrtcCompat";
+import { withAlpha } from "../../theme/Theme";
 
 // Two square "screen" tiles hugging the left edge — partner on top, you below.
 // Styled like little cinema monitors (warm amber frame, soft glow, a glassy
@@ -22,7 +23,6 @@ export type FaceCamOverlayProps = {
   partnerConnected: boolean;
 };
 
-const GOLD = "#E7C36B";
 const BOX_SIZE = 122;
 const STREAM_STYLE = { width: "100%" as const, height: "100%" as const };
 
@@ -102,7 +102,7 @@ const Column = styled(View)`
   justify-content: center;
 `;
 
-// The warm amber frame with a soft glow — the "monitor" bezel.
+// A dotted green frame with a soft glow — the "monitor" bezel.
 const Box = styled(View)`
   width: ${BOX_SIZE}px;
   height: ${BOX_SIZE}px;
@@ -111,9 +111,10 @@ const Box = styled(View)`
   border-radius: 18px;
   background-color: #0e0f0d;
   border-width: 2px;
-  border-color: rgba(231, 195, 107, 0.6);
-  shadow-color: ${GOLD};
-  shadow-opacity: 0.32;
+  border-style: dotted;
+  border-color: ${({ theme }) => theme.colors.primary};
+  shadow-color: ${({ theme }) => theme.colors.primary};
+  shadow-opacity: 0.4;
   shadow-radius: 10px;
   shadow-offset: 0px 4px;
   elevation: 6;
@@ -182,7 +183,7 @@ const NameChip = styled(View)`
   border-radius: 999px;
   background-color: rgba(13, 16, 15, 0.8);
   border-width: 1px;
-  border-color: rgba(231, 195, 107, 0.4);
+  border-color: ${({ theme }) => withAlpha(theme.colors.primary, 0.45)};
 `;
 
 const NameTag = styled(Text)`
