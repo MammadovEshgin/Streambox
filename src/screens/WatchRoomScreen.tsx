@@ -211,7 +211,6 @@ export function WatchRoomScreen({ route, navigation }: Props) {
   const hl = rawTitle.length;
   const headlineFont = hl <= 10 ? 38 : hl <= 16 ? 30 : hl <= 22 ? 25 : hl <= 30 ? 21 : hl <= 40 ? 18 : 16;
   const headlineSpacing = hl <= 10 ? 5 : hl <= 16 ? 2.5 : hl <= 22 ? 1 : 0.5;
-  const ratingNum = typeof media?.rating === "number" && media.rating > 0 ? media.rating : null;
 
   return (
     <Root>
@@ -262,7 +261,7 @@ export function WatchRoomScreen({ route, navigation }: Props) {
 
         {/* The screen — the hero */}
         <Animated.View entering={FadeInUp.duration(520).delay(160)}>
-          <PosterFrame $border={withAlpha(theme.colors.gold, 0.4)} style={{ aspectRatio: 3 / 2 }}>
+          <PosterFrame style={{ aspectRatio: 3 / 2 }}>
             {heroImg ? (
               <Image source={{ uri: heroImg }} style={{ flex: 1 }} contentFit="cover" />
             ) : (
@@ -272,7 +271,7 @@ export function WatchRoomScreen({ route, navigation }: Props) {
                 <EmptyHint>Enter a code below{"\n"}to take your seat.</EmptyHint>
               </EmptyScreen>
             )}
-            <ScreenScrim colors={["transparent", "transparent", "rgba(6,8,7,0.78)"]} locations={[0, 0.55, 1]} />
+            <ScreenScrim colors={["rgba(6,8,7,0.62)", "transparent", "rgba(6,8,7,0.82)"]} locations={[0, 0.42, 1]} />
 
             {/* projector light-sweep */}
             <SweepClip pointerEvents="none">
@@ -286,16 +285,15 @@ export function WatchRoomScreen({ route, navigation }: Props) {
               </Sweep>
             </SweepClip>
 
-            {media && (media.year || ratingNum) ? (
+            {media?.tagline ? (
+              <Tagline numberOfLines={2}>“{media.tagline}”</Tagline>
+            ) : null}
+
+            {media && (media.year || media.genre) ? (
               <PosterInfo>
                 {media.year ? <InfoText>{media.year}</InfoText> : null}
-                {media.year && ratingNum ? <InfoDot /> : null}
-                {ratingNum ? (
-                  <InfoStarRow>
-                    <StarMark size={11} color={theme.colors.gold} />
-                    <InfoText>{ratingNum.toFixed(1)}</InfoText>
-                  </InfoStarRow>
-                ) : null}
+                {media.year && media.genre ? <InfoDot /> : null}
+                {media.genre ? <InfoText numberOfLines={1}>{media.genre}</InfoText> : null}
               </PosterInfo>
             ) : null}
           </PosterFrame>
@@ -410,7 +408,6 @@ function TicketTab({
       $active={active}
       $activeBg={withAlpha(theme.colors.primary, 0.16)}
       $activeBorder={theme.colors.primary}
-      $glow={theme.colors.primary}
       style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.98 : 1 }] }]}
     >
       <MaterialCommunityIcons
@@ -503,19 +500,30 @@ const TitleRule = styled(View)<{ $color: string }>`
   background-color: ${({ $color }) => $color};
 `;
 
-const PosterFrame = styled(View)<{ $border: string }>`
+const PosterFrame = styled(View)`
   width: 100%;
   border-radius: 14px;
   overflow: hidden;
   background-color: ${({ theme }) => theme.colors.surface};
-  border-width: 1px;
-  border-color: ${({ $border }) => $border};
+`;
+
+const Tagline = styled(Text)`
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  right: 14px;
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: ${SCRIPT};
+  font-size: 18px;
+  line-height: 21px;
+  text-shadow: 0px 1px 8px rgba(0, 0, 0, 0.9);
 `;
 
 const PosterInfo = styled(View)`
   position: absolute;
   left: 14px;
   bottom: 12px;
+  right: 14px;
   flex-direction: row;
   align-items: center;
   gap: 8px;
@@ -534,12 +542,6 @@ const InfoDot = styled(View)`
   height: 3px;
   border-radius: 2px;
   background-color: ${({ theme }) => theme.colors.textSecondary};
-`;
-
-const InfoStarRow = styled(View)`
-  flex-direction: row;
-  align-items: center;
-  gap: 4px;
 `;
 
 const EmptyScreen = styled(View)`
@@ -584,7 +586,7 @@ const Tabs = styled(View)`
   margin-top: 22px;
 `;
 
-const Stub = styled(Pressable)<{ $active: boolean; $activeBg: string; $activeBorder: string; $glow: string }>`
+const Stub = styled(Pressable)<{ $active: boolean; $activeBg: string; $activeBorder: string }>`
   flex: 1;
   flex-direction: row;
   align-items: center;
@@ -593,13 +595,9 @@ const Stub = styled(Pressable)<{ $active: boolean; $activeBg: string; $activeBor
   padding: 14px 10px;
   border-radius: 14px;
   background-color: ${({ $active, $activeBg, theme }) => ($active ? $activeBg : theme.colors.glassFill)};
-  border-width: 1px;
+  border-width: 1.5px;
+  border-style: dotted;
   border-color: ${({ $active, $activeBorder, theme }) => ($active ? $activeBorder : theme.colors.glassBorder)};
-  shadow-color: ${({ $glow }) => $glow};
-  shadow-opacity: ${({ $active }) => ($active ? 0.5 : 0)};
-  shadow-radius: 14px;
-  shadow-offset: 0px 0px;
-  elevation: ${({ $active }) => ($active ? 8 : 0)};
 `;
 
 const StubText = styled(Text)<{ $active: boolean; $activeColor: string }>`
@@ -682,11 +680,6 @@ const TicketCTA = styled(Pressable)<{ $enabled: boolean }>`
   flex-direction: row;
   align-items: center;
   background-color: ${({ $enabled, theme }) => ($enabled ? theme.colors.primary : theme.colors.surfaceHigh)};
-  shadow-color: ${({ theme }) => theme.colors.primary};
-  shadow-opacity: ${({ $enabled }) => ($enabled ? 0.55 : 0)};
-  shadow-radius: 20px;
-  shadow-offset: 0px 10px;
-  elevation: ${({ $enabled }) => ($enabled ? 12 : 0)};
 `;
 
 const TicketStub = styled(View)`

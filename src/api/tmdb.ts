@@ -137,6 +137,7 @@ type TmdbMovieDetailsWithCreditsResponse = {
   original_title: string;
   original_language: string;
   overview: string;
+  tagline?: string | null;
   runtime: number | null;
   poster_path: string | null;
   backdrop_path: string | null;
@@ -1484,6 +1485,7 @@ async function fetchMovieDetails(id: string, cacheKey: string): Promise<MovieDet
     originalTitle: (data.original_language !== "en" && data.original_title !== data.title)
       ? data.original_title : undefined,
     overview: data.overview ?? "",
+    tagline: (typeof data.tagline === "string" && data.tagline.trim().length > 0) ? data.tagline.trim() : null,
     runtimeMinutes: data.runtime,
     genres: data.genres.map((entry) => entry.name),
     genreIds: data.genres.map((entry) => entry.id),

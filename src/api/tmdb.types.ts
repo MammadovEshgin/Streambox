@@ -58,6 +58,7 @@ export type MovieDetails = {
   title: string;
   originalTitle?: string;
   overview: string;
+  tagline?: string | null;
   runtimeMinutes: number | null;
   genres: string[];
   genreIds: number[];
