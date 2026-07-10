@@ -94,6 +94,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   }, [session, cameraPermission, micPermission, requestCameraPermission, requestMicPermission]);
 
   const [chatOpen, setChatOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [unread, setUnread] = useState(0);
   const seenChatCountRef = useRef(0);
@@ -385,20 +386,40 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
 
       {/* Right slide-in control rail */}
       <Reanimated.View style={[railWrapStyle, railStyle]}>
+        {emojiOpen ? (
+          <Reanimated.View entering={FadeIn.duration(140)} exiting={FadeOut.duration(120)}>
+            <EmojiPop>
+              {REACTION_EMOJIS.map((emoji) => (
+                <TouchableOpacity
+                  key={emoji}
+                  onPress={() => {
+                    session.sendReaction(emoji);
+                    setEmojiOpen(false);
+                  }}
+                  hitSlop={6}
+                >
+                  <EmojiText>{emoji}</EmojiText>
+                </TouchableOpacity>
+              ))}
+            </EmojiPop>
+          </Reanimated.View>
+        ) : null}
         <GestureDetector gesture={railGesture}>
           <Handle>
             <Feather name="chevron-left" size={16} color="#EFF2ED" />
           </Handle>
         </GestureDetector>
         <Rail>
-          <EmojiStrip>
-            {REACTION_EMOJIS.map((emoji) => (
-              <TouchableOpacity key={emoji} onPress={() => session.sendReaction(emoji)} hitSlop={6}>
-                <EmojiText>{emoji}</EmojiText>
-              </TouchableOpacity>
-            ))}
-          </EmojiStrip>
-          <RailButton onPress={() => setChatOpen(true)} $tone="surface">
+          <RailButton onPress={() => setEmojiOpen((v) => !v)} $tone={emojiOpen ? "primary" : "surface"}>
+            <Feather name="smile" size={15} color={emojiOpen ? theme.colors.textOnPrimary : theme.colors.textPrimary} />
+          </RailButton>
+          <RailButton
+            onPress={() => {
+              setEmojiOpen(false);
+              setChatOpen(true);
+            }}
+            $tone="surface"
+          >
             <Feather name="message-circle" size={15} color={theme.colors.textPrimary} />
             {unread > 0 ? (
               <Badge>
@@ -600,14 +621,22 @@ const Rail = styled(View)`
   border-bottom-left-radius: 16px;
 `;
 
-const EmojiStrip = styled(View)`
+// A horizontal picker that pops to the left of the rail when the emoji
+// button is tapped — keeps the rail short instead of a tall vertical strip.
+const EmojiPop = styled(View)`
+  flex-direction: row;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 2px;
+  gap: 14px;
+  margin-right: 8px;
+  padding: 9px 14px;
+  border-radius: 999px;
+  background-color: rgba(13, 16, 15, 0.85);
+  border-width: 1px;
+  border-color: rgba(255, 255, 255, 0.12);
 `;
 
 const EmojiText = styled(Text)`
-  font-size: 17px;
+  font-size: 20px;
 `;
 
 const RailButton = styled(TouchableOpacity)<{ $tone: "surface" | "primary" | "danger" }>`
