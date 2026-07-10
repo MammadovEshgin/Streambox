@@ -487,7 +487,6 @@ const MarqueeTitle = styled(Text)`
   font-size: 40px;
   line-height: 42px;
   letter-spacing: 6px;
-  text-shadow: 0px 2px 18px ${({ theme }) => withAlpha(theme.colors.gold, 0.35)};
 `;
 
 const TitleRule = styled(View)<{ $color: string }>`
