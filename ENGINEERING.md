@@ -63,6 +63,33 @@ the `app.config.js` runtime, not the branch you happen to be on.
 2. **Any change that adds or upgrades a native module cannot go OTA.** It requires a new native build **and** a `runtimeVersion` bump (e.g. `1.2.0`). Do **not** reuse `1.1.0` for a build that adds a native module — existing `1.1.0` installs would crash on the next OTA when they call the missing module. Prefer pure-JS solutions to stay OTA-deliverable (this is why the loader was rebuilt with SVG+Reanimated instead of Lottie).
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 
+### Current deployed state (last updated 2026-07-11)
+
+| Runtime | Branch @ commit | EAS update group |
+|---------|-----------------|------------------|
+| 1.2.0 | `release/1.2.0-watch-together` @ `38b01de` | `e31ac6cb-8e3d-40f1-a7bb-5c92d30ab491` |
+| 1.1.0 | `release/1.1.0-navbar` @ `f77d5ff` | `e7a1cf31-5169-42e9-93d2-147fa3b7f3e6` |
+| 1.0.2 | `release/1.0.2-legacy` @ `01926b3` | `1064072c-e415-423e-b067-3827dc4fe574` |
+
+- **2026-07-11 (all three fleets):** launch-splash black-flash fix (splash is now an
+  opaque overlay fading out over pre-painted content), Profile Movies/Series
+  chip-squeeze fix (`ToggleRow` dropped `flex:1`), and the **user-data sync
+  data-loss hardening** (involuntary auth loss purges tokens only — local lists +
+  sync queue survive; sign-out drains the queue in rounds and preserves it across
+  the wipe; cross-account guard in bootstrap; enqueue falls back to the last
+  bootstrapped user id; cold bootstrap flushes pending ops before the union
+  merge). Port chain: `38b01de` (1.2.0) → hunk-port `f77d5ff` (1.1.0, minus
+  watch-together-only bits in App.tsx/ProfileScreen/SharedSessionsSection) →
+  cherry-pick `01926b3` (1.0.2, nav-bar guard clean). 1.2.0 additionally got the
+  Shared Sessions polaroid rail restyle (bare polaroids, no poster containers).
+- **2026-07-10 (1.2.0 only):** Watch Together audit hardening (all 34 findings —
+  ICE restart/re-announce, private Realtime channels [needs migration
+  `20260710190000`], memory outbox, audio ducking, capture privacy) @ `e1b8017`
+  → group `98cbce14-4460-47a7-872c-8307a51af73c`.
+- Older deploy history: memory file `release-tracks.md` (agent memory) and the
+  EAS dashboard. `docs/release-tracks.md` predates the 1.2.0 track and the
+  branch renames — treat this section and §2 as the source of truth.
+
 ---
 
 ## 2A. Watch Together / Shared Sessions — runtime 1.2.0 (IMPORTANT, NEW)
