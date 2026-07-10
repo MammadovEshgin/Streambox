@@ -95,7 +95,7 @@ function Stars({ value }: { value: number }) {
 }
 
 // A film clapperboard / slate: a dark board with two ruled rows and a striped
-// clapstick hinged at the board's top-left, opened 45° (mouth open).
+// clapstick hinged at the board's top-left, opened 15° (mouth open).
 function Clapperboard({ w = 48 }: { w?: number }) {
   const stripes = [2, 9, 16, 23, 30];
   return (
@@ -109,8 +109,8 @@ function Clapperboard({ w = 48 }: { w?: number }) {
       <Rect x={6} y={30} width={40} height={22} rx={2} fill={PALETTE.posterDark} stroke={PALETTE.ink} strokeWidth={1.1} />
       <Rect x={11} y={38} width={30} height={1.4} fill="#565b62" />
       <Rect x={11} y={44} width={20} height={1.4} fill="#565b62" />
-      {/* clapstick — hinged at (8,30), rotated 45° open */}
-      <G transform="translate(8 30) rotate(-45)">
+      {/* clapstick — hinged at (8,30), rotated 15° open */}
+      <G transform="translate(8 30) rotate(-15)">
         <G clipPath="url(#clap)">
           <Rect x={0} y={-8} width={32} height={8} fill={PALETTE.cream} />
           {stripes.map((x, i) => (
