@@ -95,28 +95,32 @@ function Stars({ value }: { value: number }) {
 }
 
 // A film clapperboard / slate: a dark board with two ruled rows and a striped
-// clapstick hinged across the top.
-function Clapperboard({ w = 46 }: { w?: number }) {
-  const stripes = [6, 14, 22, 30, 38, 46];
+// clapstick hinged at the board's top-left, opened 45° (mouth open).
+function Clapperboard({ w = 48 }: { w?: number }) {
+  const stripes = [2, 9, 16, 23, 30];
   return (
-    <Svg width={w} height={(w * 44) / 48} viewBox="0 0 48 44">
+    <Svg width={w} height={w} viewBox="0 0 56 56">
       <Defs>
         <ClipPath id="clap">
-          <Rect x={4} y={5} width={40} height={11} rx={1.5} />
+          <Rect x={0} y={-8} width={32} height={8} />
         </ClipPath>
       </Defs>
       {/* board */}
-      <Rect x={4} y={17} width={40} height={22} rx={2} fill={PALETTE.posterDark} stroke={PALETTE.ink} strokeWidth={1.1} />
-      <Rect x={9} y={24} width={30} height={1.4} fill="#565b62" />
-      <Rect x={9} y={30} width={20} height={1.4} fill="#565b62" />
-      {/* clapstick with diagonal stripes */}
-      <G clipPath="url(#clap)">
-        <Rect x={4} y={5} width={40} height={11} fill={PALETTE.cream} />
-        {stripes.map((x, i) => (
-          <Polygon key={i} points={`${x},5 ${x + 5},5 ${x - 1},16 ${x - 6},16`} fill={PALETTE.ink} />
-        ))}
+      <Rect x={6} y={30} width={40} height={22} rx={2} fill={PALETTE.posterDark} stroke={PALETTE.ink} strokeWidth={1.1} />
+      <Rect x={11} y={38} width={30} height={1.4} fill="#565b62" />
+      <Rect x={11} y={44} width={20} height={1.4} fill="#565b62" />
+      {/* clapstick — hinged at (8,30), rotated 45° open */}
+      <G transform="translate(8 30) rotate(-45)">
+        <G clipPath="url(#clap)">
+          <Rect x={0} y={-8} width={32} height={8} fill={PALETTE.cream} />
+          {stripes.map((x, i) => (
+            <Polygon key={i} points={`${x},-8 ${x + 4},-8 ${x - 1},0 ${x - 5},0`} fill={PALETTE.ink} />
+          ))}
+        </G>
+        <Rect x={0} y={-8} width={32} height={8} fill="none" stroke={PALETTE.ink} strokeWidth={1.1} />
       </G>
-      <Rect x={4} y={5} width={40} height={11} rx={1.5} fill="none" stroke={PALETTE.ink} strokeWidth={1.1} />
+      {/* hinge pin */}
+      <Circle cx={8} cy={30} r={1.6} fill={PALETTE.ink} />
     </Svg>
   );
 }
