@@ -524,19 +524,20 @@ function AppShell() {
 
   // What the splash hands off to. The app phase additionally needs its synced
   // data + hub caches; welcome/auth need nothing. Until the launch phase
-  // resolves we keep waiting too. Content loads *during* the splash, so this is
-  // usually already false by the time the splash finishes — no spinner shown.
+  // resolves we keep waiting too. Content MOUNTS as soon as it is ready — the
+  // splash is an opaque absolute overlay above it — so by the time the reveal
+  // fades out, the first frame beneath is already painted (mounting only after
+  // the splash unmounted flashed the black window background for a frame).
   const isContentPending =
     launchPhase === "loading"
     || (launchPhase === "app" && (!isUserDataReady || !hubCachesHydrated));
-  const showLoadingFallback = splashComplete && isContentPending;
-  const showResolvedScreen = splashComplete && !isContentPending;
+  const showLoadingFallback = isContentPending;
+  const showResolvedScreen = !isContentPending;
   const startupBoundaryResetKey = `${session?.user.id ?? "guest"}:${startupRetryNonce}`;
 
   return (
     <ThemeProvider theme={activeTheme}>
       <StatusBar style="light" />
-      {!splashComplete ? <LaunchSplash onComplete={handleSplashComplete} /> : null}
       {showLoadingFallback ? <SplashLoading /> : null}
       {showResolvedScreen && launchPhase === "welcome" ? <WelcomeScreen onContinue={handleContinueFromWelcome} /> : null}
       {showResolvedScreen && launchPhase === "auth" ? (
@@ -585,9 +586,13 @@ function AppShell() {
           <NavigationContainer theme={navigationTheme} linking={watchTogetherLinking}>
             <Navigation />
           </NavigationContainer>
-          <LiveOpsHost enabled={isUserDataReady} />
+          {/* Popups wait for the splash: a LiveOps modal is a native layer that
+              would otherwise appear ABOVE the splash overlay mid-reveal. */}
+          <LiveOpsHost enabled={isUserDataReady && splashComplete} />
         </StartupErrorBoundary>
       ) : null}
+      {/* Top-most opaque overlay — content mounts and paints beneath it. */}
+      {!splashComplete ? <LaunchSplash onComplete={handleSplashComplete} /> : null}
     </ThemeProvider>
   );
 }

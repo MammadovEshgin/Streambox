@@ -43,9 +43,11 @@ const GRID_GAP = 10;
 const COLUMNS = 3;
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
-// Rail cards match the poster cards in the other profile sections exactly (132x198).
-const RAIL_CARD_WIDTH = 132;
-const RAIL_CARD_HEIGHT = 198;
+// Rail cards ARE the polaroid: sized to its own 320:430 paper ratio, no
+// container chrome. (They used to sit inside poster-shaped 132x198 bordered
+// boxes, which letterboxed the polaroid and looked broken.)
+const RAIL_CARD_WIDTH = 152;
+const RAIL_CARD_HEIGHT = Math.round(RAIL_CARD_WIDTH * POLAROID_RATIO);
 // Floor so three cards + two gaps always fit one row (never wrap to 2-up).
 const CARD_WIDTH = Math.floor((SCREEN_WIDTH - SECTION_PADDING * 2 - GRID_GAP * (COLUMNS - 1)) / COLUMNS);
 const CARD_HEIGHT = Math.round(CARD_WIDTH * POLAROID_RATIO);
@@ -376,11 +378,6 @@ const RailCardWrap = styled(View)`
 const RailCard = styled(Pressable)`
   width: ${RAIL_CARD_WIDTH}px;
   height: ${RAIL_CARD_HEIGHT}px;
-  border-radius: 14px;
-  overflow: hidden;
-  background-color: ${({ theme }) => theme.colors.surfaceRaised};
-  border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.glassBorder};
 `;
 
 const RailThumb = styled(Image)`
