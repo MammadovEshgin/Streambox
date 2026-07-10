@@ -39,9 +39,27 @@ const PULSE_END = APPEAR_MS + BEAT_GROW + BEAT_SHRINK;
 const MOVE_START = PULSE_END + SETTLE_PAUSE;
 /** Total time from mount to the moment the lockup is fully settled. */
 export const LAUNCH_SPLASH_DURATION_MS = MOVE_START + MOVE_MS + HOLD_MS;
+// After the hold, the whole splash fades out to reveal the content already
+// painted beneath it (the splash is an opaque absolute overlay — see App.tsx).
+const FADE_OUT_MS = 260;
 
 const Root = styled.View`
   flex: 1;
+  background-color: ${({ theme }) => theme.colors.background};
+  align-items: center;
+  justify-content: center;
+`;
+
+// The launch splash covers the app as a top-most opaque layer so content can
+// mount and paint underneath while the reveal plays. Unmounting used to swap
+// the splash for a not-yet-painted navigation tree, which flashed the black
+// window background for a frame or two.
+const OverlayRoot = styled(Animated.View)`
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
   background-color: ${({ theme }) => theme.colors.background};
   align-items: center;
   justify-content: center;
@@ -75,6 +93,7 @@ export function LaunchSplash({ onComplete }: LaunchSplashProps) {
   const enter = useSharedValue(0);
   const scale = useSharedValue(1);
   const move = useSharedValue(0);
+  const fade = useSharedValue(1);
   // Measured wordmark width so the logo can rest at the true screen center
   // (the lockup reserves logo + gap + word; the logo sits left of that center
   // by half the gap+word, so we offset it right by that amount until it slides).
@@ -90,9 +109,15 @@ export function LaunchSplash({ onComplete }: LaunchSplashProps) {
 
     move.value = withDelay(MOVE_START, withTiming(1, { duration: MOVE_MS, easing: Easing.out(Easing.cubic) }));
 
-    const doneTimer = setTimeout(() => onComplete?.(), LAUNCH_SPLASH_DURATION_MS);
+    // Reveal ends → fade the overlay away over the content beneath, and only
+    // then unmount (onComplete).
+    fade.value = withDelay(
+      LAUNCH_SPLASH_DURATION_MS,
+      withTiming(0, { duration: FADE_OUT_MS, easing: Easing.in(Easing.quad) })
+    );
+    const doneTimer = setTimeout(() => onComplete?.(), LAUNCH_SPLASH_DURATION_MS + FADE_OUT_MS);
     return () => clearTimeout(doneTimer);
-  }, [enter, scale, move, onComplete]);
+  }, [enter, scale, move, fade, onComplete]);
 
   const onWordLayout = (event: LayoutChangeEvent) => {
     const width = event.nativeEvent.layout.width;
@@ -120,15 +145,20 @@ export function LaunchSplash({ onComplete }: LaunchSplashProps) {
     };
   });
 
+  const overlayStyle = useAnimatedStyle(() => {
+    "worklet";
+    return { opacity: fade.value };
+  });
+
   return (
-    <Root>
+    <OverlayRoot style={overlayStyle}>
       <Lockup>
         <LogoImage source={MARK} resizeMode="contain" style={logoStyle} />
         <Wordmark onLayout={onWordLayout} style={wordStyle}>
           StreamBox
         </Wordmark>
       </Lockup>
-    </Root>
+    </OverlayRoot>
   );
 }
 

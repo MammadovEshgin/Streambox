@@ -409,6 +409,19 @@ async function updateLocalAssetMetadata(assetKind: SyncAssetKind, nextUri: strin
 }
 
 async function getCurrentUserId() { const { data: { session } } = await supabase.auth.getSession(); return session?.user.id ?? null; }
+
+// Who a locally-made mutation belongs to. The session is the source of truth,
+// but with autoRefreshToken off app-wide there are real windows where the
+// session reads as null/expired while the user is still using the app — and
+// enqueue functions used to silently DROP the operation then. The local list
+// had already changed, the cloud never heard about it, and the next bootstrap
+// union resurrected removed items. Fall back to the last bootstrapped owner:
+// the op queues under their id and flushes once they re-authenticate.
+async function getSyncUserId() {
+  const sessionUserId = await getCurrentUserId();
+  if (sessionUserId) return sessionUserId;
+  return AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY);
+}
 async function readPendingQueue(): Promise<PendingSyncOperation[]> { try { const raw = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; } }
 async function writePendingQueue(queue: PendingSyncOperation[]) { if (queue.length === 0) await AsyncStorage.removeItem(SYNC_QUEUE_STORAGE_KEY); else await AsyncStorage.setItem(SYNC_QUEUE_STORAGE_KEY, JSON.stringify(queue)); }
 
@@ -851,10 +864,18 @@ async function executePendingOperation(op: PendingSyncOperation) {
   }
 }
 
-export async function clearLocalUserDataCache() {
+// `preserveSyncQueue` keeps the durable op queue across the wipe. Sign-out
+// uses it: queued ops are tagged with their owner's user id, so a delete that
+// couldn't flush before sign-out (offline, expired token) survives on-device
+// and flushes when that user signs back in — instead of being erased and
+// having the "deleted" item resurrected by the next bootstrap union. The queue
+// is only dropped when a DIFFERENT account signs in (cross-user guard in
+// bootstrapSupabaseUserData).
+export async function clearLocalUserDataCache(options?: { preserveSyncQueue?: boolean }) {
   scheduledFlushTimers.forEach((timer) => clearTimeout(timer));
   scheduledFlushTimers.clear();
-  const keys = [APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, CONTINUE_WATCHING_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY, SERIES_OF_DAY_CURRENT_STORAGE_KEY, ACTIVE_SYNC_USER_KEY, SYNC_QUEUE_STORAGE_KEY];
+  const keys = [APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, CONTINUE_WATCHING_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY, SERIES_OF_DAY_CURRENT_STORAGE_KEY, ACTIVE_SYNC_USER_KEY];
+  if (!options?.preserveSyncQueue) keys.push(SYNC_QUEUE_STORAGE_KEY);
   const all = await AsyncStorage.getAllKeys(); const bKeys = all.filter(k => k.startsWith(BOOTSTRAP_COMPLETE_KEY_PREFIX));
   await AsyncStorage.multiRemove([...keys, ...bKeys]);
 }
@@ -915,6 +936,25 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
   await flushPromise;
 }
 
+// Flush repeatedly until the user's queue is empty or stops shrinking. A
+// single flush handles at most MAX_SYNC_OPERATIONS_PER_FLUSH ops and re-queues
+// failures for a later timer — fine mid-session, but before a sign-out wipe or
+// a bootstrap merge the WHOLE backlog has to reach the cloud now. Returns
+// whether the queue fully drained.
+export async function drainSupabaseUserDataSync(userId: string, maxRounds = 8): Promise<boolean> {
+  let previousPending = Number.POSITIVE_INFINITY;
+  for (let round = 0; round < maxRounds; round += 1) {
+    const pending = (await readPendingQueue()).filter((op) => op.userId === userId).length;
+    if (pending === 0) return true;
+    // No progress since the last round (offline / persistent failure) — stop
+    // burning time; the ops stay queued for a later session.
+    if (pending >= previousPending) return false;
+    previousPending = pending;
+    await flushSupabaseUserDataSync(userId);
+  }
+  return (await readPendingQueue()).filter((op) => op.userId === userId).length === 0;
+}
+
 export async function hasWarmBootstrappedUserData(userId: string) {
   const [[, activeUserId], [, bootstrapComplete]] = await AsyncStorage.multiGet([
     ACTIVE_SYNC_USER_KEY,
@@ -926,7 +966,14 @@ export async function hasWarmBootstrappedUserData(userId: string) {
 
 export async function bootstrapSupabaseUserData() {
   const uid = await getCurrentUserId(); if (!uid) return;
-  const pId = await AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY); let local = await readLocalUserSnapshot(); const bDone = (await AsyncStorage.getItem(getBootstrapCompleteKey(uid))) === "1";
+  const pId = await AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY);
+  // Cross-account guard: local data (and queued ops) belonging to a DIFFERENT
+  // user must never merge into this account. This is the only path that drops
+  // the sync queue — auth-loss and sign-out both preserve it now.
+  if (pId && pId !== uid) {
+    await clearLocalUserDataCache();
+  }
+  let local = await readLocalUserSnapshot(); const bDone = (await AsyncStorage.getItem(getBootstrapCompleteKey(uid))) === "1";
   if (bDone && pId === uid) {
     await queueInitialAssetUploads(uid, local.settings);
     await flushSupabaseUserDataSync(uid); await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, uid);
@@ -948,6 +995,11 @@ export async function bootstrapSupabaseUserData() {
     }
     return;
   }
+  // Push this device's pending mutations up BEFORE downloading: the merge
+  // below is a pure union, so a delete still sitting in the queue (e.g. made
+  // in the 30s debounce window before the previous sign-out) would otherwise
+  // be resurrected by its own not-yet-deleted remote row.
+  await drainSupabaseUserDataSync(uid).catch(() => undefined);
   let rb: RemoteBootstrap; try { rb = await fetchRemoteBootstrap(); } catch { const a = await resolveProfileAssetUris(); if (a.profileImageUri) local.settings.profileImageUri = a.profileImageUri; if (a.bannerImageUri) local.settings.bannerImageUri = a.bannerImageUri; await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(local.settings)); return; }
   // Did this device hold any data the cloud might not have yet? After a sign-out
   // the local store is wiped, so on the next sign-in there's nothing local-only
@@ -984,13 +1036,13 @@ export async function bootstrapSupabaseUserData() {
 }
 
 export async function enqueueProfileSettingsSync(settings: PersistedSettings, audit: SyncMetadata = {}) {
-  const uid = await getCurrentUserId(); if (!uid) return;
+  const uid = await getSyncUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "profile_settings", userId: uid, settings, auditMetadata: normalizeSyncMetadata(audit) });
   scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueProfileAssetSync(kind: SyncAssetKind, uri: string | null, prev: string | null, ver: number) {
-  const uid = await getCurrentUserId(); if (!uid || !uri || !isLocalFileUri(uri)) return;
+  const uid = await getSyncUserId(); if (!uid || !uri || !isLocalFileUri(uri)) return;
   await enqueuePendingOperation({ kind: "asset_upload", userId: uid, assetKind: kind, localUri: uri, previousPath: prev, nextVersion: Math.max(ver, 0) + 1 });
   // Media uploads shouldn't sit behind the 30s debounce: the user often
   // backgrounds the app right after picking an image (JS timers stop firing
@@ -1000,7 +1052,7 @@ export async function enqueueProfileAssetSync(kind: SyncAssetKind, uri: string |
 }
 
 export async function enqueueMediaLibrarySync(i: { operation: "upsert" | "delete"; listKind: SyncListKind; mediaType: MediaType; tmdbId: number | string; details?: UserMediaSyncDetails | null; occurredAt?: string; }) {
-  const uid = await getCurrentUserId(); if (!uid) return;
+  const uid = await getSyncUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "media_library", userId: uid, operation: i.operation, listKind: i.listKind, mediaType: i.mediaType, tmdbId: i.tmdbId, imdbId: i.details?.imdbId ?? null, collectedAt: i.occurredAt ?? new Date().toISOString(), snapshot: normalizeMediaSnapshot(i.details), auditMetadata: normalizeSyncMetadata({ title: i.details?.title }) });
   scheduleSupabaseUserDataSync(uid);
 }
@@ -1018,7 +1070,7 @@ export type WatchHistoryQueueItem =
   | { operation: "delete"; mediaType: MediaType; tmdbId: number | string; audit?: SyncMetadata };
 
 export async function enqueueWatchHistoryBatch(items: WatchHistoryQueueItem[]) {
-  const uid = await getCurrentUserId(); if (!uid || items.length === 0) return;
+  const uid = await getSyncUserId(); if (!uid || items.length === 0) return;
   await enqueuePendingOperations(items.map((item): PendingSyncOperation =>
     item.operation === "upsert"
       ? { kind: "watch_history_upsert", userId: uid, entry: item.entry, auditMetadata: normalizeSyncMetadata(item.audit) }
@@ -1034,20 +1086,20 @@ export async function enqueueEpisodeProgressSync(t: number, s: number, e: number
 export type EpisodeProgressQueueItem = { seriesTmdbId: number; seasonNumber: number; episodeNumber: number; isWatched: boolean; audit?: SyncMetadata };
 
 export async function enqueueEpisodeProgressBatch(items: EpisodeProgressQueueItem[]) {
-  const uid = await getCurrentUserId(); if (!uid || items.length === 0) return;
+  const uid = await getSyncUserId(); if (!uid || items.length === 0) return;
   const watchedAt = new Date().toISOString();
   await enqueuePendingOperations(items.map((item): PendingSyncOperation => ({ kind: "episode_progress", userId: uid, seriesTmdbId: item.seriesTmdbId, seasonNumber: item.seasonNumber, episodeNumber: item.episodeNumber, isWatched: item.isWatched, watchedAt, auditMetadata: normalizeSyncMetadata(item.audit) })));
   scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueDailyRecommendationSync(m: Record<string, any> | null, d: string) {
-  const uid = await getCurrentUserId(); if (!uid || !m || !m.id) return;
+  const uid = await getSyncUserId(); if (!uid || !m || !m.id) return;
   await enqueuePendingOperation({ kind: "daily_recommendation", userId: uid, recommendationKind: MOVIE_OF_DAY_KIND, recommendationDate: d, mediaType: "movie", tmdbId: m.id, imdbId: m.imdbId || null, strategy: "device_generated", snapshot: { movie: m } });
   scheduleSupabaseUserDataSync(uid);
 }
 
 export async function logSupabaseUserEvent(cat: string, type: string, meta: SyncMetadata = {}, opts?: any) {
-  const uid = await getCurrentUserId(); if (!uid) return;
+  const uid = await getSyncUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "auth_event", userId: uid, actionCategory: cat, actionType: type, entityType: opts?.entityType ?? null, entityKey: opts?.entityKey ?? null, metadata: normalizeSyncMetadata(meta), createdAt: new Date().toISOString() });
   if (opts?.flushImmediately) await flushSupabaseUserDataSync(uid); else scheduleSupabaseUserDataSync(uid);
 }
