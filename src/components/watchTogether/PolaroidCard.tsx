@@ -3,7 +3,7 @@ import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import type { RefObject } from "react";
 import { Text, View } from "react-native";
-import Svg, { Circle, Defs, Path, Pattern, Polygon, RadialGradient, Rect, Stop } from "react-native-svg";
+import Svg, { Circle, ClipPath, Defs, G, Pattern, Polygon, RadialGradient, Rect, Stop } from "react-native-svg";
 import ViewShot from "react-native-view-shot";
 import styled from "styled-components/native";
 
@@ -94,16 +94,29 @@ function Stars({ value }: { value: number }) {
   );
 }
 
-// A round cinema seal / rubber stamp: a red roundel with a dashed inner ring
-// and a cream star — flanked by two tiny stars.
-function RoundStamp({ size = 46 }: { size?: number }) {
+// A film clapperboard / slate: a dark board with two ruled rows and a striped
+// clapstick hinged across the top.
+function Clapperboard({ w = 46 }: { w?: number }) {
+  const stripes = [6, 14, 22, 30, 38, 46];
   return (
-    <Svg width={size} height={size} viewBox="0 0 48 48">
-      <Circle cx={24} cy={24} r={22} fill={PALETTE.red} stroke={PALETTE.redDeep} strokeWidth={1.4} />
-      <Circle cx={24} cy={24} r={17.5} fill="none" stroke={PALETTE.cream} strokeWidth={1} strokeDasharray="2 2.4" />
-      <Polygon points={STAR_POINTS} transform="translate(13.2, 13.2) scale(0.9)" fill={PALETTE.cream} />
-      <Polygon points={STAR_POINTS} transform="translate(3.6, 20.4) scale(0.3)" fill={PALETTE.cream} />
-      <Polygon points={STAR_POINTS} transform="translate(37.2, 20.4) scale(0.3)" fill={PALETTE.cream} />
+    <Svg width={w} height={(w * 44) / 48} viewBox="0 0 48 44">
+      <Defs>
+        <ClipPath id="clap">
+          <Rect x={4} y={5} width={40} height={11} rx={1.5} />
+        </ClipPath>
+      </Defs>
+      {/* board */}
+      <Rect x={4} y={17} width={40} height={22} rx={2} fill={PALETTE.posterDark} stroke={PALETTE.ink} strokeWidth={1.1} />
+      <Rect x={9} y={24} width={30} height={1.4} fill="#565b62" />
+      <Rect x={9} y={30} width={20} height={1.4} fill="#565b62" />
+      {/* clapstick with diagonal stripes */}
+      <G clipPath="url(#clap)">
+        <Rect x={4} y={5} width={40} height={11} fill={PALETTE.cream} />
+        {stripes.map((x, i) => (
+          <Polygon key={i} points={`${x},5 ${x + 5},5 ${x - 1},16 ${x - 6},16`} fill={PALETTE.ink} />
+        ))}
+      </G>
+      <Rect x={4} y={5} width={40} height={11} rx={1.5} fill="none" stroke={PALETTE.ink} strokeWidth={1.1} />
     </Svg>
   );
 }
@@ -286,14 +299,7 @@ export function PolaroidCard({
           )}
         </Hero>
         <View style={{ position: "absolute", right: 18, top: 232, transform: [{ rotate: "8deg" }] }}>
-          <RoundStamp size={46} />
-        </View>
-
-        {/* Divider swash, below the tagline, separating it from the log */}
-        <View style={{ position: "absolute", top: 302, left: 0, right: 0, alignItems: "center" }}>
-          <Svg width={150} height={12} viewBox="0 0 150 12">
-            <Path d="M4 7 Q 40 1, 78 6 T 146 5" stroke={PALETTE.slate} strokeWidth={2.4} fill="none" strokeLinecap="round" />
-          </Svg>
+          <Clapperboard w={46} />
         </View>
 
         {/* Typed log — flows as a column so a long, two-line title pushes the
