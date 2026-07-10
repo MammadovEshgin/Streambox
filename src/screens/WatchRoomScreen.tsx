@@ -99,16 +99,14 @@ export function WatchRoomScreen({ route, navigation }: Props) {
     });
   }, []);
 
-  // ── Ambient motion: breathing projector glow + a slow light-sweep ──
-  const glow = useSharedValue(1);
+  // ── Ambient motion: marquee bulbs that swell on/off softly + a slow sweep ──
+  const bulbGlow = useSharedValue(1);
   const sweep = useSharedValue(0);
   const twinkle = useSharedValue(0);
   useEffect(() => {
-    glow.value = withRepeat(
-      withSequence(
-        withTiming(1.28, { duration: 3200, easing: Easing.inOut(Easing.ease) }),
-        withTiming(1, { duration: 3200, easing: Easing.inOut(Easing.ease) })
-      ),
+    // Gentle, gradual "turning on and off" — never snappy.
+    bulbGlow.value = withRepeat(
+      withTiming(0.42, { duration: 2100, easing: Easing.inOut(Easing.ease) }),
       -1,
       true
     );
@@ -124,9 +122,9 @@ export function WatchRoomScreen({ route, navigation }: Props) {
         true
       )
     );
-  }, [glow, sweep, twinkle]);
+  }, [bulbGlow, sweep, twinkle]);
 
-  const glowStyle = useAnimatedStyle(() => ({ transform: [{ scale: glow.value }], opacity: 0.16 * glow.value }));
+  const bulbStyle = useAnimatedStyle(() => ({ opacity: bulbGlow.value }));
   const sweepStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: -220 + sweep.value * 440 }, { rotate: "18deg" }],
     opacity: sweep.value < 0.15 || sweep.value > 0.85 ? 0 : 0.5,
@@ -203,23 +201,32 @@ export function WatchRoomScreen({ route, navigation }: Props) {
     }
   };
 
-  const feature = media?.backdropPath ?? media?.posterPath ?? null;
-  const featureImg = feature ? getTmdbImageUrl(feature, "w780") : null;
+  // Hero = the real portrait poster; ambient spill = the wider backdrop.
+  const posterSrc = media?.posterPath ?? media?.backdropPath ?? null;
+  const posterImg = posterSrc ? getTmdbImageUrl(posterSrc, "w500") : null;
+  const ambientSrc = media?.backdropPath ?? media?.posterPath ?? null;
+  const ambientImg = ambientSrc ? getTmdbImageUrl(ambientSrc, "w780") : null;
+
+  // Headline is the movie's title (falls back to the brand); size flexes with length.
+  const rawTitle = media?.title ?? "Watch Together";
+  const headline = rawTitle.toUpperCase();
+  const hl = rawTitle.length;
+  const headlineFont = hl <= 10 ? 38 : hl <= 16 ? 30 : hl <= 22 ? 25 : hl <= 30 ? 21 : hl <= 40 ? 18 : 16;
+  const headlineSpacing = hl <= 10 ? 5 : hl <= 16 ? 2.5 : hl <= 22 ? 1 : 0.5;
 
   return (
     <Root>
       {/* Theater ambience */}
       <Backdrop colors={["#17120E", "#0D100F", "#070908"]} locations={[0, 0.45, 1]} />
-      {featureImg ? (
+      {ambientImg ? (
         <AmbientWrap pointerEvents="none">
-          <Image source={{ uri: featureImg }} style={{ flex: 1 }} contentFit="cover" blurRadius={40} />
+          <Image source={{ uri: ambientImg }} style={{ flex: 1 }} contentFit="cover" blurRadius={40} />
           <Backdrop
             colors={[withAlpha(theme.colors.background, 0.3), theme.colors.background]}
             locations={[0, 0.9]}
           />
         </AmbientWrap>
       ) : null}
-      <ProjectorGlow style={glowStyle} $color={theme.colors.primary} />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -238,25 +245,35 @@ export function WatchRoomScreen({ route, navigation }: Props) {
         {/* Marquee header */}
         <Animated.View entering={FadeInDown.duration(600).springify().damping(15)}>
           <BulbRow>
-            <MarqueeBulbs color={theme.colors.gold} />
+            <Animated.View style={bulbStyle}>
+              <MarqueeBulbs color={theme.colors.gold} />
+            </Animated.View>
           </BulbRow>
           <Kicker>now showing</Kicker>
-          <MarqueeTitle>WATCH{"\n"}TOGETHER</MarqueeTitle>
+          <MarqueeTitle
+            numberOfLines={2}
+            adjustsFontSizeToFit
+            minimumFontScale={0.7}
+            style={{ fontSize: headlineFont, lineHeight: headlineFont + 4, letterSpacing: headlineSpacing }}
+          >
+            {headline}
+          </MarqueeTitle>
           <TitleRule $color={theme.colors.gold} />
         </Animated.View>
 
-        {/* The screen */}
-        <Animated.View entering={FadeInUp.duration(520).delay(160)}>
-          <ScreenFrame $border={withAlpha(theme.colors.gold, 0.28)} style={{ aspectRatio: 16 / 9 }}>
-            {featureImg ? (
-              <Image source={{ uri: featureImg }} style={{ flex: 1 }} contentFit="cover" />
+        {/* The poster — the hero */}
+        <Animated.View entering={FadeInUp.duration(520).delay(160)} style={{ alignItems: "center" }}>
+          <PosterFrame $border={withAlpha(theme.colors.gold, 0.28)} style={{ aspectRatio: 2 / 3 }}>
+            {posterImg ? (
+              <Image source={{ uri: posterImg }} style={{ flex: 1 }} contentFit="cover" />
             ) : (
               <EmptyScreen>
                 <MaterialCommunityIcons name="movie-open-outline" size={30} color={withAlpha(theme.colors.textPrimary, 0.5)} />
                 <Sprockets color={theme.colors.textTertiary} />
+                <EmptyHint>Enter a code below{"\n"}to take your seat.</EmptyHint>
               </EmptyScreen>
             )}
-            <ScreenScrim colors={["transparent", "rgba(6,8,7,0.15)", "rgba(6,8,7,0.92)"]} locations={[0, 0.5, 1]} />
+            <ScreenScrim colors={["transparent", "transparent", "rgba(6,8,7,0.5)"]} locations={[0, 0.62, 1]} />
 
             {/* projector light-sweep */}
             <SweepClip pointerEvents="none">
@@ -269,25 +286,7 @@ export function WatchRoomScreen({ route, navigation }: Props) {
                 />
               </Sweep>
             </SweepClip>
-
-            <ScreenLabel>
-              <MaterialCommunityIcons name="ticket-confirmation" size={12} color={theme.colors.gold} />
-              <ScreenLabelText>TONIGHT’S FEATURE</ScreenLabelText>
-            </ScreenLabel>
-
-            <ScreenCaption>
-              {media ? (
-                <>
-                  <FeatureTitle numberOfLines={2}>{media.title}</FeatureTitle>
-                  <FeatureMeta>
-                    {media.year ? `${media.year}   ·   ` : ""}in sync, face to face
-                  </FeatureMeta>
-                </>
-              ) : (
-                <FeatureMeta>Enter a code below to take your seat.</FeatureMeta>
-              )}
-            </ScreenCaption>
-          </ScreenFrame>
+          </PosterFrame>
         </Animated.View>
 
         {/* Ticket tabs */}
@@ -306,7 +305,7 @@ export function WatchRoomScreen({ route, navigation }: Props) {
 
         {/* Form */}
         <Animated.View entering={FadeInUp.duration(500).delay(340)}>
-          <FieldLabel>your name for tonight</FieldLabel>
+          <FieldLabel>what should we call you?</FieldLabel>
           <FieldWrap>
             <Feather name="user" size={16} color={theme.colors.textTertiary} />
             <Field
@@ -344,21 +343,26 @@ export function WatchRoomScreen({ route, navigation }: Props) {
           ) : null}
 
           <PrimaryWrap>
-            <Primary
+            <TicketCTA
               onPress={handleSubmit}
               disabled={!canSubmit || busy}
               $enabled={canSubmit && !busy}
               style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.98 : 1 }] }]}
             >
-              {busy ? (
-                <ActivityIndicator color={theme.colors.textOnPrimary} />
-              ) : (
-                <>
-                  <MaterialCommunityIcons name="ticket-confirmation-outline" size={18} color={theme.colors.textOnPrimary} />
-                  <PrimaryText>{mode === "create" ? "Open the room" : "Take my seat"}</PrimaryText>
-                </>
-              )}
-            </Primary>
+              <TicketStub>
+                {busy ? (
+                  <ActivityIndicator color={theme.colors.textOnPrimary} />
+                ) : (
+                  <MaterialCommunityIcons name="ticket-confirmation-outline" size={22} color={theme.colors.textOnPrimary} />
+                )}
+              </TicketStub>
+              <TicketPerf />
+              <TicketMain>
+                <TicketText>{mode === "create" ? "OPEN THE ROOM" : "TAKE MY SEAT"}</TicketText>
+              </TicketMain>
+              <TicketNotch style={{ top: -9 }} />
+              <TicketNotch style={{ bottom: -9 }} />
+            </TicketCTA>
           </PrimaryWrap>
 
           <FooterRow>
@@ -394,6 +398,7 @@ function TicketTab({
       $active={active}
       $activeBg={withAlpha(theme.colors.primary, 0.16)}
       $activeBorder={theme.colors.primary}
+      $glow={theme.colors.primary}
       style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.98 : 1 }] }]}
     >
       <MaterialCommunityIcons
@@ -401,7 +406,6 @@ function TicketTab({
         size={16}
         color={active ? theme.colors.primary : theme.colors.textTertiary}
       />
-      <Perf $color={active ? withAlpha(theme.colors.primary, 0.5) : theme.colors.border} />
       <StubText $active={active} $activeColor={theme.colors.primary}>
         {children}
       </StubText>
@@ -426,16 +430,6 @@ const AmbientWrap = styled(View)`
   right: 0;
   height: 360px;
   opacity: 0.5;
-`;
-
-const ProjectorGlow = styled(Animated.View)<{ $color: string }>`
-  position: absolute;
-  top: -140px;
-  align-self: center;
-  width: 320px;
-  height: 320px;
-  border-radius: 160px;
-  background-color: ${({ $color }) => $color};
 `;
 
 const TopBar = styled(View)`
@@ -497,21 +491,36 @@ const TitleRule = styled(View)<{ $color: string }>`
   background-color: ${({ $color }) => $color};
 `;
 
-const ScreenFrame = styled(View)<{ $border: string }>`
-  width: 100%;
-  border-radius: 20px;
+const PosterFrame = styled(View)<{ $border: string }>`
+  width: 62%;
+  border-radius: 18px;
   overflow: hidden;
   background-color: ${({ theme }) => theme.colors.surface};
   border-width: 1px;
   border-color: ${({ $border }) => $border};
+  shadow-color: #000000;
+  shadow-opacity: 0.5;
+  shadow-radius: 24px;
+  shadow-offset: 0px 16px;
+  elevation: 16;
 `;
 
 const EmptyScreen = styled(View)`
   flex: 1;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: 12px;
+  padding: 16px;
   background-color: ${({ theme }) => theme.colors.surface};
+`;
+
+const EmptyHint = styled(Text)`
+  margin-top: 2px;
+  text-align: center;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
+  font-size: 12px;
+  line-height: 17px;
 `;
 
 const ScreenScrim = styled(LinearGradient)`
@@ -532,75 +541,29 @@ const Sweep = styled(Animated.View)`
   width: 120px;
 `;
 
-const ScreenLabel = styled(View)`
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  flex-direction: row;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 9px;
-  border-radius: 999px;
-  background-color: rgba(6, 8, 7, 0.55);
-  border-width: 1px;
-  border-color: ${({ theme }) => withAlpha(theme.colors.gold, 0.3)};
-`;
-
-const ScreenLabelText = styled(Text)`
-  color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: ${TYPEWRITER};
-  font-size: 9px;
-  letter-spacing: 1.5px;
-`;
-
-const ScreenCaption = styled(View)`
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: 14px;
-`;
-
-const FeatureTitle = styled(Text)`
-  color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: ${({ theme }) => theme.typography.Display.fontFamily};
-  font-size: 22px;
-  line-height: 26px;
-  letter-spacing: -0.4px;
-`;
-
-const FeatureMeta = styled(Text)`
-  margin-top: 4px;
-  color: ${({ theme }) => theme.colors.textSecondary};
-  font-family: ${({ theme }) => theme.typography.MetaSmall.fontFamily};
-  font-size: 12px;
-  letter-spacing: 0.3px;
-`;
-
 const Tabs = styled(View)`
   flex-direction: row;
   gap: 10px;
   margin-top: 22px;
 `;
 
-const Stub = styled(Pressable)<{ $active: boolean; $activeBg: string; $activeBorder: string }>`
+const Stub = styled(Pressable)<{ $active: boolean; $activeBg: string; $activeBorder: string; $glow: string }>`
   flex: 1;
   flex-direction: row;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 13px 10px;
-  border-radius: 14px;
+  padding: 14px 10px;
+  border-radius: 26px;
   background-color: ${({ $active, $activeBg, theme }) => ($active ? $activeBg : theme.colors.glassFill)};
-  border-width: 1px;
+  border-width: 1.5px;
+  border-style: dotted;
   border-color: ${({ $active, $activeBorder, theme }) => ($active ? $activeBorder : theme.colors.glassBorder)};
-`;
-
-const Perf = styled(View)<{ $color: string }>`
-  width: 1px;
-  height: 18px;
-  border-left-width: 1px;
-  border-style: dashed;
-  border-color: ${({ $color }) => $color};
+  shadow-color: ${({ $glow }) => $glow};
+  shadow-opacity: ${({ $active }) => ($active ? 0.5 : 0)};
+  shadow-radius: 14px;
+  shadow-offset: 0px 0px;
+  elevation: ${({ $active }) => ($active ? 8 : 0)};
 `;
 
 const StubText = styled(Text)<{ $active: boolean; $activeColor: string }>`
@@ -675,13 +638,13 @@ const PrimaryWrap = styled(View)`
   margin-top: 26px;
 `;
 
-const Primary = styled(Pressable)<{ $enabled: boolean }>`
-  height: 56px;
-  border-radius: 30px;
+// The submit button, shaped like a torn admission ticket: an icon stub, a
+// dashed perforation, then the label — with two edge notches punched out.
+const TicketCTA = styled(Pressable)<{ $enabled: boolean }>`
+  height: 60px;
+  border-radius: 16px;
   flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 10px;
   background-color: ${({ $enabled, theme }) => ($enabled ? theme.colors.primary : theme.colors.surfaceHigh)};
   shadow-color: ${({ theme }) => theme.colors.primary};
   shadow-opacity: ${({ $enabled }) => ($enabled ? 0.55 : 0)};
@@ -690,11 +653,42 @@ const Primary = styled(Pressable)<{ $enabled: boolean }>`
   elevation: ${({ $enabled }) => ($enabled ? 12 : 0)};
 `;
 
-const PrimaryText = styled(Text)`
+const TicketStub = styled(View)`
+  width: 58px;
+  align-items: center;
+  justify-content: center;
+`;
+
+const TicketPerf = styled(View)`
+  width: 1px;
+  align-self: stretch;
+  margin: 13px 0;
+  border-left-width: 1.5px;
+  border-style: dashed;
+  border-color: ${({ theme }) => withAlpha(theme.colors.textOnPrimary, 0.55)};
+`;
+
+const TicketMain = styled(View)`
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+`;
+
+// Background-coloured circles that "punch" the ticket edges at the perforation.
+const TicketNotch = styled(View)`
+  position: absolute;
+  left: 49px;
+  width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  background-color: ${({ theme }) => theme.colors.background};
+`;
+
+const TicketText = styled(Text)`
   color: ${({ theme }) => theme.colors.textOnPrimary};
   font-family: ${({ theme }) => theme.typography.Button.fontFamily};
   font-size: 16px;
-  letter-spacing: 0.3px;
+  letter-spacing: 1px;
 `;
 
 const FooterRow = styled(View)`
