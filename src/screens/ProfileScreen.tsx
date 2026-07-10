@@ -269,11 +269,12 @@ const SeeAllText = styled.Text`
   font-size: 13px;
 `;
 
+// Content-sized row of two chips. No flex: 1 here — inside the ScrollView
+// column it meant flexBasis:0, which collapsed/squeezed the chips on the first
+// layout pass until the scroll content re-measured.
 const ToggleRow = styled.View`
   flex-direction: row;
   gap: 6px;
-  flex: 1;
-  flex-wrap: wrap;
   margin-bottom: 14px;
 `;
 
