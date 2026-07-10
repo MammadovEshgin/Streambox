@@ -751,6 +751,7 @@ if (!details) {
                           year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
                           originalTitle: details.originalTitle,
                           castNames: details.cast.slice(0, 4).map((c) => c.name),
+                          rating: details.voteAverage,
                         },
                       });
                     }}

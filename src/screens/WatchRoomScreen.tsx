@@ -211,6 +211,7 @@ export function WatchRoomScreen({ route, navigation }: Props) {
   const hl = rawTitle.length;
   const headlineFont = hl <= 10 ? 38 : hl <= 16 ? 30 : hl <= 22 ? 25 : hl <= 30 ? 21 : hl <= 40 ? 18 : 16;
   const headlineSpacing = hl <= 10 ? 5 : hl <= 16 ? 2.5 : hl <= 22 ? 1 : 0.5;
+  const ratingNum = typeof media?.rating === "number" && media.rating > 0 ? media.rating : null;
 
   return (
     <Root>
@@ -261,7 +262,7 @@ export function WatchRoomScreen({ route, navigation }: Props) {
 
         {/* The screen — the hero */}
         <Animated.View entering={FadeInUp.duration(520).delay(160)}>
-          <PosterFrame $border={withAlpha(theme.colors.gold, 0.45)} style={{ aspectRatio: 16 / 9 }}>
+          <PosterFrame $border={withAlpha(theme.colors.gold, 0.4)} style={{ aspectRatio: 3 / 2 }}>
             {heroImg ? (
               <Image source={{ uri: heroImg }} style={{ flex: 1 }} contentFit="cover" />
             ) : (
@@ -271,7 +272,7 @@ export function WatchRoomScreen({ route, navigation }: Props) {
                 <EmptyHint>Enter a code below{"\n"}to take your seat.</EmptyHint>
               </EmptyScreen>
             )}
-            <ScreenScrim colors={["transparent", "transparent", "rgba(6,8,7,0.5)"]} locations={[0, 0.62, 1]} />
+            <ScreenScrim colors={["transparent", "transparent", "rgba(6,8,7,0.78)"]} locations={[0, 0.55, 1]} />
 
             {/* projector light-sweep */}
             <SweepClip pointerEvents="none">
@@ -284,6 +285,19 @@ export function WatchRoomScreen({ route, navigation }: Props) {
                 />
               </Sweep>
             </SweepClip>
+
+            {media && (media.year || ratingNum) ? (
+              <PosterInfo>
+                {media.year ? <InfoText>{media.year}</InfoText> : null}
+                {media.year && ratingNum ? <InfoDot /> : null}
+                {ratingNum ? (
+                  <InfoStarRow>
+                    <StarMark size={11} color={theme.colors.gold} />
+                    <InfoText>{ratingNum.toFixed(1)}</InfoText>
+                  </InfoStarRow>
+                ) : null}
+              </PosterInfo>
+            ) : null}
           </PosterFrame>
         </Animated.View>
 
@@ -491,12 +505,41 @@ const TitleRule = styled(View)<{ $color: string }>`
 
 const PosterFrame = styled(View)<{ $border: string }>`
   width: 100%;
-  border-radius: 3px;
+  border-radius: 14px;
   overflow: hidden;
   background-color: ${({ theme }) => theme.colors.surface};
-  border-width: 1.5px;
-  border-style: dotted;
+  border-width: 1px;
   border-color: ${({ $border }) => $border};
+`;
+
+const PosterInfo = styled(View)`
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+`;
+
+const InfoText = styled(Text)`
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: ${TYPEWRITER};
+  font-size: 13px;
+  letter-spacing: 1px;
+  text-shadow: 0px 1px 6px rgba(0, 0, 0, 0.85);
+`;
+
+const InfoDot = styled(View)`
+  width: 3px;
+  height: 3px;
+  border-radius: 2px;
+  background-color: ${({ theme }) => theme.colors.textSecondary};
+`;
+
+const InfoStarRow = styled(View)`
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
 `;
 
 const EmptyScreen = styled(View)`
@@ -548,10 +591,9 @@ const Stub = styled(Pressable)<{ $active: boolean; $activeBg: string; $activeBor
   justify-content: center;
   gap: 8px;
   padding: 14px 10px;
-  border-radius: 3px;
+  border-radius: 14px;
   background-color: ${({ $active, $activeBg, theme }) => ($active ? $activeBg : theme.colors.glassFill)};
-  border-width: 1.5px;
-  border-style: dotted;
+  border-width: 1px;
   border-color: ${({ $active, $activeBorder, theme }) => ($active ? $activeBorder : theme.colors.glassBorder)};
   shadow-color: ${({ $glow }) => $glow};
   shadow-opacity: ${({ $active }) => ($active ? 0.5 : 0)};
