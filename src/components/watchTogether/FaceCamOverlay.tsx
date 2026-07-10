@@ -5,7 +5,6 @@ import type { MediaStream } from "react-native-webrtc";
 import styled from "styled-components/native";
 
 import { getWebRtc } from "../../services/webrtcCompat";
-import { withAlpha } from "../../theme/Theme";
 
 // Two square "screen" tiles hugging the left edge — partner on top, you below.
 // Styled like little cinema monitors (warm amber frame, soft glow, a glassy
@@ -102,27 +101,18 @@ const Column = styled(View)`
   justify-content: center;
 `;
 
-// A dotted green frame with a soft glow — the "monitor" bezel.
+// A plain rounded video tile — no frame, no accent colour.
 const Box = styled(View)`
   width: ${BOX_SIZE}px;
   height: ${BOX_SIZE}px;
   margin: 8px 0;
-  padding: 3px;
   border-radius: 18px;
-  background-color: #0e0f0d;
-  border-width: 2px;
-  border-style: dotted;
-  border-color: ${({ theme }) => theme.colors.primary};
-  shadow-color: ${({ theme }) => theme.colors.primary};
-  shadow-opacity: 0.4;
-  shadow-radius: 10px;
-  shadow-offset: 0px 4px;
-  elevation: 6;
+  background-color: #10110f;
 `;
 
 const Screen = styled(View)`
   flex: 1;
-  border-radius: 13px;
+  border-radius: 18px;
   overflow: hidden;
   background-color: #10110f;
 `;
@@ -182,8 +172,6 @@ const NameChip = styled(View)`
   padding: 3px 10px;
   border-radius: 999px;
   background-color: rgba(13, 16, 15, 0.8);
-  border-width: 1px;
-  border-color: ${({ theme }) => withAlpha(theme.colors.primary, 0.45)};
 `;
 
 const NameTag = styled(Text)`
