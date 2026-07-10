@@ -18,7 +18,8 @@ import {
   pruneCachedMemories,
   removeCachedMemoryImage,
 } from "../../services/watchMemories";
-import { listLocalMemories, removeLocalMemory } from "../../services/watchMemoryLocalStore";
+import { listLocalMemories, removeLocalMemory, type LocalMemory } from "../../services/watchMemoryLocalStore";
+import { runOpportunisticCleanup, syncPendingMemories } from "../../services/watchMemorySync";
 
 // Profile → "Shared Sessions": every polaroid from a watch-together session, in
 // a 3-up grid. Memories show instantly from the on-device store (written the
@@ -67,13 +68,25 @@ export function SharedSessionsSection() {
 
   const load = useCallback(async () => {
     try {
-      const [localMems, cloudRows] = await Promise.all([
+      // Settled independently: a cloud failure (offline, token expiry) must
+      // never blank the shelf — the local copies are the whole point of the
+      // local-first store.
+      const [localResult, cloudResult] = await Promise.allSettled([
         listLocalMemories(),
         user?.id ? listWatchMemories(user.id) : Promise.resolve([]),
       ]);
-      const localByCloud = new Map(
-        localMems.filter((m) => m.cloudId).map((m) => [m.cloudId as string, m])
-      );
+      const localMems = localResult.status === "fulfilled" ? localResult.value : [];
+      const cloudOk = cloudResult.status === "fulfilled";
+      const cloudRows = cloudOk ? cloudResult.value : [];
+
+      // Outbox-era entries share their id with the cloud row from birth, so a
+      // row matches its local entry by localId even before cloudId reconciles
+      // — that closes the duplicate-card window mid-upload.
+      const localById = new Map<string, LocalMemory>();
+      for (const m of localMems) {
+        localById.set(m.localId, m);
+        if (m.cloudId) localById.set(m.cloudId, m);
+      }
       const cloudIds = new Set(cloudRows.map((row) => row.id));
       const shownLocalIds = new Set<string>();
       const items: Item[] = [];
@@ -81,7 +94,7 @@ export function SharedSessionsSection() {
       // Cloud rows are authoritative (both participants see them). Prefer a
       // local cached file for the image; download + cache on first sight.
       for (const row of cloudRows) {
-        const local = localByCloud.get(row.id);
+        const local = localById.get(row.id);
         if (local) shownLocalIds.add(local.localId);
         let uri: string | null = local?.imageLocalUri ?? (await getCachedMemoryUri(row.id));
         if (!uri) {
@@ -99,7 +112,7 @@ export function SharedSessionsSection() {
       }
 
       // Local memories not yet represented by a visible cloud row (still
-      // uploading, or the cloud row isn't readable to us).
+      // uploading, cloud unreachable, or the row isn't readable to us).
       for (const m of localMems) {
         if (shownLocalIds.has(m.localId)) continue;
         if (m.cloudId && cloudIds.has(m.cloudId)) continue;
@@ -117,12 +130,16 @@ export function SharedSessionsSection() {
       setMemories(items);
 
       // Keep every still-live image (cloud ids + local ids) in the cache.
-      const activeIds = [
-        ...cloudRows.map((row) => row.id),
-        ...localMems.map((m) => m.localId),
-        ...localMems.flatMap((m) => (m.cloudId ? [m.cloudId] : [])),
-      ];
-      void pruneCachedMemories(activeIds);
+      // Only prune against a COMPLETE picture — a failed cloud list would
+      // otherwise delete cached images that are still live.
+      if (cloudOk) {
+        const activeIds = [
+          ...cloudRows.map((row) => row.id),
+          ...localMems.map((m) => m.localId),
+          ...localMems.flatMap((m) => (m.cloudId ? [m.cloudId] : [])),
+        ];
+        void pruneCachedMemories(activeIds);
+      }
     } catch {
       setMemories([]);
     } finally {
@@ -131,7 +148,15 @@ export function SharedSessionsSection() {
   }, [user?.id]);
 
   useEffect(() => {
-    if (isFocused) void load();
+    if (!isFocused) return;
+    void load();
+    // Push any still-pending captures to the cloud, then refresh once so a
+    // just-reconciled entry shows its cloud state. No-ops instantly when the
+    // outbox is empty.
+    void syncPendingMemories()
+      .then(() => load())
+      .catch(() => undefined);
+    void runOpportunisticCleanup();
   }, [isFocused, load]);
 
   const share = useCallback(async () => {

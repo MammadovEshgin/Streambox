@@ -1,16 +1,19 @@
 import { Feather } from "@expo/vector-icons";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import type { MediaStream } from "react-native-webrtc";
 import styled from "styled-components/native";
 
 import { getWebRtc } from "../../services/webrtcCompat";
+import type { PeerConnectionState } from "../../hooks/useWebRtcPeers";
 
 // Two square "screen" tiles hugging the left edge — partner on top, you below.
 // Styled like little cinema monitors (warm amber frame, soft glow, a glassy
 // sheen, a LIVE dot + name plate) so they feel like part of a movie room rather
 // than plain webcam bubbles. Hidden until the cameras are on; shown as
-// placeholders in Expo Go (no native WebRTC).
+// placeholders in Expo Go (no native WebRTC). The partner tile surfaces the
+// media state — a silent ICE failure used to look identical to "partner has no
+// camera", with no way to recover but guessing.
 
 export type FaceCamOverlayProps = {
   visible: boolean;
@@ -20,6 +23,8 @@ export type FaceCamOverlayProps = {
   partnerNickname?: string | null;
   cameraEnabled: boolean;
   partnerConnected: boolean;
+  mediaState: PeerConnectionState;
+  onRetry: () => void;
 };
 
 const BOX_SIZE = 122;
@@ -33,16 +38,22 @@ export function FaceCamOverlay({
   partnerNickname,
   cameraEnabled,
   partnerConnected,
+  mediaState,
+  onRetry,
 }: FaceCamOverlayProps) {
   const RTCView = getWebRtc()?.RTCView;
   if (!visible) return null;
 
   const partnerLive = Boolean(RTCView && remoteStream && partnerConnected);
   const selfLive = Boolean(RTCView && localStream && cameraEnabled);
+  const showFailed = mediaState === "failed";
+  const showConnecting = !showFailed && !partnerLive && partnerConnected && mediaState === "connecting";
 
   return (
-    <Column pointerEvents="none">
-      <Box>
+    <Column pointerEvents="box-none">
+      {/* Only the retry chip may catch touches — everything else lets taps
+          through to the player beneath. */}
+      <Box pointerEvents={showFailed ? "auto" : "none"}>
         <Screen>
           {RTCView && remoteStream && partnerConnected ? (
             <RTCView streamURL={remoteStream.toURL()} style={STREAM_STYLE} objectFit="cover" mirror={false} />
@@ -59,6 +70,16 @@ export function FaceCamOverlay({
             <LiveLabel>LIVE</LiveLabel>
           </LiveTag>
         ) : null}
+        {showFailed ? (
+          <StatusOverlay onPress={onRetry}>
+            <Feather name="refresh-cw" size={14} color="#FFFFFF" />
+            <StatusText>Tap to retry</StatusText>
+          </StatusOverlay>
+        ) : showConnecting ? (
+          <StatusOverlay disabled>
+            <StatusText>Connecting…</StatusText>
+          </StatusOverlay>
+        ) : null}
         <NamePlate>
           <NameChip>
             <NameTag numberOfLines={1}>{partnerNickname ?? "Partner"}</NameTag>
@@ -66,7 +87,7 @@ export function FaceCamOverlay({
         </NamePlate>
       </Box>
 
-      <Box>
+      <Box pointerEvents="none">
         <Screen>
           {RTCView && localStream && cameraEnabled ? (
             <RTCView streamURL={localStream.toURL()} style={STREAM_STYLE} objectFit="cover" mirror />
@@ -143,6 +164,27 @@ const LiveTag = styled(View)`
   padding: 2px 6px;
   border-radius: 999px;
   background-color: rgba(0, 0, 0, 0.55);
+`;
+
+// Media-state chip centred on the partner tile ("Connecting…" / retry).
+const StatusOverlay = styled(Pressable)`
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  background-color: rgba(13, 16, 15, 0.45);
+  border-radius: 18px;
+`;
+
+const StatusText = styled(Text)`
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
 `;
 
 const LiveDot = styled(View)`

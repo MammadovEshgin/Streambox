@@ -22,8 +22,21 @@ export const WATCH_ROOM_CODE_LENGTH = 6;
 // private casual room.
 export const WATCH_ROOM_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
+// Prefer the platform CSPRNG when one exists (Hermes exposes
+// crypto.getRandomValues in recent RN releases); Math.random is the fallback so
+// the module stays dependency-free and node-testable.
+export function secureRandomFraction(): number {
+  const cryptoObj = (globalThis as { crypto?: Crypto }).crypto;
+  if (cryptoObj?.getRandomValues) {
+    const buf = new Uint32Array(1);
+    cryptoObj.getRandomValues(buf);
+    return buf[0] / 0x1_0000_0000;
+  }
+  return Math.random();
+}
+
 export function generateRoomCode(
-  randomFn: () => number = Math.random,
+  randomFn: () => number = secureRandomFraction,
   length: number = WATCH_ROOM_CODE_LENGTH
 ): string {
   let code = "";
@@ -106,6 +119,25 @@ export type SyncOptions = {
 export const WATCH_ROOM_DEFAULT_HARD_SEEK_SECONDS = 2;
 // How often the host broadcasts its playback heartbeat while a room is active.
 export const WATCH_ROOM_HEARTBEAT_INTERVAL_MS = 3_000;
+// A guest never hard-seeks more often than this: a stall/buffer on either side
+// would otherwise trigger a seek→rebuffer→seek loop on every heartbeat.
+export const WATCH_ROOM_SEEK_COOLDOWN_MS = 5_000;
+
+// ── Clock offset (host clock − guest clock) via ping/pong ──────────────────
+// The guest sends sync-ping with its clock t0; the host answers sync-pong with
+// its clock t1; the guest reads its clock t2 on arrival. Standard NTP-style
+// estimate: offset ≈ t1 − (t0 + t2) / 2 (assumes symmetric network latency).
+export function clockOffsetSampleMs(t0: number, t1: number, t2: number): number {
+  return t1 - (t0 + t2) / 2;
+}
+
+// Median of the collected samples — robust against the odd delayed pong.
+export function medianClockOffsetMs(samples: readonly number[]): number {
+  if (samples.length === 0) return 0;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
 
 export function projectRemotePosition(
   remote: RemotePlaybackState,
@@ -183,8 +215,16 @@ export type WatchRoomSignal =
   | { type: "playback"; from: string; state: RemotePlaybackState }
   | { type: "reaction"; from: string; emoji: string; at: number }
   | { type: "chat"; from: string; text: string; at: number }
-  | { type: "capture-request"; from: string; at: number }
-  | { type: "capture-still"; from: string; nickname: string; imagePath: string; at: number };
+  // Clock-offset probe (guest → host → guest); see clockOffsetSampleMs.
+  | { type: "sync-ping"; from: string; t0: number }
+  | { type: "sync-pong"; from: string; t0: number; t1: number }
+  // captureId ties a partner's still to the exact capture that requested it, so
+  // a late-arriving still can never leak into the NEXT polaroid.
+  | { type: "capture-request"; from: string; captureId: string; at: number }
+  | { type: "capture-still"; from: string; captureId: string; nickname: string; imagePath: string; at: number }
+  // The partner declined to contribute (face-cam off / permission missing) —
+  // lets the author compose immediately instead of waiting out the timeout.
+  | { type: "capture-unavailable"; from: string; captureId: string };
 
 // What a peer should do when it hears the other side is "ready": the host
 // (initiator) answers with an SDP offer; the guest re-announces its own
