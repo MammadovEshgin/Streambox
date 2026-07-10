@@ -4,14 +4,17 @@ import test from "node:test";
 import {
   WATCH_ROOM_CODE_ALPHABET,
   WATCH_ROOM_CODE_LENGTH,
+  clockOffsetSampleMs,
   generateRoomCode,
   isNicknameAvailable,
   isValidNickname,
   isValidRoomCode,
+  medianClockOffsetMs,
   normalizeNickname,
   normalizeRoomCode,
   projectRemotePosition,
   resolveSyncDecision,
+  secureRandomFraction,
   watchRoomChannelName,
   type RemotePlaybackState,
 } from "../src/utils/watchRoom";
@@ -94,4 +97,28 @@ test("resolveSyncDecision reconciles transport state independently of position",
 
 test("channel name is stable regardless of how the code was typed", () => {
   assert.equal(watchRoomChannelName(" an-z ctj "), "watch-room:ANZCTJ");
+});
+
+test("secureRandomFraction stays in [0, 1) so it can drive the code alphabet", () => {
+  for (let i = 0; i < 200; i += 1) {
+    const value = secureRandomFraction();
+    assert.ok(value >= 0 && value < 1);
+  }
+});
+
+test("clock offset sample is the NTP-style midpoint estimate", () => {
+  // Guest sends at t0=1000, host replies with its clock t1=1600, guest receives
+  // at t2=1200 → RTT 200ms, host clock is 500ms ahead.
+  assert.equal(clockOffsetSampleMs(1_000, 1_600, 1_200), 500);
+  // Symmetric case: clocks agree, 100ms RTT → offset 0.
+  assert.equal(clockOffsetSampleMs(1_000, 1_050, 1_100), 0);
+});
+
+test("median clock offset resists a single delayed outlier", () => {
+  assert.equal(medianClockOffsetMs([]), 0);
+  assert.equal(medianClockOffsetMs([500]), 500);
+  // One pong stuck behind a burst of traffic reads as a huge offset — the
+  // median ignores it.
+  assert.equal(medianClockOffsetMs([480, 510, 4_000, 495, 505]), 505);
+  assert.equal(medianClockOffsetMs([100, 200]), 150);
 });

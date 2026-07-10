@@ -40,35 +40,54 @@ export type WatchRoomListeners = {
 // socket never drops mid-movie. autoRefreshToken is off app-wide, so the room
 // session refreshes explicitly while it is active.
 const REALTIME_AUTH_MARGIN_MS = 60_000;
+// How long the initial channel join may take before connect() rejects and the
+// caller shows a retry.
+const SUBSCRIBE_TIMEOUT_MS = 12_000;
+const RECONNECT_MAX_DELAY_MS = 15_000;
 
 export class WatchRoomService {
   private channel: RealtimeChannel | null = null;
   private listeners: WatchRoomListeners = {};
   private authTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private hadConnected = false;
+  private closedByUser = false;
   private self: PresenceMeta | null = null;
+  private room: WatchRoom | null = null;
 
   setListeners(listeners: WatchRoomListeners) {
     this.listeners = listeners;
   }
 
   async createRoom(media: WatchRoomMedia, nickname: string): Promise<WatchRoom> {
-    const code = (await import("../utils/watchRoom")).generateRoomCode();
-    const { data, error } = await supabase.rpc("create_watch_room", {
-      p_code: code,
-      p_media_type: media.mediaType,
-      p_tmdb_id: media.tmdbId,
-      p_title: media.title,
-      p_nickname: nickname.trim(),
-      p_poster_path: media.posterPath ?? null,
-      p_backdrop_path: media.backdropPath ?? null,
-      p_season_number: media.seasonNumber ?? null,
-      p_episode_number: media.episodeNumber ?? null,
-      p_imdb_id: media.imdbId ?? null,
-      p_year: media.year ?? null,
-      p_original_title: media.originalTitle ?? null,
-    });
-    if (error) throw error;
-    return mapWatchRoomRow(data as WatchRoomRow);
+    const { generateRoomCode } = await import("../utils/watchRoom");
+    // A code collision (unique constraint) just means "roll again" — it should
+    // never surface to the user as a failed create.
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const code = generateRoomCode();
+      const { data, error } = await supabase.rpc("create_watch_room", {
+        p_code: code,
+        p_media_type: media.mediaType,
+        p_tmdb_id: media.tmdbId,
+        p_title: media.title,
+        p_nickname: nickname.trim(),
+        p_poster_path: media.posterPath ?? null,
+        p_backdrop_path: media.backdropPath ?? null,
+        p_season_number: media.seasonNumber ?? null,
+        p_episode_number: media.episodeNumber ?? null,
+        p_imdb_id: media.imdbId ?? null,
+        p_year: media.year ?? null,
+        p_original_title: media.originalTitle ?? null,
+      });
+      if (!error) return mapWatchRoomRow(data as WatchRoomRow);
+      lastError = error;
+      const isCodeCollision =
+        (error as { code?: string }).code === "23505" || /duplicate key/i.test(error.message ?? "");
+      if (!isCodeCollision) throw error;
+    }
+    throw lastError;
   }
 
   async joinRoom(code: string, nickname: string): Promise<WatchRoom> {
@@ -107,14 +126,42 @@ export class WatchRoomService {
     await supabase.rpc("end_watch_room", { p_room_id: roomId });
   }
 
-  // Open the Realtime channel and start tracking presence as `self`.
+  // Open the Realtime channel and start tracking presence as `self`. Resolves
+  // only once the channel is actually SUBSCRIBED — a send fired before that is
+  // silently dropped by realtime-js, which is exactly how the first
+  // webrtc-ready used to vanish. Rejects on join failure/timeout so the caller
+  // can surface a retry instead of a forever-empty lobby.
   async connect(room: WatchRoom, self: PresenceMeta): Promise<void> {
+    this.room = room;
     this.self = self;
+    this.closedByUser = false;
+    this.hadConnected = false;
+    this.reconnectAttempts = 0;
+    await this.openChannel();
+  }
+
+  private async openChannel(): Promise<void> {
+    const room = this.room;
+    const self = this.self;
+    if (!room || !self || this.closedByUser) return;
+
     this.emitConnectionState("connecting");
     await this.authorizeRealtime();
 
+    // Replace any previous channel; null the field first so the old channel's
+    // late status callbacks (CLOSED from removeChannel) are ignored below.
+    const stale = this.channel;
+    this.channel = null;
+    if (stale) {
+      await supabase.removeChannel(stale).catch(() => undefined);
+    }
+
     const channel = supabase.channel(watchRoomChannelName(room.code), {
       config: {
+        // Private channel: receiving/sending requires the realtime.messages RLS
+        // policies from migration 20260710190000 — the join code alone is no
+        // longer enough to eavesdrop or inject signals; membership is.
+        private: true,
         broadcast: { self: false, ack: false },
         presence: { key: self.userId },
       },
@@ -131,18 +178,60 @@ export class WatchRoomService {
       this.emitMembersFromPresence(channel);
     });
 
-    channel.subscribe(async (status: string) => {
-      if (status === "SUBSCRIBED") {
-        await channel.track(self);
-        this.emitConnectionState("connected");
-      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-        this.emitConnectionState("error");
-      } else if (status === "CLOSED") {
-        this.emitConnectionState("closed");
-      }
-    });
-
     this.channel = channel;
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error("Realtime subscribe timed out"));
+        }
+      }, SUBSCRIBE_TIMEOUT_MS);
+
+      channel.subscribe(async (status: string) => {
+        // A replaced channel keeps emitting while it tears down — ignore it.
+        if (this.channel !== channel) return;
+
+        if (status === "SUBSCRIBED") {
+          this.hadConnected = true;
+          this.reconnectAttempts = 0;
+          await channel.track(self);
+          this.emitConnectionState("connected");
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve();
+          }
+        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          this.emitConnectionState("error");
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            reject(new Error(`Realtime channel ${status}`));
+          } else if (this.hadConnected) {
+            // Mid-session flap: rebuild the channel (and re-track presence)
+            // rather than waiting on realtime-js internals.
+            this.scheduleReconnect();
+          }
+        } else if (status === "CLOSED") {
+          this.emitConnectionState("closed");
+          if (settled && this.hadConnected && !this.closedByUser) {
+            this.scheduleReconnect();
+          }
+        }
+      });
+    });
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closedByUser || this.reconnectTimer) return;
+    const delay = Math.min(RECONNECT_MAX_DELAY_MS, 2_000 * 2 ** Math.min(this.reconnectAttempts, 3));
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.openChannel().catch(() => this.scheduleReconnect());
+    }, delay);
   }
 
   send(signal: WatchRoomSignal): void {
@@ -150,13 +239,19 @@ export class WatchRoomService {
   }
 
   async disconnect(): Promise<void> {
+    this.closedByUser = true;
     if (this.authTimer) {
       clearTimeout(this.authTimer);
       this.authTimer = null;
     }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.channel) {
-      await supabase.removeChannel(this.channel);
+      const channel = this.channel;
       this.channel = null;
+      await supabase.removeChannel(channel);
     }
     this.emitConnectionState("closed");
   }

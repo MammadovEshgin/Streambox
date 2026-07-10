@@ -33,8 +33,10 @@ export async function uploadCameraStill(roomId: string, uri: string): Promise<st
   return uploadFile(name, uri, "image/jpeg");
 }
 
-export async function uploadPolaroid(roomId: string, uri: string): Promise<string> {
-  const name = `${roomId}/polaroid-${Date.now()}.png`;
+// Deterministic path (keyed by the client-generated memory id): a retried
+// upload overwrites its own half-finished object instead of orphaning it.
+export async function uploadPolaroid(roomId: string, memoryId: string, uri: string): Promise<string> {
+  const name = `${roomId}/polaroid-${memoryId}.png`;
   return uploadFile(name, uri, "image/png");
 }
 
@@ -42,6 +44,21 @@ export async function getMemoryImageUrl(path: string): Promise<string | null> {
   const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 60);
   if (error) return null;
   return data?.signedUrl ?? null;
+}
+
+// Partner-still exchange: pull the just-uploaded still down to a local temp
+// file. The polaroid must compose from disk — snapshotting while expo-image is
+// still streaming a remote signed URL bakes a half-loaded photo into the PNG.
+export async function downloadMemoryStill(imagePath: string): Promise<string | null> {
+  const url = await getMemoryImageUrl(imagePath);
+  if (!url) return null;
+  try {
+    const dest = `${FileSystem.cacheDirectory}watch-still-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+    const result = await FileSystem.downloadAsync(url, dest);
+    return result.uri ?? dest;
+  } catch {
+    return null;
+  }
 }
 
 // ── On-device cache ─────────────────────────────────────────────────────────
@@ -120,6 +137,10 @@ export async function pruneCachedMemories(activeIds: string[]): Promise<void> {
 }
 
 export type WatchMemoryInput = {
+  // Client-generated UUID (utils/uuid.ts) — passing it makes the insert
+  // idempotent: a retry after "insert succeeded but the app died before
+  // reconciling" hits the primary-key conflict and is treated as success.
+  id?: string;
   roomId: string;
   mediaType: MediaType;
   tmdbId: number;
@@ -131,8 +152,8 @@ export type WatchMemoryInput = {
   participantUserIds: string[];
 };
 
-// Returns the new memory's id so the author can cache the polaroid locally
-// under that id (matching how the shelf later reads it back).
+// Returns the memory's id so the author can cache the polaroid locally under
+// that id (matching how the shelf later reads it back).
 export async function saveWatchMemory(input: WatchMemoryInput): Promise<string> {
   const { data } = await supabase.auth.getUser();
   const createdBy = data.user?.id;
@@ -141,6 +162,7 @@ export async function saveWatchMemory(input: WatchMemoryInput): Promise<string> 
   const { data: inserted, error } = await supabase
     .from("watch_room_memories")
     .insert({
+      ...(input.id ? { id: input.id } : {}),
       room_id: input.roomId,
       created_by: createdBy,
       media_type: input.mediaType,
@@ -154,7 +176,11 @@ export async function saveWatchMemory(input: WatchMemoryInput): Promise<string> 
     })
     .select("id")
     .single();
-  if (error) throw error;
+  if (error) {
+    // 23505 = the row from a previous attempt already exists — that IS success.
+    if (input.id && (error as { code?: string }).code === "23505") return input.id;
+    throw error;
+  }
   return (inserted as { id: string }).id;
 }
 

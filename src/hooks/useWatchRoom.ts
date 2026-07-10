@@ -28,8 +28,11 @@ export type WatchRoomSignalHandlers = {
   onWebrtcSignal?: (signal: Extract<WatchRoomSignal, { type: `webrtc-${string}` }>) => void;
   onPlayback?: (state: RemotePlaybackState, fromUserId: string) => void;
   onReaction?: (emoji: string, fromUserId: string) => void;
-  onCaptureRequest?: (fromUserId: string) => void;
-  onCaptureStill?: (payload: { fromUserId: string; nickname: string; imagePath: string }) => void;
+  onCaptureRequest?: (fromUserId: string, captureId: string) => void;
+  onCaptureStill?: (payload: { fromUserId: string; captureId: string; nickname: string; imagePath: string }) => void;
+  onCaptureUnavailable?: (captureId: string) => void;
+  onSyncPing?: (fromUserId: string, t0: number) => void;
+  onSyncPong?: (t0: number, t1: number) => void;
 };
 
 export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
@@ -58,10 +61,11 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
       onSignal: (signal) => {
         switch (signal.type) {
           case "chat":
+            // Capped so a chat-heavy multi-hour session can't grow memory unbounded.
             setChatMessages((prev) => [
               ...prev,
               { id: `${signal.from}-${signal.at}`, fromUserId: signal.from, text: signal.text, at: signal.at, mine: false },
-            ]);
+            ].slice(-200));
             break;
           case "reaction":
             handlersRef.current.onReaction?.(signal.emoji, signal.from);
@@ -69,11 +73,25 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
           case "playback":
             handlersRef.current.onPlayback?.(signal.state, signal.from);
             break;
+          case "sync-ping":
+            handlersRef.current.onSyncPing?.(signal.from, signal.t0);
+            break;
+          case "sync-pong":
+            handlersRef.current.onSyncPong?.(signal.t0, signal.t1);
+            break;
           case "capture-request":
-            handlersRef.current.onCaptureRequest?.(signal.from);
+            handlersRef.current.onCaptureRequest?.(signal.from, signal.captureId);
             break;
           case "capture-still":
-            handlersRef.current.onCaptureStill?.({ fromUserId: signal.from, nickname: signal.nickname, imagePath: signal.imagePath });
+            handlersRef.current.onCaptureStill?.({
+              fromUserId: signal.from,
+              captureId: signal.captureId,
+              nickname: signal.nickname,
+              imagePath: signal.imagePath,
+            });
+            break;
+          case "capture-unavailable":
+            handlersRef.current.onCaptureUnavailable?.(signal.captureId);
             break;
           case "webrtc-offer":
           case "webrtc-answer":
@@ -127,11 +145,13 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
 
   const sendChat = useCallback(
     (text: string) => {
-      const trimmed = text.trim();
+      const trimmed = text.trim().slice(0, 500);
       if (!trimmed) return;
       const at = Date.now();
       send({ type: "chat", from: selfUserId, text: trimmed, at });
-      setChatMessages((prev) => [...prev, { id: `${selfUserId}-${at}`, fromUserId: selfUserId, text: trimmed, at, mine: true }]);
+      setChatMessages((prev) =>
+        [...prev, { id: `${selfUserId}-${at}`, fromUserId: selfUserId, text: trimmed, at, mine: true }].slice(-200)
+      );
     },
     [selfUserId, send]
   );
@@ -146,16 +166,38 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
     [selfUserId, send]
   );
 
+  const sendSyncPing = useCallback(
+    () => send({ type: "sync-ping", from: selfUserId, t0: Date.now() }),
+    [selfUserId, send]
+  );
+
+  const sendSyncPong = useCallback(
+    (t0: number) => send({ type: "sync-pong", from: selfUserId, t0, t1: Date.now() }),
+    [selfUserId, send]
+  );
+
   const requestCapture = useCallback(
-    () => send({ type: "capture-request", from: selfUserId, at: Date.now() }),
+    (captureId: string) => send({ type: "capture-request", from: selfUserId, captureId, at: Date.now() }),
     [selfUserId, send]
   );
 
   const sendCaptureStill = useCallback(
-    (nickname: string, imagePath: string) =>
-      send({ type: "capture-still", from: selfUserId, nickname, imagePath, at: Date.now() }),
+    (captureId: string, nickname: string, imagePath: string) =>
+      send({ type: "capture-still", from: selfUserId, captureId, nickname, imagePath, at: Date.now() }),
     [selfUserId, send]
   );
+
+  const sendCaptureUnavailable = useCallback(
+    (captureId: string) => send({ type: "capture-unavailable", from: selfUserId, captureId }),
+    [selfUserId, send]
+  );
+
+  // Durable membership from the DB — presence can flap, and anything persisted
+  // (memory participant ids) must never be derived from a live roster snapshot.
+  const fetchRoomMembers = useCallback(async (): Promise<WatchRoomMember[]> => {
+    if (!room) return [];
+    return serviceRef.current!.fetchMembers(room.id);
+  }, [room]);
 
   const startWatching = useCallback(async () => {
     if (room && isHost) {
@@ -164,15 +206,15 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
     }
   }, [room, isHost]);
 
+  // Leaving no longer ends the room: an accidental host exit used to strand the
+  // guest permanently (the code stopped resolving). The room stays joinable
+  // until its 12h expiry so the pair can re-form; expiry is the cleanup.
   const leave = useCallback(async () => {
-    if (room && isHost) {
-      await serviceRef.current?.endRoom(room.id).catch(() => undefined);
-    }
     await serviceRef.current?.disconnect();
     setRoom(null);
     setMembers([]);
     setChatMessages([]);
-  }, [room, isHost]);
+  }, []);
 
   const partner = useMemo(
     () => members.find((member) => member.userId !== selfUserId) ?? null,
@@ -193,8 +235,12 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
     sendChat,
     sendReaction,
     sendPlayback,
+    sendSyncPing,
+    sendSyncPong,
     requestCapture,
     sendCaptureStill,
+    sendCaptureUnavailable,
+    fetchRoomMembers,
     send,
     startWatching,
     leave,

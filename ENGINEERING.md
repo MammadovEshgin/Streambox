@@ -127,9 +127,14 @@ for **both** users. Movie-only for now (no series episode picker yet).
 ### Migrations that MUST be applied manually (never `db push`)
 `20260708120000` (platform), `20260708150000` (imdb/year/original_title cols + 3
 create-room params — Create room fails without it), `20260709120000` (memories
-shelf + participant-based Storage read policy), **`20260709160000`** (resilient
+shelf + participant-based Storage read policy), `20260709160000` (resilient
 delete — wraps the Storage delete in an exception block so it can't roll back the
-whole delete). Apply with `npx supabase db push` **by the user**, not the agent.
+whole delete), **`20260710190000`** (hardening — private Realtime channels RLS,
+storage UPDATE policy for outbox retries, join throttle, expired-room cleanup.
+**MUST be applied BEFORE testing any build from 2026-07-10 on**: the client now
+joins the room channel with `private: true`, which Realtime rejects until the
+realtime.messages policies exist). Apply with `npx supabase db push` **by the
+user**, not the agent.
 
 ### Deploy specifics for 1.2.0
 - The CLI binary lives in package **`eas-cli`**, not `eas`: use
@@ -139,11 +144,30 @@ whole delete). Apply with `npx supabase db push` **by the user**, not the agent.
   isolated to the 1.2.0 fleet. Record the update group ID in the final report.
 - This branch is standalone: **no porting to the other two release branches.**
 
-### Known open technical questions (flagged for review, not yet solved)
-Cross-NAT connectivity across different Wi-Fi / cellular+Wi-Fi (TURN relay
-coverage), **audio ducking** (lower movie volume while a partner speaks, restore
-after), and cloud-upload **retry on failure** are not yet hardened. See the
-technical-review prompt handed to the reviewer.
+### Hardening round (2026-07-10) — know these when debugging
+Implemented from the technical audit (`outputs/shared-sessions-tech-review-2026-07-10.md`):
+- **Reconnects**: offers always use `iceRestart`; `webrtc-ready` re-announces
+  every 2s until SDP lands; failed / stuck-disconnected connections auto-rebuild
+  (max 3 attempts, then a "Tap to retry" chip on the partner tile). Channel
+  flaps rebuild + re-track presence; `connect()` resolves only on SUBSCRIBED.
+- **Sync**: guest measures the host clock offset via `sync-ping/pong` (median of
+  5), hard-seeks have a 5s cooldown and skip while buffering; host broadcasts
+  immediately on seek jumps (owns `timeUpdateEventInterval` in rooms).
+- **Audio**: mic constraints (EC/NS/AGC) explicit; 640×480@24 + 400kbps cap on
+  the face-cam; **audio ducking** (`useAudioDucking` + pure
+  `utils/audioDucking.ts`) drops movie volume while someone talks.
+- **Memories**: OUTBOX — client-generated UUID is the memory id from birth;
+  `pending` payload on the local entry; `watchMemorySync.syncPendingMemories()`
+  retries upload+insert idempotently (deterministic Storage path, 23505 =
+  success). Participants come from `watch_room_members`, never presence.
+  Shelf loads local + cloud independently (offline shows local).
+- **Privacy/security**: room channel is `private: true` (needs migration
+  20260710190000 — see above); a capture request is DECLINED when the partner's
+  face-cam is off (`capture-unavailable`); playback signals apply only from the
+  host; TURN worker optionally requires a Supabase JWT
+  (`wrangler secret put SUPABASE_JWT_SECRET`, enforced only when set).
+- **Gotcha**: `scripts/watchPartnerBot.ts` (anon-key one-phone test bot) cannot
+  join private channels anymore — real 2-device testing only.
 
 ---
 

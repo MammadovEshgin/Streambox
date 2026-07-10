@@ -21,16 +21,17 @@ import { FaceCamOverlay } from "./FaceCamOverlay";
 import { PolaroidCard } from "./PolaroidCard";
 import { getMovieDetails, getSeriesDetails } from "../../api/tmdb";
 import { useWatchRoomSession } from "../../hooks/useWatchRoomSession";
-import {
-  uploadCameraStill,
-  uploadPolaroid,
-  saveWatchMemory,
-  cacheMemoryFromLocalUri,
-} from "../../services/watchMemories";
-import { addLocalMemory, updateLocalMemory } from "../../services/watchMemoryLocalStore";
+import { uploadCameraStill, cacheMemoryFromLocalUri } from "../../services/watchMemories";
+import { addLocalMemory } from "../../services/watchMemoryLocalStore";
+import { syncPendingMemories } from "../../services/watchMemorySync";
+import { generateUuidV4 } from "../../utils/uuid";
 
 const REACTIONS = ["WTF?", "💖", "LOL:)", "Cringe🔪", "Red flag 🚩"];
-const PARTNER_STILL_TIMEOUT_MS = 5000;
+// Budget for the partner's still: their side is a camera handoff + snap +
+// upload on a possibly-cellular uplink — 5s proved routinely too tight. A
+// decline (capture-unavailable) short-circuits the wait, so the timeout is
+// only ever fully paid when the partner's side silently died.
+const PARTNER_STILL_TIMEOUT_MS = 10_000;
 
 const RAIL_WIDTH = 54;
 const HANDLE_WIDTH = 22;
@@ -127,17 +128,41 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   const [polaroidPreview, setPolaroidPreview] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
 
-  // Mirror the partner's still + presence into refs so the async build flow can
-  // read the latest without re-subscribing (state closures would be stale).
+  // Mirror the partner's still / decline / presence into refs so the async
+  // build flow can read the latest without re-subscribing (state closures
+  // would be stale).
   const partnerStillRef = useRef(session.partnerStill);
   partnerStillRef.current = session.partnerStill;
+  const captureDeclinedRef = useRef(session.captureDeclinedId);
+  captureDeclinedRef.current = session.captureDeclinedId;
   const bothPresentRef = useRef(session.bothPresent);
   bothPresentRef.current = session.bothPresent;
+  // The capture currently being composed; stills tagged with any other id are
+  // leftovers from an earlier capture and never make it into the polaroid.
+  const [activeCaptureId, setActiveCaptureId] = useState<string | null>(null);
   const [rating, setRating] = useState<number | null>(null);
   const [genres, setGenres] = useState<string[] | null>(null);
   const [tagline, setTagline] = useState<string | null>(null);
 
   const partnerNickname = session.partner?.nickname ?? null;
+
+  // "Partner left" is a different situation than "partner hasn't arrived yet"
+  // — sync silently stopping with no explanation was the worst version of it.
+  const [partnerLeft, setPartnerLeft] = useState(false);
+  const hadPartnerRef = useRef(false);
+  useEffect(() => {
+    if (session.bothPresent) {
+      hadPartnerRef.current = true;
+      setPartnerLeft(false);
+      return;
+    }
+    if (hadPartnerRef.current) {
+      hadPartnerRef.current = false;
+      setPartnerLeft(true);
+      const timer = setTimeout(() => setPartnerLeft(false), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [session.bothPresent]);
 
   // Pull the film's rating + genres for the polaroid log once we know the title.
   const roomId = session.room?.id;
@@ -239,99 +264,151 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
     }
   }, [cameraPermission, requestCameraPermission, session]);
 
-  const contributeStill = useCallback(async () => {
+  // Author path: the photo only composes locally — nothing to upload. (The old
+  // flow uploaded the author's still too; the partner never used it, and it
+  // polluted their capture state.)
+  const captureOwnStill = useCallback(async (): Promise<string | null> => {
     const uri = await captureSelfPhoto();
     if (uri) setSelfStillUri(uri);
-    if (uri && session.room) {
-      const path = await uploadCameraStill(session.room.id, uri).catch(() => null);
-      if (path) session.sendCaptureStill(nickname, path);
-    }
-  }, [captureSelfPhoto, nickname, session]);
+    return uri;
+  }, [captureSelfPhoto]);
 
-  // Author flow: take my photo, wait briefly for the partner's still (if a
-  // partner is here), then render + upload + save the polaroid. Runs to
-  // completion as one sequence — nothing external can cancel it, so every
-  // capture reliably produces exactly one saved memory.
-  const buildPolaroid = useCallback(async () => {
-    try {
-      if (bothPresentRef.current) {
-        const deadline = Date.now() + PARTNER_STILL_TIMEOUT_MS;
-        while (!partnerStillRef.current && Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 150));
+  // Responder path: snap + upload + signal the still, tagged with the capture
+  // it belongs to. Any failure declines instead, so the author composes right
+  // away rather than waiting out the full timeout.
+  const respondToCapture = useCallback(
+    async (captureId: string) => {
+      const uri = await captureSelfPhoto();
+      const roomId = session.room?.id;
+      if (uri && roomId) {
+        const path = await uploadCameraStill(roomId, uri).catch(() => null);
+        if (path) {
+          session.sendCaptureStill(captureId, nickname, path);
+          return;
         }
       }
-      // Let the polaroid re-render with the latest stills before snapshotting.
-      await new Promise((r) => setTimeout(r, 250));
-      // Full-HD portrait polaroid.
-      const uri = await captureRef(polaroidShotRef, { format: "png", quality: 1, width: 1080, height: 1451 });
-      setPolaroidPreview(uri);
+      session.sendCaptureUnavailable(captureId);
+    },
+    [captureSelfPhoto, nickname, session]
+  );
 
-      const room = session.room;
-      const nicknames = [nickname, partnerNickname].filter(Boolean) as string[];
-
-      // Save LOCALLY first — this writes the image + index entry to the device
-      // immediately, so the memory shows in Shared Sessions right away and is
-      // never lost if the session is left before the cloud upload finishes.
-      const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const cachedUri = (await cacheMemoryFromLocalUri(localId, uri).catch(() => null)) ?? uri;
-      await addLocalMemory({
-        localId,
-        cloudId: null,
-        title: room?.title ?? "",
-        participantNicknames: nicknames,
-        createdAtEpochMs: Date.now(),
-        imageLocalUri: cachedUri,
-        imagePath: null,
-      }).catch(() => undefined);
-
-      // Sync to the cloud in the background (detached, so it completes even if
-      // the user leaves the session the instant the preview appears).
-      if (room) {
-        void (async () => {
-          const path = await uploadPolaroid(room.id, uri).catch(() => null);
-          if (!path) return;
-          const cloudId = await saveWatchMemory({
-            roomId: room.id,
-            mediaType: room.mediaType,
-            tmdbId: room.tmdbId,
-            title: room.title,
-            positionSeconds: player?.currentTime ?? 0,
-            imagePath: path,
-            participantNicknames: nicknames,
-            participantUserIds: session.members.map((member) => member.userId),
-          }).catch(() => null);
-          if (cloudId) {
-            await updateLocalMemory(localId, { cloudId, imagePath: path }).catch(() => undefined);
-            // Mirror the cache under the cloud id so cross-device resolve finds it.
-            await cacheMemoryFromLocalUri(cloudId, cachedUri).catch(() => undefined);
+  // Author flow: take my photo, wait briefly for the partner's still (if a
+  // partner is here and hasn't declined), then render the polaroid and save it
+  // LOCALLY with an outbox payload. The cloud upload + row insert live in
+  // syncPendingMemories, which retries after any failure or app kill — the
+  // partner's copy no longer depends on one fire-and-forget attempt.
+  const buildPolaroid = useCallback(
+    async (captureId: string) => {
+      try {
+        if (bothPresentRef.current) {
+          const deadline = Date.now() + PARTNER_STILL_TIMEOUT_MS;
+          while (
+            partnerStillRef.current?.captureId !== captureId &&
+            captureDeclinedRef.current !== captureId &&
+            Date.now() < deadline
+          ) {
+            await new Promise((r) => setTimeout(r, 150));
           }
-        })();
+        }
+        // Let the polaroid re-render with the latest stills before snapshotting
+        // (the partner still is a local file by now — see downloadMemoryStill).
+        await new Promise((r) => setTimeout(r, 250));
+        // Full-HD portrait polaroid.
+        const uri = await captureRef(polaroidShotRef, { format: "png", quality: 1, width: 1080, height: 1451 });
+        setPolaroidPreview(uri);
+
+        const room = session.room;
+
+        // Participants come from the durable membership table — presence can
+        // flap at the exact capture moment, and a snapshot of the live roster
+        // would silently cut the partner out of the saved memory forever.
+        let participantUserIds = session.members.map((member) => member.userId);
+        let participantNicknames = [nickname, partnerNickname].filter(Boolean) as string[];
+        if (room) {
+          const dbMembers = await session.fetchRoomMembers().catch(() => null);
+          if (dbMembers && dbMembers.length > 0) {
+            participantUserIds = dbMembers.map((member) => member.userId);
+            participantNicknames = dbMembers.map((member) => member.nickname);
+          }
+        }
+
+        // One id from birth: index entry, cached file and (later) cloud row all
+        // share it — that is what makes the background sync idempotent.
+        const localId = generateUuidV4();
+        const cachedUri = (await cacheMemoryFromLocalUri(localId, uri).catch(() => null)) ?? uri;
+        await addLocalMemory({
+          localId,
+          cloudId: null,
+          title: room?.title ?? "",
+          participantNicknames,
+          createdAtEpochMs: Date.now(),
+          imageLocalUri: cachedUri,
+          imagePath: null,
+          pending: room
+            ? {
+                roomId: room.id,
+                mediaType: room.mediaType,
+                tmdbId: room.tmdbId,
+                positionSeconds: player?.currentTime ?? 0,
+                participantUserIds,
+              }
+            : null,
+        }).catch(() => undefined);
+
+        // First sync attempt now; the outbox owns every retry after this.
+        void syncPendingMemories();
+      } finally {
+        authorRef.current = false;
+        setCapturing(false);
+        setActiveCaptureId(null);
       }
-    } finally {
-      authorRef.current = false;
-      setCapturing(false);
-    }
-  }, [session, player, nickname, partnerNickname]);
+    },
+    [session, player, nickname, partnerNickname]
+  );
 
   const initiateCapture = useCallback(async () => {
     if (capturing) return;
+    // A late-arriving still from a PREVIOUS capture must never leak into this
+    // one — start from a clean slate and tag everything with a fresh id.
+    session.clearCapture();
+    const captureId = generateUuidV4();
+    setActiveCaptureId(captureId);
     authorRef.current = true;
     setCapturing(true);
-    session.requestCapture();
-    await contributeStill();
-    await buildPolaroid();
-  }, [capturing, contributeStill, buildPolaroid, session]);
+    session.requestCapture(captureId);
+    const ownStill = await captureOwnStill();
+    if (!ownStill) {
+      // Composing a polaroid of two placeholders helps nobody — say what broke.
+      authorRef.current = false;
+      setCapturing(false);
+      setActiveCaptureId(null);
+      session.clearCapture();
+      Alert.alert(
+        "Couldn't take your photo",
+        "The camera didn't respond. Check that StreamBox still has camera access and try again."
+      );
+      return;
+    }
+    await buildPolaroid(captureId);
+  }, [capturing, captureOwnStill, buildPolaroid, session]);
 
   useEffect(() => {
-    if (session.captureRequestedBy && !authorRef.current) {
-      setCapturing(true);
-      void contributeStill().finally(() => {
-        setTimeout(() => setCapturing(false), 1500);
-        session.clearCapture();
-      });
+    const request = session.captureRequest;
+    if (!request || authorRef.current) return;
+    // Face-cam off is an explicit privacy choice — never let a capture request
+    // silently photograph someone through the hidden camera. Decline instead.
+    if (!session.camerasOn) {
+      session.sendCaptureUnavailable(request.captureId);
+      session.clearCapture();
+      return;
     }
+    setCapturing(true);
+    void respondToCapture(request.captureId).finally(() => {
+      setTimeout(() => setCapturing(false), 1500);
+      session.clearCapture();
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.captureRequestedBy]);
+  }, [session.captureRequest]);
 
   const sharePolaroid = useCallback(async () => {
     if (!polaroidPreview) return;
@@ -369,6 +446,8 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         partnerNickname={partnerNickname}
         cameraEnabled={session.cameraEnabled}
         partnerConnected={session.bothPresent}
+        mediaState={session.mediaState}
+        onRetry={session.restartMedia}
       />
 
       {/* Floating reactions */}
@@ -378,14 +457,25 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         ))}
       </ReactionsAnchor>
 
-      {/* Lobby / waiting state */}
-      {!session.bothPresent ? (
+      {/* Join failure / lobby / partner-left states */}
+      {session.joinFailed ? (
+        <Reanimated.View entering={FadeIn} exiting={FadeOut} style={waitingWrapStyle} pointerEvents="box-none">
+          <WaitingCard>
+            <WaitingTitle>Couldn't join the room</WaitingTitle>
+            <RetryPill onPress={session.retryJoin} hitSlop={6}>
+              <RetryPillText>Retry</RetryPillText>
+            </RetryPill>
+          </WaitingCard>
+        </Reanimated.View>
+      ) : !session.bothPresent ? (
         <Reanimated.View entering={FadeIn} exiting={FadeOut} style={waitingWrapStyle} pointerEvents="none">
           <WaitingCard>
-            <WaitingTitle>Waiting for your partner</WaitingTitle>
-            <CodePill>
-              <CodeText>{code}</CodeText>
-            </CodePill>
+            <WaitingTitle>{partnerLeft ? "Your partner left — sync is paused" : "Waiting for your partner"}</WaitingTitle>
+            {partnerLeft ? null : (
+              <CodePill>
+                <CodeText>{code}</CodeText>
+              </CodePill>
+            )}
           </WaitingCard>
         </Reanimated.View>
       ) : null}
@@ -462,7 +552,11 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
           posterPath={session.room?.posterPath ?? null}
           backdropPath={session.room?.backdropPath ?? null}
           selfStillUri={selfStillUri}
-          partnerStillUri={session.partnerStill?.uri ?? null}
+          partnerStillUri={
+            session.partnerStill && session.partnerStill.captureId === activeCaptureId
+              ? session.partnerStill.uri
+              : null
+          }
           selfNickname={nickname}
           partnerNickname={partnerNickname}
           dateEpochMs={Date.now()}
@@ -600,6 +694,18 @@ const CodeText = styled(Text)`
   font-size: 14px;
   font-weight: 800;
   letter-spacing: 3px;
+`;
+
+const RetryPill = styled(TouchableOpacity)`
+  padding: 4px 12px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.16);
+`;
+
+const RetryPillText = styled(Text)`
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
 `;
 
 const Handle = styled(View)`
