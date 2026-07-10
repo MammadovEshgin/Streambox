@@ -25,6 +25,8 @@ export type WatchRoomSetupMedia = {
   castNames?: string[];
   seasonNumber?: number;
   episodeNumber?: number;
+  // Shown on the setup screen's poster (not carried into the room).
+  rating?: number | null;
 };
 
 export type WatchRoomSetupParams = {
