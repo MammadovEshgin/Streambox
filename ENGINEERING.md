@@ -63,14 +63,22 @@ the `app.config.js` runtime, not the branch you happen to be on.
 2. **Any change that adds or upgrades a native module cannot go OTA.** It requires a new native build **and** a `runtimeVersion` bump (e.g. `1.2.0`). Do **not** reuse `1.1.0` for a build that adds a native module — existing `1.1.0` installs would crash on the next OTA when they call the missing module. Prefer pure-JS solutions to stay OTA-deliverable (this is why the loader was rebuilt with SVG+Reanimated instead of Lottie).
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 
-### Current deployed state (last updated 2026-07-11)
+### Current deployed state (last updated 2026-07-11, capture-fix OTA)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `release/1.2.0-watch-together` @ `38b01de` | `e31ac6cb-8e3d-40f1-a7bb-5c92d30ab491` |
+| 1.2.0 | `release/1.2.0-watch-together` @ `239955e` | `f88a2b72-933d-4102-b37e-847591b46f23` |
 | 1.1.0 | `release/1.1.0-navbar` @ `f77d5ff` | `e7a1cf31-5169-42e9-93d2-147fa3b7f3e6` |
 | 1.0.2 | `release/1.0.2-legacy` @ `01926b3` | `1064072c-e415-423e-b067-3827dc4fe574` |
 
+- **2026-07-11 later (1.2.0 only):** polaroid capture flow repair @ `239955e` —
+  responder still shoots at q0.3 with a 12s-bounded upload (decline on timeout;
+  fixes the missing partner photo + forever-stuck spinner), getUserMedia leak on
+  teardown race fixed (camera no longer wedges after rapid captures), preview
+  Modal → in-layer overlay (kills the Android stuck-white-window), new
+  `polaroid-preview` signal (partner sees the finished card too — both devices
+  must run this bundle), shared 30s capture cooldown with countdown on the rail
+  button. Author wait for the partner still is now 20s.
 - **2026-07-11 (all three fleets):** launch-splash black-flash fix (splash is now an
   opaque overlay fading out over pre-painted content), Profile Movies/Series
   chip-squeeze fix (`ToggleRow` dropped `flex:1`), and the **user-data sync
