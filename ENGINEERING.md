@@ -63,14 +63,23 @@ the `app.config.js` runtime, not the branch you happen to be on.
 2. **Any change that adds or upgrades a native module cannot go OTA.** It requires a new native build **and** a `runtimeVersion` bump (e.g. `1.2.0`). Do **not** reuse `1.1.0` for a build that adds a native module — existing `1.1.0` installs would crash on the next OTA when they call the missing module. Prefer pure-JS solutions to stay OTA-deliverable (this is why the loader was rebuilt with SVG+Reanimated instead of Lottie).
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 
-### Current deployed state (last updated 2026-07-11, capture-fix OTA)
+### Current deployed state (last updated 2026-07-11, Watch Together stability OTA)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `release/1.2.0-watch-together` @ `239955e` | `f88a2b72-933d-4102-b37e-847591b46f23` |
+| 1.2.0 | `release/1.2.0-watch-together` @ `caf8c25` | `f06bbf09-4270-4861-a871-1984d68188cb` |
 | 1.1.0 | `release/1.1.0-navbar` @ `f77d5ff` | `e7a1cf31-5169-42e9-93d2-147fa3b7f3e6` |
 | 1.0.2 | `release/1.0.2-legacy` @ `01926b3` | `1064072c-e415-423e-b067-3827dc4fe574` |
 
+- **2026-07-11 latest (1.2.0 only):** Watch Together stability repair @
+  `caf8c25` → group `f06bbf09-4270-4861-a871-1984d68188cb` — memory uploads
+  moved off the JS thread to cancellable native binary tasks; responder upload
+  deadline covers signed-URL creation + body upload; room sends are acknowledged
+  and socket/liveness checked; token refresh + reconnect/disconnect lifecycle
+  races are guarded; disconnected captures are blocked/aborted; reconnecting and
+  partner-left states never show the join code; chat is an in-layer overlay; a
+  room-scoped recovery boundary + released-player/stream guards contain future
+  white-screen paths. No wire-format, native, dependency, runtime, or SQL change.
 - **2026-07-11 later (1.2.0 only):** polaroid capture flow repair @ `239955e` —
   responder still shoots at q0.3 with a 12s-bounded upload (decline on timeout;
   fixes the missing partner photo + forever-stuck spinner), getUserMedia leak on
@@ -203,6 +212,32 @@ Implemented from the technical audit (`outputs/shared-sessions-tech-review-2026-
   (`wrangler secret put SUPABASE_JWT_SECRET`, enforced only when set).
 - **Gotcha**: `scripts/watchPartnerBot.ts` (anon-key one-phone test bot) cannot
   join private channels anymore — real 2-device testing only.
+
+### Stability repair (2026-07-11) — current behavior
+
+- **Capture uploads**: `watchMemories.ts` obtains a Storage signed upload URL,
+  then streams the JPEG/PNG through Expo FileSystem's native binary upload task.
+  The responder's 12s deadline is end-to-end and cancels the native task
+  best-effort; no whole-file base64 decode runs on the JS thread.
+- **Realtime health**: broadcasts use server acknowledgements; normal sends and
+  the 20s liveness probe first require an open Realtime socket, so REST fallback
+  cannot hide a dead receive path. Failed sends coalesce into the bounded manual
+  reconnect. Lifecycle generations prevent stale auth/join/remove work from
+  resurrecting a room after exit, and failed initial joins invalidate their exact
+  channel so late callbacks cannot create a ghost connection.
+- **Auth**: the room refreshes at the 60s boundary, awaits `setAuth`, retries a
+  failed/null refresh after 10s, and reconnects if the token is no longer usable.
+- **Session UX**: only the never-connected lobby shows the code. A local channel
+  failure shows “Reconnecting…”; an actual departure shows partner-left copy.
+  Capture requires a connected channel + present partner, and a mid-capture
+  disconnect aborts instead of saving a misleading one-person card.
+- **White-screen containment**: chat and polaroid preview are both in-player
+  overlays (no competing Watch Together native Modals). Stream/player teardown
+  reads are guarded, and `WatchRoomBoundary` can retry or exit only the room layer.
+- **Compatibility**: no `WatchRoomSignal` format changed. The `liveness` event is
+  service-only and is not dispatched as a signal. Both devices should still run
+  the current bundle so acknowledgements, capture gating, and recovery UI are
+  symmetric.
 
 ---
 
