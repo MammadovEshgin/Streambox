@@ -15,6 +15,31 @@ import {
 
 const BUCKET = "watch-memories";
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(message));
+    }, Math.max(0, timeoutMs));
+    void promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
 async function runNativeUpload(
   signedUrl: string,
   uri: string,
@@ -42,9 +67,10 @@ async function runNativeUpload(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      // Promise.race used to leave the losing native upload alive. Cancel the
-      // task before declining so repeated captures cannot stack orphan work.
-      void task.cancelAsync().catch(() => undefined).finally(() => reject(new Error("Storage upload timed out")));
+      // Reject at the deadline (even if native cancellation itself wedges),
+      // then cancel best-effort so repeated captures cannot stack orphan work.
+      reject(new Error("Storage upload timed out"));
+      void task.cancelAsync().catch(() => undefined);
     }, timeoutMs);
 
     void task.uploadAsync().then(
@@ -70,9 +96,15 @@ async function uploadFile(path: string, uri: string, contentType: string, timeou
   // RLS); only the large file body moves to Expo's native upload task. This
   // avoids materialising both a 4/3-size base64 string and an ArrayBuffer on
   // the JS thread while Realtime timers are trying to heartbeat.
-  const { data, error } = await supabase.storage.from(BUCKET).createSignedUploadUrl(path, { upsert: true });
+  const deadlineAt = timeoutMs ? Date.now() + timeoutMs : null;
+  const signedUrlRequest = supabase.storage.from(BUCKET).createSignedUploadUrl(path, { upsert: true });
+  const { data, error } = deadlineAt
+    ? await withTimeout(signedUrlRequest, deadlineAt - Date.now(), "Signed upload URL timed out")
+    : await signedUrlRequest;
   if (error || !data?.signedUrl) throw error ?? new Error("Could not create signed upload URL");
-  const result = await runNativeUpload(data.signedUrl, uri, contentType, timeoutMs);
+  const remainingMs = deadlineAt ? deadlineAt - Date.now() : undefined;
+  if (remainingMs != null && remainingMs <= 0) throw new Error("Storage upload timed out");
+  const result = await runNativeUpload(data.signedUrl, uri, contentType, remainingMs);
   if (result.status < 200 || result.status >= 300) {
     throw new Error(`Storage upload failed with status ${result.status}`);
   }

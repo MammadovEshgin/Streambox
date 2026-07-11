@@ -28,14 +28,14 @@ The downstream failure chain is deterministic in the baseline code, but static c
 - Explains: the strong correlation with repeated captures, growing memory/JS pressure, and why the problem appears only after several successes.
 - Evidence: baseline whole-file base64 + synchronous decode at `watchMemories.ts:19-27`; both still and polaroid use the same path at `:31-40`; full-HD PNG capture at `WatchRoomLayer.tsx:364-370`; non-cancelling timeout at `:324-332`.
 - Limit: realtime-js normally turns a missed heartbeat into a channel error/reconnect, so upload pressure alone does not prove the reported no-recovery state.
-- Fix: native signed-URL binary upload with status validation (`src/services/watchMemories.ts:18-78`), plus actual cancellation on timeout (`:39-66`). No dependency or runtime change.
+- Fix: native signed-URL binary upload with status validation (`src/services/watchMemories.ts:43-111`). The 12-second responder deadline now starts before signed-URL creation, passes only the remaining budget to the native upload, rejects immediately at expiry, and cancels the native task best-effort (`:18-40,67-88,99-107`). No dependency or runtime change.
 
 ### L2 — socket dies with no status callback
 
 - Status: **disproven as stated; residual defense gap confirmed; medium severity**.
 - Explains: a half-open transport could otherwise leave the UI stale, but an ordinary heartbeat/socket close in this installed library does emit `CHANNEL_ERROR`.
 - Evidence: vendor heartbeat/close propagation cited in the summary; baseline reconnect existed at `watchRoomService.ts:206-235`.
-- Fix: server-acknowledged broadcasts (`src/services/watchRoomService.ts:175-180,267-284`) and a 20-second acked liveness probe (`:308-340`). Any failed/timed-out result enters reconnecting and coalesces through the existing single reconnect timer.
+- Fix: server-acknowledged broadcasts and checked sends (`src/services/watchRoomService.ts:183-188,289-309`) plus a 20-second acked liveness probe (`:339-367`). Both paths preflight the public socket state before sending, so realtime-js cannot mask a dead receive path with its REST fallback (`:295,343`). Any failed/timed-out result enters reconnecting and coalesces through the existing single reconnect timer.
 
 ### L3 — token expiry on private channels
 
@@ -50,7 +50,7 @@ The downstream failure chain is deterministic in the baseline code, but static c
 - Status: **confirmed; critical**.
 - Explains: chat and reactions stop in both directions while optimistic local UI hides the failure; capture signals can be asymmetric during a flap.
 - Evidence: baseline `ack:false` and fire-and-forget result discard at `watchRoomService.ts:159-166,237-239`.
-- Fix: `ack:true`, joined-state gate, checked result, and guarded reconnect (`src/services/watchRoomService.ts:175-180,267-284`). Repeating playback/readiness messages may still be dropped during the first join, but they cannot tear down that in-progress join (`:267-275`). No stale ICE/playback/capture queue was added.
+- Fix: `ack:true`, joined/socket-state gate, checked result, and guarded reconnect (`src/services/watchRoomService.ts:183-188,289-309`). Repeating playback/readiness messages may still be dropped during the first join, but they cannot tear down that in-progress join. No stale ICE/playback/capture queue was added.
 
 ### L5 — lobby/code UX after a mid-session loss
 
@@ -87,7 +87,7 @@ The downstream failure chain is deterministic in the baseline code, but static c
 ## Automated coverage
 
 - Pure transition tests: reconnect backoff, auth scheduling, stale-presence/reconnecting priority, permanent partner-left state, and capture eligibility (`tests/watchRoom.test.ts:127-197`).
-- Architecture regression tests: native/cancellable upload, acknowledged sends/liveness, no Watch Together `Modal`, and room-scoped boundary (`tests/watchTogetherStabilityArchitecture.test.ts:1-36`).
+- Architecture regression tests: end-to-end native/cancellable upload deadline, acknowledged sends/socket liveness, lifecycle generation, no Watch Together `Modal`, and room-scoped boundary (`tests/watchTogetherStabilityArchitecture.test.ts:1-40`).
 - Native camera, WebRTC, Android window behavior, and actual socket/token rollover remain two-device checks.
 
 Prepared-branch quality gates:
@@ -96,6 +96,15 @@ Prepared-branch quality gates:
 - `npm test` — 230 passed, 0 failed.
 - `npx eslint <touched files> --quiet` — passed with zero errors.
 - `git diff --check` — passed (only the repository's existing Windows line-ending notices were printed).
+
+## Post-review race hardening
+
+The post-commit backend/orchestration review found four races that the first automated pass did not exercise; all were corrected before device handoff:
+
+- A lifecycle generation is captured by connect/reconnect/auth work and invalidated first on disconnect. Every post-await continuation and channel callback checks it, so an in-flight authorization/removal cannot resurrect a room after exit (`src/services/watchRoomService.ts:67,145-176,209-228,312-333,375-376,396-414`).
+- A successful library rejoin clears the service's pending manual reconnect timer before marking connected, so that timer cannot later tear down the recovered channel (`watchRoomService.ts:240-247`).
+- Initial subscribe timeout nulls/removes that exact channel; late callbacks fail the channel identity/generation guard and cannot produce a ghost connected service behind a join-failed UI (`watchRoomService.ts:206-228`).
+- The responder upload deadline covers signed-URL creation and native body upload; expiry rejects immediately even if `cancelAsync()` itself stalls (`watchMemories.ts:18-40,67-88,99-107`).
 
 ## Required two-device verification
 

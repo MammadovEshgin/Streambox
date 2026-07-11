@@ -64,6 +64,7 @@ export class WatchRoomService {
   private self: PresenceMeta | null = null;
   private room: WatchRoom | null = null;
   private connectionState: WatchRoomConnectionState = "idle";
+  private lifecycleGeneration = 0;
 
   setListeners(listeners: WatchRoomListeners) {
     this.listeners = listeners;
@@ -141,22 +142,28 @@ export class WatchRoomService {
   // webrtc-ready used to vanish. Rejects on join failure/timeout so the caller
   // can surface a retry instead of a forever-empty lobby.
   async connect(room: WatchRoom, self: PresenceMeta): Promise<void> {
+    const generation = ++this.lifecycleGeneration;
     this.room = room;
     this.self = self;
     this.closedByUser = false;
     this.hadConnected = false;
     this.reconnectAttempts = 0;
-    await this.openChannel();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    await this.openChannel(generation);
   }
 
-  private async openChannel(): Promise<void> {
+  private async openChannel(generation = this.lifecycleGeneration): Promise<void> {
     const room = this.room;
     const self = this.self;
-    if (!room || !self || this.closedByUser) return;
+    if (!room || !self || !this.isActiveGeneration(generation)) return;
 
     this.clearLivenessWatchdog();
     this.emitConnectionState("connecting");
-    const authorized = await this.authorizeRealtime();
+    const authorized = await this.authorizeRealtime(generation);
+    if (!this.isActiveGeneration(generation)) return;
     if (!authorized) throw new Error("Realtime authentication unavailable");
 
     // Replace any previous channel; null the field first so the old channel's
@@ -166,6 +173,7 @@ export class WatchRoomService {
     if (stale) {
       await supabase.removeChannel(stale).catch(() => undefined);
     }
+    if (!this.isActiveGeneration(generation)) return;
 
     const channel = supabase.channel(watchRoomChannelName(room.code), {
       config: {
@@ -196,9 +204,20 @@ export class WatchRoomService {
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
+      const invalidateInitialChannel = () => {
+        if (this.channel !== channel) return;
+        this.channel = null;
+        void supabase.removeChannel(channel).catch(() => undefined);
+      };
       const timer = setTimeout(() => {
         if (!settled) {
+          if (!this.isActiveGeneration(generation) || this.channel !== channel) {
+            settled = true;
+            resolve();
+            return;
+          }
           settled = true;
+          invalidateInitialChannel();
           this.emitConnectionState("error");
           reject(new Error("Realtime subscribe timed out"));
         }
@@ -206,21 +225,28 @@ export class WatchRoomService {
 
       channel.subscribe(async (status: string) => {
         // A replaced channel keeps emitting while it tears down — ignore it.
-        if (this.channel !== channel) return;
+        if (!this.isActiveGeneration(generation) || this.channel !== channel) return;
 
         if (status === "SUBSCRIBED") {
           const trackResult = await channel.track(self, { timeout: LIVENESS_TIMEOUT_MS });
-          if (this.channel !== channel) return;
-          if (trackResult !== "ok") {
+          if (!this.isActiveGeneration(generation) || this.channel !== channel) return;
+          const trackHealthy =
+            trackResult === "ok" && channel.state === "joined" && supabase.realtime.isConnected();
+          if (!trackHealthy) {
             this.emitConnectionState("error");
             if (!settled) {
               settled = true;
               clearTimeout(timer);
-              reject(new Error(`Realtime presence track ${trackResult}`));
+              invalidateInitialChannel();
+              reject(new Error(`Realtime presence track ${trackResult}; socket healthy: ${trackHealthy}`));
             } else {
               this.scheduleReconnect();
             }
             return;
+          }
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
           }
           this.hadConnected = true;
           this.reconnectAttempts = 0;
@@ -237,6 +263,7 @@ export class WatchRoomService {
           if (!settled) {
             settled = true;
             clearTimeout(timer);
+            invalidateInitialChannel();
             reject(new Error(`Realtime channel ${status}`));
           } else if (this.hadConnected) {
             // Mid-session flap: rebuild the channel (and re-track presence)
@@ -246,7 +273,12 @@ export class WatchRoomService {
         } else if (status === "CLOSED") {
           this.clearLivenessWatchdog();
           this.emitConnectionState("closed");
-          if (settled && this.hadConnected && !this.closedByUser) {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            invalidateInitialChannel();
+            reject(new Error("Realtime channel CLOSED"));
+          } else if (this.hadConnected && !this.closedByUser) {
             this.scheduleReconnect();
           }
         }
@@ -258,16 +290,23 @@ export class WatchRoomService {
     if (this.closedByUser || this.reconnectTimer) return;
     this.clearLivenessWatchdog();
     const delay = watchRoomReconnectDelayMs(this.reconnectAttempts);
+    const generation = this.lifecycleGeneration;
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      void this.openChannel().catch(() => this.scheduleReconnect());
+      if (!this.isActiveGeneration(generation)) return;
+      void this.openChannel(generation).catch(() => this.scheduleReconnect());
     }, delay);
   }
 
   send(signal: WatchRoomSignal): void {
     const channel = this.channel;
-    if (!channel || this.connectionState !== "connected" || channel.state !== "joined") {
+    if (
+      !channel ||
+      this.connectionState !== "connected" ||
+      channel.state !== "joined" ||
+      !supabase.realtime.isConnected()
+    ) {
       // Playback/readiness can render before the first subscribe completes.
       // Those repeating signals may be dropped, but must not tear down the
       // channel that is still performing its initial join.
@@ -283,6 +322,7 @@ export class WatchRoomService {
   }
 
   async disconnect(): Promise<void> {
+    this.lifecycleGeneration += 1;
     this.closedByUser = true;
     if (this.authTimer) {
       clearTimeout(this.authTimer);
@@ -293,12 +333,15 @@ export class WatchRoomService {
       this.reconnectTimer = null;
     }
     this.clearLivenessWatchdog();
-    if (this.channel) {
-      const channel = this.channel;
-      this.channel = null;
-      await supabase.removeChannel(channel);
+    const channel = this.channel;
+    this.channel = null;
+    try {
+      if (channel) await supabase.removeChannel(channel);
+    } catch {
+      /* teardown is best-effort; lifecycle generation prevents resurrection */
+    } finally {
+      this.emitConnectionState("closed");
     }
-    this.emitConnectionState("closed");
   }
 
   private emitConnectionState(state: WatchRoomConnectionState) {
@@ -310,6 +353,10 @@ export class WatchRoomService {
     this.clearLivenessWatchdog();
     this.livenessTimer = setInterval(() => {
       if (this.livenessInFlight || this.channel !== channel || this.connectionState !== "connected") return;
+      if (channel.state !== "joined" || !supabase.realtime.isConnected()) {
+        this.handleTransportFailure(channel);
+        return;
+      }
       this.livenessInFlight = true;
       void channel
         .send(
@@ -338,6 +385,10 @@ export class WatchRoomService {
     this.scheduleReconnect();
   }
 
+  private isActiveGeneration(generation: number): boolean {
+    return !this.closedByUser && generation === this.lifecycleGeneration;
+  }
+
   private emitMembersFromPresence(channel: RealtimeChannel) {
     const state = channel.presenceState() as Record<string, PresenceMeta[]>;
     const members: WatchRoomMember[] = [];
@@ -355,7 +406,7 @@ export class WatchRoomService {
 
   // Point Realtime at a fresh access token and schedule the next refresh before
   // it expires. Works around the app-wide autoRefreshToken:false.
-  private async authorizeRealtime(): Promise<boolean> {
+  private async authorizeRealtime(generation = this.lifecycleGeneration): Promise<boolean> {
     const { data } = await supabase.auth.getSession();
     let session = data.session;
     const nowSec = Math.floor(Date.now() / 1000);
@@ -368,11 +419,12 @@ export class WatchRoomService {
     }
     const expiresAtMs = (session?.expires_at ?? nowSec + 3600) * 1000;
     const scheduleNext = () => {
-      if (this.closedByUser) return;
+      if (!this.isActiveGeneration(generation)) return;
       if (this.authTimer) clearTimeout(this.authTimer);
       const delay = watchRoomAuthTimerDelayMs({ expiresAtMs, nowMs, refreshFailed });
       this.authTimer = setTimeout(() => {
-        void this.authorizeRealtime()
+        if (!this.isActiveGeneration(generation)) return;
+        void this.authorizeRealtime(generation)
           .then((ok) => {
             if (!ok && this.hadConnected) this.handleTransportFailure(this.channel);
           })

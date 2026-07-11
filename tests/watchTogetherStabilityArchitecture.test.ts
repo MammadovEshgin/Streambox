@@ -14,6 +14,8 @@ test("watch-memory uploads stay native and cancel timed-out responder work", () 
   assert.equal(source.includes("createSignedUploadUrl"), true);
   assert.equal(source.includes("createUploadTask"), true);
   assert.equal(source.includes("cancelAsync"), true);
+  assert.equal(source.indexOf("const deadlineAt") < source.indexOf("createSignedUploadUrl"), true);
+  assert.equal(source.includes("remainingMs"), true);
   assert.equal(source.includes("readAsStringAsync"), false);
   assert.equal(source.includes("decode(base64)"), false);
 });
@@ -24,6 +26,8 @@ test("room transport checks acknowledged sends and runs a liveness probe", () =>
   assert.equal(source.includes('event: "liveness"'), true);
   assert.equal(source.includes('result !== "ok"'), true);
   assert.equal(source.includes("watchRoomReconnectDelayMs"), true);
+  assert.equal(source.includes("supabase.realtime.isConnected()"), true);
+  assert.equal(source.includes("lifecycleGeneration"), true);
 });
 
 test("watch-together overlays stay in-layer and have room-scoped recovery", () => {
