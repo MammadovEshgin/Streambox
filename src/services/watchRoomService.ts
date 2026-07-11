@@ -3,8 +3,12 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { supabase } from "./supabase";
 import {
   mapWatchRoomRow,
+  watchRoomAuthTimerDelayMs,
   watchRoomChannelName,
+  watchRoomReconnectDelayMs,
+  WATCH_ROOM_REALTIME_AUTH_MARGIN_MS,
   type WatchRoom,
+  type WatchRoomConnectionState,
   type WatchRoomMedia,
   type WatchRoomMember,
   type WatchRoomRole,
@@ -22,7 +26,7 @@ import {
 // The actual camera/mic never touches this — it rides WebRTC peer-to-peer.
 // ---------------------------------------------------------------------------
 
-export type WatchRoomConnectionState = "idle" | "connecting" | "connected" | "closed" | "error";
+export type { WatchRoomConnectionState } from "../utils/watchRoom";
 
 type PresenceMeta = {
   userId: string;
@@ -39,22 +43,27 @@ export type WatchRoomListeners = {
 // Refresh the access token this far (ms) before it expires so the Realtime
 // socket never drops mid-movie. autoRefreshToken is off app-wide, so the room
 // session refreshes explicitly while it is active.
-const REALTIME_AUTH_MARGIN_MS = 60_000;
 // How long the initial channel join may take before connect() rejects and the
 // caller shows a retry.
 const SUBSCRIBE_TIMEOUT_MS = 12_000;
-const RECONNECT_MAX_DELAY_MS = 15_000;
+// A tiny server-acknowledged broadcast catches a half-open channel even if no
+// socket status callback arrives.
+const LIVENESS_INTERVAL_MS = 20_000;
+const LIVENESS_TIMEOUT_MS = 5_000;
 
 export class WatchRoomService {
   private channel: RealtimeChannel | null = null;
   private listeners: WatchRoomListeners = {};
   private authTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private livenessTimer: ReturnType<typeof setInterval> | null = null;
+  private livenessInFlight = false;
   private reconnectAttempts = 0;
   private hadConnected = false;
   private closedByUser = false;
   private self: PresenceMeta | null = null;
   private room: WatchRoom | null = null;
+  private connectionState: WatchRoomConnectionState = "idle";
 
   setListeners(listeners: WatchRoomListeners) {
     this.listeners = listeners;
@@ -145,8 +154,10 @@ export class WatchRoomService {
     const self = this.self;
     if (!room || !self || this.closedByUser) return;
 
+    this.clearLivenessWatchdog();
     this.emitConnectionState("connecting");
-    await this.authorizeRealtime();
+    const authorized = await this.authorizeRealtime();
+    if (!authorized) throw new Error("Realtime authentication unavailable");
 
     // Replace any previous channel; null the field first so the old channel's
     // late status callbacks (CLOSED from removeChannel) are ignored below.
@@ -162,7 +173,10 @@ export class WatchRoomService {
         // policies from migration 20260710190000 — the join code alone is no
         // longer enough to eavesdrop or inject signals; membership is.
         private: true,
-        broadcast: { self: false, ack: false },
+        // Server acknowledgements turn every user action into a liveness
+        // signal. Without them realtime-js resolves a broadcast immediately,
+        // even if the socket dies before the server receives it.
+        broadcast: { self: false, ack: true },
         presence: { key: self.userId },
       },
     });
@@ -185,6 +199,7 @@ export class WatchRoomService {
       const timer = setTimeout(() => {
         if (!settled) {
           settled = true;
+          this.emitConnectionState("error");
           reject(new Error("Realtime subscribe timed out"));
         }
       }, SUBSCRIBE_TIMEOUT_MS);
@@ -194,16 +209,30 @@ export class WatchRoomService {
         if (this.channel !== channel) return;
 
         if (status === "SUBSCRIBED") {
+          const trackResult = await channel.track(self, { timeout: LIVENESS_TIMEOUT_MS });
+          if (this.channel !== channel) return;
+          if (trackResult !== "ok") {
+            this.emitConnectionState("error");
+            if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+              reject(new Error(`Realtime presence track ${trackResult}`));
+            } else {
+              this.scheduleReconnect();
+            }
+            return;
+          }
           this.hadConnected = true;
           this.reconnectAttempts = 0;
-          await channel.track(self);
           this.emitConnectionState("connected");
+          this.startLivenessWatchdog(channel);
           if (!settled) {
             settled = true;
             clearTimeout(timer);
             resolve();
           }
         } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          this.clearLivenessWatchdog();
           this.emitConnectionState("error");
           if (!settled) {
             settled = true;
@@ -215,6 +244,7 @@ export class WatchRoomService {
             this.scheduleReconnect();
           }
         } else if (status === "CLOSED") {
+          this.clearLivenessWatchdog();
           this.emitConnectionState("closed");
           if (settled && this.hadConnected && !this.closedByUser) {
             this.scheduleReconnect();
@@ -226,7 +256,8 @@ export class WatchRoomService {
 
   private scheduleReconnect(): void {
     if (this.closedByUser || this.reconnectTimer) return;
-    const delay = Math.min(RECONNECT_MAX_DELAY_MS, 2_000 * 2 ** Math.min(this.reconnectAttempts, 3));
+    this.clearLivenessWatchdog();
+    const delay = watchRoomReconnectDelayMs(this.reconnectAttempts);
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -235,7 +266,20 @@ export class WatchRoomService {
   }
 
   send(signal: WatchRoomSignal): void {
-    void this.channel?.send({ type: "broadcast", event: "signal", payload: signal });
+    const channel = this.channel;
+    if (!channel || this.connectionState !== "connected" || channel.state !== "joined") {
+      // Playback/readiness can render before the first subscribe completes.
+      // Those repeating signals may be dropped, but must not tear down the
+      // channel that is still performing its initial join.
+      if (this.hadConnected) this.handleTransportFailure(channel);
+      return;
+    }
+    void channel
+      .send({ type: "broadcast", event: "signal", payload: signal }, { timeout: LIVENESS_TIMEOUT_MS })
+      .then((result) => {
+        if (result !== "ok") this.handleTransportFailure(channel);
+      })
+      .catch(() => this.handleTransportFailure(channel));
   }
 
   async disconnect(): Promise<void> {
@@ -248,6 +292,7 @@ export class WatchRoomService {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.clearLivenessWatchdog();
     if (this.channel) {
       const channel = this.channel;
       this.channel = null;
@@ -257,7 +302,40 @@ export class WatchRoomService {
   }
 
   private emitConnectionState(state: WatchRoomConnectionState) {
+    this.connectionState = state;
     this.listeners.onConnectionStateChange?.(state);
+  }
+
+  private startLivenessWatchdog(channel: RealtimeChannel): void {
+    this.clearLivenessWatchdog();
+    this.livenessTimer = setInterval(() => {
+      if (this.livenessInFlight || this.channel !== channel || this.connectionState !== "connected") return;
+      this.livenessInFlight = true;
+      void channel
+        .send(
+          { type: "broadcast", event: "liveness", payload: { at: Date.now() } },
+          { timeout: LIVENESS_TIMEOUT_MS }
+        )
+        .then((result) => {
+          if (result !== "ok") this.handleTransportFailure(channel);
+        })
+        .catch(() => this.handleTransportFailure(channel))
+        .finally(() => {
+          this.livenessInFlight = false;
+        });
+    }, LIVENESS_INTERVAL_MS);
+  }
+
+  private clearLivenessWatchdog(): void {
+    if (this.livenessTimer) clearInterval(this.livenessTimer);
+    this.livenessTimer = null;
+    this.livenessInFlight = false;
+  }
+
+  private handleTransportFailure(channel: RealtimeChannel | null): void {
+    if (this.closedByUser || (channel && this.channel !== channel)) return;
+    this.emitConnectionState("connecting");
+    this.scheduleReconnect();
   }
 
   private emitMembersFromPresence(channel: RealtimeChannel) {
@@ -277,23 +355,47 @@ export class WatchRoomService {
 
   // Point Realtime at a fresh access token and schedule the next refresh before
   // it expires. Works around the app-wide autoRefreshToken:false.
-  private async authorizeRealtime(): Promise<void> {
+  private async authorizeRealtime(): Promise<boolean> {
     const { data } = await supabase.auth.getSession();
     let session = data.session;
     const nowSec = Math.floor(Date.now() / 1000);
-    if (session?.expires_at && session.expires_at - nowSec < REALTIME_AUTH_MARGIN_MS / 1000) {
+    const nowMs = Date.now();
+    let refreshFailed = false;
+    if (session?.expires_at && session.expires_at - nowSec <= WATCH_ROOM_REALTIME_AUTH_MARGIN_MS / 1000) {
       const refreshed = await supabase.auth.refreshSession().catch(() => null);
-      session = refreshed?.data.session ?? session;
+      if (refreshed?.data.session) session = refreshed.data.session;
+      else refreshFailed = true;
     }
-    if (!session?.access_token) return;
+    const expiresAtMs = (session?.expires_at ?? nowSec + 3600) * 1000;
+    const scheduleNext = () => {
+      if (this.closedByUser) return;
+      if (this.authTimer) clearTimeout(this.authTimer);
+      const delay = watchRoomAuthTimerDelayMs({ expiresAtMs, nowMs, refreshFailed });
+      this.authTimer = setTimeout(() => {
+        void this.authorizeRealtime()
+          .then((ok) => {
+            if (!ok && this.hadConnected) this.handleTransportFailure(this.channel);
+          })
+          .catch(() => {
+            if (this.hadConnected) this.handleTransportFailure(this.channel);
+          });
+      }, delay);
+    };
+    if (!session?.access_token) {
+      refreshFailed = true;
+      scheduleNext();
+      return false;
+    }
 
-    supabase.realtime.setAuth(session.access_token);
+    try {
+      await supabase.realtime.setAuth(session.access_token);
+    } catch {
+      refreshFailed = true;
+      scheduleNext();
+      return false;
+    }
 
-    if (this.authTimer) clearTimeout(this.authTimer);
-    const expiresAtMs = (session.expires_at ?? nowSec + 3600) * 1000;
-    const delay = Math.max(REALTIME_AUTH_MARGIN_MS, expiresAtMs - Date.now() - REALTIME_AUTH_MARGIN_MS);
-    this.authTimer = setTimeout(() => {
-      void this.authorizeRealtime();
-    }, delay);
+    scheduleNext();
+    return expiresAtMs > nowMs;
   }
 }

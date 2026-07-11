@@ -71,22 +71,26 @@ export function useWatchRoomSession({ player, code, nickname }: Options) {
     // Backgrounded: the OS owns playback (phone call, screen lock) — fighting
     // it with play() every heartbeat helps nobody. Sync resumes on foreground.
     if (AppState.currentState !== "active") return;
-    const decision = resolveSyncDecision(
-      { isPlaying: Boolean((p as any).playing), positionSeconds: p.currentTime ?? 0 },
-      state,
-      Date.now(),
-      { clockOffsetMs: clockOffsetRef.current }
-    );
-    if (decision.setPlaying === true) p.play();
-    else if (decision.setPlaying === false) p.pause();
-    if (decision.seekToSeconds != null) {
-      const now = Date.now();
-      const buffering = (p as any).status === "loading";
-      // Cooldown so a buffering stall can't trigger a seek→rebuffer→seek loop.
-      if (!buffering && now - lastSeekAtRef.current >= WATCH_ROOM_SEEK_COOLDOWN_MS) {
-        lastSeekAtRef.current = now;
-        p.currentTime = decision.seekToSeconds;
+    try {
+      const decision = resolveSyncDecision(
+        { isPlaying: Boolean((p as any).playing), positionSeconds: p.currentTime ?? 0 },
+        state,
+        Date.now(),
+        { clockOffsetMs: clockOffsetRef.current }
+      );
+      if (decision.setPlaying === true) p.play();
+      else if (decision.setPlaying === false) p.pause();
+      if (decision.seekToSeconds != null) {
+        const now = Date.now();
+        const buffering = (p as any).status === "loading";
+        // Cooldown so a buffering stall can't trigger a seek→rebuffer→seek loop.
+        if (!buffering && now - lastSeekAtRef.current >= WATCH_ROOM_SEEK_COOLDOWN_MS) {
+          lastSeekAtRef.current = now;
+          p.currentTime = decision.seekToSeconds;
+        }
       }
+    } catch {
+      /* player released between the signal arriving and this callback */
     }
   }, []);
 
@@ -194,31 +198,53 @@ export function useWatchRoomSession({ player, code, nickname }: Options) {
   const { sendPlayback } = room;
   useEffect(() => {
     if (!isHost || !player) return;
+    const readSnapshot = (): RemotePlaybackState | null => {
+      try {
+        return {
+          isPlaying: Boolean((player as any).playing),
+          positionSeconds: player.currentTime ?? 0,
+          updatedAtEpochMs: Date.now(),
+        };
+      } catch {
+        return null;
+      }
+    };
     const broadcast = () => {
-      sendPlayback({
-        isPlaying: Boolean((player as any).playing),
-        positionSeconds: player.currentTime ?? 0,
-        updatedAtEpochMs: Date.now(),
-      });
+      const snapshot = readSnapshot();
+      if (snapshot) sendPlayback(snapshot);
     };
     const interval = setInterval(broadcast, WATCH_ROOM_HEARTBEAT_INTERVAL_MS);
-    const playSub = player.addListener("playingChange", broadcast);
+    let playSub: { remove: () => void } | null = null;
+    let timeSub: { remove: () => void } | null = null;
     // Seek detection: a position jump beyond what wall-clock playback explains.
-    let last = { pos: player.currentTime ?? 0, at: Date.now(), playing: Boolean((player as any).playing) };
-    const prevTimeUpdateInterval = (player as any).timeUpdateEventInterval;
-    (player as any).timeUpdateEventInterval = 1;
-    const timeSub = player.addListener("timeUpdate", (event: any) => {
-      const now = Date.now();
-      const pos = event?.currentTime ?? player.currentTime ?? 0;
-      const expected = last.pos + (last.playing ? (now - last.at) / 1000 : 0);
-      if (Math.abs(pos - expected) > WATCH_ROOM_DEFAULT_HARD_SEEK_SECONDS) broadcast();
-      last = { pos, at: now, playing: Boolean((player as any).playing) };
-    });
+    const initial = readSnapshot();
+    let last = { pos: initial?.positionSeconds ?? 0, at: Date.now(), playing: initial?.isPlaying ?? false };
+    let prevTimeUpdateInterval = 0;
+    try {
+      playSub = player.addListener("playingChange", broadcast);
+      prevTimeUpdateInterval = (player as any).timeUpdateEventInterval ?? 0;
+      (player as any).timeUpdateEventInterval = 1;
+      timeSub = player.addListener("timeUpdate", (event: any) => {
+        try {
+          const now = Date.now();
+          const pos = event?.currentTime ?? player.currentTime ?? 0;
+          const expected = last.pos + (last.playing ? (now - last.at) / 1000 : 0);
+          if (Math.abs(pos - expected) > WATCH_ROOM_DEFAULT_HARD_SEEK_SECONDS) broadcast();
+          last = { pos, at: now, playing: Boolean((player as any).playing) };
+        } catch {
+          /* player released while a queued timeUpdate callback was draining */
+        }
+      });
+    } catch {
+      clearInterval(interval);
+      playSub?.remove();
+      return;
+    }
     broadcast();
     return () => {
       clearInterval(interval);
-      playSub.remove();
-      timeSub.remove();
+      playSub?.remove();
+      timeSub?.remove();
       try {
         (player as any).timeUpdateEventInterval = prevTimeUpdateInterval ?? 0;
       } catch {

@@ -343,7 +343,17 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
       }, READY_REANNOUNCE_MS);
     }
 
-    void setup();
+    void setup().catch(() => {
+      if (cancelled) return;
+      pcRef.current?.close();
+      pcRef.current = null;
+      localStreamRef.current?.getTracks().forEach((track: any) => track.stop?.());
+      localStreamRef.current = null;
+      setLocalStream(null);
+      setRemoteStream(null);
+      setConnectionState("failed");
+      scheduleRestart();
+    });
 
     return () => {
       cancelled = true;
