@@ -39,6 +39,14 @@ export function useAudioDucking({ player, getAudioLevels, active }: Options) {
     let preDuckVolume: number | null = null;
     let rampTimer: ReturnType<typeof setInterval> | null = null;
 
+    const readVolume = (p: VideoPlayer): number => {
+      try {
+        return typeof p.volume === "number" ? p.volume : 1;
+      } catch {
+        return 1;
+      }
+    };
+
     // Small stepped ramp — an instant volume cut reads as a glitch; a short
     // fade reads as intentional.
     const rampVolumeTo = (target: number, durationMs: number) => {
@@ -48,7 +56,7 @@ export function useAudioDucking({ player, getAudioLevels, active }: Options) {
       }
       const p = playerRef.current;
       if (!p) return;
-      const start = typeof p.volume === "number" ? p.volume : 1;
+      const start = readVolume(p);
       const steps = Math.max(1, Math.round(durationMs / 40));
       let step = 0;
       rampTimer = setInterval(() => {
@@ -67,18 +75,22 @@ export function useAudioDucking({ player, getAudioLevels, active }: Options) {
 
     const poll = setInterval(() => {
       void (async () => {
-        const levels = await getLevelsRef.current();
-        if (disposed || !levels) return;
-        const level = Math.max(levels.remote, levels.local * LOCAL_LEVEL_WEIGHT);
-        const action = controller.sample(level, Date.now());
-        const p = playerRef.current;
-        if (!p) return;
-        if (action === "duck") {
-          preDuckVolume = typeof p.volume === "number" ? p.volume : 1;
-          rampVolumeTo(preDuckVolume * DUCK_VOLUME_FACTOR, DUCK_RAMP_MS);
-        } else if (action === "restore") {
-          rampVolumeTo(preDuckVolume ?? 1, RESTORE_RAMP_MS);
-          preDuckVolume = null;
+        try {
+          const levels = await getLevelsRef.current();
+          if (disposed || !levels) return;
+          const level = Math.max(levels.remote, levels.local * LOCAL_LEVEL_WEIGHT);
+          const action = controller.sample(level, Date.now());
+          const p = playerRef.current;
+          if (!p) return;
+          if (action === "duck") {
+            preDuckVolume = readVolume(p);
+            rampVolumeTo(preDuckVolume * DUCK_VOLUME_FACTOR, DUCK_RAMP_MS);
+          } else if (action === "restore") {
+            rampVolumeTo(preDuckVolume ?? 1, RESTORE_RAMP_MS);
+            preDuckVolume = null;
+          }
+        } catch {
+          /* peer/player released while an async poll was in flight */
         }
       })();
     }, POLL_INTERVAL_MS);

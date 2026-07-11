@@ -30,6 +30,17 @@ export type FaceCamOverlayProps = {
 const BOX_SIZE = 122;
 const STREAM_STYLE = { width: "100%" as const, height: "100%" as const };
 
+function safeStreamUrl(stream: MediaStream | null): string | null {
+  if (!stream) return null;
+  try {
+    return stream.toURL();
+  } catch {
+    // Native teardown can invalidate a stream one render before React receives
+    // the null state. Render the placeholder instead of throwing from RTCView.
+    return null;
+  }
+}
+
 export function FaceCamOverlay({
   visible,
   localStream,
@@ -44,8 +55,10 @@ export function FaceCamOverlay({
   const RTCView = getWebRtc()?.RTCView;
   if (!visible) return null;
 
-  const partnerLive = Boolean(RTCView && remoteStream && partnerConnected);
-  const selfLive = Boolean(RTCView && localStream && cameraEnabled);
+  const remoteStreamUrl = safeStreamUrl(remoteStream);
+  const localStreamUrl = safeStreamUrl(localStream);
+  const partnerLive = Boolean(RTCView && remoteStreamUrl && partnerConnected);
+  const selfLive = Boolean(RTCView && localStreamUrl && cameraEnabled);
   const showFailed = mediaState === "failed";
   const showConnecting = !showFailed && !partnerLive && partnerConnected && mediaState === "connecting";
 
@@ -55,8 +68,8 @@ export function FaceCamOverlay({
           through to the player beneath. */}
       <Box pointerEvents={showFailed ? "auto" : "none"}>
         <Screen>
-          {RTCView && remoteStream && partnerConnected ? (
-            <RTCView streamURL={remoteStream.toURL()} style={STREAM_STYLE} objectFit="cover" mirror={false} />
+          {RTCView && remoteStreamUrl && partnerConnected ? (
+            <RTCView streamURL={remoteStreamUrl} style={STREAM_STYLE} objectFit="cover" mirror={false} />
           ) : (
             <Placeholder>
               <Feather name="user" size={22} color="#8A938B" />
@@ -89,8 +102,8 @@ export function FaceCamOverlay({
 
       <Box pointerEvents="none">
         <Screen>
-          {RTCView && localStream && cameraEnabled ? (
-            <RTCView streamURL={localStream.toURL()} style={STREAM_STYLE} objectFit="cover" mirror />
+          {RTCView && localStreamUrl && cameraEnabled ? (
+            <RTCView streamURL={localStreamUrl} style={STREAM_STYLE} objectFit="cover" mirror />
           ) : (
             <Placeholder>
               <Feather name={cameraEnabled ? "user" : "video-off"} size={22} color="#8A938B" />

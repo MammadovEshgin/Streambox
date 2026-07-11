@@ -1,4 +1,3 @@
-import { decode } from "base64-arraybuffer";
 import * as FileSystem from "expo-file-system/legacy";
 
 import { supabase } from "./supabase";
@@ -16,21 +15,73 @@ import {
 
 const BUCKET = "watch-memories";
 
-async function uploadFile(path: string, uri: string, contentType: string): Promise<string> {
-  const base64 = await FileSystem.readAsStringAsync(uri, {
-    encoding: FileSystem.EncodingType.Base64,
+async function runNativeUpload(
+  signedUrl: string,
+  uri: string,
+  contentType: string,
+  timeoutMs?: number
+): Promise<FileSystem.FileSystemUploadResult> {
+  const task = FileSystem.createUploadTask(signedUrl, uri, {
+    httpMethod: "PUT",
+    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+    headers: {
+      "Content-Type": contentType,
+      "cache-control": "max-age=3600",
+      "x-upsert": "true",
+    },
   });
-  const { error } = await supabase.storage.from(BUCKET).upload(path, decode(base64), {
-    contentType,
-    upsert: true,
+
+  if (!timeoutMs) {
+    const result = await task.uploadAsync();
+    if (!result) throw new Error("Storage upload was cancelled");
+    return result;
+  }
+
+  return await new Promise<FileSystem.FileSystemUploadResult>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      // Promise.race used to leave the losing native upload alive. Cancel the
+      // task before declining so repeated captures cannot stack orphan work.
+      void task.cancelAsync().catch(() => undefined).finally(() => reject(new Error("Storage upload timed out")));
+    }, timeoutMs);
+
+    void task.uploadAsync().then(
+      (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (!result) reject(new Error("Storage upload was cancelled"));
+        else resolve(result);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
   });
-  if (error) throw error;
+}
+
+async function uploadFile(path: string, uri: string, contentType: string, timeoutMs?: number): Promise<string> {
+  // Signed URL creation still runs through supabase-js (and therefore Storage
+  // RLS); only the large file body moves to Expo's native upload task. This
+  // avoids materialising both a 4/3-size base64 string and an ArrayBuffer on
+  // the JS thread while Realtime timers are trying to heartbeat.
+  const { data, error } = await supabase.storage.from(BUCKET).createSignedUploadUrl(path, { upsert: true });
+  if (error || !data?.signedUrl) throw error ?? new Error("Could not create signed upload URL");
+  const result = await runNativeUpload(data.signedUrl, uri, contentType, timeoutMs);
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`Storage upload failed with status ${result.status}`);
+  }
   return path;
 }
 
-export async function uploadCameraStill(roomId: string, uri: string): Promise<string> {
+export async function uploadCameraStill(roomId: string, uri: string, timeoutMs?: number): Promise<string> {
   const name = `${roomId}/stills/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
-  return uploadFile(name, uri, "image/jpeg");
+  return uploadFile(name, uri, "image/jpeg", timeoutMs);
 }
 
 // Deterministic path (keyed by the client-generated memory id): a retried

@@ -123,6 +123,63 @@ export const WATCH_ROOM_HEARTBEAT_INTERVAL_MS = 3_000;
 // would otherwise trigger a seek→rebuffer→seek loop on every heartbeat.
 export const WATCH_ROOM_SEEK_COOLDOWN_MS = 5_000;
 
+// ── Transport recovery + presence UI ──────────────────────────────────────
+// Kept pure so the state transitions that users see during a channel flap are
+// testable without React Native or a live Supabase socket.
+export type WatchRoomConnectionState = "idle" | "connecting" | "connected" | "closed" | "error";
+export type WatchRoomPresenceUiState = "lobby" | "ready" | "partner-left" | "reconnecting";
+
+export function deriveWatchRoomPresenceUiState(input: {
+  connectionState: WatchRoomConnectionState;
+  bothPresent: boolean;
+  hasEverConnected: boolean;
+  hasEverPartner: boolean;
+}): WatchRoomPresenceUiState {
+  // Presence can remain stale while the local channel is down. Once this
+  // client has subscribed, transport health wins over that stale roster.
+  if (input.hasEverConnected && input.connectionState !== "connected") return "reconnecting";
+  if (input.bothPresent) return "ready";
+  // A real mid-session departure is never a new lobby: showing the join code
+  // again suggests the still-connected partner needs to re-enter it.
+  if (input.hasEverPartner) return "partner-left";
+  return "lobby";
+}
+
+export function canStartWatchRoomCapture(input: {
+  connectionState: WatchRoomConnectionState;
+  bothPresent: boolean;
+  capturing: boolean;
+  cooldownUntilMs: number;
+  nowMs: number;
+}): boolean {
+  return (
+    input.connectionState === "connected" &&
+    input.bothPresent &&
+    !input.capturing &&
+    input.nowMs >= input.cooldownUntilMs
+  );
+}
+
+export const WATCH_ROOM_RECONNECT_BASE_DELAY_MS = 2_000;
+export const WATCH_ROOM_RECONNECT_MAX_DELAY_MS = 15_000;
+
+export function watchRoomReconnectDelayMs(attempt: number): number {
+  const safeAttempt = Math.max(0, Math.floor(attempt));
+  return Math.min(WATCH_ROOM_RECONNECT_MAX_DELAY_MS, WATCH_ROOM_RECONNECT_BASE_DELAY_MS * 2 ** Math.min(safeAttempt, 3));
+}
+
+export const WATCH_ROOM_REALTIME_AUTH_MARGIN_MS = 60_000;
+export const WATCH_ROOM_REALTIME_AUTH_RETRY_MS = 10_000;
+
+export function watchRoomAuthTimerDelayMs(input: {
+  expiresAtMs: number;
+  nowMs: number;
+  refreshFailed: boolean;
+}): number {
+  if (input.refreshFailed) return WATCH_ROOM_REALTIME_AUTH_RETRY_MS;
+  return Math.max(1_000, input.expiresAtMs - input.nowMs - WATCH_ROOM_REALTIME_AUTH_MARGIN_MS);
+}
+
 // ── Clock offset (host clock − guest clock) via ping/pong ──────────────────
 // The guest sends sync-ping with its clock t0; the host answers sync-pong with
 // its clock t1; the guest reads its clock t2 on arrival. Standard NTP-style

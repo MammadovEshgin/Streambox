@@ -24,6 +24,7 @@ import { MovieLoader } from "../components/common/MovieLoader";
 import { ContinueWatchingModal } from "../components/common/ContinueWatchingModal";
 import { QualityWarningModal } from "../components/common/QualityWarningModal";
 import { WatchRoomLayer } from "../components/watchTogether/WatchRoomLayer";
+import { WatchRoomBoundary } from "../components/watchTogether/WatchRoomBoundary";
 import { useContinueWatching } from "../hooks/useContinueWatching";
 import { useRecentlyWatched } from "../hooks/useRecentlyWatched";
 
@@ -1387,12 +1388,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           onTouchEnd={toggleCloseBtn}
         />
         {route.params.watchRoomCode && route.params.watchRoomNickname ? (
-          <WatchRoomLayer
-            player={videoPlayer}
-            code={route.params.watchRoomCode}
-            nickname={route.params.watchRoomNickname}
-            onExit={handleClose}
-          />
+          <WatchRoomBoundary onExit={handleClose}>
+            <WatchRoomLayer
+              player={videoPlayer}
+              code={route.params.watchRoomCode}
+              nickname={route.params.watchRoomNickname}
+              onExit={handleClose}
+            />
+          </WatchRoomBoundary>
         ) : null}
         {isLoading && (
           <PlayerLoadingOverlay

@@ -1,6 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Dimensions, FlatList, Modal, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { Alert, Dimensions, FlatList, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, {
@@ -25,6 +25,7 @@ import { uploadCameraStill, cacheMemoryFromLocalUri } from "../../services/watch
 import { addLocalMemory, listLocalMemories } from "../../services/watchMemoryLocalStore";
 import { syncPendingMemories } from "../../services/watchMemorySync";
 import { generateUuidV4 } from "../../utils/uuid";
+import { canStartWatchRoomCapture, deriveWatchRoomPresenceUiState } from "../../utils/watchRoom";
 
 const REACTIONS = ["WTF?", "💖", "LOL:)", "Cringe🔪", "Red flag 🚩"];
 // Budget for the partner's still: their side is a camera handoff + snap +
@@ -153,8 +154,8 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   partnerStillRef.current = session.partnerStill;
   const captureDeclinedRef = useRef(session.captureDeclinedId);
   captureDeclinedRef.current = session.captureDeclinedId;
-  const bothPresentRef = useRef(session.bothPresent);
-  bothPresentRef.current = session.bothPresent;
+  const connectionStateRef = useRef(session.connectionState);
+  connectionStateRef.current = session.connectionState;
   // The capture currently being composed; stills tagged with any other id are
   // leftovers from an earlier capture and never make it into the polaroid.
   const [activeCaptureId, setActiveCaptureId] = useState<string | null>(null);
@@ -187,23 +188,27 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
 
   const partnerNickname = session.partner?.nickname ?? null;
 
-  // "Partner left" is a different situation than "partner hasn't arrived yet"
-  // — sync silently stopping with no explanation was the worst version of it.
-  const [partnerLeft, setPartnerLeft] = useState(false);
-  const hadPartnerRef = useRef(false);
+  // Sticky history keeps a mid-session flap/departure from ever masquerading
+  // as a brand-new lobby with a join code.
+  const [hasEverConnected, setHasEverConnected] = useState(false);
+  const [hasEverPartner, setHasEverPartner] = useState(false);
   useEffect(() => {
-    if (session.bothPresent) {
-      hadPartnerRef.current = true;
-      setPartnerLeft(false);
-      return;
-    }
-    if (hadPartnerRef.current) {
-      hadPartnerRef.current = false;
-      setPartnerLeft(true);
-      const timer = setTimeout(() => setPartnerLeft(false), 6000);
-      return () => clearTimeout(timer);
-    }
-  }, [session.bothPresent]);
+    if (session.connectionState === "connected") setHasEverConnected(true);
+    if (session.bothPresent) setHasEverPartner(true);
+  }, [session.connectionState, session.bothPresent]);
+  const presenceUiState = deriveWatchRoomPresenceUiState({
+    connectionState: session.connectionState,
+    bothPresent: session.bothPresent,
+    hasEverConnected,
+    hasEverPartner,
+  });
+  const canCaptureNow = canStartWatchRoomCapture({
+    connectionState: session.connectionState,
+    bothPresent: session.bothPresent,
+    capturing,
+    cooldownUntilMs: cooldownUntil,
+    nowMs: Date.now(),
+  });
 
   // Pull the film's rating + genres for the polaroid log once we know the title.
   const roomId = session.room?.id;
@@ -326,10 +331,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
       const uri = await captureSelfPhoto();
       const roomId = session.room?.id;
       if (uri && roomId) {
-        const path = await Promise.race([
-          uploadCameraStill(roomId, uri),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), STILL_UPLOAD_TIMEOUT_MS)),
-        ]).catch(() => null);
+        const path = await uploadCameraStill(roomId, uri, STILL_UPLOAD_TIMEOUT_MS).catch(() => null);
         if (path) {
           session.sendCaptureStill(captureId, nickname, path);
           return;
@@ -346,24 +348,34 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   // syncPendingMemories, which retries after any failure or app kill — the
   // partner's copy no longer depends on one fire-and-forget attempt.
   const buildPolaroid = useCallback(
-    async (captureId: string) => {
+    async (captureId: string, expectPartner: boolean) => {
       try {
-        if (bothPresentRef.current) {
+        if (expectPartner) {
           const deadline = Date.now() + PARTNER_STILL_TIMEOUT_MS;
           while (
             partnerStillRef.current?.captureId !== captureId &&
             captureDeclinedRef.current !== captureId &&
+            connectionStateRef.current === "connected" &&
             Date.now() < deadline
           ) {
             await new Promise((r) => setTimeout(r, 150));
+          }
+          if (
+            partnerStillRef.current?.captureId !== captureId &&
+            captureDeclinedRef.current !== captureId
+          ) {
+            Alert.alert(
+              "Capture interrupted",
+              "The room connection dropped before your partner's photo arrived. Reconnect and try again."
+            );
+            return;
           }
         }
         // Let the polaroid re-render with the latest stills before snapshotting
         // (the partner still is a local file by now — see downloadMemoryStill).
         await new Promise((r) => setTimeout(r, 250));
         // Full-HD portrait polaroid. A snapshot failure must surface as an
-        // alert, not an unhandled rejection — with no error boundary in the
-        // app, anything uncaught here is a white-screen in release.
+        // alert, not an unhandled rejection.
         let uri: string;
         try {
           uri = await captureRef(polaroidShotRef, { format: "png", quality: 1, width: 1080, height: 1451 });
@@ -444,7 +456,15 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   );
 
   const initiateCapture = useCallback(async () => {
-    if (capturing || Date.now() < cooldownUntilRef.current) return;
+    if (
+      !canStartWatchRoomCapture({
+        connectionState: session.connectionState,
+        bothPresent: session.bothPresent,
+        capturing,
+        cooldownUntilMs: cooldownUntilRef.current,
+        nowMs: Date.now(),
+      })
+    ) return;
     // A late-arriving still from a PREVIOUS capture must never leak into this
     // one — start from a clean slate and tag everything with a fresh id.
     session.clearCapture();
@@ -471,7 +491,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
     }
     // buildPolaroid cleans its own state in finally; a stray failure must end
     // as a no-op, never an unhandled rejection.
-    await buildPolaroid(captureId).catch(() => undefined);
+    await buildPolaroid(captureId, true).catch(() => undefined);
   }, [capturing, captureOwnStill, buildPolaroid, session, startCooldown]);
 
   useEffect(() => {
@@ -489,10 +509,12 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
       return;
     }
     setCapturing(true);
-    void respondToCapture(request.captureId).finally(() => {
-      setTimeout(() => setCapturing(false), 1500);
-      session.clearCapture();
-    });
+    void respondToCapture(request.captureId)
+      .catch(() => session.sendCaptureUnavailable(request.captureId))
+      .finally(() => {
+        setTimeout(() => setCapturing(false), 1500);
+        session.clearCapture();
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.captureRequest]);
 
@@ -563,15 +585,21 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
             </RetryPill>
           </WaitingCard>
         </Reanimated.View>
-      ) : !session.bothPresent ? (
+      ) : presenceUiState !== "ready" ? (
         <Reanimated.View entering={FadeIn} exiting={FadeOut} style={waitingWrapStyle} pointerEvents="none">
-          <WaitingCard>
-            <WaitingTitle>{partnerLeft ? "Your partner left — sync is paused" : "Waiting for your partner"}</WaitingTitle>
-            {partnerLeft ? null : (
+          <WaitingCard accessibilityLiveRegion="polite">
+            <WaitingTitle>
+              {presenceUiState === "reconnecting"
+                ? "Reconnecting…"
+                : presenceUiState === "partner-left"
+                  ? "Your partner left — sync is paused"
+                  : "Waiting for your partner"}
+            </WaitingTitle>
+            {presenceUiState === "lobby" ? (
               <CodePill>
                 <CodeText>{code}</CodeText>
               </CodePill>
-            )}
+            ) : null}
           </WaitingCard>
         </Reanimated.View>
       ) : null}
@@ -616,7 +644,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
           </RailButton>
           <RailButton
             onPress={initiateCapture}
-            disabled={capturing || cooldownRemainingSec > 0}
+            disabled={!canCaptureNow}
             $tone="surface"
           >
             {capturing ? (
@@ -671,55 +699,58 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         />
       </OffscreenHost>
 
-      {/* Chat sheet */}
-      <Modal visible={chatOpen} transparent animationType="slide" onRequestClose={() => setChatOpen(false)}>
-        <ChatBackdrop activeOpacity={1} onPress={() => setChatOpen(false)} />
-        <ChatSheet>
-          <ChatHeader>
-            <ChatTitle>Chat</ChatTitle>
-            <TouchableOpacity onPress={() => setChatOpen(false)} hitSlop={8}>
-              <Feather name="x" size={18} color={theme.colors.textSecondary} />
-            </TouchableOpacity>
-          </ChatHeader>
-          <FlatList
-            data={session.chatMessages}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
-              <ChatRow $mine={item.mine}>
-                <ChatBubble $mine={item.mine}>
-                  <ChatText $mine={item.mine}>{item.text}</ChatText>
-                </ChatBubble>
-              </ChatRow>
-            )}
-            contentContainerStyle={{ padding: 12, gap: 6 }}
-          />
-          <ChatInputRow>
-            <ChatInput
-              value={draft}
-              onChangeText={setDraft}
-              placeholder="Message…"
-              placeholderTextColor={theme.colors.textTertiary}
-              onSubmitEditing={() => {
-                session.sendChat(draft);
-                setDraft("");
-              }}
-              returnKeyType="send"
+      {/* Chat stays inside the player layer. A native Modal here can race the
+          polaroid overlay on Android and leave a stuck white dialog window. */}
+      {chatOpen ? (
+        <Reanimated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={chatWrapStyle}>
+          <ChatBackdrop activeOpacity={1} onPress={() => setChatOpen(false)} />
+          <ChatSheet>
+            <ChatHeader>
+              <ChatTitle>Chat</ChatTitle>
+              <TouchableOpacity onPress={() => setChatOpen(false)} hitSlop={8}>
+                <Feather name="x" size={18} color={theme.colors.textSecondary} />
+              </TouchableOpacity>
+            </ChatHeader>
+            <FlatList
+              data={session.chatMessages}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => (
+                <ChatRow $mine={item.mine}>
+                  <ChatBubble $mine={item.mine}>
+                    <ChatText $mine={item.mine}>{item.text}</ChatText>
+                  </ChatBubble>
+                </ChatRow>
+              )}
+              contentContainerStyle={{ padding: 12, gap: 6 }}
             />
-            <SendButton
-              onPress={() => {
-                session.sendChat(draft);
-                setDraft("");
-              }}
-            >
-              <Feather name="send" size={16} color={theme.colors.textOnPrimary} />
-            </SendButton>
-          </ChatInputRow>
-        </ChatSheet>
-      </Modal>
+            <ChatInputRow>
+              <ChatInput
+                value={draft}
+                onChangeText={setDraft}
+                placeholder="Message…"
+                placeholderTextColor={theme.colors.textTertiary}
+                onSubmitEditing={() => {
+                  session.sendChat(draft);
+                  setDraft("");
+                }}
+                returnKeyType="send"
+              />
+              <SendButton
+                onPress={() => {
+                  session.sendChat(draft);
+                  setDraft("");
+                }}
+              >
+                <Feather name="send" size={16} color={theme.colors.textOnPrimary} />
+              </SendButton>
+            </ChatInputRow>
+          </ChatSheet>
+        </Reanimated.View>
+      ) : null}
 
-      {/* Polaroid preview — a plain overlay, deliberately NOT a Modal: a
-          second native dialog window (chat sheet is one) racing this one is
-          how Android ends up with a stuck, uncloseable white window. */}
+      {/* Polaroid preview — a plain overlay, deliberately NOT a Modal. Keeping
+          both preview and chat in this layer avoids Android dialog-window
+          races that can leave a stuck, uncloseable white window. */}
       {polaroidPreview ? (
         <Reanimated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={previewWrapStyle}>
           <PreviewBackdrop>
@@ -775,6 +806,16 @@ const previewWrapStyle = {
   bottom: 0,
   zIndex: 30,
   elevation: 30,
+};
+
+const chatWrapStyle = {
+  position: "absolute" as const,
+  left: 0,
+  right: 0,
+  top: 0,
+  bottom: 0,
+  zIndex: 20,
+  elevation: 20,
 };
 
 const ReactionsAnchor = styled(View)`

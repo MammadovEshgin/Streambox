@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   WATCH_ROOM_CODE_ALPHABET,
   WATCH_ROOM_CODE_LENGTH,
+  canStartWatchRoomCapture,
   clockOffsetSampleMs,
+  deriveWatchRoomPresenceUiState,
   generateRoomCode,
   isNicknameAvailable,
   isValidNickname,
@@ -15,7 +17,9 @@ import {
   projectRemotePosition,
   resolveSyncDecision,
   secureRandomFraction,
+  watchRoomAuthTimerDelayMs,
   watchRoomChannelName,
+  watchRoomReconnectDelayMs,
   type RemotePlaybackState,
 } from "../src/utils/watchRoom";
 
@@ -121,4 +125,73 @@ test("median clock offset resists a single delayed outlier", () => {
   // median ignores it.
   assert.equal(medianClockOffsetMs([480, 510, 4_000, 495, 505]), 505);
   assert.equal(medianClockOffsetMs([100, 200]), 150);
+});
+
+test("presence UI keeps the join code exclusive to the initial lobby", () => {
+  assert.equal(
+    deriveWatchRoomPresenceUiState({
+      connectionState: "connecting",
+      bothPresent: false,
+      hasEverConnected: false,
+      hasEverPartner: false,
+    }),
+    "lobby"
+  );
+  assert.equal(
+    deriveWatchRoomPresenceUiState({
+      connectionState: "connected",
+      bothPresent: false,
+      hasEverConnected: true,
+      hasEverPartner: true,
+    }),
+    "partner-left"
+  );
+});
+
+test("presence UI prioritizes reconnecting over a stale presence roster", () => {
+  assert.equal(
+    deriveWatchRoomPresenceUiState({
+      connectionState: "error",
+      bothPresent: true,
+      hasEverConnected: true,
+      hasEverPartner: true,
+    }),
+    "reconnecting"
+  );
+  assert.equal(
+    deriveWatchRoomPresenceUiState({
+      connectionState: "connected",
+      bothPresent: true,
+      hasEverConnected: true,
+      hasEverPartner: true,
+    }),
+    "ready"
+  );
+});
+
+test("transport recovery helpers cap backoff and retry failed auth promptly", () => {
+  assert.deepEqual([0, 1, 2, 3, 8].map(watchRoomReconnectDelayMs), [2_000, 4_000, 8_000, 15_000, 15_000]);
+  assert.equal(
+    watchRoomAuthTimerDelayMs({ expiresAtMs: 3_600_000, nowMs: 0, refreshFailed: false }),
+    3_540_000
+  );
+  assert.equal(
+    watchRoomAuthTimerDelayMs({ expiresAtMs: 30_000, nowMs: 0, refreshFailed: true }),
+    10_000
+  );
+});
+
+test("capture eligibility requires a live channel, partner, and expired cooldown", () => {
+  const ready = {
+    connectionState: "connected" as const,
+    bothPresent: true,
+    capturing: false,
+    cooldownUntilMs: 1_000,
+    nowMs: 1_000,
+  };
+  assert.equal(canStartWatchRoomCapture(ready), true);
+  assert.equal(canStartWatchRoomCapture({ ...ready, connectionState: "connecting" }), false);
+  assert.equal(canStartWatchRoomCapture({ ...ready, bothPresent: false }), false);
+  assert.equal(canStartWatchRoomCapture({ ...ready, capturing: true }), false);
+  assert.equal(canStartWatchRoomCapture({ ...ready, nowMs: 999 }), false);
 });
