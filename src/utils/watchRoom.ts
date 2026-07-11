@@ -224,7 +224,10 @@ export type WatchRoomSignal =
   | { type: "capture-still"; from: string; captureId: string; nickname: string; imagePath: string; at: number }
   // The partner declined to contribute (face-cam off / permission missing) —
   // lets the author compose immediately instead of waiting out the timeout.
-  | { type: "capture-unavailable"; from: string; captureId: string };
+  | { type: "capture-unavailable"; from: string; captureId: string }
+  // The author's composed polaroid, uploaded to Storage — lets the partner see
+  // the finished card too (both decide whether it's a keeper or a retake).
+  | { type: "polaroid-preview"; from: string; captureId: string; imagePath: string };
 
 // What a peer should do when it hears the other side is "ready": the host
 // (initiator) answers with an SDP offer; the guest re-announces its own

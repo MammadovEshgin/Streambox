@@ -235,7 +235,11 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
         })
         .catch(() => null);
       if (cancelled || !stream) {
-        setConnectionState("failed");
+        // A stream that resolves AFTER teardown began must be stopped here or
+        // the camera stays natively locked — expo-camera (the polaroid handoff)
+        // and every later getUserMedia would then fail until an app restart.
+        stream?.getTracks().forEach((track: any) => track.stop?.());
+        if (!cancelled) setConnectionState("failed");
         return;
       }
       // Reapply the user's mute choices from before the restart/handoff.
