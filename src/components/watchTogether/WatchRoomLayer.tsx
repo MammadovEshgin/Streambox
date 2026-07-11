@@ -22,16 +22,34 @@ import { PolaroidCard } from "./PolaroidCard";
 import { getMovieDetails, getSeriesDetails } from "../../api/tmdb";
 import { useWatchRoomSession } from "../../hooks/useWatchRoomSession";
 import { uploadCameraStill, cacheMemoryFromLocalUri } from "../../services/watchMemories";
-import { addLocalMemory } from "../../services/watchMemoryLocalStore";
+import { addLocalMemory, listLocalMemories } from "../../services/watchMemoryLocalStore";
 import { syncPendingMemories } from "../../services/watchMemorySync";
 import { generateUuidV4 } from "../../utils/uuid";
 
 const REACTIONS = ["WTF?", "💖", "LOL:)", "Cringe🔪", "Red flag 🚩"];
 // Budget for the partner's still: their side is a camera handoff + snap +
-// upload on a possibly-cellular uplink — 5s proved routinely too tight. A
-// decline (capture-unavailable) short-circuits the wait, so the timeout is
-// only ever fully paid when the partner's side silently died.
-const PARTNER_STILL_TIMEOUT_MS = 10_000;
+// upload on a possibly-cellular uplink — field testing showed the whole chain
+// routinely takes 8-14s on a slower phone. A decline (capture-unavailable)
+// short-circuits the wait, so the timeout is only ever fully paid when the
+// partner's side silently died.
+const PARTNER_STILL_TIMEOUT_MS = 20_000;
+// The responder's upload must never outlive the author's wait — past this it
+// declines so the author composes instead of both sides hanging. (A stalled
+// supabase upload otherwise has NO timeout of its own and can hang for
+// minutes, which is exactly the "partner's spinner stuck forever" bug.)
+const STILL_UPLOAD_TIMEOUT_MS = 12_000;
+// The stills render at ~270px inside the polaroid — full-resolution q0.85
+// JPEGs (2-5MB) were pure upload latency for zero visible quality.
+const STILL_PHOTO_QUALITY = 0.3;
+// Shared anti-spam lockout: after ANY capture (yours or your partner's) both
+// sides wait this long before the next one. Starts when a capture begins —
+// locally on the author, on request arrival on the partner — so the two
+// devices stay in lockstep without extra signaling.
+const CAPTURE_COOLDOWN_MS = 30_000;
+// A capture that failed before producing anything only pays the short camera
+// handoff protection (re-grabbing the camera mid-handoff-back-to-WebRTC is
+// how it ends up wedged), not the full anti-spam wait.
+const CAPTURE_RETRY_COOLDOWN_MS = 2_500;
 
 const RAIL_WIDTH = 54;
 const HANDLE_WIDTH = 22;
@@ -140,6 +158,29 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   // The capture currently being composed; stills tagged with any other id are
   // leftovers from an earlier capture and never make it into the polaroid.
   const [activeCaptureId, setActiveCaptureId] = useState<string | null>(null);
+  // Capture lockout: timestamp until which the capture button is disabled.
+  // Ref mirror for the async guards, state for the countdown on the button.
+  const cooldownUntilRef = useRef(0);
+  const [cooldownUntil, setCooldownUntil] = useState(0);
+  const [cooldownRemainingSec, setCooldownRemainingSec] = useState(0);
+  const startCooldown = useCallback((ms: number) => {
+    const until = Date.now() + ms;
+    cooldownUntilRef.current = until;
+    setCooldownUntil(until);
+  }, []);
+
+  // Tick the visible countdown while a cooldown is running.
+  useEffect(() => {
+    const compute = () => Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000));
+    setCooldownRemainingSec(compute());
+    if (compute() <= 0) return;
+    const timer = setInterval(() => {
+      const remaining = compute();
+      setCooldownRemainingSec(remaining);
+      if (remaining <= 0) clearInterval(timer);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [cooldownUntil]);
   const [rating, setRating] = useState<number | null>(null);
   const [genres, setGenres] = useState<string[] | null>(null);
   const [tagline, setTagline] = useState<string | null>(null);
@@ -222,16 +263,14 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   // briefly hand the camera from WebRTC to a hidden CameraView, snap a real
   // photo, then hand it back (the readiness handshake reconnects the video).
   const onPhotoCameraReady = useCallback(async () => {
-    const resolve = photoResolveRef.current;
+    const settle = photoResolveRef.current;
     try {
       // A short settle lets the sensor lock exposure before the shot.
       await new Promise((r) => setTimeout(r, 350));
-      const photo = await cameraViewRef.current?.takePictureAsync({ quality: 0.85 });
-      photoResolveRef.current = null;
-      resolve?.(photo?.uri ?? null);
+      const photo = await cameraViewRef.current?.takePictureAsync({ quality: STILL_PHOTO_QUALITY });
+      settle?.(photo?.uri ?? null);
     } catch {
-      photoResolveRef.current = null;
-      resolve?.(null);
+      settle?.(null);
     }
   }, []);
 
@@ -248,15 +287,20 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         await new Promise((r) => setTimeout(r, 550));
       }
       return await new Promise<string | null>((resolve) => {
-        photoResolveRef.current = resolve;
+        // Identity-guarded settle: if a second capture ever overwrites the ref,
+        // this one's safety timer must not null out the NEWER resolver — that
+        // race left a promise pending forever (spinner stuck until app kill).
+        let done = false;
+        const settle = (uri: string | null) => {
+          if (done) return;
+          done = true;
+          if (photoResolveRef.current === settle) photoResolveRef.current = null;
+          resolve(uri);
+        };
+        photoResolveRef.current = settle;
         setPhotoMode(true);
         // Safety net if the camera never signals ready.
-        setTimeout(() => {
-          if (photoResolveRef.current) {
-            photoResolveRef.current = null;
-            resolve(null);
-          }
-        }, 4500);
+        setTimeout(() => settle(null), 4500);
       });
     } finally {
       setPhotoMode(false);
@@ -274,14 +318,18 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   }, [captureSelfPhoto]);
 
   // Responder path: snap + upload + signal the still, tagged with the capture
-  // it belongs to. Any failure declines instead, so the author composes right
-  // away rather than waiting out the full timeout.
+  // it belongs to. Any failure OR timeout declines instead, so the author
+  // composes right away rather than waiting out the full timeout — and this
+  // side's spinner is guaranteed to clear.
   const respondToCapture = useCallback(
     async (captureId: string) => {
       const uri = await captureSelfPhoto();
       const roomId = session.room?.id;
       if (uri && roomId) {
-        const path = await uploadCameraStill(roomId, uri).catch(() => null);
+        const path = await Promise.race([
+          uploadCameraStill(roomId, uri),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), STILL_UPLOAD_TIMEOUT_MS)),
+        ]).catch(() => null);
         if (path) {
           session.sendCaptureStill(captureId, nickname, path);
           return;
@@ -313,8 +361,17 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         // Let the polaroid re-render with the latest stills before snapshotting
         // (the partner still is a local file by now — see downloadMemoryStill).
         await new Promise((r) => setTimeout(r, 250));
-        // Full-HD portrait polaroid.
-        const uri = await captureRef(polaroidShotRef, { format: "png", quality: 1, width: 1080, height: 1451 });
+        // Full-HD portrait polaroid. A snapshot failure must surface as an
+        // alert, not an unhandled rejection — with no error boundary in the
+        // app, anything uncaught here is a white-screen in release.
+        let uri: string;
+        try {
+          uri = await captureRef(polaroidShotRef, { format: "png", quality: 1, width: 1080, height: 1451 });
+        } catch {
+          Alert.alert("Couldn't create the polaroid", "Something went wrong composing the memory. Try again.");
+          return;
+        }
+        setChatOpen(false);
         setPolaroidPreview(uri);
 
         const room = session.room;
@@ -330,6 +387,14 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
             participantUserIds = dbMembers.map((member) => member.userId);
             participantNicknames = dbMembers.map((member) => member.nickname);
           }
+        }
+
+        // A released expo-video player throws synchronously on property reads.
+        let positionSeconds = 0;
+        try {
+          positionSeconds = player?.currentTime ?? 0;
+        } catch {
+          /* player already released — 0 is fine for the memory log */
         }
 
         // One id from birth: index entry, cached file and (later) cloud row all
@@ -349,14 +414,26 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
                 roomId: room.id,
                 mediaType: room.mediaType,
                 tmdbId: room.tmdbId,
-                positionSeconds: player?.currentTime ?? 0,
+                positionSeconds,
                 participantUserIds,
               }
             : null,
         }).catch(() => undefined);
 
         // First sync attempt now; the outbox owns every retry after this.
-        void syncPendingMemories();
+        // Once the sweep has uploaded the card, broadcast its Storage path so
+        // the partner sees the finished polaroid too (detached — the author's
+        // preview and spinner must not wait on an upload).
+        void (async () => {
+          try {
+            await syncPendingMemories();
+            if (!room) return;
+            const entry = (await listLocalMemories()).find((memory) => memory.localId === localId);
+            if (entry?.imagePath) session.sendPolaroidPreview(captureId, entry.imagePath);
+          } catch {
+            /* partner just misses the live preview; the shelf still syncs */
+          }
+        })();
       } finally {
         authorRef.current = false;
         setCapturing(false);
@@ -367,7 +444,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
   );
 
   const initiateCapture = useCallback(async () => {
-    if (capturing) return;
+    if (capturing || Date.now() < cooldownUntilRef.current) return;
     // A late-arriving still from a PREVIOUS capture must never leak into this
     // one — start from a clean slate and tag everything with a fresh id.
     session.clearCapture();
@@ -375,6 +452,7 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
     setActiveCaptureId(captureId);
     authorRef.current = true;
     setCapturing(true);
+    startCooldown(CAPTURE_COOLDOWN_MS);
     session.requestCapture(captureId);
     const ownStill = await captureOwnStill();
     if (!ownStill) {
@@ -382,6 +460,8 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
       authorRef.current = false;
       setCapturing(false);
       setActiveCaptureId(null);
+      // Nothing was captured — only the short handoff protection applies.
+      startCooldown(CAPTURE_RETRY_COOLDOWN_MS);
       session.clearCapture();
       Alert.alert(
         "Couldn't take your photo",
@@ -389,17 +469,23 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
       );
       return;
     }
-    await buildPolaroid(captureId);
-  }, [capturing, captureOwnStill, buildPolaroid, session]);
+    // buildPolaroid cleans its own state in finally; a stray failure must end
+    // as a no-op, never an unhandled rejection.
+    await buildPolaroid(captureId).catch(() => undefined);
+  }, [capturing, captureOwnStill, buildPolaroid, session, startCooldown]);
 
   useEffect(() => {
     const request = session.captureRequest;
-    if (!request || authorRef.current) return;
-    // Face-cam off is an explicit privacy choice — never let a capture request
-    // silently photograph someone through the hidden camera. Decline instead.
-    if (!session.camerasOn) {
+    if (!request) return;
+    // The partner started a capture — this side's lockout starts now too, so
+    // "one polaroid per 30s" holds no matter who took it.
+    startCooldown(CAPTURE_COOLDOWN_MS);
+    // Busy (authoring or already responding) or face-cam off — decline so the
+    // author composes right away. Cameras-off in particular is an explicit
+    // privacy choice: never photograph someone through the hidden camera.
+    if (authorRef.current || capturing || !session.camerasOn) {
       session.sendCaptureUnavailable(request.captureId);
-      session.clearCapture();
+      if (!authorRef.current && !capturing) session.clearCapture();
       return;
     }
     setCapturing(true);
@@ -409,6 +495,16 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.captureRequest]);
+
+  // The partner authored a capture and its finished card arrived — show the
+  // same preview overlay so both can judge keeper-or-retake together.
+  useEffect(() => {
+    const incoming = session.partnerPolaroid;
+    if (!incoming || authorRef.current) return;
+    setChatOpen(false);
+    setPolaroidPreview(incoming.uri);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.partnerPolaroid]);
 
   const sharePolaroid = useCallback(async () => {
     if (!polaroidPreview) return;
@@ -518,8 +614,18 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
               </Badge>
             ) : null}
           </RailButton>
-          <RailButton onPress={initiateCapture} disabled={capturing} $tone="surface">
-            <Feather name={capturing ? "loader" : "aperture"} size={15} color={theme.colors.primary} />
+          <RailButton
+            onPress={initiateCapture}
+            disabled={capturing || cooldownRemainingSec > 0}
+            $tone="surface"
+          >
+            {capturing ? (
+              <Feather name="loader" size={15} color={theme.colors.primary} />
+            ) : cooldownRemainingSec > 0 ? (
+              <CooldownText>{cooldownRemainingSec}</CooldownText>
+            ) : (
+              <Feather name="aperture" size={15} color={theme.colors.primary} />
+            )}
           </RailButton>
           <RailButton onPress={toggleCameras} $tone={session.camerasOn ? "primary" : "surface"}>
             <Feather name="camera" size={15} color={session.camerasOn ? theme.colors.textOnPrimary : theme.colors.textPrimary} />
@@ -611,26 +717,28 @@ export function WatchRoomLayer({ player, code, nickname, onExit }: WatchRoomLaye
         </ChatSheet>
       </Modal>
 
-      {/* Polaroid preview */}
-      <Modal visible={Boolean(polaroidPreview)} transparent animationType="fade" onRequestClose={dismissPreview}>
-        <PreviewBackdrop>
-          <PreviewClose onPress={dismissPreview} hitSlop={10}>
-            <Feather name="x" size={22} color="#FFFFFF" />
-          </PreviewClose>
-          {polaroidPreview ? (
+      {/* Polaroid preview — a plain overlay, deliberately NOT a Modal: a
+          second native dialog window (chat sheet is one) racing this one is
+          how Android ends up with a stuck, uncloseable white window. */}
+      {polaroidPreview ? (
+        <Reanimated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={previewWrapStyle}>
+          <PreviewBackdrop>
+            <PreviewClose onPress={dismissPreview} hitSlop={10}>
+              <Feather name="x" size={22} color="#FFFFFF" />
+            </PreviewClose>
             <PreviewImage source={{ uri: polaroidPreview }} style={{ width: preview.w, height: preview.h }} resizeMode="contain" />
-          ) : null}
-          <PreviewActions>
-            <PreviewButton onPress={sharePolaroid} $primary>
-              <Feather name="share-2" size={16} color="#fff" />
-              <PreviewButtonText>Share</PreviewButtonText>
-            </PreviewButton>
-            <PreviewButton onPress={dismissPreview}>
-              <PreviewButtonText>Done</PreviewButtonText>
-            </PreviewButton>
-          </PreviewActions>
-        </PreviewBackdrop>
-      </Modal>
+            <PreviewActions>
+              <PreviewButton onPress={sharePolaroid} $primary>
+                <Feather name="share-2" size={16} color="#fff" />
+                <PreviewButtonText>Share</PreviewButtonText>
+              </PreviewButton>
+              <PreviewButton onPress={dismissPreview}>
+                <PreviewButtonText>Done</PreviewButtonText>
+              </PreviewButton>
+            </PreviewActions>
+          </PreviewBackdrop>
+        </Reanimated.View>
+      ) : null}
     </Root>
   );
 }
@@ -656,6 +764,17 @@ const railWrapStyle = {
   bottom: 0,
   flexDirection: "row" as const,
   alignItems: "center" as const,
+};
+
+// Above every sibling in the layer (face cams, rail, pills).
+const previewWrapStyle = {
+  position: "absolute" as const,
+  left: 0,
+  right: 0,
+  top: 0,
+  bottom: 0,
+  zIndex: 30,
+  elevation: 30,
 };
 
 const ReactionsAnchor = styled(View)`
@@ -781,6 +900,13 @@ const RailButton = styled(TouchableOpacity)<{ $tone: "surface" | "primary" | "da
     $tone === "danger" ? "#C0392B" : $tone === "primary" ? theme.colors.primary : "rgba(255,255,255,0.1)"};
 `;
 
+// The seconds left on the capture lockout, shown in place of the aperture icon.
+const CooldownText = styled(Text)`
+  color: rgba(239, 242, 237, 0.55);
+  font-size: 11px;
+  font-weight: 800;
+`;
+
 const Badge = styled(View)`
   position: absolute;
   top: -4px;
@@ -890,7 +1016,8 @@ const SendButton = styled(TouchableOpacity)`
 `;
 
 const PreviewBackdrop = styled(View)`
-  flex: 1;
+  width: 100%;
+  height: 100%;
   align-items: center;
   justify-content: center;
   background-color: rgba(0, 0, 0, 0.88);

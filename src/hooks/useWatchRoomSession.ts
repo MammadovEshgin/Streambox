@@ -19,6 +19,7 @@ import {
 export type FloatingReaction = { id: string; emoji: string };
 export type PartnerStill = { nickname: string; uri: string; captureId: string };
 export type CaptureRequest = { fromUserId: string; captureId: string };
+export type PartnerPolaroid = { captureId: string; uri: string };
 
 type Options = {
   player: VideoPlayer | null;
@@ -41,6 +42,9 @@ export function useWatchRoomSession({ player, code, nickname }: Options) {
   const [captureRequest, setCaptureRequest] = useState<CaptureRequest | null>(null);
   const [captureDeclinedId, setCaptureDeclinedId] = useState<string | null>(null);
   const [partnerStill, setPartnerStill] = useState<PartnerStill | null>(null);
+  // The partner's finished polaroid card (they authored a capture) — downloaded
+  // to a local file so the preview + share work exactly like an own capture.
+  const [partnerPolaroid, setPartnerPolaroid] = useState<PartnerPolaroid | null>(null);
   // Cameras are OFF by default (privacy). Turning them on both reveals the face
   // bubbles and starts the WebRTC capture; nothing streams until then.
   const [camerasOn, setCamerasOn] = useState(false);
@@ -114,6 +118,10 @@ export function useWatchRoomSession({ player, code, nickname }: Options) {
       if (uri) setPartnerStill({ nickname: partnerNickname, uri, captureId });
     },
     onCaptureUnavailable: (captureId) => setCaptureDeclinedId(captureId),
+    onPolaroidPreview: async ({ captureId, imagePath }) => {
+      const uri = await downloadMemoryStill(imagePath);
+      if (uri) setPartnerPolaroid({ captureId, uri });
+    },
   });
 
   isHostRef.current = room.isHost;
@@ -244,6 +252,7 @@ export function useWatchRoomSession({ player, code, nickname }: Options) {
     setCaptureRequest(null);
     setCaptureDeclinedId(null);
     setPartnerStill(null);
+    setPartnerPolaroid(null);
   }, []);
 
   return {
@@ -282,9 +291,11 @@ export function useWatchRoomSession({ player, code, nickname }: Options) {
     captureRequest,
     captureDeclinedId,
     partnerStill,
+    partnerPolaroid,
     requestCapture: room.requestCapture,
     sendCaptureStill: room.sendCaptureStill,
     sendCaptureUnavailable: room.sendCaptureUnavailable,
+    sendPolaroidPreview: room.sendPolaroidPreview,
     clearCapture,
     // lifecycle
     leave: room.leave,

@@ -31,6 +31,7 @@ export type WatchRoomSignalHandlers = {
   onCaptureRequest?: (fromUserId: string, captureId: string) => void;
   onCaptureStill?: (payload: { fromUserId: string; captureId: string; nickname: string; imagePath: string }) => void;
   onCaptureUnavailable?: (captureId: string) => void;
+  onPolaroidPreview?: (payload: { fromUserId: string; captureId: string; imagePath: string }) => void;
   onSyncPing?: (fromUserId: string, t0: number) => void;
   onSyncPong?: (t0: number, t1: number) => void;
 };
@@ -92,6 +93,13 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
             break;
           case "capture-unavailable":
             handlersRef.current.onCaptureUnavailable?.(signal.captureId);
+            break;
+          case "polaroid-preview":
+            handlersRef.current.onPolaroidPreview?.({
+              fromUserId: signal.from,
+              captureId: signal.captureId,
+              imagePath: signal.imagePath,
+            });
             break;
           case "webrtc-offer":
           case "webrtc-answer":
@@ -192,6 +200,12 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
     [selfUserId, send]
   );
 
+  const sendPolaroidPreview = useCallback(
+    (captureId: string, imagePath: string) =>
+      send({ type: "polaroid-preview", from: selfUserId, captureId, imagePath }),
+    [selfUserId, send]
+  );
+
   // Durable membership from the DB — presence can flap, and anything persisted
   // (memory participant ids) must never be derived from a live roster snapshot.
   const fetchRoomMembers = useCallback(async (): Promise<WatchRoomMember[]> => {
@@ -240,6 +254,7 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
     requestCapture,
     sendCaptureStill,
     sendCaptureUnavailable,
+    sendPolaroidPreview,
     fetchRoomMembers,
     send,
     startWatching,
