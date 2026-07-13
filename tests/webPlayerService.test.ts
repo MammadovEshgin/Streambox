@@ -359,7 +359,32 @@ test("pickDizibalHit rejects junk matches when no TMDB/IMDB and title scores too
   assert.equal(picked, null);
 });
 
-test("Dizibal resolver uses the rotating embed URL as the native HLS referer", async () => {
+test("extractDizibalEmbedStream reads the deferred /dl path and subtitles", () => {
+  // The live Playerjs embed defers the media URL behind a fetch('/dl?...') call
+  // and lists subtitles as "[Label]url" (url may be absolute or root-relative).
+  const html = `
+    <script>fetch('/dl?op=get_stream&view_id=44356597&hash=1783922324-abc')
+      .then(function(r){return r.json();}).then(function(d){
+        var player=new Playerjs({id:"playerjs",file:d.url,
+          "subtitle":"[Türkçe]/srt/00/x_tur.vtt,[İngilizce]https://cdn77.services/vtt/x_eng.vtt"});
+      });</script>`;
+  const parsed = __internal.extractDizibalEmbedStream(html, "https://x.ag2m4.cfd");
+  assert.equal(parsed?.dlPath, "/dl?op=get_stream&view_id=44356597&hash=1783922324-abc");
+  assert.equal(parsed?.m3u8Url, undefined);
+  assert.deepEqual(parsed?.subtitles, [
+    { url: "https://x.ag2m4.cfd/srt/00/x_tur.vtt", label: "Türkçe", lang: "tr" },
+    { url: "https://cdn77.services/vtt/x_eng.vtt", label: "İngilizce", lang: "en" },
+  ]);
+});
+
+test("extractDizibalEmbedStream falls back to an inline file: m3u8", () => {
+  const html = `new Playerjs({id:"playerjs", file:"https://cdn.example/inline/master.m3u8"});`;
+  const parsed = __internal.extractDizibalEmbedStream(html, "https://x.ag2m4.cfd");
+  assert.equal(parsed?.m3u8Url, "https://cdn.example/inline/master.m3u8");
+  assert.equal(parsed?.dlPath, undefined);
+});
+
+test("Dizibal resolver follows embed → /dl → m3u8 and uses the embed host as referer", async () => {
   const originalGet = axios.get;
   const originalDev = (globalThis as any).__DEV__;
   const calls: Array<{ url: string; config: any }> = [];
@@ -373,11 +398,14 @@ test("Dizibal resolver uses the rotating embed URL as the native HLS referer", a
     if (url.endsWith("/api/series/the-boys/seasons/1")) {
       return { data: { success: true, data: { episodes: [{ episode_number: 4, src: "2ibfbt9ftb6d" }] } } };
     }
-    if (url.endsWith("/api/stream/m3u8")) {
-      return { data: { success: true, m3u8Url: "https://cdn.example/master.m3u8", subtitles: [] } };
-    }
     if (url.endsWith("/api/stream/embed")) {
       return { data: { success: true, embedUrl: "https://x.ag2m4.cfd/embed-2ibfbt9ftb6d.html?autoplay=1" } };
+    }
+    if (url.includes("/embed-2ibfbt9ftb6d.html")) {
+      return { data: `fetch('/dl?op=get_stream&view_id=1&hash=abc').then(function(r){return r.json();})` };
+    }
+    if (url.includes("/dl?op=get_stream")) {
+      return { data: { url: "https://cdn.example/master.m3u8" } };
     }
     throw new Error(`Unexpected URL: ${url}`);
   }) as typeof axios.get;
@@ -393,12 +421,66 @@ test("Dizibal resolver uses the rotating embed URL as the native HLS referer", a
 
     assert.equal(result.source, "direct");
     assert.equal(result.streamUrl, "https://cdn.example/master.m3u8");
-    assert.equal(result.referer, "https://x.ag2m4.cfd/embed-2ibfbt9ftb6d.html?autoplay=1");
-    assert.equal(calls.some((call) => call.url.endsWith("/api/stream/embed")), true);
+    assert.equal(result.referer, "https://x.ag2m4.cfd/");
+    // The retired /api/stream/m3u8 endpoint must never be called again.
+    assert.equal(calls.some((call) => call.url.endsWith("/api/stream/m3u8")), false);
+    // The /dl call must carry an Origin header or the endpoint 401s.
+    const dlCall = calls.find((call) => call.url.includes("/dl?op=get_stream"));
+    assert.equal(dlCall?.config.headers.Origin, "https://x.ag2m4.cfd");
     assert.equal(
       calls.find((call) => call.url.endsWith("/api/stream/embed"))?.config.params.autoplay,
       1,
     );
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizibal resolver falls back to /api/anime for anime series", async () => {
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  const calls: Array<{ url: string; config: any }> = [];
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string, config: any) => {
+    calls.push({ url, config });
+    // /api/series has no anime → empty; /api/anime carries it.
+    if (url.endsWith("/api/series")) {
+      return { data: { success: true, data: [] } };
+    }
+    if (url.endsWith("/api/anime")) {
+      return { data: { success: true, data: [{ id: 46260, slug: "naruto" }] } };
+    }
+    if (url.endsWith("/api/anime/naruto/seasons/1")) {
+      return { data: { success: true, data: { episodes: [{ episode_number: 1, src: "jwizahail2ft" }] } } };
+    }
+    if (url.endsWith("/api/stream/embed")) {
+      return { data: { success: true, embedUrl: "https://x.ag2m4.cfd/embed-jwizahail2ft.html?autoplay=1" } };
+    }
+    if (url.includes("/embed-jwizahail2ft.html")) {
+      return { data: `fetch('/dl?op=get_stream&view_id=9&hash=xyz')` };
+    }
+    if (url.includes("/dl?op=get_stream")) {
+      return { data: { url: "https://cdn.example/naruto.m3u8" } };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await resolveDirectWebPlayerFallback({
+      mediaType: "tv",
+      title: "Naruto",
+      tmdbId: "46260",
+      seasonNumber: 1,
+      episodeNumber: 1,
+    });
+
+    assert.equal(result.source, "direct");
+    assert.equal(result.streamUrl, "https://cdn.example/naruto.m3u8");
+    // It must have consulted /api/anime and its season endpoint.
+    assert.equal(calls.some((call) => call.url.endsWith("/api/anime")), true);
+    assert.equal(calls.some((call) => call.url.endsWith("/api/anime/naruto/seasons/1")), true);
   } finally {
     axios.get = originalGet;
     (globalThis as any).__DEV__ = originalDev;
