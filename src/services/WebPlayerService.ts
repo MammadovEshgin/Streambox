@@ -40,11 +40,11 @@ import { getTurkishAlternativeTitle } from "../api/tmdb";
 // providers stall in series; the user sees "Not Available" instead of spinning.
 const RESOLVER_TOTAL_TIMEOUT_MS = 15_000;
 
-// Dizibal third-tier scraper budget. The chain is 3 sequential HTTP calls
-// (search → season → stream/m3u8); on a healthy network each is ~150-400ms,
-// so 8s is plenty for the worst case and keeps "Not Available" from ever
-// exceeding the user's patience.
-const DIRECT_FALLBACK_TIMEOUT_MS = 8_000;
+// Dizibal third-tier scraper budget. The chain is now up to 4 sequential HTTP
+// calls (search → [season] → stream/embed → embed HTML → /dl get_stream); on a
+// healthy network each is ~150-400ms, so 12s covers the worst case while
+// keeping "Not Available" from ever exceeding the user's patience.
+const DIRECT_FALLBACK_TIMEOUT_MS = 12_000;
 
 // Best-effort wait before resolution: if provider config hasn't loaded yet,
 // give it a brief window (Supabase fetch is ~500ms typical) so we don't run
@@ -2422,14 +2422,28 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
 // cdn77 family) is mainstream commercial infrastructure that's not on the
 // Azerbaijani ISP block lists that killed cloudnestra/embed.su.
 //
-// Endpoint chain (3 sequential HTTP calls):
-//   1. GET /api/<series|movies>?search={title}&limit=10
-//        → returns array of { _id, id (TMDB), slug, src* (movies only), ... }
-//   2a. (movies)  src is already in the search result
-//   2b. (series)  GET /api/series/{slug}/seasons/{N}
+// Endpoint chain:
+//   1. GET /api/<movies|series|anime>?search={title}&limit=10
+//        → array of { _id, id (TMDB), slug, src* (movies only), ... }
+//        Movies and anime FILMS live under /api/movies (direct src). Regular
+//        series live under /api/series; ANIME series live under the separate
+//        /api/anime namespace and are ABSENT from /api/series — for tv we try
+//        /api/series first, then /api/anime.
+//   2a. (movies/anime films)  src is already in the search result
+//   2b. (series/anime series)  GET /api/<series|anime>/{slug}/seasons/{N}
 //        → returns { episodes: [{ id, episode_number, src, ... }] }
-//   3. GET /api/stream/m3u8?code={src}
-//        → returns { success, m3u8Url, subtitles: [{url,label,lang}] }
+//   3. GET /api/stream/embed?code={src}&autoplay=1
+//        → { embedUrl: "https://<rotating-host>/embed-<src>.html?autoplay=1" }
+//   4. GET {embedUrl} (HTML) → a Playerjs bootstrap that either defers the real
+//        media URL behind fetch('/dl?op=get_stream&view_id=…&hash=…') (current
+//        behaviour; hash is per-load + expiring) or inlines file:"…m3u8…".
+//   5. GET {embedOrigin}/dl?op=get_stream&… WITH an Origin/Sec-Fetch-Site header
+//        (gated — returns {"error":"unauthorized"} without it) → { url: m3u8 }.
+//   The master.m3u8 is CDN referer-gated (403 without it) → play it with the
+//   embed host as Referer.
+//
+// NOTE (2026-07-13): /api/stream/m3u8 was retired by Dizibal (now 404
+// "Video bulunamadı" for every code) — do NOT reintroduce it.
 //
 // We match by TMDB id (`id` field on the result). If the TMDB id is missing
 // (e.g. caller only has imdbId), fall back to the first result whose name
@@ -2474,15 +2488,24 @@ type DizibalSeasonResponse = {
   data?: { season_number?: number; episodes?: DizibalEpisode[] };
 };
 
-type DizibalStreamResponse = {
-  success?: boolean;
-  m3u8Url?: string;
-  subtitles?: Array<{ url?: string; label?: string; lang?: string }>;
-};
-
 type DizibalEmbedResponse = {
   success?: boolean;
   embedUrl?: string;
+};
+
+// A resolved search hit plus which Dizibal namespace it came from, so the
+// episode fetch knows which /seasons endpoint to call. Anime films resolve as
+// "movie" (they live under /api/movies with a direct src); only anime SERIES
+// use the "anime" kind.
+type DizibalKind = "movie" | "series" | "anime";
+type DizibalMatch = { hit: DizibalSearchHit; kind: DizibalKind };
+type DizibalSubtitle = { url: string; label: string; lang: string };
+type DizibalEmbedParse = {
+  /** Deferred: relative /dl?op=get_stream path to call for the media URL. */
+  dlPath?: string;
+  /** Inline: media URL was embedded directly in the Playerjs config. */
+  m3u8Url?: string;
+  subtitles: DizibalSubtitle[];
 };
 
 function dizibalBaseUrl(): string {
@@ -2545,20 +2568,16 @@ function pickDizibalHit(
   return bestScore >= 70 ? bestHit : null;
 }
 
-async function searchDizibal(
+async function searchDizibalEndpoint(
+  path: string,
+  queries: string[],
   request: WebPlayerRequest,
 ): Promise<DizibalSearchHit | null> {
   const base = dizibalBaseUrl();
-  const path = request.mediaType === "movie" ? "/api/movies" : "/api/series";
-  const queries = [request.title];
-  if (request.originalTitle && request.originalTitle !== request.title) {
-    queries.push(request.originalTitle);
-  }
-
   for (const q of queries) {
     try {
       const response = await axios.get<DizibalSearchResponse>(`${base}${path}`, {
-        timeout: 6_000,
+        timeout: 5_000,
         headers: { ...DIZIBAL_HEADERS, Referer: dizibalReferer() },
         params: { search: q, limit: 10 },
       });
@@ -2569,24 +2588,53 @@ async function searchDizibal(
       if (hit) return hit;
     } catch (error: any) {
       debugLog(
-        `[WebPlayer:dizibal] search "${q}" failed: ${error?.code ?? "?"} ${error?.message ?? error}`,
+        `[WebPlayer:dizibal] search ${path} "${q}" failed: ${error?.code ?? "?"} ${error?.message ?? error}`,
       );
     }
   }
   return null;
 }
 
+async function searchDizibal(
+  request: WebPlayerRequest,
+): Promise<DizibalMatch | null> {
+  const queries = [request.title];
+  if (request.originalTitle && request.originalTitle !== request.title) {
+    queries.push(request.originalTitle);
+  }
+
+  if (request.mediaType === "movie") {
+    // /api/movies covers live-action films AND anime films (both carry src).
+    const hit = await searchDizibalEndpoint("/api/movies", queries, request);
+    return hit ? { hit, kind: "movie" } : null;
+  }
+
+  // tv: regular series live under /api/series; anime series (Naruto, Attack on
+  // Titan, …) live under the separate /api/anime namespace and never appear in
+  // /api/series. Try series first (the common case, one call), then anime, so
+  // TMDB titles that only exist on Dizibal as anime still resolve natively.
+  const seriesHit = await searchDizibalEndpoint("/api/series", queries, request);
+  if (seriesHit) return { hit: seriesHit, kind: "series" };
+  const animeHit = await searchDizibalEndpoint("/api/anime", queries, request);
+  if (animeHit) return { hit: animeHit, kind: "anime" };
+  return null;
+}
+
 async function fetchDizibalEpisodeSrc(
+  kind: "series" | "anime",
   slug: string,
   seasonNumber: number,
   episodeNumber: number,
 ): Promise<string | null> {
   const base = dizibalBaseUrl();
+  // Anime seasons/episodes are served from /api/anime/… with the identical
+  // { data: { episodes: [{ episode_number, src }] } } shape as /api/series.
+  const root = kind === "anime" ? "/api/anime" : "/api/series";
   try {
     const response = await axios.get<DizibalSeasonResponse>(
-      `${base}/api/series/${encodeURIComponent(slug)}/seasons/${seasonNumber}`,
+      `${base}${root}/${encodeURIComponent(slug)}/seasons/${seasonNumber}`,
       {
-        timeout: 6_000,
+        timeout: 5_000,
         headers: { ...DIZIBAL_HEADERS, Referer: dizibalReferer() },
       },
     );
@@ -2596,55 +2644,147 @@ async function fetchDizibalEpisodeSrc(
     return ep?.src ?? null;
   } catch (error: any) {
     debugLog(
-      `[WebPlayer:dizibal] season ${slug}/${seasonNumber} failed: ${error?.code ?? "?"} ${error?.message ?? error}`,
+      `[WebPlayer:dizibal] ${root} season ${slug}/${seasonNumber} failed: ${error?.code ?? "?"} ${error?.message ?? error}`,
     );
     return null;
   }
 }
 
+/** Guess an ISO-ish subtitle lang from a Playerjs label (tr/eng/etc.). */
+function langFromSubtitleLabel(label: string): string {
+  // Turkish dotted-İ lowercases to "i" + combining dot, so "İngilizce" won't
+  // contain a plain "ing" — match the distinctive "ngiliz" substring instead.
+  const l = label.toLowerCase();
+  if (/t[üu]rk/.test(l)) return "tr";
+  if (/ing|eng|ngiliz/.test(l)) return "en";
+  if (/alman|german|deutsch/.test(l)) return "de";
+  if (/frans|french|frn/.test(l)) return "fr";
+  if (/arap|arab/.test(l)) return "ar";
+  if (/isp|span|espa/.test(l)) return "es";
+  if (/rus/.test(l)) return "ru";
+  return "und";
+}
+
+/** Absolutise a subtitle/media URL against the embed origin (Dizibal mixes
+ *  absolute CDN URLs and root-relative /srt paths). Returns null if unusable. */
+function absolutiseDizibalUrl(url: string, embedOrigin: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/")) return `${embedOrigin}${trimmed}`;
+  return null;
+}
+
+/**
+ * Parse a Dizibal Playerjs embed page. Two shapes exist:
+ *   (a) deferred — the real media URL is behind
+ *       fetch('/dl?op=get_stream&view_id=…&hash=…') (current live behaviour;
+ *       the view_id/hash are minted per page load and expire quickly);
+ *   (b) inline — some XFileSharing variants put file:"…m3u8…" straight into the
+ *       Playerjs config.
+ * Also reads the Playerjs `subtitle` list ("[Label]url,[Label]url"; url may be
+ * absolute or root-relative). Pure (no network) so it is unit-testable.
+ */
+function extractDizibalEmbedStream(html: string, embedOrigin: string): DizibalEmbedParse | null {
+  const subtitles: DizibalSubtitle[] = [];
+  const subMatch = html.match(/["']?subtitle["']?\s*:\s*["']([^"']+)["']/i);
+  if (subMatch?.[1]) {
+    for (const raw of subMatch[1].split(",")) {
+      const entry = raw.trim();
+      if (!entry) continue;
+      const labelled = entry.match(/^\[([^\]]*)\](.+)$/);
+      const label = labelled ? labelled[1].trim() : "";
+      const rawUrl = labelled ? labelled[2].trim() : entry;
+      const url = absolutiseDizibalUrl(rawUrl, embedOrigin);
+      if (!url) continue;
+      subtitles.push({ url, label: label || "Subtitle", lang: langFromSubtitleLabel(label) });
+    }
+  }
+
+  const dlMatch = html.match(/fetch\(\s*['"](\/dl\?op=get_stream[^'"]+)['"]/i);
+  if (dlMatch?.[1]) {
+    return { dlPath: dlMatch[1].replace(/&amp;/g, "&"), subtitles };
+  }
+
+  const fileMatch =
+    html.match(/\bfile\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i) ??
+    html.match(/(https?:\/\/[^\s'"]+\.m3u8[^\s'"]*)/i);
+  if (fileMatch?.[1]) {
+    return { m3u8Url: fileMatch[1], subtitles };
+  }
+
+  return null;
+}
+
 async function fetchDizibalStreamForSrc(src: string): Promise<{
   m3u8Url: string;
   referer: string;
-  subtitles: Array<{ url: string; label: string; lang: string }>;
+  subtitles: DizibalSubtitle[];
 } | null> {
   const base = dizibalBaseUrl();
+  const reqHeaders = { ...DIZIBAL_HEADERS, Referer: dizibalReferer() };
   try {
-    const requestConfig = {
-      timeout: 6_000,
-      headers: { ...DIZIBAL_HEADERS, Referer: dizibalReferer() },
-    };
-    const [streamResponse, embedResponse] = await Promise.all([
-      axios.get<DizibalStreamResponse>(`${base}/api/stream/m3u8`, {
-        ...requestConfig,
-        params: { code: src },
-      }),
-      axios.get<DizibalEmbedResponse>(`${base}/api/stream/embed`, {
-        ...requestConfig,
-        params: { code: src, autoplay: 1 },
-      }),
-    ]);
-    recordObservedBaseUrl("dizibal", getResponseFinalOrigin(streamResponse));
-
-    const m3u8Url = streamResponse.data?.m3u8Url;
+    // 1. Resolve the rotating Playerjs embed host for this code.
+    const embedResponse = await axios.get<DizibalEmbedResponse>(`${base}/api/stream/embed`, {
+      timeout: 5_000,
+      headers: reqHeaders,
+      params: { code: src, autoplay: 1 },
+    });
+    recordObservedBaseUrl("dizibal", getResponseFinalOrigin(embedResponse));
     const embedUrl = embedResponse.data?.embedUrl;
-    if (
-      !streamResponse.data?.success
-      || !m3u8Url
-      || !embedResponse.data?.success
-      || !embedUrl
-      || !/^https?:\/\//i.test(embedUrl)
-    ) {
+    if (!embedResponse.data?.success || !embedUrl || !/^https?:\/\//i.test(embedUrl)) {
       return null;
     }
 
-    const subtitles = (streamResponse.data.subtitles ?? [])
-      .filter((s): s is { url: string; label?: string; lang?: string } => Boolean(s?.url))
-      .map((s) => ({
-        url: s.url,
-        label: s.label || s.lang || "Subtitle",
-        lang: s.lang || "und",
-      }));
-    return { m3u8Url, referer: embedUrl, subtitles };
+    let embedOrigin: string;
+    try {
+      embedOrigin = new URL(embedUrl).origin;
+    } catch {
+      return null;
+    }
+
+    // 2. Fetch the embed HTML and read the Playerjs bootstrap out of it.
+    const htmlResponse = await axios.get(embedUrl, {
+      timeout: 5_000,
+      responseType: "text",
+      headers: reqHeaders,
+    });
+    const html =
+      typeof htmlResponse.data === "string" ? htmlResponse.data : String(htmlResponse.data ?? "");
+    const parsed = extractDizibalEmbedStream(html, embedOrigin);
+    if (!parsed) return null;
+
+    let m3u8Url = parsed.m3u8Url;
+
+    // 3. Deferred case: call /dl?op=get_stream to get the real media URL. It is
+    //    gated on an Origin/Sec-Fetch-Site header (returns {"error":"unauthorized"}
+    //    without it) which axios does not send on its own, so set them explicitly.
+    //    Must run immediately after the HTML fetch — the hash expires.
+    if (!m3u8Url && parsed.dlPath) {
+      const dlResponse = await axios.get(`${embedOrigin}${parsed.dlPath}`, {
+        timeout: 5_000,
+        headers: {
+          ...DIZIBAL_HEADERS,
+          Referer: embedUrl,
+          Origin: embedOrigin,
+          "Sec-Fetch-Site": "same-origin",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Dest": "empty",
+        },
+      });
+      let payload: any = dlResponse.data;
+      if (typeof payload === "string") {
+        try { payload = JSON.parse(payload); } catch { payload = null; }
+      }
+      if (typeof payload?.url === "string" && payload.url) m3u8Url = payload.url;
+    }
+
+    if (!m3u8Url || !/^https?:\/\//i.test(m3u8Url)) return null;
+
+    // The CDN referer-gates the master.m3u8 (403 without it); the embed host is
+    // the value the browser sends. It is a host-level check, so origin + "/" is
+    // enough and matches what expo-av will send as the Referer header.
+    return { m3u8Url, referer: `${embedOrigin}/`, subtitles: parsed.subtitles };
   } catch (error: any) {
     debugLog(
       `[WebPlayer:dizibal] stream code=${src.slice(0, 12)} failed: ${error?.code ?? "?"} ${error?.message ?? error}`,
@@ -2656,22 +2796,18 @@ async function fetchDizibalStreamForSrc(src: string): Promise<{
 async function resolveDizibalStream(
   request: WebPlayerRequest,
 ): Promise<WebPlayerResult | null> {
-  const hit = await searchDizibal(request);
-  if (!hit) {
+  const match = await searchDizibal(request);
+  if (!match) {
     debugLog("[WebPlayer:dizibal] no matching hit");
     return null;
   }
+  const { hit, kind } = match;
 
   let src: string | null = null;
-  if (request.mediaType === "movie") {
+  if (kind === "movie") {
     src = hit.src ?? null;
-  } else if (
-    request.mediaType === "tv" &&
-    hit.slug &&
-    request.seasonNumber &&
-    request.episodeNumber
-  ) {
-    src = await fetchDizibalEpisodeSrc(hit.slug, request.seasonNumber, request.episodeNumber);
+  } else if (hit.slug && request.seasonNumber && request.episodeNumber) {
+    src = await fetchDizibalEpisodeSrc(kind, hit.slug, request.seasonNumber, request.episodeNumber);
   }
 
   if (!src) {
@@ -2683,7 +2819,7 @@ async function resolveDizibalStream(
   if (!stream) return null;
 
   debugLog(
-    `[WebPlayer:dizibal] resolved m3u8 (referer=${stream.referer}) for ${request.title} via slug=${hit.slug} code=${src.slice(0, 12)}`,
+    `[WebPlayer:dizibal] resolved m3u8 (referer=${stream.referer}) for ${request.title} via kind=${kind} slug=${hit.slug} code=${src.slice(0, 12)}`,
   );
   return {
     url: stream.m3u8Url,
@@ -2717,6 +2853,7 @@ export const __internal = {
   buildHdFilmResult,
   decodeRapidrameByInterpretingDcBody,
   decodeRapidrameValueCandidates,
+  extractDizibalEmbedStream,
   extractDizipalPageYear,
   extractHdFilmEmbedUrl,
   extractRapidrameStreamUrl,
