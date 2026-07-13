@@ -63,14 +63,29 @@ the `app.config.js` runtime, not the branch you happen to be on.
 2. **Any change that adds or upgrades a native module cannot go OTA.** It requires a new native build **and** a `runtimeVersion` bump (e.g. `1.2.0`). Do **not** reuse `1.1.0` for a build that adds a native module — existing `1.1.0` installs would crash on the next OTA when they call the missing module. Prefer pure-JS solutions to stay OTA-deliverable (this is why the loader was rebuilt with SVG+Reanimated instead of Lottie).
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 
-### Current deployed state (last updated 2026-07-11, Watch Together stability OTA)
+### Current deployed state (last updated 2026-07-13, Dizibal resolver + anime OTA)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `release/1.2.0-watch-together` @ `caf8c25` | `f06bbf09-4270-4861-a871-1984d68188cb` |
+| 1.2.0 | `release/1.2.0-watch-together` @ `b54a87c` | `1116b7f6-1688-44b4-bf19-728af3e73abc` |
 | 1.1.0 | `release/1.1.0-navbar` @ `f77d5ff` | `e7a1cf31-5169-42e9-93d2-147fa3b7f3e6` |
 | 1.0.2 | `release/1.0.2-legacy` @ `01926b3` | `1064072c-e415-423e-b067-3827dc4fe574` |
 
+- **2026-07-13 (1.2.0 only):** Dizibal resolver repair + anime support @
+  `b54a87c` → group `1116b7f6-1688-44b4-bf19-728af3e73abc`. Dizibal retired
+  `/api/stream/m3u8` (now 404 "Video bulunamadı" for every code), and the old
+  resolver required both it and `/api/stream/embed`, so Dizibal produced no
+  streams while HDFilm/Dizipal still worked. Resolver now follows
+  `/api/stream/embed` → the rotating Playerjs embed HTML → the deferred
+  `fetch('/dl?op=get_stream&…')` (called with an `Origin` header — it 401s
+  without one) → the real `master.m3u8`, played with the embed host as
+  `Referer` (CDN 403s otherwise). On-device regex, no WebView — player stays
+  native. Anime SERIES now resolve via the separate `/api/anime` namespace
+  (`searchDizibal` returns `{hit, kind}`; tv tries `/api/series` then
+  `/api/anime`; `fetchDizibalEpisodeSrc` picks the `/seasons` root); anime
+  FILMS already worked through `/api/movies`. `DIRECT_FALLBACK_TIMEOUT_MS`
+  8s→12s. Pure JS in `WebPlayerService.ts` — **not yet ported** to 1.1.0/1.0.2
+  (also OTA-safe there when wanted; no native/dependency/SQL change).
 - **2026-07-11 latest (1.2.0 only):** Watch Together stability repair @
   `caf8c25` → group `f06bbf09-4270-4861-a871-1984d68188cb` — memory uploads
   moved off the JS thread to cancellable native binary tasks; responder upload
