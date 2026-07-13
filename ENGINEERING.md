@@ -68,15 +68,14 @@ the `app.config.js` runtime, not the branch you happen to be on.
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
 | 1.2.0 | `release/1.2.0-watch-together` @ `b54a87c` | `1116b7f6-1688-44b4-bf19-728af3e73abc` |
-| 1.1.0 | `release/1.1.0-navbar` @ `f77d5ff` | `e7a1cf31-5169-42e9-93d2-147fa3b7f3e6` |
-| 1.0.2 | `release/1.0.2-legacy` @ `01926b3` | `1064072c-e415-423e-b067-3827dc4fe574` |
+| 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
+| 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
 
-- **2026-07-13 (1.2.0 only):** Dizibal resolver repair + anime support @
-  `b54a87c` → group `1116b7f6-1688-44b4-bf19-728af3e73abc`. Dizibal retired
-  `/api/stream/m3u8` (now 404 "Video bulunamadı" for every code), and the old
-  resolver required both it and `/api/stream/embed`, so Dizibal produced no
-  streams while HDFilm/Dizipal still worked. Resolver now follows
-  `/api/stream/embed` → the rotating Playerjs embed HTML → the deferred
+- **2026-07-13 (ALL THREE fleets):** Dizibal resolver repair + anime support.
+  Dizibal retired `/api/stream/m3u8` (now 404 "Video bulunamadı" for every
+  code), and the old resolver required both it and `/api/stream/embed`, so
+  Dizibal produced no streams while HDFilm/Dizipal still worked. Resolver now
+  follows `/api/stream/embed` → the rotating Playerjs embed HTML → the deferred
   `fetch('/dl?op=get_stream&…')` (called with an `Origin` header — it 401s
   without one) → the real `master.m3u8`, played with the embed host as
   `Referer` (CDN 403s otherwise). On-device regex, no WebView — player stays
@@ -84,8 +83,13 @@ the `app.config.js` runtime, not the branch you happen to be on.
   (`searchDizibal` returns `{hit, kind}`; tv tries `/api/series` then
   `/api/anime`; `fetchDizibalEpisodeSrc` picks the `/seasons` root); anime
   FILMS already worked through `/api/movies`. `DIRECT_FALLBACK_TIMEOUT_MS`
-  8s→12s. Pure JS in `WebPlayerService.ts` — **not yet ported** to 1.1.0/1.0.2
-  (also OTA-safe there when wanted; no native/dependency/SQL change).
+  8s→12s. Pure JS in `WebPlayerService.ts` + test (no native/dependency/SQL
+  change) — cherry-picked identically across all three (both files were
+  byte-identical pre-fix). Deploy: 1.2.0 `b54a87c` → group
+  `1116b7f6-1688-44b4-bf19-728af3e73abc`; 1.1.0 `6658bff` → group
+  `b4a79405-d989-4b16-858d-0f3bb1ebb055`; 1.0.2 `f9cfc56` (nav-bar guard clean)
+  → group `0513cd3d-1105-4d9c-b954-a8cb1b54c190`. Expo-verified by user on
+  1.2.0 (anime plays via `kind=anime`).
 - **2026-07-11 latest (1.2.0 only):** Watch Together stability repair @
   `caf8c25` → group `f06bbf09-4270-4861-a871-1984d68188cb` — memory uploads
   moved off the JS thread to cancellable native binary tasks; responder upload
