@@ -7,6 +7,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "styled-components/native";
 
 import { ActorDetailScreen } from "../screens/ActorDetailScreen";
+import { AzClassicDetailScreen } from "../screens/AzClassicDetailScreen";
+import { AzClassicsGridScreen } from "../screens/AzClassicsGridScreen";
 import { DiscoverGridScreen } from "../screens/DiscoverGridScreen";
 import { FranchiseCatalogScreen } from "../screens/FranchiseCatalogScreen";
 import { FranchiseTimelineScreen } from "../screens/FranchiseTimelineScreen";
@@ -43,6 +45,8 @@ function HomeStackScreen() {
       <HomeStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <HomeStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <HomeStack.Screen name="ActorDetail" component={ActorDetailScreen} />
+      <HomeStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
+      <HomeStack.Screen name="AzClassicsGrid" component={AzClassicsGridScreen} />
       <HomeStack.Screen name="Player" component={PlayerScreen} />
     </HomeStack.Navigator>
   );
@@ -59,6 +63,8 @@ function MoviesStackScreen() {
       <MoviesStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <MoviesStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <MoviesStack.Screen name="ActorDetail" component={ActorDetailScreen} />
+      <MoviesStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
+      <MoviesStack.Screen name="AzClassicsGrid" component={AzClassicsGridScreen} />
       <MoviesStack.Screen name="Player" component={PlayerScreen} />
     </MoviesStack.Navigator>
   );
@@ -107,7 +113,7 @@ function StatsStackScreen() {
   );
 }
 
-const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline"]);
+const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "AzClassicDetail", "AzClassicsGrid", "Player", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline"]);
 const STACK_TABS = new Set<keyof RootTabParamList>(["Discover", "Movies", "Series", "Stats", "Profile"]);
 
 export function Navigation() {
