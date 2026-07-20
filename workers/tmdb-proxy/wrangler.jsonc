@@ -10,6 +10,9 @@
   "vars": {
     "ALLOWED_ORIGINS": "",
     "RATE_LIMIT_WINDOW_SECONDS": "60",
-    "RATE_LIMIT_MAX_REQUESTS": "120"
+    // Abuse ceiling, not a throttle: mobile CGNAT puts many users behind one
+    // IP, and the app's legitimate cold-start burst is ~40+ requests. Cache
+    // hits no longer count against this (cache lookup precedes the limiter).
+    "RATE_LIMIT_MAX_REQUESTS": "600"
   }
 }
