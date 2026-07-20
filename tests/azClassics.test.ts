@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   azClassicToMediaItem,
   getAzClassicById,
+  getAzClassicDisplayTitle,
   getAzClassics,
   getAzClassicsAsMediaItems,
 } from "../src/api/azClassics";
@@ -76,7 +77,8 @@ describe("azClassicToMediaItem", () => {
     const film = getAzClassics().find((f) => f.posterPath && f.year) ?? getAzClassics()[0];
     const item = azClassicToMediaItem(film);
     assert.equal(item.id, film.id);
-    assert.equal(item.title, film.title);
+    // Rails/cards display the native (Azerbaijani) name when available.
+    assert.equal(item.title, getAzClassicDisplayTitle(film));
     assert.equal(item.mediaType, "movie");
     assert.equal(item.posterPath, film.posterPath);
     assert.equal(typeof item.year, "string");
