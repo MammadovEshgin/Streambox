@@ -3,7 +3,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Dimensions,
-  Image,
   Keyboard,
   Pressable,
   ScrollView,
@@ -15,6 +14,7 @@ import styled, { useTheme } from "styled-components/native";
 
 import { MediaItem, getTmdbImageUrl, searchMulti } from "../../api/tmdb";
 import { formatRating } from "../../api/mediaFormatting";
+import { CachedRemoteImage } from "../common/CachedRemoteImage";
 import { MovieLoader } from "../common/MovieLoader";
 
 /* ------------------------------------------------------------------ */
@@ -123,7 +123,7 @@ const ResultSeparator = styled.View`
   background-color: ${({ theme }) => theme.colors.border};
 `;
 
-const PosterImage = styled(Image)`
+const PosterImage = styled(CachedRemoteImage)`
   width: 44px;
   height: 66px;
   border-radius: 6px;
@@ -204,6 +204,21 @@ const EmptyText = styled.Text`
   text-align: center;
 `;
 
+const RetrySearchButton = styled(Pressable)`
+  margin-top: 12px;
+  padding: 8px 22px;
+  border-radius: 999px;
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.border};
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
+`;
+
+const RetrySearchText = styled.Text`
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
+  font-size: 13px;
+`;
+
 const SearchHintRow = styled.View`
   padding: 16px 14px;
   flex-direction: row;
@@ -248,14 +263,44 @@ export function HomeHeader({
   const [results, setResults] = useState<MediaItem[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  const [searchFailed, setSearchFailed] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastQueryRef = useRef("");
+  // Monotonic sequence so a slow response for an OLD query can never overwrite
+  // the results of a newer one (out-of-order responses are common on mobile
+  // networks where request latency varies wildly).
+  const searchSeqRef = useRef(0);
 
   const showDropdown = isFocused && query.trim().length > 0;
 
+  const performSearch = useCallback(async (trimmed: string) => {
+    const seq = ++searchSeqRef.current;
+    setIsSearching(true);
+    setSearchFailed(false);
+    try {
+      const response = await searchMulti(trimmed, 1);
+      if (searchSeqRef.current !== seq) return;
+      lastQueryRef.current = trimmed;
+      setResults(response.items);
+      setCurrentPage(1);
+      setTotalPages(response.totalPages);
+      setHasSearched(true);
+    } catch {
+      if (searchSeqRef.current !== seq) return;
+      // A failed request is NOT "no results" — surface it as an error with a
+      // retry, otherwise throttled/offline searches look like empty catalogs.
+      setResults([]);
+      setHasSearched(true);
+      setSearchFailed(true);
+    } finally {
+      if (searchSeqRef.current === seq) {
+        setIsSearching(false);
+      }
+    }
+  }, []);
 
   // Debounced live search
   useEffect(() => {
@@ -263,34 +308,25 @@ export function HomeHeader({
 
     const trimmed = query.trim();
     if (trimmed.length < 2) {
+      searchSeqRef.current += 1;
       setResults([]);
       setHasSearched(false);
+      setSearchFailed(false);
       setCurrentPage(1);
       setTotalPages(0);
+      setIsSearching(false);
       return;
     }
 
     setIsSearching(true);
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const response = await searchMulti(trimmed, 1);
-        lastQueryRef.current = trimmed;
-        setResults(response.items);
-        setCurrentPage(1);
-        setTotalPages(response.totalPages);
-        setHasSearched(true);
-      } catch {
-        setResults([]);
-        setHasSearched(true);
-      } finally {
-        setIsSearching(false);
-      }
+    debounceRef.current = setTimeout(() => {
+      void performSearch(trimmed);
     }, 350);
 
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query]);
+  }, [query, performSearch]);
 
   // Load next page when scrolling to the end
   const handleLoadMore = useCallback(async () => {
@@ -311,9 +347,11 @@ export function HomeHeader({
   }, [isLoadingMore, currentPage, totalPages]);
 
   const handleClear = useCallback(() => {
+    searchSeqRef.current += 1;
     onChangeQuery("");
     setResults([]);
     setHasSearched(false);
+    setSearchFailed(false);
     setCurrentPage(1);
     setTotalPages(0);
     inputRef.current?.focus();
@@ -349,7 +387,7 @@ export function HomeHeader({
       return (
         <ResultRow onPress={() => handleSelectItem(item)}>
           {posterUri ? (
-            <PosterImage source={{ uri: posterUri }} resizeMode="cover" />
+            <PosterImage uri={posterUri} contentFit="cover" />
           ) : (
             <PosterPlaceholder>
               <Feather name="film" size={18} color={currentTheme.colors.textSecondary} />
@@ -439,6 +477,18 @@ export function HomeHeader({
             <LoadingRow>
               <MovieLoader size={28} />
             </LoadingRow>
+          ) : searchFailed && results.length === 0 ? (
+            <EmptyRow>
+              <Feather name="wifi-off" size={24} color={currentTheme.colors.textSecondary} />
+              <EmptyText style={{ marginTop: 8 }}>{t("search.searchFailedTitle")}</EmptyText>
+              <EmptyText style={{ fontSize: 12, marginTop: 4 }}>{t("search.searchFailedBody")}</EmptyText>
+              <RetrySearchButton
+                onPress={() => void performSearch(query.trim())}
+                style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
+              >
+                <RetrySearchText>{t("common.retry")}</RetrySearchText>
+              </RetrySearchButton>
+            </EmptyRow>
           ) : hasSearched && results.length === 0 ? (
             <EmptyRow>
               <Feather name="search" size={24} color={currentTheme.colors.textSecondary} />

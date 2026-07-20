@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
 
-import { LruMap } from "../utils/LruMap";
+import { PersistedLruMap } from "../services/persistedLruMap";
 
 // The upstream GitHub dataset has rotated its schema over time. Older revisions
 // used string fields with "Movie Name"/"Movie Link"; the current one uses
@@ -86,9 +86,14 @@ let moviesLastFetch = 0;
 let showsLastFetch = 0;
 let popularMoviesLastFetch = 0;
 
-// Bounded: individual IMDb ratings accumulate as the user browses. LruMap keeps
-// hot ratings and evicts the oldest. has()/get() negative-caching is preserved.
-const imdbRatingCache = new LruMap<string, number | null>(2000);
+// Bounded: individual IMDb ratings accumulate as the user browses. Persisted so
+// a cold start doesn't refetch the same ratings; ratings drift slowly, so a 24h
+// snapshot TTL keeps them honest. has()/get() negative-caching is preserved.
+const imdbRatingCache = new PersistedLruMap<number | null>({
+  storageKey: "@streambox/api-cache-imdb-ratings-v1",
+  maxEntries: 2000,
+  ttlMs: 24 * 60 * 60 * 1000,
+});
 // Bounded by concurrency: each entry is removed in its own finally block.
 const inFlightImdbRatingRequests = new Map<string, Promise<number | null>>();
 

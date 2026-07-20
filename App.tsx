@@ -49,6 +49,7 @@ import { flushTelemetry, initialiseTelemetry, trackAppError, trackEvent, trackPe
 import { AppSettingsProvider, useAppSettings } from "./src/settings/AppSettingsContext";
 import { migrateLegacyContentImageCaches } from "./src/services/remoteImageCache";
 import { preloadPersistedMediaHydration } from "./src/services/mediaHydration";
+import { hydrateAllPersistedApiCaches } from "./src/services/persistedLruMap";
 import { clearPersistedRuntimeCaches, hydratePersistedRuntimeCachesIntoMemory } from "./src/services/runtimeCache";
 import { runStorageMigrationsIfNeeded } from "./src/services/storageMigrations";
 
@@ -317,7 +318,12 @@ function AppShell() {
     // Warm the poster-hydration cache from disk so the profile shelves can paint
     // synchronously the first time they open (no spinner flash on a warm cache).
     void preloadPersistedMediaHydration();
-    void hydratePersistedRuntimeCachesIntoMemory().finally(() => {
+    // API id/logo/rating caches hydrate inside the same gate so the first
+    // discovery burst sees them warm instead of refetching everything.
+    void Promise.all([
+      hydratePersistedRuntimeCachesIntoMemory(),
+      hydrateAllPersistedApiCaches().catch(() => undefined),
+    ]).finally(() => {
       if (active) {
         setHubCachesHydrated(true);
       }

@@ -188,6 +188,25 @@ const ErrorText = styled.Text`
   margin-top: 12px;
 `;
 
+const ErrorRow = styled.View`
+  align-items: center;
+`;
+
+const RetryButton = styled.Pressable`
+  margin-top: 10px;
+  padding: 8px 22px;
+  border-radius: 999px;
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.border};
+  background-color: ${({ theme }) => theme.colors.surface};
+`;
+
+const RetryButtonText = styled.Text`
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
+  font-size: 13px;
+`;
+
 
 
 type RailProps = {
@@ -223,7 +242,7 @@ const DiscoveryRail = memo(function DiscoveryRail({ title, data, onPressItem, on
       </SectionHeader>
       {data.length === 0 ? (
         <EmptyRail>
-          <EmptyRailText>{t("search.noResultsFound")}</EmptyRailText>
+          <EmptyRailText>{t("home.railUnavailable")}</EmptyRailText>
         </EmptyRail>
       ) : (
         <RailWrap>
@@ -322,51 +341,68 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
     }
 
     const retryDelays = !background && !hasDiscoveryData ? HOME_DISCOVERY_FIRST_LOAD_RETRY_DELAYS_MS : [];
-    let lastError: unknown = null;
 
     try {
-      for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
-        try {
-          const [popular, movies, series] = await Promise.all([
-            getPopular(),
-            getTrending("movie"),
-            getTrending("tv"),
-          ]);
+      // Rails resolve independently: one failed request must not blank the
+      // whole screen (Promise.all previously did exactly that on flaky mobile
+      // networks). Retries only re-fetch the rails that are still missing, so
+      // they don't burn extra proxy rate budget on rails that already loaded.
+      const resolved: Partial<HomeDiscoveryCache> = {};
 
+      for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+        const [popularResult, moviesResult, seriesResult] = await Promise.allSettled([
+          resolved.popularMovies ? Promise.resolve(resolved.popularMovies) : getPopular(),
+          resolved.trendingMovies ? Promise.resolve(resolved.trendingMovies) : getTrending("movie"),
+          resolved.trendingSeries ? Promise.resolve(resolved.trendingSeries) : getTrending("tv"),
+        ]);
+
+        if (popularResult.status === "fulfilled") resolved.popularMovies = popularResult.value;
+        if (moviesResult.status === "fulfilled") resolved.trendingMovies = moviesResult.value;
+        if (seriesResult.status === "fulfilled") resolved.trendingSeries = seriesResult.value;
+
+        const hasAnyRail = Boolean(
+          resolved.popularMovies?.length || resolved.trendingMovies?.length || resolved.trendingSeries?.length
+        );
+
+        // Paint whatever arrived so far — partial content beats a spinner.
+        startTransition(() => {
+          if (resolved.popularMovies) setPopularMovies(resolved.popularMovies);
+          if (resolved.trendingMovies) setTrendingMovies(resolved.trendingMovies);
+          if (resolved.trendingSeries) setTrendingSeries(resolved.trendingSeries);
+        });
+        if (hasAnyRail) {
+          setIsLoading(false);
+        }
+
+        if (resolved.popularMovies && resolved.trendingMovies && resolved.trendingSeries) {
           const coreState: HomeDiscoveryCache = {
-            popularMovies: popular,
-            trendingMovies: movies,
-            trendingSeries: series,
+            popularMovies: resolved.popularMovies,
+            trendingMovies: resolved.trendingMovies,
+            trendingSeries: resolved.trendingSeries,
           };
 
           const freshnessVersion = getDiscoveryFreshnessVersion();
           writeRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, coreState, { version: freshnessVersion });
           void writePersistedRuntimeCache<HomeDiscoveryCache>(localizedCacheKey, coreState, { version: freshnessVersion });
-
-          startTransition(() => {
-            setPopularMovies(popular);
-            setTrendingMovies(movies);
-            setTrendingSeries(series);
-            setErrorMessage(null);
-          });
+          setErrorMessage(null);
           return;
-        } catch (error) {
-          lastError = error;
-          const retryDelay = retryDelays[attempt];
-          if (retryDelay) {
-            await wait(retryDelay);
-          }
+        }
+
+        const retryDelay = retryDelays[attempt];
+        if (retryDelay) {
+          await wait(retryDelay);
         }
       }
 
-      const message = lastError instanceof Error ? lastError.message : "Unable to load discovery feed.";
-      if (!hasDiscoveryData) {
-        setErrorMessage(message);
-      }
+      // Still incomplete after the retry budget. Tell the truth about it —
+      // "no results" for a network failure destroys trust in the screen.
+      const hasAnyContent = hasDiscoveryData
+        || Boolean(resolved.popularMovies?.length || resolved.trendingMovies?.length || resolved.trendingSeries?.length);
+      setErrorMessage(hasAnyContent ? t("home.partialLoadError") : t("home.loadFailed"));
     } finally {
       setIsLoading(false);
     }
-  }, [getDiscoveryFreshnessVersion, hasDiscoveryData, localizedCacheKey]);
+  }, [getDiscoveryFreshnessVersion, hasDiscoveryData, localizedCacheKey, t]);
 
   useEffect(() => {
     let active = true;
@@ -571,7 +607,20 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
               items={spotlightItems}
               onPressItem={handleSelectItem}
             />
-            {errorMessage ? <ErrorText>{errorMessage}</ErrorText> : null}
+            {errorMessage ? (
+              <ErrorRow>
+                <ErrorText>{errorMessage}</ErrorText>
+                <RetryButton
+                  onPress={() => {
+                    setErrorMessage(null);
+                    void loadDiscovery();
+                  }}
+                  style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
+                >
+                  <RetryButtonText>{t("common.retry")}</RetryButtonText>
+                </RetryButton>
+              </ErrorRow>
+            ) : null}
           </HeroWrap>
 
           <DiscoveryRail

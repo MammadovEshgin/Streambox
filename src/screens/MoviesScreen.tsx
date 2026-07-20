@@ -19,6 +19,7 @@ import {
   getTopNewMoviesPage,
   resolveTmdbMovieIdFromImdbId
 } from "../api/tmdb";
+import { getAzClassicsAsMediaItems } from "../api/azClassics";
 import { formatRating, isValidMediaItem, isValidMediaItemArray } from "../api/mediaFormatting";
 import { HubHeroSkeleton, HubRailSkeleton } from "../components/common/HubSkeletons";
 import { SafeContainer } from "../components/common/SafeContainer";
@@ -311,52 +312,33 @@ function mergeUnique(existing: MediaItem[], incoming: MediaItem[]): MediaItem[] 
   return merged;
 }
 
-async function seedTopNewMovies(minimumCount: number, initialPage?: SeedPageResponse): Promise<MediaItem[]> {
-  const firstPage = initialPage ?? await getTopNewMoviesPage(1);
+// Seed pages SEQUENTIALLY and stop the moment the pool is full. The previous
+// parallel fetch requested up to 4 extra pages upfront (each page fans out into
+// per-item enrichment requests) and then threw most of them away — a major
+// contributor to proxy rate-limit bursts on cold start.
+async function seedPagedPool(
+  minimumCount: number,
+  fetchPage: (page: number) => Promise<SeedPageResponse>,
+  initialPage?: SeedPageResponse
+): Promise<MediaItem[]> {
+  const firstPage = initialPage ?? await fetchPage(1);
   let pool = mergeUnique([], firstPage.items);
 
-  if (pool.length >= minimumCount || firstPage.totalPages <= 1) {
-    return pool;
-  }
-
-  const pagesToFetch = Array.from(
-    { length: Math.min(firstPage.totalPages, 5) - 1 },
-    (_, index) => index + 2
-  );
-
-  const responses = await Promise.all(pagesToFetch.map((page) => getTopNewMoviesPage(page)));
-  for (const response of responses) {
+  const lastPage = Math.min(firstPage.totalPages, 5);
+  for (let page = 2; page <= lastPage && pool.length < minimumCount; page += 1) {
+    const response = await fetchPage(page);
     pool = mergeUnique(pool, response.items);
-    if (pool.length >= minimumCount) {
-      break;
-    }
   }
 
   return pool;
 }
 
-async function seedImdbTopMovies(minimumCount: number, initialPage?: SeedPageResponse): Promise<MediaItem[]> {
-  const firstPage = initialPage ?? await getImdbTop250Page(1);
-  let pool = mergeUnique([], firstPage.items);
+function seedTopNewMovies(minimumCount: number, initialPage?: SeedPageResponse): Promise<MediaItem[]> {
+  return seedPagedPool(minimumCount, getTopNewMoviesPage, initialPage);
+}
 
-  if (pool.length >= minimumCount || firstPage.totalPages <= 1) {
-    return pool;
-  }
-
-  const pagesToFetch = Array.from(
-    { length: Math.min(firstPage.totalPages, 5) - 1 },
-    (_, index) => index + 2
-  );
-
-  const responses = await Promise.all(pagesToFetch.map((page) => getImdbTop250Page(page)));
-  for (const response of responses) {
-    pool = mergeUnique(pool, response.items);
-    if (pool.length >= minimumCount) {
-      break;
-    }
-  }
-
-  return pool;
+function seedImdbTopMovies(minimumCount: number, initialPage?: SeedPageResponse): Promise<MediaItem[]> {
+  return seedPagedPool(minimumCount, getImdbTop250Page, initialPage);
 }
 
 const RailSection = memo(function RailSection({ title, items, isLoading = false, onPressItem, onPressSeeAll }: RailSectionProps) {
@@ -421,6 +403,8 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
   const [isImdbTopLoading, setIsImdbTopLoading] = useState(!cachedHub);
   const [hasHydratedPersistentCache, setHasHydratedPersistentCache] = useState(Boolean(cachedHub));
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Bundled, offline catalog of classic Azerbaijani films — no fetch, renders instantly.
+  const azClassics = useMemo(() => getAzClassicsAsMediaItems(), []);
   const watchedMovieIds = useMemo(
     () =>
       history
@@ -721,6 +705,19 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
                   source: "top_new_movies",
                   title: t("movies.topNewMovies")
                 });
+              }}
+            />
+          </Animated.View>
+
+          <Animated.View entering={FadeInDown.duration(200)}>
+            <RailSection
+              title={t("movies.azClassics")}
+              items={azClassics}
+              onPressItem={(item) => {
+                navigation.navigate("AzClassicDetail", { id: String(item.id) });
+              }}
+              onPressSeeAll={() => {
+                navigation.navigate("AzClassicsGrid");
               }}
             />
           </Animated.View>
