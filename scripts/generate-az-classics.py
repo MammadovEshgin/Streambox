@@ -40,6 +40,48 @@ MATCH_THRESHOLD = 0.62
 # 329 = "Jurassic Park" (1993) — a source row mis-resolved to it.
 EXCLUDED_TMDB_IDS = {329}
 
+# Film ids whose only non-English TMDB title is NOT Azerbaijani (e.g. a French
+# or Russian original_title with no Azerbaijani alternative). Keep them
+# English-only rather than surface a misleading "original" title.
+FORCE_ENGLISH_ONLY_IDS = {"az-195"}  # "Let Me Dance" — TMDB original is French.
+
+# Azerbaijani-Latin diacritics (ə is unique to Azerbaijani among these scripts).
+AZ_DIACRITIC_RE = re.compile(r"[əƏçÇşŞğĞıİöÖüÜ]")
+CYRILLIC_RE = re.compile(r"[Ѐ-ӿ]")
+# Scripts that a Latin Azerbaijani title never uses — reject as an "original".
+NON_LATIN_RE = re.compile(
+    r"[؀-ۿЀ-ӿ֐-׿Ͱ-Ͽ԰-֏"
+    r"぀-ヿ一-鿿฀-๿]"
+)
+
+
+def _title_norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip().lower()
+
+
+def pick_original_title(film_id: str, english_title: str, alt_titles: list[str]) -> str | None:
+    """Best Azerbaijani title for a film, or None to stay English-only.
+
+    Mirrors scripts' JS assignment: prefer a title carrying Azerbaijani-Latin
+    diacritics; else fall back to TMDB's original_title (first alt) when it's
+    Latin and differs from the English name. Returns None when nothing better
+    than the English title exists (proper nouns like "Sevil" collapse to None).
+    """
+    if film_id in FORCE_ENGLISH_ONLY_IDS or not alt_titles:
+        return None
+    diacritic = next(
+        (t for t in alt_titles if t and AZ_DIACRITIC_RE.search(t) and not CYRILLIC_RE.search(t)),
+        None,
+    )
+    candidate = diacritic
+    if candidate is None:
+        original = alt_titles[0]
+        if original and not NON_LATIN_RE.search(original):
+            candidate = original
+    if candidate and _title_norm(candidate) != _title_norm(english_title):
+        return candidate.strip()
+    return None
+
 # Azerbaijani-latin -> ascii, mirroring how TMDB tends to slugify (ə is dropped).
 AZ_MAP = {
     "ı": "i", "İ": "i", "i̇": "i",
@@ -198,6 +240,7 @@ def parse_md() -> list[dict]:
             "no": no,
             "id": f"az-{no:03d}",
             "title": title,
+            "originalTitle": None,
             "year": year,
             "releaseDate": release,
             "genres": genres,
@@ -216,6 +259,9 @@ def parse_md() -> list[dict]:
     tmdb_titles = json.loads(TMDB_TITLES.read_text(encoding="utf-8")) if TMDB_TITLES.exists() else {}
     for film in films:
         film["_altTitles"] = tmdb_titles.get(str(film["tmdbId"]), []) if film["tmdbId"] else []
+        # Azerbaijani display title (shown as the primary name; English `title`
+        # becomes the small secondary line in the app). None => English-only.
+        film["originalTitle"] = pick_original_title(film["id"], film["title"], film["_altTitles"])
         key_sources = [film["_slug"], film["title"], *film["_altTitles"]]
         keys: set[str] = set()
         for src in key_sources:
@@ -348,6 +394,9 @@ def main() -> None:
         f.pop("_slug", None)
         f.pop("_altTitles", None)
         f.pop("no", None)
+        # Drop the English-only marker so those films carry no null field.
+        if f.get("originalTitle") is None:
+            f.pop("originalTitle", None)
 
     OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(films, ensure_ascii=False, indent=2), encoding="utf-8")
