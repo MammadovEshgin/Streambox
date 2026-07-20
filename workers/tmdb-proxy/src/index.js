@@ -1,9 +1,15 @@
 const TMDB_API_BASE_URL = "https://api.themoviedb.org/3";
 const DEFAULT_CACHE_TTL_SECONDS = 60 * 60 * 6;
 const SEARCH_CACHE_TTL_SECONDS = 60 * 5;
+const NOT_FOUND_CACHE_TTL_SECONDS = 60 * 5;
 const ERROR_CACHE_TTL_SECONDS = 30;
+const STALE_WHILE_REVALIDATE_SECONDS = 60 * 60 * 24;
 const DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60;
-const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 120;
+// This is an abuse ceiling, not a throttle. The app legitimately bursts dozens
+// of requests on a cold start, and mobile carriers put MANY users behind one
+// CGNAT IP — a tight per-IP limit made those users share one tiny bucket and
+// turned every burst into a 429 storm. TMDB's own upstream limits still apply.
+const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 600;
 
 function logMetric(event, fields = {}) {
   console.log(JSON.stringify({
@@ -144,6 +150,10 @@ function getCacheTtlSeconds(targetUrl, responseStatus) {
     return ERROR_CACHE_TTL_SECONDS;
   }
 
+  if (responseStatus === 404) {
+    return NOT_FOUND_CACHE_TTL_SECONDS;
+  }
+
   if (targetUrl.pathname.includes("/search/")) {
     return SEARCH_CACHE_TTL_SECONDS;
   }
@@ -187,7 +197,11 @@ function withResponseHeaders(response, request, env, targetUrl, rateLimitResult)
     headers.set(key, value);
   });
 
-  headers.set("cache-control", `public, max-age=${getCacheTtlSeconds(targetUrl, response.status)}`);
+  const cacheTtlSeconds = getCacheTtlSeconds(targetUrl, response.status);
+  const cacheControl = response.ok
+    ? `public, max-age=${cacheTtlSeconds}, stale-while-revalidate=${STALE_WHILE_REVALIDATE_SECONDS}`
+    : `public, max-age=${cacheTtlSeconds}`;
+  headers.set("cache-control", cacheControl);
   headers.set("x-streambox-tmdb-proxy", "hit");
   if (rateLimitResult) {
     headers.set("x-ratelimit-limit", String(rateLimitResult.limit));
@@ -224,6 +238,37 @@ export default {
       );
     }
 
+    const requestUrl = new URL(request.url);
+    const targetUrl = buildTmdbUrl(requestUrl);
+    if (!targetUrl) {
+      logMetric("tmdb_proxy_invalid_path", {
+        method: request.method,
+        path: requestUrl.pathname,
+        durationMs: Date.now() - startedAt,
+      });
+      return jsonResponse(
+        { error: "Invalid TMDB path" },
+        { status: 400, headers: buildCorsHeaders(request, env) }
+      );
+    }
+
+    // Cache lookup runs BEFORE the rate limiter: an edge-cache hit costs no
+    // upstream call, so it must never consume rate budget. Previously a fully
+    // cached home screen still burned ~40 tokens per open.
+    const cache = caches.default;
+    const cacheKey = new Request(targetUrl.toString(), { method: request.method });
+    const cachedResponse = await cache.match(cacheKey);
+    if (cachedResponse) {
+      logMetric("tmdb_proxy_response", {
+        method: request.method,
+        path: targetUrl.pathname,
+        status: cachedResponse.status,
+        cacheStatus: "hit",
+        durationMs: Date.now() - startedAt,
+      });
+      return withResponseHeaders(cachedResponse, request, env, targetUrl, null);
+    }
+
     const rateLimitResult = await checkRateLimit(request, env);
     if (!rateLimitResult.allowed) {
       logMetric("tmdb_proxy_rate_limited", {
@@ -246,35 +291,6 @@ export default {
       );
     }
 
-    const requestUrl = new URL(request.url);
-    const targetUrl = buildTmdbUrl(requestUrl);
-    if (!targetUrl) {
-      logMetric("tmdb_proxy_invalid_path", {
-        method: request.method,
-        path: requestUrl.pathname,
-        durationMs: Date.now() - startedAt,
-      });
-      return jsonResponse(
-        { error: "Invalid TMDB path" },
-        { status: 400, headers: buildCorsHeaders(request, env) }
-      );
-    }
-
-    const cache = caches.default;
-    const cacheKey = new Request(targetUrl.toString(), { method: request.method });
-    const cachedResponse = await cache.match(cacheKey);
-    if (cachedResponse) {
-      logMetric("tmdb_proxy_response", {
-        method: request.method,
-        path: targetUrl.pathname,
-        status: cachedResponse.status,
-        cacheStatus: "hit",
-        rateLimitRemaining: rateLimitResult.remaining,
-        durationMs: Date.now() - startedAt,
-      });
-      return withResponseHeaders(cachedResponse, request, env, targetUrl, rateLimitResult);
-    }
-
     try {
       const upstreamResponse = await fetchTmdb(targetUrl, request, env);
       const response = withResponseHeaders(upstreamResponse, request, env, targetUrl, rateLimitResult);
@@ -287,7 +303,9 @@ export default {
         durationMs: Date.now() - startedAt,
       });
 
-      if (request.method === "GET" && upstreamResponse.ok) {
+      // 404s are cached briefly too: repeat lookups for missing titles used to
+      // hit upstream (and burn rate budget) every single time.
+      if (request.method === "GET" && (upstreamResponse.ok || upstreamResponse.status === 404)) {
         ctx.waitUntil(cache.put(cacheKey, response.clone()));
       }
 
