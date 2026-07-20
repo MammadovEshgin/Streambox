@@ -1,13 +1,19 @@
 import { Feather } from "@expo/vector-icons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { LinearGradient } from "expo-linear-gradient";
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { ScrollView } from "react-native";
+import { ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
-import { getAzClassicById } from "../api/azClassics";
+import {
+  AzClassicMovie,
+  getAzClassicById,
+  getAzClassicDisplayTitle,
+  getSimilarAzClassics,
+} from "../api/azClassics";
 import type { CastMember, CrewMember } from "../api/tmdb";
 import { getTmdbImageUrl } from "../api/tmdb";
 import { CachedRemoteImage } from "../components/common/CachedRemoteImage";
@@ -69,6 +75,15 @@ const Title = styled.Text`
   letter-spacing: -0.6px;
 `;
 
+const EnglishSubtitle = styled.Text`
+  margin-top: 4px;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
+  font-size: 14px;
+  line-height: 19px;
+  letter-spacing: 0.1px;
+`;
+
 const MetaRow = styled.Text`
   margin-top: 8px;
   color: ${({ theme }) => theme.colors.textSecondary};
@@ -117,6 +132,53 @@ const SynopsisText = styled.Text`
 
 const CastWrap = styled.View`
   height: 200px;
+`;
+
+const SimilarWrap = styled.View`
+  height: 232px;
+`;
+
+const SimilarCard = styled.Pressable`
+  width: 118px;
+  margin-right: 12px;
+`;
+
+const SimilarPosterFrame = styled.View`
+  width: 118px;
+  height: 177px;
+  border-radius: 10px;
+  overflow: hidden;
+  background-color: ${({ theme }) => theme.colors.surface};
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.border};
+`;
+
+const SimilarPoster = styled(CachedRemoteImage)`
+  width: 100%;
+  height: 100%;
+`;
+
+const SimilarNoImage = styled.View`
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+`;
+
+const SimilarTitle = styled.Text`
+  margin-top: 8px;
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
+  font-size: 13px;
+  line-height: 16px;
+  letter-spacing: -0.2px;
+`;
+
+const SimilarMeta = styled.Text`
+  margin-top: 2px;
+  color: ${({ theme }) => theme.colors.textTertiary};
+  font-family: Outfit_400Regular;
+  font-size: 11px;
+  line-height: 14px;
 `;
 
 const MissingRoot = styled.View`
@@ -175,6 +237,33 @@ export function AzClassicDetailScreen({ route, navigation }: AzClassicDetailProp
     [movie]
   );
 
+  const similar = useMemo(() => (movie ? getSimilarAzClassics(movie.id) : []), [movie]);
+
+  const renderSimilar = useCallback(
+    ({ item }: ListRenderItemInfo<AzClassicMovie>) => {
+      const uri = getTmdbImageUrl(item.posterPath, "w342");
+      return (
+        <SimilarCard
+          onPress={() => navigation.push("AzClassicDetail", { id: item.id })}
+          style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.97 : 1 }] }]}
+        >
+          <SimilarPosterFrame>
+            {uri ? (
+              <SimilarPoster uri={uri} contentFit="cover" />
+            ) : (
+              <SimilarNoImage>
+                <Feather name="film" size={20} color={theme.colors.textSecondary} />
+              </SimilarNoImage>
+            )}
+          </SimilarPosterFrame>
+          <SimilarTitle numberOfLines={1}>{getAzClassicDisplayTitle(item)}</SimilarTitle>
+          {item.year ? <SimilarMeta>{item.year}</SimilarMeta> : null}
+        </SimilarCard>
+      );
+    },
+    [navigation, theme.colors.textSecondary]
+  );
+
   if (!movie) {
     return (
       <MissingRoot>
@@ -187,6 +276,11 @@ export function AzClassicDetailScreen({ route, navigation }: AzClassicDetailProp
   }
 
   const posterUri = getTmdbImageUrl(movie.posterPath, "w780");
+  const displayTitle = getAzClassicDisplayTitle(movie);
+  // Show the English name as a small secondary line only when it differs from
+  // the native title on display (proper nouns like "Ulduz" have no subtitle).
+  const englishSubtitle =
+    movie.title.trim() && movie.title.trim() !== displayTitle.trim() ? movie.title.trim() : null;
   const runtimeLabel = formatRuntime(movie.runtimeMinutes);
   const metaParts = [
     movie.year ? String(movie.year) : null,
@@ -202,7 +296,7 @@ export function AzClassicDetailScreen({ route, navigation }: AzClassicDetailProp
     navigation.navigate("Player", {
       mediaType: "movie",
       tmdbId: movie.tmdbId ? String(movie.tmdbId) : "",
-      title: movie.title,
+      title: displayTitle,
       year: movie.year ? String(movie.year) : null,
       videoId: movie.youtubeId,
       playbackSource: "youtube",
@@ -224,7 +318,8 @@ export function AzClassicDetailScreen({ route, navigation }: AzClassicDetailProp
         </HeroWrap>
 
         <Body>
-          <Title numberOfLines={3}>{movie.title}</Title>
+          <Title numberOfLines={3}>{displayTitle}</Title>
+          {englishSubtitle ? <EnglishSubtitle numberOfLines={2}>{englishSubtitle}</EnglishSubtitle> : null}
           {metaParts.length > 0 ? <MetaRow>{metaParts.join("  ·  ")}</MetaRow> : null}
 
           <PlayButton $disabled={!canPlay} disabled={!canPlay} onPress={handlePlay}>
@@ -247,6 +342,23 @@ export function AzClassicDetailScreen({ route, navigation }: AzClassicDetailProp
               <CastWrap>
                 <CastCrewSection cast={cast} crew={crew} />
               </CastWrap>
+            </>
+          ) : null}
+
+          {similar.length > 0 ? (
+            <>
+              <SectionTitle>{t("azClassic.similar")}</SectionTitle>
+              <SimilarWrap>
+                <FlashList
+                  data={similar}
+                  horizontal
+                  keyExtractor={(item) => item.id}
+                  renderItem={renderSimilar}
+                  showsHorizontalScrollIndicator={false}
+                  removeClippedSubviews
+                  ListFooterComponent={<View style={{ width: 4 }} />}
+                />
+              </SimilarWrap>
             </>
           ) : null}
         </Body>

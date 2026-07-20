@@ -5,7 +5,7 @@ import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components/native";
 
-import { AzClassicMovie, getAzClassics } from "../api/azClassics";
+import { AzClassicMovie, getAzClassicDisplayTitle, getAzClassics } from "../api/azClassics";
 import { getTmdbImageUrl } from "../api/tmdb";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { HomeStackParamList } from "../navigation/types";
@@ -118,7 +118,7 @@ export function AzClassicsGridScreen({ navigation }: AzClassicsGridProps) {
               </NoImage>
             )}
           </PosterFrame>
-          <CardTitle numberOfLines={1}>{item.title}</CardTitle>
+          <CardTitle numberOfLines={1}>{getAzClassicDisplayTitle(item)}</CardTitle>
           <CardMeta>{item.year ?? ""}</CardMeta>
         </CardPressable>
       );
