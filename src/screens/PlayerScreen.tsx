@@ -491,14 +491,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, []);
 
   useEffect(() => {
-    if (!hasTrackedRef.current && !route.params.trailerUrl) {
+    if (!hasTrackedRef.current && !route.params.trailerUrl && route.params.playbackSource !== "youtube") {
       hasTrackedRef.current = true;
       void addToRecentlyWatched(Number(route.params.tmdbId), route.params.mediaType, {
         title: route.params.title,
         imdbId: route.params.imdbId ?? null,
       });
     }
-  }, [addToRecentlyWatched, route.params.tmdbId, route.params.mediaType, route.params.trailerUrl]);
+  }, [addToRecentlyWatched, route.params.tmdbId, route.params.mediaType, route.params.trailerUrl, route.params.playbackSource]);
 
   // â”€â”€ Auto-hide overlay controls â”€â”€
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -643,6 +643,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     hdfilmRuntimeDiscoveryKeysRef.current.clear();
     dizipalRecoveryTriggeredRef.current = false;
     directFallbackPromiseRef.current = null;
+
+    if (route.params.playbackSource === "youtube" && route.params.videoId) {
+      // Azerbaijani Classics: play straight through the in-app YouTube player,
+      // no provider resolution (these titles aren't on the scraper providers).
+      setIsResolving(false);
+      setPlayerResult({ url: route.params.videoId, source: "youtube_embed" });
+      setCurrentStreamUrl(null);
+      return;
+    }
 
     if (route.params.trailerUrl) {
       // Show trailer directly

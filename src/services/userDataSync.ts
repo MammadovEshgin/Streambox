@@ -1051,9 +1051,18 @@ export async function enqueueProfileAssetSync(kind: SyncAssetKind, uri: string |
   scheduleSupabaseUserDataSync(uid, 1_000);
 }
 
-export async function enqueueMediaLibrarySync(i: { operation: "upsert" | "delete"; listKind: SyncListKind; mediaType: MediaType; tmdbId: number | string; details?: UserMediaSyncDetails | null; occurredAt?: string; }) {
-  const uid = await getSyncUserId(); if (!uid) return;
-  await enqueuePendingOperation({ kind: "media_library", userId: uid, operation: i.operation, listKind: i.listKind, mediaType: i.mediaType, tmdbId: i.tmdbId, imdbId: i.details?.imdbId ?? null, collectedAt: i.occurredAt ?? new Date().toISOString(), snapshot: normalizeMediaSnapshot(i.details), auditMetadata: normalizeSyncMetadata({ title: i.details?.title }) });
+export type MediaLibraryQueueItem = { operation: "upsert" | "delete"; listKind: SyncListKind; mediaType: MediaType; tmdbId: number | string; details?: UserMediaSyncDetails | null; occurredAt?: string; };
+
+export async function enqueueMediaLibrarySync(i: MediaLibraryQueueItem) {
+  await enqueueMediaLibraryBatch([i]);
+}
+
+// One queue read + one write for a whole batch. The Letterboxd import queues
+// hundreds of items when its one-shot snapshot push fails — per-item enqueues
+// would do hundreds of serialized read-modify-writes of the same queue.
+export async function enqueueMediaLibraryBatch(items: MediaLibraryQueueItem[]) {
+  const uid = await getSyncUserId(); if (!uid || items.length === 0) return;
+  await enqueuePendingOperations(items.map((i): PendingSyncOperation => ({ kind: "media_library", userId: uid, operation: i.operation, listKind: i.listKind, mediaType: i.mediaType, tmdbId: i.tmdbId, imdbId: i.details?.imdbId ?? null, collectedAt: i.occurredAt ?? new Date().toISOString(), snapshot: normalizeMediaSnapshot(i.details), auditMetadata: normalizeSyncMetadata({ title: i.details?.title }) })));
   scheduleSupabaseUserDataSync(uid);
 }
 

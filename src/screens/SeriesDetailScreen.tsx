@@ -68,6 +68,12 @@ import { useAppSettings } from "../settings/AppSettingsContext";
 
 const SERIES_SIMILAR_CACHE_PREFIX = "series-detail-similar-v1";
 
+// Smart-similar fans out into keyword/credit lookups for ~20 candidates.
+// Deferring it keeps the detail screen's first paint (details + ratings +
+// quick-similar) inside the proxy rate budget; quick-similar fills the rail
+// immediately and smart-similar refines it a moment later.
+const SMART_SIMILAR_DEFER_MS = 3500;
+
 function getSeriesSimilarCacheKey(seriesId: string, language: string) {
   return `${SERIES_SIMILAR_CACHE_PREFIX}:${language}:${seriesId}`;
 }
@@ -624,6 +630,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const loveProgress = useSharedValue(0);
   const trailerRequestRef = useRef<Promise<string | null> | null>(null);
   const detailRequestRef = useRef(0);
+  const smartSimilarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconcileSeriesWatchRef = useRef<"idle" | "saving" | "removing">("idle");
 
   const loadTrailer = useCallback(() => {
@@ -710,25 +717,38 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
         }
       }).catch(() => undefined);
 
-      void getSmartSimilarSeries(route.params.seriesId, detailResponse).then((similarResponse) => {
+      // Smart-similar fans out into keyword/credit lookups for ~20 candidates.
+      // Deferring it keeps the detail screen's first paint (details + ratings +
+      // quick-similar) inside the proxy rate budget.
+      if (smartSimilarTimerRef.current) {
+        clearTimeout(smartSimilarTimerRef.current);
+      }
+      smartSimilarTimerRef.current = setTimeout(() => {
+        smartSimilarTimerRef.current = null;
         if (detailRequestRef.current !== requestId) {
           return;
         }
 
-        const nextSimilarSeries = similarResponse
-          .filter((item) => String(item.id) !== route.params.seriesId)
-          .slice(0, 12);
-        setSimilarSeries(nextSimilarSeries);
-        void writePersistedRuntimeCache(similarCacheKey, nextSimilarSeries);
-      }).catch(() => {
-        if (detailRequestRef.current === requestId) {
-          setSimilarSeries((current) => current);
-        }
-      }).finally(() => {
-        if (detailRequestRef.current === requestId) {
-          setIsRelatedLoading(false);
-        }
-      });
+        void getSmartSimilarSeries(route.params.seriesId, detailResponse).then((similarResponse) => {
+          if (detailRequestRef.current !== requestId) {
+            return;
+          }
+
+          const nextSimilarSeries = similarResponse
+            .filter((item) => String(item.id) !== route.params.seriesId)
+            .slice(0, 12);
+          setSimilarSeries(nextSimilarSeries);
+          void writePersistedRuntimeCache(similarCacheKey, nextSimilarSeries);
+        }).catch(() => {
+          if (detailRequestRef.current === requestId) {
+            setSimilarSeries((current) => current);
+          }
+        }).finally(() => {
+          if (detailRequestRef.current === requestId) {
+            setIsRelatedLoading(false);
+          }
+        });
+      }, SMART_SIMILAR_DEFER_MS);
 
       void getSeriesEpisodeFallbackImagesWithImdb(detailResponse.title, detailResponse.imdbId).then((fallbackImages) => {
         if (detailRequestRef.current !== requestId) {
@@ -759,6 +779,13 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
 
   useEffect(() => {
     void loadSeries();
+
+    return () => {
+      if (smartSimilarTimerRef.current) {
+        clearTimeout(smartSimilarTimerRef.current);
+        smartSimilarTimerRef.current = null;
+      }
+    };
   }, [loadSeries]);
 
   useEffect(() => {
