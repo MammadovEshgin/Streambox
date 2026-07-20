@@ -11,7 +11,11 @@ import {
   WATCHLIST_STORAGE_KEY,
   WATCH_HISTORY_STORAGE_KEY,
 } from "./userDataStorage";
-import { syncCurrentLocalUserSnapshotToSupabase } from "./userDataSync";
+import {
+  enqueueMediaLibraryBatch,
+  enqueueWatchHistoryBatch,
+  syncCurrentLocalUserSnapshotToSupabase,
+} from "./userDataSync";
 
 // Letterboxd's data export contains far more than these, but watched /
 // watchlist / likes / diary are everything we need to mirror the user's
@@ -310,14 +314,46 @@ export async function importLetterboxdArchive(
     [WATCH_HISTORY_STORAGE_KEY, JSON.stringify(mergedHistory)],
   ]);
 
-  // Push the merged snapshot to Supabase. Failure here (offline) is non-fatal:
-  // the data is already saved locally.
+  // Push the merged snapshot to Supabase. Failure here (offline / rate limit)
+  // is non-fatal for the import itself — the data is saved locally — but it
+  // must NOT be fire-and-forget: this one-shot push used to be the ONLY cloud
+  // path for imported items, so a single failure left hundreds of movies
+  // existing on this device alone, unprotected against any later local loss.
   let syncedToCloud = false;
   try {
     await syncCurrentLocalUserSnapshotToSupabase();
     syncedToCloud = true;
   } catch {
     syncedToCloud = false;
+    // Durable fallback: queue every imported item as an idempotent upsert in
+    // the sync queue. The standard retry machinery (flush on foreground /
+    // background / next launch) keeps retrying until they reach the cloud.
+    try {
+      await enqueueMediaLibraryBatch([
+        ...addedWatchlist.map((id) => ({
+          operation: "upsert" as const,
+          listKind: "watchlist" as const,
+          mediaType: "movie" as const,
+          tmdbId: id,
+        })),
+        ...addedLiked.map((id) => ({
+          operation: "upsert" as const,
+          listKind: "liked" as const,
+          mediaType: "movie" as const,
+          tmdbId: id,
+        })),
+      ]);
+      await enqueueWatchHistoryBatch(
+        addedWatchEntries.map((entry) => ({
+          operation: "upsert" as const,
+          entry,
+          audit: { source: "letterboxd_import" },
+        }))
+      );
+    } catch {
+      // Even the queue write failed — local data is intact; the user can
+      // re-run the import or the next successful sync picks the lists up.
+    }
   }
 
   const matched = [...idByUri.values()].filter((id) => id != null).length;

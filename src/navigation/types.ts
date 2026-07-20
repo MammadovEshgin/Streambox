@@ -62,6 +62,10 @@ export type HomeStackParamList = {
   ActorDetail: {
     actorId: string;
   };
+  AzClassicDetail: {
+    id: string;
+  };
+  AzClassicsGrid: undefined;
   Player: {
     mediaType: MediaType,
     tmdbId: string,
@@ -74,6 +78,7 @@ export type HomeStackParamList = {
     trailerUrl?: string,
     year?: string | null;
     videoId?: string | null;
+    playbackSource?: "youtube";
     resumeAtSeconds?: number;
     watchRoomCode?: string;
     watchRoomNickname?: string;
@@ -116,6 +121,7 @@ export type ProfileStackParamList = {
     trailerUrl?: string;
     year?: string | null;
     videoId?: string | null;
+    playbackSource?: "youtube";
     resumeAtSeconds?: number;
     watchRoomCode?: string;
     watchRoomNickname?: string;
@@ -168,6 +174,7 @@ export type StatsStackParamList = {
     trailerUrl?: string;
     year?: string | null;
     videoId?: string | null;
+    playbackSource?: "youtube";
     resumeAtSeconds?: number;
     watchRoomCode?: string;
     watchRoomNickname?: string;

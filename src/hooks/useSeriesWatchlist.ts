@@ -8,7 +8,6 @@ export function useSeriesWatchlist() {
     storageKey: SERIES_WATCHLIST_STORAGE_KEY,
     listKind: "watchlist",
     mediaType: "tv",
-    notifyStorageChanges: true,
   });
 
   return useMemo(

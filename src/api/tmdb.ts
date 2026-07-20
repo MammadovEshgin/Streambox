@@ -7,6 +7,7 @@ import { shouldFetchExternalRatings, type ExternalRatingsSurface } from "../serv
 import { trackNetworkFailure } from "../services/telemetryService";
 import { dedupeInFlight, mapWithConcurrency } from "../utils/concurrency";
 import { LruMap } from "../utils/LruMap";
+import { PersistedLruMap } from "../services/persistedLruMap";
 import {
   getImdbPopularMovies,
   getImdbTop250Movies,
@@ -371,11 +372,33 @@ const CACHE_MAX = {
   list: 300
 } as const;
 
-const imdbIdCache = new LruMap<string, string | null>(CACHE_MAX.id);
+// The TMDB↔IMDb id maps and media logos never (or almost never) change, yet
+// rebuilding them used to cost a fresh /external_ids //find //images request
+// per item on EVERY cold start — the main driver of proxy rate-limit storms.
+// PersistedLruMap survives restarts; a coarse whole-map TTL keeps them honest.
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const imdbIdCache = new PersistedLruMap<string | null>({
+  storageKey: "@streambox/api-cache-imdb-ids-v1",
+  maxEntries: CACHE_MAX.id,
+  ttlMs: 4 * WEEK_MS,
+});
 const omdbRatingsCache = new LruMap<string, Pick<ExternalRatings, "imdb" | "rottenTomatoes" | "metacritic">>(CACHE_MAX.rating);
 const letterboxdCache = new LruMap<string, string | null>(CACHE_MAX.id);
-const imdbToTmdbMovieCache = new LruMap<string, TmdbFindMovieRecord | null>(CACHE_MAX.rating);
-const imdbToTmdbTvCache = new LruMap<string, TmdbFindTvRecord | null>(CACHE_MAX.rating);
+const imdbToTmdbMovieCache = new PersistedLruMap<TmdbFindMovieRecord | null>({
+  storageKey: "@streambox/api-cache-imdb-to-tmdb-movie-v1",
+  maxEntries: CACHE_MAX.rating,
+  ttlMs: WEEK_MS,
+});
+const imdbToTmdbTvCache = new PersistedLruMap<TmdbFindTvRecord | null>({
+  storageKey: "@streambox/api-cache-imdb-to-tmdb-tv-v1",
+  maxEntries: CACHE_MAX.rating,
+  ttlMs: WEEK_MS,
+});
+const mediaLogoCache = new PersistedLruMap<string | null>({
+  storageKey: "@streambox/api-cache-media-logos-v1",
+  maxEntries: CACHE_MAX.id,
+  ttlMs: 2 * WEEK_MS,
+});
 const tvMazeEpisodeImageCache = new LruMap<string, Record<string, string>>(CACHE_MAX.medium);
 const tmdbEpisodeImageCache = new LruMap<string, string | null>(CACHE_MAX.medium);
 const trailerUrlCache = new LruMap<string, string | null>(CACHE_MAX.id);
@@ -394,7 +417,10 @@ const inFlightMovieDetails = new Map<string, Promise<MovieDetails>>();
 const inFlightSeriesDetails = new Map<string, Promise<SeriesDetails>>();
 const LIST_ENRICHMENT_CONCURRENCY = 4;
 const IMDB_TOP250_RESOLVE_CONCURRENCY = 6;
-const IMDB_POPULAR_SPOTLIGHT_RESOLVE_LIMIT = 36;
+// The hero shows 10 slides; resolving 36 IMDb→TMDB ids per cold start was the
+// single largest request burst in the app. 14 leaves headroom for entries that
+// fail the quality/backdrop filters while cutting the burst by ~60%.
+const IMDB_POPULAR_SPOTLIGHT_RESOLVE_LIMIT = 14;
 const MIN_IMDB_POPULAR_SPOTLIGHT_ITEMS = 6;
 
 function getLocalizedTmdbCacheKey(scope: string, id: string | number) {
@@ -469,9 +495,43 @@ tmdbClient.interceptors.request.use((config) => {
 // deterministic and must NOT be retried.
 const TMDB_MAX_TRANSIENT_RETRIES = 2;
 const TMDB_RETRY_BACKOFF_MS = [200, 600];
+// A 429 means the proxy's rate window is CLOSED: fast retries are guaranteed to
+// fail AND each one consumes more of the shared per-IP budget (on mobile
+// carriers that budget is shared across CGNAT users). Honor the server-stated
+// Retry-After once when it's short; otherwise fail fast so the UI can show a
+// real error state instead of deepening the outage.
+const TMDB_MAX_HONORED_RETRY_AFTER_MS = 8000;
+const TMDB_DEFAULT_429_RETRY_MS = 1500;
 
 function isTransientTmdbError(status: number | undefined): boolean {
   return status === 429 || status === undefined || (typeof status === "number" && status >= 500);
+}
+
+function getTransientRetryDelayMs(
+  status: number | undefined,
+  attempt: number,
+  retryAfterHeader: unknown
+): number | null {
+  if (status !== 429) {
+    return TMDB_RETRY_BACKOFF_MS[attempt] ?? TMDB_RETRY_BACKOFF_MS[TMDB_RETRY_BACKOFF_MS.length - 1];
+  }
+
+  if (attempt > 0) {
+    return null;
+  }
+
+  const retryAfterSeconds = Number(retryAfterHeader);
+  if (!Number.isFinite(retryAfterSeconds) || retryAfterSeconds < 0) {
+    return TMDB_DEFAULT_429_RETRY_MS;
+  }
+
+  const retryAfterMs = retryAfterSeconds * 1000;
+  if (retryAfterMs > TMDB_MAX_HONORED_RETRY_AFTER_MS) {
+    return null;
+  }
+
+  // Small jitter so a burst of throttled requests doesn't re-fire in lockstep.
+  return retryAfterMs + Math.floor(Math.random() * 250);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -493,14 +553,23 @@ tmdbClient.interceptors.response.use(
       }, status === 429 ? "error" : "warning");
     }
 
-    // Retry transient failures with bounded exponential-ish backoff. Applies to
-    // both proxy and direct modes; deterministic 4xx (except 429) fall through.
+    // Retry transient failures with bounded backoff. Applies to both proxy and
+    // direct modes; deterministic 4xx (except 429) fall through. 429s get at
+    // most ONE retry, delayed by the server's Retry-After — fast blind retries
+    // just burn more of the rate window (see getTransientRetryDelayMs).
     if (config && isTransientTmdbError(status)) {
       const attempt = (config._tmdbTransientRetryCount as number | undefined) ?? 0;
       if (attempt < TMDB_MAX_TRANSIENT_RETRIES) {
-        config._tmdbTransientRetryCount = attempt + 1;
-        await sleep(TMDB_RETRY_BACKOFF_MS[attempt] ?? TMDB_RETRY_BACKOFF_MS[TMDB_RETRY_BACKOFF_MS.length - 1]);
-        return tmdbClient.request(config);
+        const retryDelayMs = getTransientRetryDelayMs(
+          status,
+          attempt,
+          error?.response?.headers?.["retry-after"]
+        );
+        if (retryDelayMs !== null) {
+          config._tmdbTransientRetryCount = attempt + 1;
+          await sleep(retryDelayMs);
+          return tmdbClient.request(config);
+        }
       }
     }
 
@@ -1012,28 +1081,33 @@ export const GENRE_ID_MAP: Record<number, string> = {
   10765: "Sci-Fi & Fantasy", 10766: "Soap", 10767: "Talk", 10768: "War & Politics",
 };
 
-export async function getMovieLogos(id: number): Promise<string | null> {
+async function getMediaLogo(mediaType: MediaType, id: number): Promise<string | null> {
+  const cacheKey = `${mediaType}:${id}`;
+  if (mediaLogoCache.has(cacheKey)) {
+    return mediaLogoCache.get(cacheKey) ?? null;
+  }
+
   try {
     const { data } = await tmdbClient.get<{ logos: Array<{ file_path: string; iso_639_1: string | null }> }>(
-      `/movie/${id}/images`
+      `/${mediaType}/${id}/images`
     );
     const logo = data.logos?.find((l) => l.iso_639_1 === "en") ?? data.logos?.[0];
-    return logo ? logo.file_path : null;
+    const logoPath = logo ? logo.file_path : null;
+    mediaLogoCache.set(cacheKey, logoPath);
+    return logoPath;
   } catch {
+    // Do not negative-cache failures: a 429/timeout would otherwise hide the
+    // logo until the persisted entry expires.
     return null;
   }
 }
 
+export async function getMovieLogos(id: number): Promise<string | null> {
+  return getMediaLogo("movie", id);
+}
+
 export async function getSeriesLogos(id: number): Promise<string | null> {
-  try {
-    const { data } = await tmdbClient.get<{ logos: Array<{ file_path: string; iso_639_1: string | null }> }>(
-      `/tv/${id}/images`
-    );
-    const logo = data.logos?.find((l) => l.iso_639_1 === "en") ?? data.logos?.[0];
-    return logo ? logo.file_path : null;
-  } catch {
-    return null;
-  }
+  return getMediaLogo("tv", id);
 }
 
 async function enrichItemsWithImdbRatings(items: MediaItem[]): Promise<MediaItem[]> {
