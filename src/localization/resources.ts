@@ -148,7 +148,7 @@ export const resources = {
       },
       home: { discover: "Discover", trendingMovies: "Trending Movies", trendingSeries: "Trending Series", cinematicJourneys: "Cinematic Journeys", railUnavailable: "Couldn't load right now", partialLoadError: "Some content couldn't load.", loadFailed: "Discovery couldn't load. Check your connection." },
       movies: { movieOfDay: "Movie of the Day", noMovieOfDay: "No movie of the day", topNewMovies: "Top New Movies", imdbTop250: "IMDb Top 250", azClassics: "Azerbaijani Classics" },
-      azClassic: { playOnYoutube: "Play on YouTube", unavailable: "Video unavailable", notFound: "This film could not be found." },
+      azClassic: { playOnYoutube: "Play on YouTube", unavailable: "Video unavailable", notFound: "This film could not be found.", similar: "More Azerbaijani Classics" },
       series: { seriesOfDay: "Series of the Day", noSeriesOfDay: "No series of the day", topNewSeries: "Top New Series", imdbTop250Series: "IMDb Top 250 Series" },
       search: {
         placeholder: "Search movies & series...",
@@ -490,7 +490,7 @@ export const resources = {
       },
       home: { discover: "Keşfet", trendingMovies: "Trend filmler", trendingSeries: "Trend diziler", cinematicJourneys: "Sinematik yolculuklar", railUnavailable: "Şu anda yüklenemedi", partialLoadError: "Bazı içerikler yüklenemedi.", loadFailed: "Keşfet yüklenemedi. Bağlantını kontrol et." },
       movies: { movieOfDay: "Günün filmi", noMovieOfDay: "Bugünün filmi yok", topNewMovies: "En iyi yeni filmler", imdbTop250: "IMDb En İyi 250", azClassics: "Azerbaycan Klasikleri" },
-      azClassic: { playOnYoutube: "YouTube'da oynat", unavailable: "Video mevcut değil", notFound: "Bu film bulunamadı." },
+      azClassic: { playOnYoutube: "YouTube'da oynat", unavailable: "Video mevcut değil", notFound: "Bu film bulunamadı.", similar: "Diğer Azerbaycan Klasikleri" },
       series: { seriesOfDay: "Günün dizisi", noSeriesOfDay: "Bugünün dizisi yok", topNewSeries: "En iyi yeni diziler", imdbTop250Series: "IMDb En İyi 250 Dizi" },
       search: { placeholder: "Film ve dizi ara...", noResultsForQuery: "\"{{query}}\" için sonuç bulunamadı", tryDifferentKeywords: "Farklı anahtar kelimeler dene ya da yazımı kontrol et", pressEnterForFullResults: "Tam sonuçlar için Enter'a bas", typeAtLeastTwoChars: "Arama için en az 2 karakter yaz", filteredResults: "Filtrelenmiş sonuçlar", resultsCount_one: "{{count}} sonuç", resultsCount_other: "{{count}} sonuç", noResultsFound: "Sonuç bulunamadı", couldNotFindMatch: "Şuna uygun bir sonuç bulamadık:", yourFilters: "filtrelerin", suggestionCheckSpelling: "Yazımı kontrol et ya da farklı anahtar kelimeler dene", suggestionUseShorterTerms: "Daha kısa ya da daha genel terimler kullan", suggestionAdjustFilters: "Filtreleri değiştirmeyi dene", resultsFor: "\"{{query}}\" için sonuçlar", foundMatchingTitles: "Aramana uyan {{count}}+ içerik bulundu", searchFailedTitle: "Arama yüklenemedi", searchFailedBody: "Bağlantını kontrol edip tekrar dene." },
       filters: { title: "Filtreler", reset: "Sıfırla", type: "Tür", movies: "Filmler", tvSeries: "TV dizileri", genres: "Türler", releaseYear: "Yayın yılı", from: "Başlangıç", to: "Bitiş", minimumRating: "Minimum puan", sortBy: "Sırala", mostPopular: "En popüler", highestRated: "En yüksek puanlı", newestFirst: "En yeni önce", mostVoted: "En çok oy alan", apply: "Filtreleri uygula" },
