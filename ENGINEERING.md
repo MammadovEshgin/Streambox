@@ -63,14 +63,15 @@ the `app.config.js` runtime, not the branch you happen to be on.
 2. **Any change that adds or upgrades a native module cannot go OTA.** It requires a new native build **and** a `runtimeVersion` bump (e.g. `1.2.0`). Do **not** reuse `1.1.0` for a build that adds a native module — existing `1.1.0` installs would crash on the next OTA when they call the missing module. Prefer pure-JS solutions to stay OTA-deliverable (this is why the loader was rebuilt with SVG+Reanimated instead of Lottie).
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 
-### Current deployed state (last updated 2026-07-13, Dizibal resolver + anime OTA)
+### Current deployed state (last updated 2026-07-21, Azerbaijani Classics update)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `release/1.2.0-watch-together` @ `b54a87c` | `1116b7f6-1688-44b4-bf19-728af3e73abc` |
+| 1.2.0 | `release/1.2.0-watch-together` @ `8681531` | `3752ea2e-18f6-4929-8714-fc3809820e26` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
 
+- **2026-07-21 (1.2.0 only):** Removed 30 incorrectly-included films that are not genuine Azerbaijani classics from `azClassics` catalog. Deploy: 1.2.0 `8681531` → group `3752ea2e-18f6-4929-8714-fc3809820e26`.
 - **2026-07-13 (ALL THREE fleets):** Dizibal resolver repair + anime support.
   Dizibal retired `/api/stream/m3u8` (now 404 "Video bulunamadı" for every
   code), and the old resolver required both it and `/api/stream/embed`, so
