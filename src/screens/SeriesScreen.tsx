@@ -22,7 +22,9 @@ import {
 import { formatRating, isValidMediaItem, isValidMediaItemArray } from "../api/mediaFormatting";
 import { HubHeroSkeleton, HubRailSkeleton } from "../components/common/HubSkeletons";
 import { SafeContainer } from "../components/common/SafeContainer";
+import { ContinueWatchingCard } from "../components/home/ContinueWatchingCard";
 import { MediaCard } from "../components/home/MediaCard";
+import { useContinueWatchingSlot } from "../hooks/useContinueWatchingSlot";
 import { useRuntimeCacheAutoRefresh } from "../hooks/useRuntimeCacheAutoRefresh";
 import { useLikedSeries } from "../hooks/useLikedSeries";
 import { useWatchHistory } from "../hooks/useWatchHistory";
@@ -309,52 +311,33 @@ function mergeUnique(existing: MediaItem[], incoming: MediaItem[]): MediaItem[] 
   return merged;
 }
 
-async function seedTopNewSeries(minimumCount: number, initialPage?: SeedPageResponse): Promise<MediaItem[]> {
-  const firstPage = initialPage ?? await getTopNewSeriesPage(1);
+// Seed pages SEQUENTIALLY and stop the moment the pool is full. The previous
+// parallel fetch requested up to 4 extra pages upfront (each page fans out into
+// per-item enrichment requests) and then threw most of them away — a major
+// contributor to proxy rate-limit bursts on cold start.
+async function seedPagedPool(
+  minimumCount: number,
+  fetchPage: (page: number) => Promise<SeedPageResponse>,
+  initialPage?: SeedPageResponse
+): Promise<MediaItem[]> {
+  const firstPage = initialPage ?? await fetchPage(1);
   let pool = mergeUnique([], firstPage.items);
 
-  if (pool.length >= minimumCount || firstPage.totalPages <= 1) {
-    return pool;
-  }
-
-  const pagesToFetch = Array.from(
-    { length: Math.min(firstPage.totalPages, 5) - 1 },
-    (_, index) => index + 2
-  );
-
-  const responses = await Promise.all(pagesToFetch.map((page) => getTopNewSeriesPage(page)));
-  for (const response of responses) {
+  const lastPage = Math.min(firstPage.totalPages, 5);
+  for (let page = 2; page <= lastPage && pool.length < minimumCount; page += 1) {
+    const response = await fetchPage(page);
     pool = mergeUnique(pool, response.items);
-    if (pool.length >= minimumCount) {
-      break;
-    }
   }
 
   return pool;
 }
 
-async function seedImdbTopSeries(minimumCount: number, initialPage?: SeedPageResponse): Promise<MediaItem[]> {
-  const firstPage = initialPage ?? await getImdbTop250SeriesPage(1);
-  let pool = mergeUnique([], firstPage.items);
+function seedTopNewSeries(minimumCount: number, initialPage?: SeedPageResponse): Promise<MediaItem[]> {
+  return seedPagedPool(minimumCount, getTopNewSeriesPage, initialPage);
+}
 
-  if (pool.length >= minimumCount || firstPage.totalPages <= 1) {
-    return pool;
-  }
-
-  const pagesToFetch = Array.from(
-    { length: Math.min(firstPage.totalPages, 5) - 1 },
-    (_, index) => index + 2
-  );
-
-  const responses = await Promise.all(pagesToFetch.map((page) => getImdbTop250SeriesPage(page)));
-  for (const response of responses) {
-    pool = mergeUnique(pool, response.items);
-    if (pool.length >= minimumCount) {
-      break;
-    }
-  }
-
-  return pool;
+function seedImdbTopSeries(minimumCount: number, initialPage?: SeedPageResponse): Promise<MediaItem[]> {
+  return seedPagedPool(minimumCount, getImdbTop250SeriesPage, initialPage);
 }
 
 const RailSection = memo(function RailSection({ title, items, isLoading = false, onPressItem, onPressSeeAll }: RailSectionProps) {
@@ -410,6 +393,7 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
   const { user } = useAuth();
   const { likedSeries, isLoading: isLikedSeriesLoading } = useLikedSeries();
   const { history, isLoading: isWatchHistoryLoading } = useWatchHistory();
+  const continueWatchingEntry = useContinueWatchingSlot("tv");
   const [seriesOfDay, setSeriesOfDay] = useState<MediaItem | null>(cachedHub?.seriesOfDay ?? null);
   const [topNewSeries, setTopNewSeries] = useState<MediaItem[]>(cachedHub?.topNewSeries ?? []);
   const [imdbTopSeries, setImdbTopSeries] = useState<MediaItem[]>(cachedHub?.imdbTopSeries ?? []);
@@ -681,6 +665,31 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
           </Animated.View>
 
           {errorMessage ? <ErrorText>{errorMessage}</ErrorText> : null}
+
+          {continueWatchingEntry ? (
+            <Animated.View entering={FadeInDown.duration(200)}>
+              <ContinueWatchingCard
+                entry={continueWatchingEntry}
+                onContinue={() => {
+                  navigation.navigate("Player", {
+                    mediaType: "tv",
+                    tmdbId: String(continueWatchingEntry.tmdbId),
+                    title: continueWatchingEntry.title,
+                    originalTitle: continueWatchingEntry.originalTitle,
+                    imdbId: continueWatchingEntry.imdbId,
+                    year: continueWatchingEntry.year,
+                    castNames: continueWatchingEntry.castNames,
+                    seasonNumber: continueWatchingEntry.seasonNumber,
+                    episodeNumber: continueWatchingEntry.episodeNumber,
+                    resumeAtSeconds: continueWatchingEntry.positionSeconds,
+                  });
+                }}
+                onPressCard={() => {
+                  navigation.navigate("SeriesDetail", { seriesId: String(continueWatchingEntry.tmdbId) });
+                }}
+              />
+            </Animated.View>
+          ) : null}
 
           <Animated.View entering={FadeInDown.duration(200)}>
             <RailSection

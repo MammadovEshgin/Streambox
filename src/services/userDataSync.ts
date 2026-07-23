@@ -4,6 +4,7 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import type { MediaType } from "../api/tmdb";
 import type { WatchHistoryEntry, WatchPrecision } from "../hooks/useWatchHistory";
+import { buildWatchHistorySyncArrays, clampIntOrNull } from "../utils/watchHistoryRows";
 import { normalizeAppLanguage } from "../localization/types";
 import {
   APP_SETTINGS_STORAGE_KEY,
@@ -17,9 +18,16 @@ import {
   cacheBannerImageFromRemoteUri,
   cacheProfileImageFromRemoteUri,
 } from "./profileImageService";
+import {
+  buildProfileRpcPayload,
+  buildProfileRowPayload,
+  isLocalFileUri,
+} from "../utils/profileSyncPayload";
+import { reconcileQueueAfterFlush } from "../utils/syncQueue";
 import { supabase } from "./supabase";
 import { trackNetworkFailure } from "./telemetryService";
 import {
+  CONTINUE_WATCHING_STORAGE_KEY,
   LIKED_MOVIES_STORAGE_KEY,
   LIKED_SERIES_STORAGE_KEY,
   MOVIE_OF_DAY_CURRENT_STORAGE_KEY,
@@ -173,7 +181,6 @@ function resolveThemeId(value: unknown): ThemeId { return typeof value === "stri
 function coerceMediaType(value: unknown): MediaType { return value === "tv" ? "tv" : "movie"; }
 function coerceStringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : []; }
 function coerceNumberArray(value: unknown): number[] { return Array.isArray(value) ? value.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry)) : []; }
-function isLocalFileUri(uri: string | null | undefined): uri is string { return typeof uri === "string" && uri.startsWith("file://"); }
 function normalizeSyncMetadata(value: SyncMetadata | null | undefined): SyncMetadata { return isRecord(value) ? value : {}; }
 
 function normalizeMediaSnapshot(details?: UserMediaSyncDetails | null): SyncMetadata {
@@ -187,24 +194,6 @@ function normalizeMediaSnapshot(details?: UserMediaSyncDetails | null): SyncMeta
   return snapshot;
 }
 
-function sanitizeParallelArray<T>(values: T[] | null | undefined, targetLength: number): T[] {
-  if (!Array.isArray(values) || targetLength <= 0) return [];
-  return values.slice(0, targetLength);
-}
-
-function buildWatchHistorySyncArrays(entry: WatchHistoryEntry) {
-  const castIds = Array.isArray(entry.castIds) ? entry.castIds : [];
-  const directorIds = Array.isArray(entry.directorIds) ? entry.directorIds : [];
-  return {
-    castIds,
-    castNames: sanitizeParallelArray(entry.castNames, castIds.length),
-    castProfilePaths: sanitizeParallelArray(entry.castProfilePaths, castIds.length),
-    castGenders: sanitizeParallelArray(entry.castGenders, castIds.length),
-    directorIds,
-    directorNames: sanitizeParallelArray(entry.directorNames, directorIds.length),
-    directorProfilePaths: sanitizeParallelArray(entry.directorProfilePaths, directorIds.length),
-  };
-}
 
 function buildWatchHistoryRows(userId: string, entries: WatchHistoryEntry[]) {
   return entries.map((entry) => {
@@ -218,13 +207,13 @@ function buildWatchHistoryRows(userId: string, entries: WatchHistoryEntry[]) {
     return {
       user_id: userId,
       media_type: entry.mediaType,
-      title: entry.title,
+      title: (entry.title ?? "").slice(0, 500),
       poster_path: entry.posterPath,
-      genres: entry.genres,
-      runtime_minutes: entry.runtimeMinutes,
-      episode_count: entry.episodeCount,
-      vote_average: entry.voteAverage,
-      release_year: entry.year ? Number(entry.year) : null,
+      genres: (Array.isArray(entry.genres) ? entry.genres : []).slice(0, 25),
+      runtime_minutes: clampIntOrNull(entry.runtimeMinutes, 1, 5000),
+      episode_count: clampIntOrNull(entry.episodeCount, 1, 50000),
+      vote_average: Math.min(10, Math.max(0, Number.isFinite(entry.voteAverage) ? entry.voteAverage : 0)),
+      release_year: clampIntOrNull(entry.year, 1878, 2100),
       cast_ids: arrays.castIds,
       cast_names: arrays.castNames,
       cast_profile_paths: arrays.castProfilePaths,
@@ -240,32 +229,44 @@ function buildWatchHistoryRows(userId: string, entries: WatchHistoryEntry[]) {
   });
 }
 
+// Supabase/PostgREST rejects (or times out on) very large upserts, and the JS
+// client returns the failure as `{ error }` rather than throwing — so a single
+// giant upsert can silently drop everything. Upsert in bounded chunks, check
+// the error every time, retry transient failures, and surface a persistent one
+// so callers know the data didn't reach the cloud. A small list is one chunk,
+// i.e. unchanged behavior.
+const SUPABASE_UPSERT_CHUNK = 100;
+const SUPABASE_UPSERT_MAX_RETRIES = 2;
+
+async function upsertRowsInChunks(table: string, rows: any[], onConflict: string) {
+  for (let start = 0; start < rows.length; start += SUPABASE_UPSERT_CHUNK) {
+    const chunk = rows.slice(start, start + SUPABASE_UPSERT_CHUNK);
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= SUPABASE_UPSERT_MAX_RETRIES; attempt += 1) {
+      const { error } = await supabase.from(table).upsert(chunk, { onConflict });
+      if (!error) {
+        lastError = null;
+        break;
+      }
+      lastError = error;
+      if (attempt < SUPABASE_UPSERT_MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+      }
+    }
+    if (lastError) throw lastError;
+  }
+}
+
 async function batchUpsertRows(table: string, rows: any[], conflictKeys: string) {
   if (rows.length === 0) return;
   const tmdb = rows.filter((row) => row.tmdb_id);
   const internal = rows.filter((row) => row.internal_id);
   if (tmdb.length > 0) {
-    await supabase.from(table).upsert(tmdb, { onConflict: `${conflictKeys},tmdb_id` });
+    await upsertRowsInChunks(table, tmdb, `${conflictKeys},tmdb_id`);
   }
   if (internal.length > 0) {
-    await supabase.from(table).upsert(internal, { onConflict: `${conflictKeys},internal_id` });
+    await upsertRowsInChunks(table, internal, `${conflictKeys},internal_id`);
   }
-}
-
-function getWatchHistoryRemoteKey(mediaType: MediaType, tmdbId: number | null, internalId: string | null) {
-  return `${mediaType}:${internalId ?? tmdbId ?? "missing"}`;
-}
-
-function formatBirthdayForDatabase(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const parts = trimmed.split("/");
-  if (parts.length !== 3) return null;
-  const day = Number(parts[0]); const month = Number(parts[1]); const year = Number(parts[2]);
-  if (!Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year)) return null;
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
-  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function formatBirthdayForLocal(value: string | null | undefined): string {
@@ -316,7 +317,7 @@ function normalizeWatchHistory(raw: string | null): WatchHistoryEntry[] {
       castIds: coerceNumberArray(entry.castIds),
       castNames: coerceStringArray(entry.castNames),
       castProfilePaths: Array.isArray(entry.castProfilePaths) ? entry.castProfilePaths.map(v => typeof v === "string" ? v : null) : [],
-      castGenders: Array.isArray(entry.castGenders) ? entry.castGenders.filter(v => v === "male" || v === "female") : [],
+      castGenders: Array.isArray(entry.castGenders) ? entry.castGenders.map(v => (v === "male" || v === "female" ? v : null)) : [],
       directorIds: coerceNumberArray(entry.directorIds),
       directorNames: coerceStringArray(entry.directorNames),
       directorProfilePaths: Array.isArray(entry.directorProfilePaths) ? entry.directorProfilePaths.map(v => typeof v === "string" ? v : null) : [],
@@ -408,8 +409,32 @@ async function updateLocalAssetMetadata(assetKind: SyncAssetKind, nextUri: strin
 }
 
 async function getCurrentUserId() { const { data: { session } } = await supabase.auth.getSession(); return session?.user.id ?? null; }
+
+// Who a locally-made mutation belongs to. The session is the source of truth,
+// but with autoRefreshToken off app-wide there are real windows where the
+// session reads as null/expired while the user is still using the app — and
+// enqueue functions used to silently DROP the operation then. The local list
+// had already changed, the cloud never heard about it, and the next bootstrap
+// union resurrected removed items. Fall back to the last bootstrapped owner:
+// the op queues under their id and flushes once they re-authenticate.
+async function getSyncUserId() {
+  const sessionUserId = await getCurrentUserId();
+  if (sessionUserId) return sessionUserId;
+  return AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY);
+}
 async function readPendingQueue(): Promise<PendingSyncOperation[]> { try { const raw = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; } }
 async function writePendingQueue(queue: PendingSyncOperation[]) { if (queue.length === 0) await AsyncStorage.removeItem(SYNC_QUEUE_STORAGE_KEY); else await AsyncStorage.setItem(SYNC_QUEUE_STORAGE_KEY, JSON.stringify(queue)); }
+
+// Serializes every read-modify-write of the pending queue. Enqueues and the
+// flush's final reconciliation both go through here so no path can overwrite
+// the queue from a stale snapshot (an op enqueued while a slow flush was
+// executing used to be silently erased by the flush's closing write).
+let queueMutationChain: Promise<void> = Promise.resolve();
+function withQueueLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = queueMutationChain.then(task, task);
+  queueMutationChain = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 function getQueueOperationKey(op: PendingSyncOperation): string | null {
   switch (op.kind) {
@@ -425,12 +450,23 @@ function getQueueOperationKey(op: PendingSyncOperation): string | null {
 }
 
 async function enqueuePendingOperation(op: PendingSyncOperation) {
-  const queue = await readPendingQueue();
-  const key = getQueueOperationKey(op);
-  if (!key) { queue.push(op); await writePendingQueue(queue); return; }
-  const idx = queue.findIndex(q => getQueueOperationKey(q) === key);
-  if (idx >= 0) queue[idx] = op; else queue.push(op);
-  await writePendingQueue(queue);
+  await enqueuePendingOperations([op]);
+}
+
+// One queue read + one write for a whole batch — a multi-season save enqueues
+// dozens of ops, and doing a read-modify-write per op made the save visibly slow.
+async function enqueuePendingOperations(ops: PendingSyncOperation[]) {
+  if (ops.length === 0) return;
+  await withQueueLock(async () => {
+    const queue = await readPendingQueue();
+    for (const op of ops) {
+      const key = getQueueOperationKey(op);
+      if (!key) { queue.push(op); continue; }
+      const idx = queue.findIndex(q => getQueueOperationKey(q) === key);
+      if (idx >= 0) queue[idx] = op; else queue.push(op);
+    }
+    await writePendingQueue(queue);
+  });
 }
 
 function scheduleSupabaseUserDataSync(userId: string, delayMs = SYNC_FLUSH_DEBOUNCE_MS) {
@@ -531,9 +567,89 @@ async function fetchProfileAssetsFromDB() {
   return { avatarPath: data.avatar_path, bannerPath: data.banner_path, avatarVersion: data.avatar_version || 0, bannerVersion: data.banner_version || 0 };
 }
 
+// A settings image URI is only usable if it points at a file that still
+// exists. Reinstalls / dev-client switches wipe the document directory but
+// AsyncStorage keeps the dead file:// pointer, so without this check the
+// profile images silently render blank forever.
+async function isUsableLocalImageUri(uri: string | null | undefined) {
+  if (!isLocalFileUri(uri)) return false;
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists;
+  } catch {
+    return false;
+  }
+}
+
+// Uploaded assets live at `${userId}/${folder}/${kind}-${Date.now()}.${ext}`
+// and are never deleted except when replaced — so even if the user_profiles
+// pointers were lost, the newest object in the folder IS the user's image.
+// Names embed a fixed-width ms timestamp, so a lexicographic sort is
+// chronological.
+async function findNewestProfileAssetPath(userId: string, folder: "avatars" | "banners") {
+  try {
+    const { data, error } = await supabase.storage
+      .from(PROFILE_ASSETS_BUCKET)
+      .list(`${userId}/${folder}`, { limit: 100 });
+    if (error || !data) return null;
+    const newest = data
+      .map((object) => object?.name)
+      .filter((name): name is string => Boolean(name))
+      .sort()
+      .pop();
+    return newest ? `${userId}/${folder}/${newest}` : null;
+  } catch {
+    return null;
+  }
+}
+
+// Write recovered pointers back to user_profiles so every device (and the
+// bootstrap RPC) heals, not just this one. Only the recovered keys are sent —
+// the RPC leaves absent keys untouched.
+async function repairRemoteProfileAssetPaths(paths: { avatarPath: string | null; bannerPath: string | null }) {
+  const payload: Record<string, unknown> = {};
+  if (paths.avatarPath) payload.avatarPath = paths.avatarPath;
+  if (paths.bannerPath) payload.bannerPath = paths.bannerPath;
+  if (Object.keys(payload).length === 0) return;
+  try {
+    await supabase.rpc("sync_streambox_profile_and_settings", {
+      profile_payload: payload,
+      settings_payload: {},
+      audit_metadata: { source: "asset_path_recovery" },
+    });
+  } catch {
+    // Non-fatal: the next launch retries the recovery.
+  }
+}
+
 async function resolveProfileAssetUris(overrides?: any) {
   let { avatarPath, bannerPath, avatarVersion, bannerVersion } = overrides || {};
-  if (!avatarPath && !bannerPath) { const db = await fetchProfileAssetsFromDB(); if (db) { avatarPath = db.avatarPath; bannerPath = db.bannerPath; avatarVersion = db.avatarVersion; bannerVersion = db.bannerVersion; } }
+  if (!avatarPath || !bannerPath) {
+    const db = await fetchProfileAssetsFromDB();
+    if (db) {
+      if (!avatarPath && db.avatarPath) { avatarPath = db.avatarPath; avatarVersion = db.avatarVersion; }
+      if (!bannerPath && db.bannerPath) { bannerPath = db.bannerPath; bannerVersion = db.bannerVersion; }
+    }
+  }
+
+  // Last resort: the pointers are gone everywhere but the bucket still holds
+  // the uploaded files. Adopt the newest object per folder and repair the
+  // remote pointers in the background.
+  if (!avatarPath || !bannerPath) {
+    const userId = await getCurrentUserId();
+    if (userId) {
+      const [recoveredAvatar, recoveredBanner] = await Promise.all([
+        avatarPath ? null : findNewestProfileAssetPath(userId, "avatars"),
+        bannerPath ? null : findNewestProfileAssetPath(userId, "banners"),
+      ]);
+      if (recoveredAvatar || recoveredBanner) {
+        avatarPath = avatarPath ?? recoveredAvatar;
+        bannerPath = bannerPath ?? recoveredBanner;
+        void repairRemoteProfileAssetPaths({ avatarPath: recoveredAvatar, bannerPath: recoveredBanner });
+      }
+    }
+  }
+
   const [remoteProfileImageUri, remoteBannerImageUri] = await Promise.all([avatarPath ? resolveStorageUrl(avatarPath) : null, bannerPath ? resolveStorageUrl(bannerPath) : null]);
   const [profileImageUri, bannerImageUri] = await Promise.all([
     cacheProfileImageFromRemoteUri(remoteProfileImageUri).catch(() => remoteProfileImageUri),
@@ -589,50 +705,13 @@ async function mergeInitialSnapshot(local: LocalUserSnapshot, remoteB: RemoteBoo
   } satisfies LocalUserSnapshot;
 }
 
-function buildProfileRpcPayload(s: PersistedSettings) {
-  const payload: Record<string, unknown> = {
-    displayName: s.profileName,
-    bio: s.profileBio,
-    location: s.profileLocation,
-    birthday: formatBirthdayForDatabase(s.profileBirthday),
-    joinedAt: s.joinedDate || new Date().toISOString(),
-  };
-
-  if (!isLocalFileUri(s.profileImageUri) || s.profileImageStoragePath) {
-    payload.avatarPath = s.profileImageStoragePath;
-    payload.avatarVersion = s.profileImageVersion;
-  }
-
-  if (!isLocalFileUri(s.bannerImageUri) || s.bannerImageStoragePath) {
-    payload.bannerPath = s.bannerImageStoragePath;
-    payload.bannerVersion = s.bannerImageVersion;
-  }
-
-  return payload;
-}
-
-function buildProfileRowPayload(s: PersistedSettings) {
-  const payload: Record<string, unknown> = {
-    display_name: s.profileName,
-    bio: s.profileBio,
-    location: s.profileLocation,
-    location_text: s.profileLocation,
-    birthday: formatBirthdayForDatabase(s.profileBirthday),
-    joined_at: s.joinedDate || new Date().toISOString(),
-  };
-
-  if (!isLocalFileUri(s.profileImageUri) || s.profileImageStoragePath) {
-    payload.avatar_path = s.profileImageStoragePath;
-    payload.avatar_version = s.profileImageVersion;
-  }
-
-  if (!isLocalFileUri(s.bannerImageUri) || s.bannerImageStoragePath) {
-    payload.banner_path = s.bannerImageStoragePath;
-    payload.banner_version = s.bannerImageVersion;
-  }
-
-  return payload;
-}
+// buildProfileRpcPayload / buildProfileRowPayload moved to
+// src/utils/profileSyncPayload.ts. They now OMIT avatarPath/bannerPath unless
+// a storage path is actually held — the sync RPC treats a present-but-null
+// key as "set NULL", so the old `!isLocalFileUri(uri) || storagePath` guard
+// let a device with degraded local image state (cleared cache, fresh install)
+// wipe the remote pointers on any ordinary settings sync. That is how profile
+// avatars/banners vanished across devices.
 
 function buildSettingsPayload(s: PersistedSettings) {
   return {
@@ -696,53 +775,13 @@ async function backfillSnapshotToRemote(userId: string, snapshot: LocalUserSnaps
   if (recRows.length > 0) await batchUpsertRows("user_daily_recommendations", recRows, "user_id,recommendation_kind,recommendation_date");
 }
 
-export async function syncCurrentWatchHistoryToSupabase(entries?: WatchHistoryEntry[]) {
-  const userId = await getCurrentUserId();
-  if (!userId) return;
-
-  const watchHistory = entries ?? (await readLocalUserSnapshot()).watchHistory;
-  const watchHistoryRows = buildWatchHistoryRows(userId, watchHistory);
-  await batchUpsertRows("user_watch_history", watchHistoryRows, "user_id,media_type");
-
-  const { data: remoteRows, error } = await supabase
-    .from("user_watch_history")
-    .select("media_type, tmdb_id, internal_id")
-    .eq("user_id", userId);
-
-  if (error) {
-    throw error;
-  }
-
-  const localKeys = new Set(
-    watchHistoryRows.map((row) => getWatchHistoryRemoteKey(row.media_type, row.tmdb_id, row.internal_id))
-  );
-
-  for (const row of remoteRows || []) {
-    const rowKey = getWatchHistoryRemoteKey(row.media_type, row.tmdb_id, row.internal_id);
-    if (localKeys.has(rowKey)) {
-      continue;
-    }
-
-    let query = supabase
-      .from("user_watch_history")
-      .delete()
-      .eq("user_id", userId)
-      .eq("media_type", row.media_type);
-
-    if (row.tmdb_id) {
-      query = query.eq("tmdb_id", row.tmdb_id);
-    } else if (row.internal_id) {
-      query = query.eq("internal_id", row.internal_id);
-    } else {
-      continue;
-    }
-
-    const { error: deleteError } = await query;
-    if (deleteError) {
-      throw deleteError;
-    }
-  }
-}
+// NOTE: there is deliberately NO "sync the full local list and prune remote
+// rows" function anymore. The old syncCurrentWatchHistoryToSupabase deleted
+// every remote user_watch_history row missing from the in-memory list it was
+// handed — so a save that ran against a stale/partial list (e.g. a freshly
+// mounted hook that hadn't finished loading) silently wiped watched movies
+// from the cloud. Upserts and deletions each flow through the durable queue
+// (enqueueWatchHistoryBatch below) as explicit per-entry operations instead.
 
 export async function syncCurrentLocalUserSnapshotToSupabase(targetId?: string) {
   const userId = targetId || await getCurrentUserId();
@@ -756,7 +795,13 @@ export async function syncCurrentLocalUserSnapshotToSupabase(targetId?: string) 
 
 async function queueInitialAssetUploads(userId: string, settings: PersistedSettings) {
   const images = [{ u: settings.profileImageUri, k: "avatar" as const, p: settings.profileImageStoragePath, v: settings.profileImageVersion }, { u: settings.bannerImageUri, k: "banner" as const, p: settings.bannerImageStoragePath, v: settings.bannerImageVersion }];
-  for (const img of images) { if (isLocalFileUri(img.u) && !img.p) await enqueuePendingOperation({ kind: "asset_upload", userId, assetKind: img.k, localUri: img.u, previousPath: null, nextVersion: Math.max(img.v, 0) + 1 }); }
+  for (const img of images) {
+    if (!isLocalFileUri(img.u) || img.p) continue;
+    // A dead file:// pointer would enqueue an upload that can never succeed
+    // and would retry forever on the 5s failure loop.
+    if (!(await isUsableLocalImageUri(img.u))) continue;
+    await enqueuePendingOperation({ kind: "asset_upload", userId, assetKind: img.k, localUri: img.u, previousPath: null, nextVersion: Math.max(img.v, 0) + 1 });
+  }
 }
 
 function inferAssetExtension(uri: string) { const m = uri.toLowerCase().match(/\.([a-z0-9]+)(?:\?|$)/); return m?.[1] || "jpg"; }
@@ -774,6 +819,14 @@ async function executePendingOperation(op: PendingSyncOperation) {
       break;
     }
     case "asset_upload": {
+      // The source file can disappear between enqueue and flush (cleared
+      // document dir). Treat that as a completed no-op instead of failing —
+      // a failed op is re-queued and would retry forever. Warn so a skipped
+      // upload is diagnosable rather than silently absent from Supabase.
+      if (!(await isUsableLocalImageUri(op.localUri))) {
+        console.warn(`[sync] asset_upload skipped — ${op.assetKind} source file missing:`, op.localUri);
+        break;
+      }
       const ext = inferAssetExtension(op.localUri); const folder = op.assetKind === "avatar" ? "avatars" : "banners"; const path = `${op.userId}/${folder}/${op.assetKind}-${Date.now()}.${ext}`;
       const base64 = await FileSystem.readAsStringAsync(op.localUri, { encoding: FileSystem.EncodingType.Base64 });
       const { error } = await supabase.storage.from(PROFILE_ASSETS_BUCKET).upload(path, decode(base64), { contentType: inferAssetContentType(op.localUri) });
@@ -811,10 +864,18 @@ async function executePendingOperation(op: PendingSyncOperation) {
   }
 }
 
-export async function clearLocalUserDataCache() {
+// `preserveSyncQueue` keeps the durable op queue across the wipe. Sign-out
+// uses it: queued ops are tagged with their owner's user id, so a delete that
+// couldn't flush before sign-out (offline, expired token) survives on-device
+// and flushes when that user signs back in — instead of being erased and
+// having the "deleted" item resurrected by the next bootstrap union. The queue
+// is only dropped when a DIFFERENT account signs in (cross-user guard in
+// bootstrapSupabaseUserData).
+export async function clearLocalUserDataCache(options?: { preserveSyncQueue?: boolean }) {
   scheduledFlushTimers.forEach((timer) => clearTimeout(timer));
   scheduledFlushTimers.clear();
-  const keys = [APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY, SERIES_OF_DAY_CURRENT_STORAGE_KEY, ACTIVE_SYNC_USER_KEY, SYNC_QUEUE_STORAGE_KEY];
+  const keys = [APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, CONTINUE_WATCHING_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY, SERIES_OF_DAY_CURRENT_STORAGE_KEY, ACTIVE_SYNC_USER_KEY];
+  if (!options?.preserveSyncQueue) keys.push(SYNC_QUEUE_STORAGE_KEY);
   const all = await AsyncStorage.getAllKeys(); const bKeys = all.filter(k => k.startsWith(BOOTSTRAP_COMPLETE_KEY_PREFIX));
   await AsyncStorage.multiRemove([...keys, ...bKeys]);
 }
@@ -841,14 +902,15 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
     }
 
     const q = await readPendingQueue(); if (q.length === 0) return;
-    const r = q.filter(e => e.userId !== uid);
     const a = q.filter(e => e.userId === uid);
     const batch = a.slice(0, MAX_SYNC_OPERATIONS_PER_FLUSH);
     const remaining = a.slice(MAX_SYNC_OPERATIONS_PER_FLUSH);
     const f: PendingSyncOperation[] = [];
+    const succeeded: PendingSyncOperation[] = [];
     for (const op of batch) {
       try {
         await executePendingOperation(op);
+        succeeded.push(op);
       } catch (e) {
         console.warn("Sync failed", e);
         trackNetworkFailure("supabase", {
@@ -858,12 +920,39 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
         f.push(op);
       }
     }
-    await writePendingQueue([...r, ...remaining, ...f]);
+    // Executing a batch can take seconds (asset uploads), and ops enqueued in
+    // that window live only in the LATEST queue state — writing back the
+    // stale pre-execution snapshot silently erased them (a banner upload
+    // enqueued while the avatar was uploading never reached Supabase). So:
+    // re-read under the queue lock and remove ONLY what actually executed.
+    await withQueueLock(async () => {
+      const latest = await readPendingQueue();
+      await writePendingQueue(reconcileQueueAfterFlush(latest, succeeded));
+    });
     if (remaining.length > 0 || f.length > 0) {
       scheduleSupabaseUserDataSync(uid, SYNC_RETRY_DEBOUNCE_MS);
     }
   })().finally(() => { flushPromise = null; });
   await flushPromise;
+}
+
+// Flush repeatedly until the user's queue is empty or stops shrinking. A
+// single flush handles at most MAX_SYNC_OPERATIONS_PER_FLUSH ops and re-queues
+// failures for a later timer — fine mid-session, but before a sign-out wipe or
+// a bootstrap merge the WHOLE backlog has to reach the cloud now. Returns
+// whether the queue fully drained.
+export async function drainSupabaseUserDataSync(userId: string, maxRounds = 8): Promise<boolean> {
+  let previousPending = Number.POSITIVE_INFINITY;
+  for (let round = 0; round < maxRounds; round += 1) {
+    const pending = (await readPendingQueue()).filter((op) => op.userId === userId).length;
+    if (pending === 0) return true;
+    // No progress since the last round (offline / persistent failure) — stop
+    // burning time; the ops stay queued for a later session.
+    if (pending >= previousPending) return false;
+    previousPending = pending;
+    await flushSupabaseUserDataSync(userId);
+  }
+  return (await readPendingQueue()).filter((op) => op.userId === userId).length === 0;
 }
 
 export async function hasWarmBootstrappedUserData(userId: string) {
@@ -877,69 +966,149 @@ export async function hasWarmBootstrappedUserData(userId: string) {
 
 export async function bootstrapSupabaseUserData() {
   const uid = await getCurrentUserId(); if (!uid) return;
-  const pId = await AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY); let local = await readLocalUserSnapshot(); const bDone = (await AsyncStorage.getItem(getBootstrapCompleteKey(uid))) === "1";
+  const pId = await AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY);
+  // Cross-account guard: local data (and queued ops) belonging to a DIFFERENT
+  // user must never merge into this account. This is the only path that drops
+  // the sync queue — auth-loss and sign-out both preserve it now.
+  if (pId && pId !== uid) {
+    await clearLocalUserDataCache();
+  }
+  let local = await readLocalUserSnapshot(); const bDone = (await AsyncStorage.getItem(getBootstrapCompleteKey(uid))) === "1";
   if (bDone && pId === uid) {
     await queueInitialAssetUploads(uid, local.settings);
     await flushSupabaseUserDataSync(uid); await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, uid);
     local = await readLocalUserSnapshot();
-    if (!isLocalFileUri(local.settings.profileImageUri) || !isLocalFileUri(local.settings.bannerImageUri)) {
+    // Health check goes beyond "is it a file:// URI": the file must actually
+    // exist. A dead pointer (wiped document dir) previously passed the old
+    // isLocalFileUri gate and the images stayed blank forever.
+    const [profileImageHealthy, bannerImageHealthy] = await Promise.all([
+      isUsableLocalImageUri(local.settings.profileImageUri),
+      isUsableLocalImageUri(local.settings.bannerImageUri),
+    ]);
+    if (!profileImageHealthy || !bannerImageHealthy) {
       const a = await resolveProfileAssetUris({ avatarPath: local.settings.profileImageStoragePath, bannerPath: local.settings.bannerImageStoragePath, avatarVersion: local.settings.profileImageVersion, bannerVersion: local.settings.bannerImageVersion });
-      if (a.profileImageUri && !isLocalFileUri(local.settings.profileImageUri)) local.settings.profileImageUri = a.profileImageUri;
-      if (a.bannerImageUri && !isLocalFileUri(local.settings.bannerImageUri)) local.settings.bannerImageUri = a.bannerImageUri;
+      if (a.profileImageUri && !profileImageHealthy) local.settings.profileImageUri = a.profileImageUri;
+      if (a.bannerImageUri && !bannerImageHealthy) local.settings.bannerImageUri = a.bannerImageUri;
+      if (a.profileImageStoragePath && !local.settings.profileImageStoragePath) local.settings.profileImageStoragePath = a.profileImageStoragePath;
+      if (a.bannerImageStoragePath && !local.settings.bannerImageStoragePath) local.settings.bannerImageStoragePath = a.bannerImageStoragePath;
       await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(local.settings));
     }
     return;
   }
+  // Push this device's pending mutations up BEFORE downloading: the merge
+  // below is a pure union, so a delete still sitting in the queue (e.g. made
+  // in the 30s debounce window before the previous sign-out) would otherwise
+  // be resurrected by its own not-yet-deleted remote row.
+  await drainSupabaseUserDataSync(uid).catch(() => undefined);
   let rb: RemoteBootstrap; try { rb = await fetchRemoteBootstrap(); } catch { const a = await resolveProfileAssetUris(); if (a.profileImageUri) local.settings.profileImageUri = a.profileImageUri; if (a.bannerImageUri) local.settings.bannerImageUri = a.bannerImageUri; await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(local.settings)); return; }
+  // Did this device hold any data the cloud might not have yet? After a sign-out
+  // the local store is wiped, so on the next sign-in there's nothing local-only
+  // to push and the merged snapshot equals what we just downloaded.
+  const hadLocalDataToPush =
+    local.movieWatchlist.length > 0 ||
+    local.seriesWatchlist.length > 0 ||
+    local.likedMovies.length > 0 ||
+    local.likedSeries.length > 0 ||
+    local.watchHistory.length > 0 ||
+    local.recentlyViewed.length > 0 ||
+    Object.keys(local.watchedEpisodes).length > 0;
+
   const merged = await mergeInitialSnapshot(local, rb); await writeLocalUserSnapshot(merged);
-  await backfillSnapshotToRemote(uid, merged); await queueInitialAssetUploads(uid, merged.settings); await flushSupabaseUserDataSync(uid);
-  await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, uid); await AsyncStorage.setItem(getBootstrapCompleteKey(uid), "1");
+  // Local data is ready here — return so the UI renders it immediately instead
+  // of blocking on the work below. Only push the snapshot back up when the
+  // device actually had local-only data to contribute; otherwise we'd be
+  // re-uploading exactly what we just downloaded (normal edits are pushed by
+  // the sync queue anyway). Flag bootstrap complete once it succeeds; if it
+  // doesn't, the next launch simply bootstraps again (idempotent).
+  void (async () => {
+    try {
+      if (hadLocalDataToPush) {
+        await backfillSnapshotToRemote(uid, merged);
+      }
+      await queueInitialAssetUploads(uid, merged.settings);
+      await flushSupabaseUserDataSync(uid);
+      await AsyncStorage.setItem(ACTIVE_SYNC_USER_KEY, uid);
+      await AsyncStorage.setItem(getBootstrapCompleteKey(uid), "1");
+    } catch (error) {
+      console.warn("[bootstrap] background sync failed:", error);
+    }
+  })();
 }
 
 export async function enqueueProfileSettingsSync(settings: PersistedSettings, audit: SyncMetadata = {}) {
-  const uid = await getCurrentUserId(); if (!uid) return;
+  const uid = await getSyncUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "profile_settings", userId: uid, settings, auditMetadata: normalizeSyncMetadata(audit) });
   scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueProfileAssetSync(kind: SyncAssetKind, uri: string | null, prev: string | null, ver: number) {
-  const uid = await getCurrentUserId(); if (!uid || !uri || !isLocalFileUri(uri)) return;
+  const uid = await getSyncUserId(); if (!uid || !uri || !isLocalFileUri(uri)) return;
   await enqueuePendingOperation({ kind: "asset_upload", userId: uid, assetKind: kind, localUri: uri, previousPath: prev, nextVersion: Math.max(ver, 0) + 1 });
-  scheduleSupabaseUserDataSync(uid);
+  // Media uploads shouldn't sit behind the 30s debounce: the user often
+  // backgrounds the app right after picking an image (JS timers stop firing
+  // on Android), leaving the upload stranded until the next launch. 1s still
+  // coalesces an avatar+banner picked back-to-back into one flush.
+  scheduleSupabaseUserDataSync(uid, 1_000);
 }
 
-export async function enqueueMediaLibrarySync(i: { operation: "upsert" | "delete"; listKind: SyncListKind; mediaType: MediaType; tmdbId: number | string; details?: UserMediaSyncDetails | null; occurredAt?: string; }) {
-  const uid = await getCurrentUserId(); if (!uid) return;
-  await enqueuePendingOperation({ kind: "media_library", userId: uid, operation: i.operation, listKind: i.listKind, mediaType: i.mediaType, tmdbId: i.tmdbId, imdbId: i.details?.imdbId ?? null, collectedAt: i.occurredAt ?? new Date().toISOString(), snapshot: normalizeMediaSnapshot(i.details), auditMetadata: normalizeSyncMetadata({ title: i.details?.title }) });
+export type MediaLibraryQueueItem = { operation: "upsert" | "delete"; listKind: SyncListKind; mediaType: MediaType; tmdbId: number | string; details?: UserMediaSyncDetails | null; occurredAt?: string; };
+
+export async function enqueueMediaLibrarySync(i: MediaLibraryQueueItem) {
+  await enqueueMediaLibraryBatch([i]);
+}
+
+// One queue read + one write for a whole batch. The Letterboxd import queues
+// hundreds of items when its one-shot snapshot push fails — per-item enqueues
+// would do hundreds of serialized read-modify-writes of the same queue.
+export async function enqueueMediaLibraryBatch(items: MediaLibraryQueueItem[]) {
+  const uid = await getSyncUserId(); if (!uid || items.length === 0) return;
+  await enqueuePendingOperations(items.map((i): PendingSyncOperation => ({ kind: "media_library", userId: uid, operation: i.operation, listKind: i.listKind, mediaType: i.mediaType, tmdbId: i.tmdbId, imdbId: i.details?.imdbId ?? null, collectedAt: i.occurredAt ?? new Date().toISOString(), snapshot: normalizeMediaSnapshot(i.details), auditMetadata: normalizeSyncMetadata({ title: i.details?.title }) })));
   scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueWatchHistoryUpsert(e: WatchHistoryEntry, a: SyncMetadata = {}) {
-  const uid = await getCurrentUserId(); if (!uid) return;
-  await enqueuePendingOperation({ kind: "watch_history_upsert", userId: uid, entry: e, auditMetadata: normalizeSyncMetadata(a) });
-  scheduleSupabaseUserDataSync(uid);
+  await enqueueWatchHistoryBatch([{ operation: "upsert", entry: e, audit: a }]);
 }
 
 export async function enqueueWatchHistoryDelete(t: MediaType, id: number | string, a: SyncMetadata = {}) {
-  const uid = await getCurrentUserId(); if (!uid) return;
-  await enqueuePendingOperation({ kind: "watch_history_delete", userId: uid, mediaType: t, tmdbId: id, auditMetadata: normalizeSyncMetadata(a) });
+  await enqueueWatchHistoryBatch([{ operation: "delete", mediaType: t, tmdbId: id, audit: a }]);
+}
+
+export type WatchHistoryQueueItem =
+  | { operation: "upsert"; entry: WatchHistoryEntry; audit?: SyncMetadata }
+  | { operation: "delete"; mediaType: MediaType; tmdbId: number | string; audit?: SyncMetadata };
+
+export async function enqueueWatchHistoryBatch(items: WatchHistoryQueueItem[]) {
+  const uid = await getSyncUserId(); if (!uid || items.length === 0) return;
+  await enqueuePendingOperations(items.map((item): PendingSyncOperation =>
+    item.operation === "upsert"
+      ? { kind: "watch_history_upsert", userId: uid, entry: item.entry, auditMetadata: normalizeSyncMetadata(item.audit) }
+      : { kind: "watch_history_delete", userId: uid, mediaType: item.mediaType, tmdbId: item.tmdbId, auditMetadata: normalizeSyncMetadata(item.audit) }
+  ));
   scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueEpisodeProgressSync(t: number, s: number, e: number, w: boolean, a: SyncMetadata = {}) {
-  const uid = await getCurrentUserId(); if (!uid) return;
-  await enqueuePendingOperation({ kind: "episode_progress", userId: uid, seriesTmdbId: t, seasonNumber: s, episodeNumber: e, isWatched: w, watchedAt: new Date().toISOString(), auditMetadata: normalizeSyncMetadata(a) });
+  await enqueueEpisodeProgressBatch([{ seriesTmdbId: t, seasonNumber: s, episodeNumber: e, isWatched: w, audit: a }]);
+}
+
+export type EpisodeProgressQueueItem = { seriesTmdbId: number; seasonNumber: number; episodeNumber: number; isWatched: boolean; audit?: SyncMetadata };
+
+export async function enqueueEpisodeProgressBatch(items: EpisodeProgressQueueItem[]) {
+  const uid = await getSyncUserId(); if (!uid || items.length === 0) return;
+  const watchedAt = new Date().toISOString();
+  await enqueuePendingOperations(items.map((item): PendingSyncOperation => ({ kind: "episode_progress", userId: uid, seriesTmdbId: item.seriesTmdbId, seasonNumber: item.seasonNumber, episodeNumber: item.episodeNumber, isWatched: item.isWatched, watchedAt, auditMetadata: normalizeSyncMetadata(item.audit) })));
   scheduleSupabaseUserDataSync(uid);
 }
 
 export async function enqueueDailyRecommendationSync(m: Record<string, any> | null, d: string) {
-  const uid = await getCurrentUserId(); if (!uid || !m || !m.id) return;
+  const uid = await getSyncUserId(); if (!uid || !m || !m.id) return;
   await enqueuePendingOperation({ kind: "daily_recommendation", userId: uid, recommendationKind: MOVIE_OF_DAY_KIND, recommendationDate: d, mediaType: "movie", tmdbId: m.id, imdbId: m.imdbId || null, strategy: "device_generated", snapshot: { movie: m } });
   scheduleSupabaseUserDataSync(uid);
 }
 
 export async function logSupabaseUserEvent(cat: string, type: string, meta: SyncMetadata = {}, opts?: any) {
-  const uid = await getCurrentUserId(); if (!uid) return;
+  const uid = await getSyncUserId(); if (!uid) return;
   await enqueuePendingOperation({ kind: "auth_event", userId: uid, actionCategory: cat, actionType: type, entityType: opts?.entityType ?? null, entityKey: opts?.entityKey ?? null, metadata: normalizeSyncMetadata(meta), createdAt: new Date().toISOString() });
   if (opts?.flushImmediately) await flushSupabaseUserDataSync(uid); else scheduleSupabaseUserDataSync(uid);
 }

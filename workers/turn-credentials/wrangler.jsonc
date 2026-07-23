@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "streambox-turn-credentials",
+  "main": "src/index.js",
+  "compatibility_date": "2026-05-11",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "vars": {
+    "ALLOWED_ORIGINS": "",
+    "CRED_TTL_SECONDS": "14400"
+  }
+  // Secrets (do NOT commit): set with
+  //   wrangler secret put TURN_KEY_ID
+  //   wrangler secret put TURN_KEY_API_TOKEN
+  //   wrangler secret put SUPABASE_JWT_SECRET   (optional — enables the auth
+  //     gate; use the project's legacy HS256 JWT secret from the Supabase
+  //     dashboard → Settings → API. Skip if the project uses asymmetric JWTs.)
+}

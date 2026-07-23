@@ -30,9 +30,14 @@ const SERIES_CANDIDATE_PAGES = 2;
 const TOP_SCORING_SLICE = 6;
 const IMDB_TOP_FALLBACK_LIMIT = 100;
 const DAILY_PICK_PROFILE_CONCURRENCY = 4;
-const DAILY_PICK_ALGORITHM_VERSION = "quality-v2";
-const DAILY_PICK_MIN_RATING = 7.5;
-const DAILY_PICK_MIN_POPULARITY = 8;
+// Bumped whenever the scoring/eligibility changes so today's cached pick is
+// recomputed under the new rules instead of lingering until midnight.
+const DAILY_PICK_ALGORITHM_VERSION = "quality-v3";
+// Lean the daily pick harder toward genuinely acclaimed, widely-loved titles:
+// a higher rating floor and a meaningfully higher popularity floor keep the
+// obscure-but-on-genre long tail out of the hero slot.
+const DAILY_PICK_MIN_RATING = 7.6;
+const DAILY_PICK_MIN_POPULARITY = 14;
 const DAILY_PICK_MIN_OVERVIEW_LENGTH = 40;
 const DAILY_PICK_RELEASE_AGE_MONTHS = 6;
 
@@ -423,8 +428,11 @@ function scoreMovieCandidate(
     0
   );
 
-  const ratingScore = candidate.rating * 5.5;
-  const popularityScore = Math.min(10, Math.log10(candidate.popularity + 1) * 4);
+  // Rating and popularity are weighted heavily so the hero skews to films the
+  // user's taste points at AND that are broadly acclaimed + talked-about — not
+  // a merely genre-adjacent deep cut.
+  const ratingScore = candidate.rating * 6.5;
+  const popularityScore = Math.min(16, Math.log10(candidate.popularity + 1) * 5);
 
   let yearScore = 0;
   if (candidate.releaseYear && model.medianYear) {
@@ -575,7 +583,7 @@ function scoreSeriesCandidate(candidate: MediaItem, model: SeriesTasteModel): nu
     0
   );
 
-  const ratingScore = candidate.rating * 6.2;
+  const ratingScore = candidate.rating * 7.0;
   const releaseYear = parseYear(candidate.year);
   let yearScore = 0;
 

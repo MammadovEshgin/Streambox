@@ -1,22 +1,22 @@
 import { Feather } from "@expo/vector-icons";
-import * as Sharing from "expo-sharing";
+import * as DocumentPicker from "expo-document-picker";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useTranslation } from "react-i18next";
 import { useCallback, useState } from "react";
-import { ActivityIndicator, Alert, Modal, ScrollView, TextInput } from "react-native";
+import { Alert, Modal, ScrollView, TextInput } from "react-native";
 import { BlurView } from "expo-blur";
 import Animated, { FadeOut, FadeIn } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
 
+import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { useAuth } from "../context/AuthContext";
 import { sendUserFeedback } from "../services/feedbackService";
-import type { ProfileStackParamList } from "../navigation/types";
 import {
-  exportStreamBoxBackupFile,
-  importStreamBoxBackupFile,
-  pickStreamBoxBackupFile,
-} from "../services/backupService";
+  importLetterboxdArchive,
+  type LetterboxdImportProgress,
+} from "../services/letterboxdImportService";
+import type { ProfileStackParamList } from "../navigation/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
 import { THEME_OPTIONS, withAlpha } from "../theme/Theme";
 import type { AppLanguage } from "../localization/types";
@@ -395,88 +395,72 @@ export function ProfileSettingsScreen({ navigation }: Props) {
     setThemeId,
     profileName,
     profileLocation,
-    reloadPersistedSettings,
+    notifyStorageChanged,
   } = useAppSettings();
   const [signingOut, setSigningOut] = useState(false);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<LetterboxdImportProgress | null>(null);
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
-  const [backupStatus, setBackupStatus] = useState<string | null>(null);
+  const [importNote, setImportNote] = useState<string | null>(null);
   const [feedbackMessage, setFeedbackMessage] = useState("");
 
-  const handleExportBackup = useCallback(async () => {
-    setBackupStatus(null);
-    setIsExporting(true);
-
+  const handleImportLetterboxd = useCallback(async () => {
     try {
-      const { fileUri } = await exportStreamBoxBackupFile();
-      const isSharingAvailable = await Sharing.isAvailableAsync();
-
-      if (!isSharingAvailable) {
-        throw new Error(t("settings.sharingUnavailable"));
-      }
-
-      await Sharing.shareAsync(fileUri, {
-        mimeType: "application/json",
-        dialogTitle: t("settings.exportAllData"),
-        UTI: "public.json",
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: ["application/zip", "application/x-zip-compressed", "multipart/x-zip", "*/*"],
+        copyToCacheDirectory: true,
+        multiple: false,
       });
-
-      setBackupStatus(t("settings.backupReady"));
-    } catch (error) {
-      Alert.alert(
-        t("settings.exportFailed"),
-        error instanceof Error ? error.message : t("settings.backupCreateFailed")
-      );
-    } finally {
-      setIsExporting(false);
-    }
-  }, [t]);
-
-  const runImportBackup = useCallback(async () => {
-    setBackupStatus(null);
-    setIsImporting(true);
-
-    try {
-      const fileUri = await pickStreamBoxBackupFile();
+      if (picked.canceled) {
+        return;
+      }
+      const fileUri = picked.assets?.[0]?.uri;
       if (!fileUri) {
         return;
       }
 
-      await importStreamBoxBackupFile(fileUri);
-      await reloadPersistedSettings();
-      setBackupStatus(t("settings.backupImported"));
-      Alert.alert(t("settings.importComplete"), t("settings.importCompleteMessage"));
+      setImportNote(null);
+      setImportProgress({ phase: "reading", completed: 0, total: 0 });
+      setIsImporting(true);
+
+      const result = await importLetterboxdArchive(fileUri, setImportProgress);
+
+      if (result.totalFilms === 0) {
+        Alert.alert(t("settings.letterboxdImportFailed"), t("settings.letterboxdInvalidArchive"));
+        return;
+      }
+
+      // Refresh every hook reading the media stores so the new watched/
+      // watchlist/liked data shows up immediately across the app.
+      notifyStorageChanged();
+
+      const lines = [
+        t("settings.letterboxdCompleteMessage", {
+          watched: result.watchedAdded,
+          watchlist: result.watchlistAdded,
+          liked: result.likedAdded,
+        }),
+      ];
+      if (result.unmatched.length > 0) {
+        lines.push(t("settings.letterboxdUnmatchedNote", { count: result.unmatched.length }));
+      }
+      if (!result.syncedToCloud) {
+        lines.push(t("settings.letterboxdOfflineNote"));
+      }
+      const summary = lines.join("\n");
+      setImportNote(summary);
+      Alert.alert(t("settings.letterboxdCompleteTitle"), summary);
     } catch (error) {
       Alert.alert(
-        t("settings.importFailed"),
-        error instanceof Error ? error.message : t("settings.backupRestoreFailed")
+        t("settings.letterboxdImportFailed"),
+        error instanceof Error ? error.message : t("settings.letterboxdInvalidArchive")
       );
     } finally {
       setIsImporting(false);
+      setImportProgress(null);
     }
-  }, [reloadPersistedSettings, t]);
-
-  const handleImportBackup = useCallback(() => {
-    Alert.alert(
-      t("settings.importBackupTitle"),
-      t("settings.importBackupMessage"),
-      [
-        {
-          text: t("common.cancel"),
-          style: "cancel",
-        },
-        {
-          text: t("settings.importBackup"),
-          style: "destructive",
-          onPress: () => {
-            void runImportBackup();
-          },
-        },
-      ]
-    );
-  }, [runImportBackup, t]);
+  }, [notifyStorageChanged, t]);
 
   const languageOptions: Array<{ id: AppLanguage; labelKey: string; descriptionKey: string }> = [
     { id: "en", labelKey: "settings.enLabel", descriptionKey: "settings.enDescription" },
@@ -515,6 +499,27 @@ export function ProfileSettingsScreen({ navigation }: Props) {
       setIsSendingFeedback(false);
     }
   }, [feedbackMessage, language, profileLocation, profileName, t, themeId]);
+
+  const importStatusLabel = (() => {
+    if (!importProgress) return t("settings.letterboxdReading");
+    switch (importProgress.phase) {
+      case "matching":
+        return t("settings.letterboxdMatching", {
+          completed: importProgress.completed,
+          total: importProgress.total,
+        });
+      case "details":
+        return t("settings.letterboxdLoadingDetails", {
+          completed: importProgress.completed,
+          total: importProgress.total,
+        });
+      case "saving":
+        return t("settings.letterboxdSaving");
+      case "reading":
+      default:
+        return t("settings.letterboxdReading");
+    }
+  })();
 
   return (
     <SafeContainer>
@@ -585,45 +590,30 @@ export function ProfileSettingsScreen({ navigation }: Props) {
         </Section>
 
         <Section>
-          <SectionTitle>{t("settings.backupTitle")}</SectionTitle>
-          <SectionText>{t("settings.backupDescription")}</SectionText>
+          <SectionTitle>{t("settings.letterboxdTitle")}</SectionTitle>
+          <SectionText>{t("settings.letterboxdDescription")}</SectionText>
           <Card>
-            <Label>{t("settings.dataPortability")}</Label>
+            <Label>{t("settings.letterboxdLabel")}</Label>
             <BackupActions>
               <BackupButton
                 $primary={true}
-                $disabled={isExporting || isImporting}
+                $disabled={isImporting}
                 onPress={() => {
-                  void handleExportBackup();
+                  void handleImportLetterboxd();
                 }}
-              >
-                <Feather
-                  name="upload"
-                  size={16}
-                  color={isExporting || isImporting ? currentTheme.colors.textSecondary : currentTheme.colors.primary}
-                />
-                <BackupButtonLabel $primary={true} $disabled={isExporting || isImporting}>
-                  {isExporting ? t("settings.preparingBackup") : t("settings.exportAllData")}
-                </BackupButtonLabel>
-              </BackupButton>
-
-              <BackupButton
-                $primary={false}
-                $disabled={isExporting || isImporting}
-                onPress={handleImportBackup}
               >
                 <Feather
                   name="download"
                   size={16}
-                  color={isExporting || isImporting ? currentTheme.colors.textSecondary : currentTheme.colors.textPrimary}
+                  color={isImporting ? currentTheme.colors.textSecondary : currentTheme.colors.primary}
                 />
-                <BackupButtonLabel $primary={false} $disabled={isExporting || isImporting}>
-                  {isImporting ? t("settings.importingBackup") : t("settings.importBackup")}
+                <BackupButtonLabel $primary={true} $disabled={isImporting}>
+                  {isImporting ? importStatusLabel : t("settings.letterboxdImport")}
                 </BackupButtonLabel>
               </BackupButton>
             </BackupActions>
-            <BackupMeta>{t("settings.importReplacesData")}</BackupMeta>
-            {backupStatus ? <BackupStatus>{backupStatus}</BackupStatus> : null}
+            <BackupMeta>{t("settings.letterboxdHint")}</BackupMeta>
+            {importNote ? <BackupStatus>{importNote}</BackupStatus> : null}
           </Card>
         </Section>
 
@@ -684,10 +674,19 @@ export function ProfileSettingsScreen({ navigation }: Props) {
         <BottomSpacer />
       </Content>
 
+      <Modal visible={isImporting} transparent animationType="fade" statusBarTranslucent>
+        <SignOutOverlay entering={FadeIn.duration(250)} exiting={FadeOut.duration(200)}>
+          <SignOutContent entering={FadeIn.duration(220)}>
+            <MovieLoader />
+            <SignOutTitle>{importStatusLabel}</SignOutTitle>
+          </SignOutContent>
+        </SignOutOverlay>
+      </Modal>
+
       <Modal visible={signingOut} transparent animationType="fade" statusBarTranslucent>
         <SignOutOverlay entering={FadeIn.duration(300)} exiting={FadeOut.duration(200)}>
           <SignOutContent entering={FadeIn.duration(250)}>
-            <ActivityIndicator size="large" color={currentTheme.colors.primary} />
+            <MovieLoader />
             <SignOutTitle>{t("settings.signingOut")}</SignOutTitle>
           </SignOutContent>
         </SignOutOverlay>

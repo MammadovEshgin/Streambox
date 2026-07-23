@@ -1,4 +1,5 @@
 import { Feather } from "@expo/vector-icons";
+import { Image as ExpoImage } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -24,7 +25,13 @@ import {
   getTmdbImageUrl,
 } from "../../api/tmdb";
 import { formatRating } from "../../api/mediaFormatting";
+import { CachedRemoteImage } from "../common/CachedRemoteImage";
 import { AppTheme } from "../../theme/Theme";
+
+// Hero backdrops (w780) are the largest images in the app. expo-image gives
+// them a disk cache so cold starts stop re-downloading every slide; the
+// animated wrapper keeps the parallax transform on the UI thread.
+const AnimatedBackdropImage = Animated.createAnimatedComponent(ExpoImage);
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const SLIDE_WIDTH = SCREEN_WIDTH - 32;
@@ -58,7 +65,7 @@ const ContentOverlay = styled.View`
   padding: 20px 18px 18px;
 `;
 
-const LogoImage = styled.Image`
+const LogoImage = styled(CachedRemoteImage)`
   width: 180px;
   height: 48px;
   margin-bottom: 10px;
@@ -155,13 +162,15 @@ function Slide({
     <Pressable onPress={onPress}>
       <SlideContainer>
         {backdropUri ? (
-          <Animated.Image
+          <AnimatedBackdropImage
             source={{ uri: backdropUri }}
             style={[
               { position: "absolute", top: 0, left: -40, right: -40, bottom: 0, width: SLIDE_WIDTH + 80 },
               parallaxStyle,
             ]}
-            resizeMode="cover"
+            contentFit="cover"
+            cachePolicy="disk"
+            transition={150}
           />
         ) : null}
         <LinearGradient
@@ -171,7 +180,7 @@ function Slide({
         />
         <ContentOverlay>
           {logoUri ? (
-            <LogoImage source={{ uri: logoUri }} resizeMode="contain" />
+            <LogoImage uri={logoUri} contentFit="contain" />
           ) : (
             <TitleText numberOfLines={2}>{item.title}</TitleText>
           )}

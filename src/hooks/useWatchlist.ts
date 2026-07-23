@@ -8,7 +8,6 @@ export function useWatchlist() {
     storageKey: WATCHLIST_STORAGE_KEY,
     listKind: "watchlist",
     mediaType: "movie",
-    notifyStorageChanges: true,
   });
 
   return useMemo(

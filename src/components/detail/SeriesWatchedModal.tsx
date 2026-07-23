@@ -69,6 +69,32 @@ const SummaryLabel = styled.Text`
   line-height: 17px;
 `;
 
+const QuickActionsRow = styled.View`
+  margin-top: 12px;
+  flex-direction: row;
+  gap: 8px;
+`;
+
+const QuickActionChip = styled.Pressable<{ $primary?: boolean }>`
+  flex: 1;
+  min-height: 40px;
+  border-radius: 3px;
+  border-width: 1px;
+  border-color: ${({ $primary, theme }) => ($primary ? theme.colors.primary : theme.colors.border)};
+  background-color: ${({ $primary, theme }) =>
+    $primary ? theme.colors.primarySoftStrong : theme.colors.surfaceRaised};
+  align-items: center;
+  justify-content: center;
+  padding: 8px 10px;
+`;
+
+const QuickActionLabel = styled.Text<{ $primary?: boolean }>`
+  color: ${({ $primary, theme }) => ($primary ? theme.colors.primary : theme.colors.textSecondary)};
+  font-family: Outfit_700Bold;
+  font-size: 12px;
+  text-align: center;
+`;
+
 const SeasonsScroll = styled(ScrollView)`
   margin-top: 14px;
   max-height: 360px;
@@ -313,14 +339,12 @@ export function SeriesWatchedModal({
   const [drafts, setDrafts] = useState<SeriesSeasonWatchedDraft[]>(initialDrafts);
   const [pickerSeasonNumber, setPickerSeasonNumber] = useState<number | null>(null);
   const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
-  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     if (visible) {
       setDrafts(initialDrafts);
       setPickerSeasonNumber(null);
       setPickerYear(new Date().getFullYear());
-      setIsSaving(false);
     }
   }, [initialDrafts, visible]);
 
@@ -375,14 +399,31 @@ export function SeriesWatchedModal({
     setPickerSeasonNumber(null);
   };
 
-  const handleSave = async () => {
-    try {
-      setIsSaving(true);
-      await onSave(drafts);
-      onClose();
-    } finally {
-      setIsSaving(false);
-    }
+  const handleMarkAllSeasons = () => {
+    setDrafts((currentDrafts) =>
+      currentDrafts.map((draft) =>
+        draft.mode === "unwatched"
+          ? {
+              ...draft,
+              mode: "undated",
+              watchedAt: draft.watchedAt || normalizeWatchedMonth(new Date()),
+            }
+          : draft
+      )
+    );
+  };
+
+  const handleClearAllSeasons = () => {
+    setDrafts((currentDrafts) => currentDrafts.map((draft) => ({ ...draft, mode: "unwatched" as const })));
+  };
+
+  const handleSave = () => {
+    // The save path is local-first (AsyncStorage write + queued background
+    // sync), so close instantly instead of holding the modal on a spinner.
+    onClose();
+    void Promise.resolve(onSave(drafts)).catch((error) =>
+      console.warn("Failed to save season log", error)
+    );
   };
 
   const pickerDraft = pickerSeasonNumber === null ? null : draftMap[pickerSeasonNumber] ?? null;
@@ -403,13 +444,22 @@ export function SeriesWatchedModal({
             <Subtitle>{t("detail.seasonTrackingDescription")}</Subtitle>
 
             <SummaryCard>
-              <SummaryValue>{watchedCount}</SummaryValue>
+              <SummaryValue>{`${watchedCount} / ${drafts.length}`}</SummaryValue>
               <SummaryLabel>
                 {watchedCount > 0
                   ? t("detail.seasonsMarkedWatched", { count: watchedCount })
                   : t("detail.markWatchedWithoutDateDescription")}
               </SummaryLabel>
             </SummaryCard>
+
+            <QuickActionsRow>
+              <QuickActionChip $primary={true} onPress={handleMarkAllSeasons}>
+                <QuickActionLabel $primary={true}>{t("detail.markAllSeasons")}</QuickActionLabel>
+              </QuickActionChip>
+              <QuickActionChip onPress={handleClearAllSeasons}>
+                <QuickActionLabel>{t("detail.clearAllSeasons")}</QuickActionLabel>
+              </QuickActionChip>
+            </QuickActionsRow>
 
             <SeasonsScroll showsVerticalScrollIndicator={false}>
               {seasons.map((season) => {
@@ -489,13 +539,11 @@ export function SeriesWatchedModal({
             </SeasonsScroll>
 
             <FooterRow>
-              <FooterButton onPress={onClose} disabled={isSaving}>
+              <FooterButton onPress={onClose}>
                 <FooterLabel>{t("common.cancel")}</FooterLabel>
               </FooterButton>
-              <FooterButton $primary={true} onPress={() => void handleSave()} disabled={isSaving}>
-                <FooterLabel $primary={true}>
-                  {isSaving ? t("common.loading") : t("common.save")}
-                </FooterLabel>
+              <FooterButton $primary={true} onPress={handleSave}>
+                <FooterLabel $primary={true}>{t("common.save")}</FooterLabel>
               </FooterButton>
             </FooterRow>
           </Sheet>

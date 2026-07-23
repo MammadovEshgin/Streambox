@@ -21,8 +21,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
 import { GENRE_ID_MAP, type MediaItem, type MediaType } from "../api/tmdb";
+import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
+import { BadgeStrip } from "../components/badges/BadgeStrip";
+import { BadgesModal } from "../components/badges/BadgesModal";
+import { SharedSessionsSection } from "../components/watchTogether/SharedSessionsSection";
+import { evaluateBadges, selectStripBadgeIds } from "../services/badgeEngine";
 import { useLikedMovies } from "../hooks/useLikedMovies";
 import { useLikedSeries } from "../hooks/useLikedSeries";
 import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
@@ -31,7 +36,12 @@ import { useWatchlist } from "../hooks/useWatchlist";
 import type { ProfileSeeAllSection, ProfileStackParamList } from "../navigation/types";
 import { normalizeAppLanguage } from "../localization/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
-import { getSharedHydratedMediaCache, hydrateMediaIds, type HydratedMediaCache } from "../services/mediaHydration";
+import {
+  getHydratedMediaItemsFromCache,
+  getSharedHydratedMediaCache,
+  hydrateMediaIds,
+  type HydratedMediaCache,
+} from "../services/mediaHydration";
 import { searchLocationSuggestions } from "../services/locationSearch";
 import { storeBannerImageFromUri, storeProfileImageFromUri } from "../services/profileImageService";
 import { formatLocalizedDate } from "../localization/format";
@@ -106,6 +116,14 @@ const BannerIconButton = styled.Pressable`
 const AvatarArea = styled.View`
   margin-top: -${AVATAR_OVERLAP}px;
   padding-horizontal: 16px;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+`;
+
+/* Pushes the strip just below the banner edge (the row's top half overlaps it). */
+const BadgeStripWrap = styled.View`
+  margin-top: ${AVATAR_OVERLAP + 9}px;
 `;
 
 const AvatarButton = styled.Pressable``;
@@ -251,11 +269,12 @@ const SeeAllText = styled.Text`
   font-size: 13px;
 `;
 
+// Content-sized row of two chips. No flex: 1 here — inside the ScrollView
+// column it meant flexBasis:0, which collapsed/squeezed the chips on the first
+// layout pass until the scroll content re-measured.
 const ToggleRow = styled.View`
   flex-direction: row;
   gap: 6px;
-  flex: 1;
-  flex-wrap: wrap;
   margin-bottom: 14px;
 `;
 
@@ -287,6 +306,20 @@ const RailCardWrap = styled.View`
 
 const EmptySection = styled.View`
   height: 140px;
+  border-radius: 5px;
+  border-width: 1px;
+  border-color: rgba(255, 255, 255, 0.06);
+  background-color: rgba(255, 255, 255, 0.02);
+  align-items: center;
+  justify-content: center;
+`;
+
+// Shown when a section's data is still loading (the id/count is already known
+// from local storage, but the poster cards are still hydrating). Matches the
+// loaded rail height (RailWrap) so the section doesn't collapse to a short box
+// and then jump taller once the posters appear.
+const LoadingSection = styled.View`
+  height: 282px;
   border-radius: 5px;
   border-width: 1px;
   border-color: rgba(255, 255, 255, 0.06);
@@ -530,12 +563,9 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const { likedSeries, isLoading: lsLoading } = useLikedSeries();
   const { history: watchHistory, rawHistory: fullWatchHistory, isLoading: whLoading } = useWatchHistory();
 
-  const [watchlistMovieItems, setWatchlistMovieItems] = useState<MediaItem[]>([]);
-  const [watchlistSeriesItems, setWatchlistSeriesItems] = useState<MediaItem[]>([]);
-  const [likedMovieItems, setLikedMovieItems] = useState<MediaItem[]>([]);
-  const [likedSeriesItems, setLikedSeriesItems] = useState<MediaItem[]>([]);
-  const [watchedMovieItems, setWatchedMovieItems] = useState<MediaItem[]>([]);
-  const [watchedSeriesItems, setWatchedSeriesItems] = useState<MediaItem[]>([]);
+  // Bumped whenever an async hydrate pass warms the cache, so the memoised
+  // shelf items below re-read the (now warmer) cache and fill in cold entries.
+  const [hydrationTick, setHydrationTick] = useState(0);
 
   const [watchedFilter, setWatchedFilter] = useState<"movie" | "tv">("movie");
   const [watchlistFilter, setWatchlistFilter] = useState<"movie" | "tv">("movie");
@@ -713,36 +743,27 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
     if (!hasListsToHydrate) {
       lastHydrationKeyRef.current = hydrationKey;
-      startTransition(() => {
-        setWatchlistMovieItems([]);
-        setWatchlistSeriesItems([]);
-        setLikedMovieItems([]);
-        setLikedSeriesItems([]);
-        setWatchedMovieItems([]);
-        setWatchedSeriesItems([]);
-      });
       return;
     }
 
     async function hydrate() {
       const cache = cacheRef.current;
-      const hydrateSection = async (
-        task: Promise<MediaItem[]>,
-        apply: (items: MediaItem[]) => void
-      ) => {
-        const items = await task;
+      // Warm the shared cache; each section that resolves bumps the tick so the
+      // memoised shelf items re-read the cache and reveal any cold entries.
+      const hydrateSection = async (task: Promise<MediaItem[]>) => {
+        await task;
         if (!cancelled) {
-          startTransition(() => apply(items));
+          startTransition(() => setHydrationTick((tick) => tick + 1));
         }
       };
 
       await Promise.all([
-        hydrateSection(hydrateMediaIds(movieWatchlist, [], cache), setWatchlistMovieItems),
-        hydrateSection(hydrateMediaIds([], seriesWatchlist, cache), setWatchlistSeriesItems),
-        hydrateSection(hydrateMediaIds(likedMovies, [], cache), setLikedMovieItems),
-        hydrateSection(hydrateMediaIds([], likedSeries, cache), setLikedSeriesItems),
-        hydrateSection(hydrateMediaIds(watchedMovieHydrationIds, [], cache), setWatchedMovieItems),
-        hydrateSection(hydrateMediaIds([], watchedSeriesHydrationIds, cache), setWatchedSeriesItems),
+        hydrateSection(hydrateMediaIds(movieWatchlist, [], cache)),
+        hydrateSection(hydrateMediaIds([], seriesWatchlist, cache)),
+        hydrateSection(hydrateMediaIds(likedMovies, [], cache)),
+        hydrateSection(hydrateMediaIds([], likedSeries, cache)),
+        hydrateSection(hydrateMediaIds(watchedMovieHydrationIds, [], cache)),
+        hydrateSection(hydrateMediaIds([], watchedSeriesHydrationIds, cache)),
       ]);
 
       if (!cancelled) {
@@ -762,6 +783,35 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     watchedMovieHydrationIds,
     watchedSeriesHydrationIds,
   ]);
+
+  // Shelf posters read straight from the shared cache during render, so a warm
+  // cache paints instantly instead of flashing a spinner. `hydrationTick` and
+  // `resolvedContentLanguage` force a re-read as the async hydrate warms cold
+  // entries or the language changes.
+  const watchlistMovieItems = useMemo(
+    () => getHydratedMediaItemsFromCache(movieWatchlist, [], cacheRef.current),
+    [movieWatchlist, hydrationTick, resolvedContentLanguage]
+  );
+  const watchlistSeriesItems = useMemo(
+    () => getHydratedMediaItemsFromCache([], seriesWatchlist, cacheRef.current),
+    [seriesWatchlist, hydrationTick, resolvedContentLanguage]
+  );
+  const likedMovieItems = useMemo(
+    () => getHydratedMediaItemsFromCache(likedMovies, [], cacheRef.current),
+    [likedMovies, hydrationTick, resolvedContentLanguage]
+  );
+  const likedSeriesItems = useMemo(
+    () => getHydratedMediaItemsFromCache([], likedSeries, cacheRef.current),
+    [likedSeries, hydrationTick, resolvedContentLanguage]
+  );
+  const watchedMovieItems = useMemo(
+    () => getHydratedMediaItemsFromCache(watchedMovieHydrationIds, [], cacheRef.current),
+    [watchedMovieHydrationIds, hydrationTick, resolvedContentLanguage]
+  );
+  const watchedSeriesItems = useMemo(
+    () => getHydratedMediaItemsFromCache([], watchedSeriesHydrationIds, cacheRef.current),
+    [watchedSeriesHydrationIds, hydrationTick, resolvedContentLanguage]
+  );
 
   // â”€â”€ Image pickers â”€â”€
 
@@ -1007,6 +1057,21 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const watchlistCount = movieWatchlist.length + seriesWatchlist.length;
   const likedCount = likedMovies.length + likedSeries.length;
   const watchedCount = watchHistory.length;
+
+  const badgeProgress = useMemo(() => evaluateBadges(fullWatchHistory), [fullWatchHistory]);
+  const stripBadgeIds = useMemo(() => selectStripBadgeIds(badgeProgress), [badgeProgress]);
+  const [showBadgesModal, setShowBadgesModal] = useState(false);
+
+  // Counts known from local storage the instant sign-in writes it — before the
+  // poster cards finish hydrating. When a section has items but none are
+  // displayed yet, show a loader instead of a misleading "empty" state.
+  const watchedExpected = useMemo(
+    () => watchHistory.filter((entry) => entry.mediaType === (watchedFilter === "tv" ? "tv" : "movie")).length,
+    [watchHistory, watchedFilter]
+  );
+  const watchlistExpected = watchlistFilter === "movie" ? movieWatchlist.length : seriesWatchlist.length;
+  const likedExpected = likedFilter === "movie" ? likedMovies.length : likedSeries.length;
+
   const joinedText = formatJoinedDate(joinedDate);
   const birthdayText = formatBirthday(profileBirthday);
 
@@ -1034,7 +1099,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </BannerIconButton>
           </BannerTopActions>
 
-          {/* Avatar */}
+          {/* Avatar + achievement badges */}
           <AvatarArea>
             <AvatarButton onPress={() => setFullViewType("avatar")}>
               <AvatarCircle>
@@ -1047,6 +1112,9 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 </AvatarInner>
               </AvatarCircle>
             </AvatarButton>
+            <BadgeStripWrap>
+              <BadgeStrip badgeIds={stripBadgeIds} onPress={() => setShowBadgesModal(true)} />
+            </BadgeStripWrap>
           </AvatarArea>
 
           {/* Name, Bio, Meta info */}
@@ -1113,12 +1181,18 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </ToggleChip>
           </ToggleRow>
           {watchedItems.length === 0 ? (
-            <EmptySection>
-              <EmptyIcon>
-                <Feather name="play-circle" size={24} color={currentTheme.colors.textSecondary} />
-              </EmptyIcon>
-              <EmptyText>{watchedFilter === "movie" ? t("profile.noMoviesWatchedYet") : t("profile.noSeriesWatchedYet")}</EmptyText>
-            </EmptySection>
+            watchedExpected > 0 ? (
+              <LoadingSection>
+                <MovieLoader />
+              </LoadingSection>
+            ) : (
+              <EmptySection>
+                <EmptyIcon>
+                  <Feather name="play-circle" size={24} color={currentTheme.colors.textSecondary} />
+                </EmptyIcon>
+                <EmptyText>{watchedFilter === "movie" ? t("profile.noMoviesWatchedYet") : t("profile.noSeriesWatchedYet")}</EmptyText>
+              </EmptySection>
+            )
           ) : (
             <RailWrap>
               <FlatList
@@ -1154,12 +1228,18 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </ToggleChip>
           </ToggleRow>
           {watchlistItems.length === 0 ? (
-            <EmptySection>
-              <EmptyIcon>
-                <Feather name="bookmark" size={24} color={currentTheme.colors.textSecondary} />
-              </EmptyIcon>
-              <EmptyText>{watchlistFilter === "movie" ? t("profile.noMoviesInWatchlist") : t("profile.noSeriesInWatchlist")}</EmptyText>
-            </EmptySection>
+            watchlistExpected > 0 ? (
+              <LoadingSection>
+                <MovieLoader />
+              </LoadingSection>
+            ) : (
+              <EmptySection>
+                <EmptyIcon>
+                  <Feather name="bookmark" size={24} color={currentTheme.colors.textSecondary} />
+                </EmptyIcon>
+                <EmptyText>{watchlistFilter === "movie" ? t("profile.noMoviesInWatchlist") : t("profile.noSeriesInWatchlist")}</EmptyText>
+              </EmptySection>
+            )
           ) : (
             <RailWrap>
               <FlatList
@@ -1195,12 +1275,18 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </ToggleChip>
           </ToggleRow>
           {likedItems.length === 0 ? (
-            <EmptySection>
-              <EmptyIcon>
-                <Feather name="heart" size={24} color={currentTheme.colors.textSecondary} />
-              </EmptyIcon>
-              <EmptyText>{likedFilter === "movie" ? t("profile.noMoviesLikedYet") : t("profile.noSeriesLikedYet")}</EmptyText>
-            </EmptySection>
+            likedExpected > 0 ? (
+              <LoadingSection>
+                <MovieLoader />
+              </LoadingSection>
+            ) : (
+              <EmptySection>
+                <EmptyIcon>
+                  <Feather name="heart" size={24} color={currentTheme.colors.textSecondary} />
+                </EmptyIcon>
+                <EmptyText>{likedFilter === "movie" ? t("profile.noMoviesLikedYet") : t("profile.noSeriesLikedYet")}</EmptyText>
+              </EmptySection>
+            )
           ) : (
             <RailWrap>
               <FlatList
@@ -1217,6 +1303,8 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             </RailWrap>
           )}
         </SectionWrap>
+
+        <SharedSessionsSection />
 
         <BottomSpacer />
       </Content>
@@ -1339,6 +1427,13 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           </FullViewActions>
         </FullViewOverlay>
       </Modal>
+
+      {/* Badges modal */}
+      <BadgesModal
+        visible={showBadgesModal}
+        progress={badgeProgress}
+        onClose={() => setShowBadgesModal(false)}
+      />
 
       {/* â”€â”€ Edit profile modal â”€â”€ */}
       <Modal visible={showEditModal} animationType="slide" statusBarTranslucent>

@@ -4,10 +4,28 @@ import axios from "axios";
 
 import {
   __internal,
+  isNativeResult,
+  preferResolution,
   resolveDirectWebPlayerFallback,
+  type WebPlayerResult,
 } from "../src/services/WebPlayerService";
 
 const dizipalBase = "https://dizipal2078.com";
+
+test("Dizipal direct-slug builds the page slug the way Dizipal does", () => {
+  // "From" (2022) exists at /dizi/from but Dizipal's ajax-search never surfaces
+  // it (buried under multi-word "…from…" titles), so the resolver falls back to
+  // the deterministic slug. These must match Dizipal's own slug convention.
+  assert.equal(__internal.slugifyForDizipal("From"), "from");
+  assert.equal(__internal.slugifyForDizipal("Stranger Things"), "stranger-things");
+  assert.equal(__internal.slugifyForDizipal("Alcatraz'dan Kaçış"), "alcatrazdan-kacis");
+  assert.equal(__internal.slugifyForDizipal("  Notes from the Last Row  "), "notes-from-the-last-row");
+  // The slug-built URL must still pass the title-compatibility guard for "From".
+  assert.equal(
+    __internal.isDizipalUrlTitleCompatible("https://dizipal2083.com/dizi/from", "From"),
+    true
+  );
+});
 
 test("Dizipal matching rejects unrelated pages for acronym titles", () => {
   const result = {
@@ -40,6 +58,49 @@ test("Dizipal matching keeps legitimate acronym pages playable", () => {
     __internal.isDizipalUrlTitleCompatible(`${dizipalBase}/bolum/mia-1-sezon-1-bolum`, "M.I.A."),
     true
   );
+});
+
+// ---------------------------------------------------------------------------
+// Native-retry decision logic — the resolver retries the native pipeline after
+// a degraded first pass and must (a) recognise a real native stream to stop on,
+// and (b) never return something worse than the first pass already found.
+// ---------------------------------------------------------------------------
+
+function nativeResult(overrides: Partial<WebPlayerResult> = {}): WebPlayerResult {
+  return { url: "https://provider/page", source: "dizipal_direct", streamUrl: "https://cdn/x.m3u8", ...overrides };
+}
+
+const webViewFallback: WebPlayerResult = { url: "https://hdfilmcehennemi/page", source: "hdfilm" };
+const notFound: WebPlayerResult = { url: "", source: "not_found" };
+
+test("isNativeResult accepts only a real playable stream", () => {
+  assert.equal(isNativeResult(nativeResult()), true);
+  assert.equal(isNativeResult(nativeResult({ source: "direct" })), true);
+
+  // The degraded outcomes the retry exists to escape.
+  assert.equal(isNativeResult(webViewFallback), false);
+  assert.equal(isNativeResult(notFound), false);
+  assert.equal(isNativeResult({ url: "https://embed", source: "dizipal_embed" }), false);
+  // dizipal_html5 is a WebView HLS retry, not a native expo-video stream.
+  assert.equal(isNativeResult({ url: "https://e", source: "dizipal_html5", streamUrl: "https://cdn/y.m3u8" }), false);
+  // dizipal_direct with no stream URL isn't playable natively.
+  assert.equal(isNativeResult({ url: "https://p", source: "dizipal_direct" }), false);
+});
+
+test("preferResolution keeps the retry from ever downgrading the first pass", () => {
+  // Retry found native — always take it.
+  assert.equal(isNativeResult(preferResolution(webViewFallback, nativeResult())), true);
+  assert.equal(isNativeResult(preferResolution(notFound, nativeResult())), true);
+
+  // Retry came back worse than the first pass — keep the first pass.
+  assert.equal(preferResolution(webViewFallback, notFound), webViewFallback);
+  assert.equal(preferResolution(nativeResult(), notFound).streamUrl, "https://cdn/x.m3u8");
+  assert.equal(preferResolution(nativeResult(), webViewFallback).streamUrl, "https://cdn/x.m3u8");
+
+  // A watchable page still beats "Not Available".
+  assert.equal(preferResolution(notFound, webViewFallback), webViewFallback);
+  // Two equal-rank results: keep the first (no pointless churn).
+  assert.equal(preferResolution(webViewFallback, { url: "https://other", source: "hdfilm" }), webViewFallback);
 });
 
 test("Dizipal matching allows safe acronym expansions", () => {
@@ -110,6 +171,98 @@ test("HDFilm Rapidrame decoder still accepts a legacy-scheme value", () => {
 
   const candidates = __internal.decodeRapidrameValueCandidates([encoded]);
   assert.ok(candidates.includes(url));
+});
+
+test("HDFilm Rapidrame decoder self-heals when the provider rotates ONLY the unmix constant", () => {
+  // The provider's most common change is bumping the unmix modulus inside the
+  // inline dc_*() body (observed 399756995 → 112511818) while keeping the
+  // reverse→base64→rot13 wrapping. We parse that number live, so even a brand
+  // new constant the app has never seen must decode. Use one NOT in the known
+  // list to prove the rescue comes from the parsed value, not a baked-in guess.
+  const url = "https://rotated.example/hls/movie.mp4/txt/master.txt";
+  const NOVEL_CONSTANT = 271828182;
+
+  // Build the parts with the CURRENT scheme: inverse of
+  // rot13(atob(reverse(joined))) then unmix(C) ⇒ reverse(btoa(rot13(mix(url)))).
+  let mixed = "";
+  for (let i = 0; i < url.length; i += 1) {
+    mixed += String.fromCharCode((url.charCodeAt(i) + (NOVEL_CONSTANT % (i + 5))) % 256);
+  }
+  const rot13 = mixed.replace(/[a-zA-Z]/g, (ch) => {
+    const code = ch.charCodeAt(0);
+    const base = code <= 90 ? 65 : 97;
+    return String.fromCharCode(((code - base + 13) % 26) + base);
+  });
+  const b64 = Buffer.from(rot13, "binary").toString("base64");
+  const encoded = b64.split("").reverse().join("");
+
+  // Without the parsed constant the known list can't recover it…
+  assert.ok(!__internal.decodeRapidrameValueCandidates([encoded]).includes(url));
+  // …but passing the live-parsed constant does.
+  assert.ok(
+    __internal.decodeRapidrameValueCandidates([encoded], { constant: NOVEL_CONSTANT, offset: 5 }).includes(url)
+  );
+
+  // End-to-end: extractRapidrameStreamUrl reads the constant from the dc_*()
+  // body in the embed HTML, so the whole flow self-heals with no release.
+  const embedHtml = [
+    `function dc_TESTROT(value_parts){let v=value_parts.join('');v=v.split('').reverse().join('');v=atob(v);`,
+    `let unmix='';for(let i=0;i<v.length;i++){let charCode=v.charCodeAt(i);charCode=(charCode-(${NOVEL_CONSTANT} % (i + 5))+256)%256;unmix+=String.fromCharCode(charCode)}return unmix}`,
+    `var s_TESTROT = dc_TESTROT(${JSON.stringify([encoded])});`,
+    'jwplayer("player").setup({ sources: [{file: s_TESTROT, type: "hls"}] });'
+  ].join("\n");
+
+  assert.equal(__internal.extractRapidrameStreamUrl(embedHtml), url);
+});
+
+test("HDFilm decoder interprets a per-request randomized dc_*() body (reverse count, caesar shift, unmix constant + offset all novel)", () => {
+  // The provider now randomizes the decoder on EVERY embed request: the number
+  // of reverses, the Caesar shift amount, the unmix constant and the `(i + N)`
+  // offset all change. No static scheme can match, so the extractor interprets
+  // the live dc_*() body. This fixture uses parameters absent from every static
+  // scheme (shift 7, offset 13, novel constant) to prove the decode is driven
+  // by the parsed body, not a baked-in guess. Mirrors "The Big Short" breakage.
+  const url = "https://srv10.cdnimages40.shop/hls/randomized-scheme.mp4/txt/master.txt";
+  const CONSTANT = 3708627584;
+  const OFFSET = 13;
+  const SHIFT = 7;
+
+  const caesar = (value: string, shift: number) => {
+    const n = ((shift % 26) + 26) % 26;
+    return value.replace(/[a-zA-Z]/g, (ch) => {
+      const code = ch.charCodeAt(0);
+      const base = code <= 90 ? 65 : 97;
+      return String.fromCharCode(((code - base + n) % 26) + base);
+    });
+  };
+  const btoaBin = (value: string) => Buffer.from(value, "binary").toString("base64");
+
+  // Scheme to replay on decode: join → reverse → atob → caesar(+SHIFT) → atob → unmix.
+  // Build the parts by inverting it end-to-end.
+  let mixed = "";
+  for (let i = 0; i < url.length; i += 1) {
+    mixed += String.fromCharCode((url.charCodeAt(i) + (CONSTANT % (i + OFFSET))) % 256);
+  }
+  const joined = btoaBin(caesar(btoaBin(mixed), -SHIFT)).split("").reverse().join("");
+  const parts = [joined.slice(0, 12), joined.slice(12)];
+
+  const embedHtml = [
+    `function dc_RANDO(value_parts){`,
+    `let result = value_parts.join('');`,
+    `result = result.split('').reverse().join('');`,
+    `result = atob(result);`,
+    `result = result.replace(/[a-zA-Z]/g, function(c){var o=c.charCodeAt(0),base=(o<=90)?65:97;return String.fromCharCode((o - base + ${SHIFT}) % 26 + base);});`,
+    `result = atob(result);`,
+    `let unmix='';for(let i=0;i<result.length;i++){let charCode=result.charCodeAt(i);charCode=((charCode-(${CONSTANT} % (i + ${OFFSET}))) % 256 + 256) % 256;unmix+=String.fromCharCode(charCode);}return unmix;}`,
+    `var s_RANDO = dc_RANDO(${JSON.stringify(parts)});`,
+    'jwplayer("player").setup({ sources: [{file: s_RANDO, type: "hls"}] });'
+  ].join("\n");
+
+  // The static schemes can't produce it (novel shift + offset)…
+  assert.ok(!__internal.decodeRapidrameValueCandidates(parts).includes(url));
+  // …but interpreting the live dc_*() body does, end to end.
+  assert.equal(__internal.decodeRapidrameByInterpretingDcBody(embedHtml, "s_RANDO", parts), url);
+  assert.equal(__internal.extractRapidrameStreamUrl(embedHtml), url);
 });
 
 test("HDFilm Rapidrame inspection follows master playlists before deciding native playback", () => {
@@ -206,7 +359,32 @@ test("pickDizibalHit rejects junk matches when no TMDB/IMDB and title scores too
   assert.equal(picked, null);
 });
 
-test("Dizibal resolver uses the rotating embed URL as the native HLS referer", async () => {
+test("extractDizibalEmbedStream reads the deferred /dl path and subtitles", () => {
+  // The live Playerjs embed defers the media URL behind a fetch('/dl?...') call
+  // and lists subtitles as "[Label]url" (url may be absolute or root-relative).
+  const html = `
+    <script>fetch('/dl?op=get_stream&view_id=44356597&hash=1783922324-abc')
+      .then(function(r){return r.json();}).then(function(d){
+        var player=new Playerjs({id:"playerjs",file:d.url,
+          "subtitle":"[Türkçe]/srt/00/x_tur.vtt,[İngilizce]https://cdn77.services/vtt/x_eng.vtt"});
+      });</script>`;
+  const parsed = __internal.extractDizibalEmbedStream(html, "https://x.ag2m4.cfd");
+  assert.equal(parsed?.dlPath, "/dl?op=get_stream&view_id=44356597&hash=1783922324-abc");
+  assert.equal(parsed?.m3u8Url, undefined);
+  assert.deepEqual(parsed?.subtitles, [
+    { url: "https://x.ag2m4.cfd/srt/00/x_tur.vtt", label: "Türkçe", lang: "tr" },
+    { url: "https://cdn77.services/vtt/x_eng.vtt", label: "İngilizce", lang: "en" },
+  ]);
+});
+
+test("extractDizibalEmbedStream falls back to an inline file: m3u8", () => {
+  const html = `new Playerjs({id:"playerjs", file:"https://cdn.example/inline/master.m3u8"});`;
+  const parsed = __internal.extractDizibalEmbedStream(html, "https://x.ag2m4.cfd");
+  assert.equal(parsed?.m3u8Url, "https://cdn.example/inline/master.m3u8");
+  assert.equal(parsed?.dlPath, undefined);
+});
+
+test("Dizibal resolver follows embed → /dl → m3u8 and uses the embed host as referer", async () => {
   const originalGet = axios.get;
   const originalDev = (globalThis as any).__DEV__;
   const calls: Array<{ url: string; config: any }> = [];
@@ -220,11 +398,14 @@ test("Dizibal resolver uses the rotating embed URL as the native HLS referer", a
     if (url.endsWith("/api/series/the-boys/seasons/1")) {
       return { data: { success: true, data: { episodes: [{ episode_number: 4, src: "2ibfbt9ftb6d" }] } } };
     }
-    if (url.endsWith("/api/stream/m3u8")) {
-      return { data: { success: true, m3u8Url: "https://cdn.example/master.m3u8", subtitles: [] } };
-    }
     if (url.endsWith("/api/stream/embed")) {
       return { data: { success: true, embedUrl: "https://x.ag2m4.cfd/embed-2ibfbt9ftb6d.html?autoplay=1" } };
+    }
+    if (url.includes("/embed-2ibfbt9ftb6d.html")) {
+      return { data: `fetch('/dl?op=get_stream&view_id=1&hash=abc').then(function(r){return r.json();})` };
+    }
+    if (url.includes("/dl?op=get_stream")) {
+      return { data: { url: "https://cdn.example/master.m3u8" } };
     }
     throw new Error(`Unexpected URL: ${url}`);
   }) as typeof axios.get;
@@ -240,12 +421,66 @@ test("Dizibal resolver uses the rotating embed URL as the native HLS referer", a
 
     assert.equal(result.source, "direct");
     assert.equal(result.streamUrl, "https://cdn.example/master.m3u8");
-    assert.equal(result.referer, "https://x.ag2m4.cfd/embed-2ibfbt9ftb6d.html?autoplay=1");
-    assert.equal(calls.some((call) => call.url.endsWith("/api/stream/embed")), true);
+    assert.equal(result.referer, "https://x.ag2m4.cfd/");
+    // The retired /api/stream/m3u8 endpoint must never be called again.
+    assert.equal(calls.some((call) => call.url.endsWith("/api/stream/m3u8")), false);
+    // The /dl call must carry an Origin header or the endpoint 401s.
+    const dlCall = calls.find((call) => call.url.includes("/dl?op=get_stream"));
+    assert.equal(dlCall?.config.headers.Origin, "https://x.ag2m4.cfd");
     assert.equal(
       calls.find((call) => call.url.endsWith("/api/stream/embed"))?.config.params.autoplay,
       1,
     );
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizibal resolver falls back to /api/anime for anime series", async () => {
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  const calls: Array<{ url: string; config: any }> = [];
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string, config: any) => {
+    calls.push({ url, config });
+    // /api/series has no anime → empty; /api/anime carries it.
+    if (url.endsWith("/api/series")) {
+      return { data: { success: true, data: [] } };
+    }
+    if (url.endsWith("/api/anime")) {
+      return { data: { success: true, data: [{ id: 46260, slug: "naruto" }] } };
+    }
+    if (url.endsWith("/api/anime/naruto/seasons/1")) {
+      return { data: { success: true, data: { episodes: [{ episode_number: 1, src: "jwizahail2ft" }] } } };
+    }
+    if (url.endsWith("/api/stream/embed")) {
+      return { data: { success: true, embedUrl: "https://x.ag2m4.cfd/embed-jwizahail2ft.html?autoplay=1" } };
+    }
+    if (url.includes("/embed-jwizahail2ft.html")) {
+      return { data: `fetch('/dl?op=get_stream&view_id=9&hash=xyz')` };
+    }
+    if (url.includes("/dl?op=get_stream")) {
+      return { data: { url: "https://cdn.example/naruto.m3u8" } };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await resolveDirectWebPlayerFallback({
+      mediaType: "tv",
+      title: "Naruto",
+      tmdbId: "46260",
+      seasonNumber: 1,
+      episodeNumber: 1,
+    });
+
+    assert.equal(result.source, "direct");
+    assert.equal(result.streamUrl, "https://cdn.example/naruto.m3u8");
+    // It must have consulted /api/anime and its season endpoint.
+    assert.equal(calls.some((call) => call.url.endsWith("/api/anime")), true);
+    assert.equal(calls.some((call) => call.url.endsWith("/api/anime/naruto/seasons/1")), true);
   } finally {
     axios.get = originalGet;
     (globalThis as any).__DEV__ = originalDev;
@@ -525,6 +760,181 @@ test("Dizipal matching still scores English title low against Turkish-only resul
   };
   const score = __internal.scoreDizipalResult(result, "Harry Potter and the Deathly Hallows: Part 1", "2010");
   assert.ok(score < 80, `English-title match against Turkish-only result must stay below the 80 cutoff, got ${score}`);
+});
+
+test("Dizipal scoring prefers the correct-year Dune among two same-title candidates", () => {
+  // Two "Dune" entries from ajax-search, 1984 and 2021, target year 2021.
+  // The 2021 candidate must win AND the 1984 one must fall below the
+  // searchDizipal 80-point cutoff (exact title 100 − 55 wrong-year = 45),
+  // so even alone it cannot be returned.
+  const dune1984 = { href: `${dizipalBase}/film/dune-1984`, text: "dune 1984", title: "Dune", resultYear: "1984" };
+  const dune2021 = { href: `${dizipalBase}/film/dune`, text: "dune 2021", title: "Dune", resultYear: "2021" };
+
+  const score1984 = __internal.scoreDizipalResult(dune1984, "Dune", "2021");
+  const score2021 = __internal.scoreDizipalResult(dune2021, "Dune", "2021");
+
+  assert.ok(score2021 > score1984, `2021 must outscore 1984: 2021=${score2021}, 1984=${score1984}`);
+  assert.ok(score1984 < 80, `lone wrong-year Dune must stay below the 80 cutoff, got ${score1984}`);
+  assert.ok(score2021 >= 80, `correct-year Dune must clear the 80 cutoff, got ${score2021}`);
+});
+
+test("extractDizipalPageYear reads only structured year markers", () => {
+  // JSON-LD
+  assert.equal(
+    __internal.extractDizipalPageYear('<script type="application/ld+json">{"datePublished":"1984-12-14"}</script>'),
+    "1984"
+  );
+  // year-classed element
+  assert.equal(
+    __internal.extractDizipalPageYear('<span class="year">2021</span>'),
+    "2021"
+  );
+  // "Yapım Yılı" label (Turkish info table)
+  assert.equal(
+    __internal.extractDizipalPageYear('<td>Yapım Yılı</td><td>1984</td>'),
+    "1984"
+  );
+  // (YYYY) in the document title
+  assert.equal(
+    __internal.extractDizipalPageYear("<title>Dune izle (1984) | dizipal</title>"),
+    "1984"
+  );
+  // A bare 4-digit number anywhere else is NOT trusted (resolutions, ids, …)
+  assert.equal(__internal.extractDizipalPageYear("<p>video 1080p bitrate 2021 kbps</p>"), null);
+  assert.equal(__internal.extractDizipalPageYear(""), null);
+});
+
+test("Dizipal direct-slug probe rejects the wrong-year movie behind the plain slug (Dune 2021 ≠ 1984)", async () => {
+  // The exact reported failure: Dune (2021) resolves through the direct-slug
+  // fallback (search missed), /film/dune serves Dune 1984, and the old probe
+  // matched on title compatibility alone and played the wrong film. The
+  // probe must now read the page year and reject.
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/film/dune-2021")) {
+      throw new Error("404"); // Dizipal has no year-suffixed page for 2021 here
+    }
+    if (url.endsWith("/film/dune")) {
+      return { data: "<title>Dune izle (1984) - dizipal</title><h1>Dune</h1>" };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await __internal.probeDizipalDirectSlug("Dune", "movie", "2021");
+    assert.equal(result, null, "wrong-year page behind the plain slug must not play");
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizipal direct-slug probe prefers the year-suffixed slug and reports the verified year", async () => {
+  // Remakes live at slug-year pages; when the year-suffixed page exists it is
+  // year-correct by construction and must be picked before the plain slug.
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/film/dune-1984")) {
+      return { data: "<title>Dune izle (1984)</title>" };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await __internal.probeDizipalDirectSlug("Dune", "movie", "1984");
+    assert.ok(result, "year-suffixed slug hit must resolve");
+    assert.ok(result!.url.endsWith("/film/dune-1984"));
+    assert.equal(result!.resultYear, "1984");
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizipal direct-slug probe accepts the plain movie slug when the page year matches", async () => {
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/film/dune-2021")) {
+      throw new Error("404");
+    }
+    if (url.endsWith("/film/dune")) {
+      return { data: '<span class="year">2021</span><h1>Dune</h1>' };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await __internal.probeDizipalDirectSlug("Dune", "movie", "2021");
+    assert.ok(result, "correct-year plain slug must resolve");
+    assert.ok(result!.url.endsWith("/film/dune"));
+    assert.equal(result!.resultYear, "2021");
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizipal direct-slug probe keeps TV fail-open on an unreadable page year (the 'From' fix)", async () => {
+  // TV premiere years drift between regions, and the probe exists precisely
+  // because /dizi/from is unfindable via search — a page without a readable
+  // year must still play for series.
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/dizi/from-2022")) {
+      throw new Error("404");
+    }
+    if (url.endsWith("/dizi/from")) {
+      return { data: "<h1>From</h1><div>1. Sezon</div>" };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await __internal.probeDizipalDirectSlug("From", "tv", "2022");
+    assert.ok(result, "TV plain-slug hit without a readable year must still resolve");
+    assert.ok(result!.url.endsWith("/dizi/from"));
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizipal direct-slug probe rejects a wrong-year movie page even when a movie has no readable year", async () => {
+  // Movies with a known target year must positively confirm the page year:
+  // same-title remakes share the plain slug, so "no year found" is not safe.
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/film/dune-2021")) {
+      throw new Error("404");
+    }
+    if (url.endsWith("/film/dune")) {
+      return { data: "<h1>Dune</h1>" }; // no year anywhere
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await __internal.probeDizipalDirectSlug("Dune", "movie", "2021");
+    assert.equal(result, null, "ambiguous-year movie page must not play");
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
 });
 
 test("HDFilm Rapidrame inspection prefers native for disguised image media segments", () => {

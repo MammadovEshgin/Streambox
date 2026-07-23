@@ -7,6 +7,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "styled-components/native";
 
 import { ActorDetailScreen } from "../screens/ActorDetailScreen";
+import { AzClassicDetailScreen } from "../screens/AzClassicDetailScreen";
+import { AzClassicsGridScreen } from "../screens/AzClassicsGridScreen";
 import { DiscoverGridScreen } from "../screens/DiscoverGridScreen";
 import { FranchiseCatalogScreen } from "../screens/FranchiseCatalogScreen";
 import { FranchiseTimelineScreen } from "../screens/FranchiseTimelineScreen";
@@ -21,6 +23,7 @@ import { SearchResultsScreen } from "../screens/SearchResultsScreen";
 import { SeriesDetailScreen } from "../screens/SeriesDetailScreen";
 import { SeriesScreen } from "../screens/SeriesScreen";
 import { StatsScreen } from "../screens/StatsScreen";
+import { WatchRoomScreen } from "../screens/WatchRoomScreen";
 
 import { WatchedGridScreen } from "../screens/WatchedGridScreen";
 import { HomeStackParamList, ProfileStackParamList, RootTabParamList, StatsStackParamList } from "./types";
@@ -43,7 +46,10 @@ function HomeStackScreen() {
       <HomeStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <HomeStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <HomeStack.Screen name="ActorDetail" component={ActorDetailScreen} />
+      <HomeStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
+      <HomeStack.Screen name="AzClassicsGrid" component={AzClassicsGridScreen} />
       <HomeStack.Screen name="Player" component={PlayerScreen} />
+      <HomeStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </HomeStack.Navigator>
   );
 }
@@ -59,7 +65,10 @@ function MoviesStackScreen() {
       <MoviesStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <MoviesStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <MoviesStack.Screen name="ActorDetail" component={ActorDetailScreen} />
+      <MoviesStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
+      <MoviesStack.Screen name="AzClassicsGrid" component={AzClassicsGridScreen} />
       <MoviesStack.Screen name="Player" component={PlayerScreen} />
+      <MoviesStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </MoviesStack.Navigator>
   );
 }
@@ -74,6 +83,7 @@ function SeriesStackScreen() {
       <SeriesStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <SeriesStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <SeriesStack.Screen name="Player" component={PlayerScreen} />
+      <SeriesStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </SeriesStack.Navigator>
   );
 }
@@ -89,6 +99,7 @@ function ProfileStackScreen() {
       <ProfileStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <ProfileStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <ProfileStack.Screen name="Player" component={PlayerScreen} />
+      <ProfileStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </ProfileStack.Navigator>
   );
 }
@@ -103,11 +114,12 @@ function StatsStackScreen() {
       <StatsStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <StatsStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <StatsStack.Screen name="Player" component={PlayerScreen} />
+      <StatsStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </StatsStack.Navigator>
   );
 }
 
-const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "Player", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline"]);
+const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "AzClassicDetail", "AzClassicsGrid", "Player", "WatchRoomSetup", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline"]);
 const STACK_TABS = new Set<keyof RootTabParamList>(["Discover", "Movies", "Series", "Stats", "Profile"]);
 
 export function Navigation() {
