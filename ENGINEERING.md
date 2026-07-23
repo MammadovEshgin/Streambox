@@ -67,10 +67,17 @@ the `app.config.js` runtime, not the branch you happen to be on.
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `b7ef808` | `409f6556-fd0a-450b-a1d7-7275d4120768` |
+| 1.2.0 | `v1.2.0` @ `7c6e29c` | `9ad008d5-55d7-496e-b6c8-7c8b03d40c4f` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
 
+- **2026-07-23 (1.2.0 only, follow-up):** Reverted the custom YouTube expand/
+  fullscreen player from earlier today — it was worse than the stock player, so
+  trailers + Azerbaijani Classics return to the original portrait iframe (its own
+  controls + `onFullScreenChange` landscape handling). The rest of the batch below
+  is kept. Also renamed the AZ Classics play button "Play on YouTube" → "Watch
+  Now" / "Şimdi İzle". Deploy: 1.2.0 `7c6e29c` → group
+  `9ad008d5-55d7-496e-b6c8-7c8b03d40c4f`.
 - **2026-07-23 (1.2.0 only):** UX + stability batch. (1) **Watch Together chat is
   now durably delivered** — un-acked chat lines queue in `watchRoomService` and
   flush the moment a fresh healthy channel subscribes; the partner de-dupes by
