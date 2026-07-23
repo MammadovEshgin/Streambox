@@ -55,8 +55,8 @@ import { MediaCard } from "../components/home/MediaCard";
 import { getWatchedStampImage } from "../constants/imageAssets";
 import { formatLocalizedMonthDayYear } from "../localization/format";
 import { useLikedSeries } from "../hooks/useLikedSeries";
-import { useWatchHistory } from "../hooks/useWatchHistory";
-import { useWatchedEpisodes } from "../hooks/useWatchedEpisodes";
+import { useWatchHistory, type SeriesSeasonWatchedSave } from "../hooks/useWatchHistory";
+import { useWatchedEpisodes, type SeasonEpisodeStateChange } from "../hooks/useWatchedEpisodes";
 import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
 import { HomeStackParamList } from "../navigation/types";
 import {
@@ -67,6 +67,12 @@ import {
 import { useAppSettings } from "../settings/AppSettingsContext";
 
 const SERIES_SIMILAR_CACHE_PREFIX = "series-detail-similar-v1";
+
+// Smart-similar fans out into keyword/credit lookups for ~20 candidates.
+// Deferring it keeps the detail screen's first paint (details + ratings +
+// quick-similar) inside the proxy rate budget; quick-similar fills the rail
+// immediately and smart-similar refines it a moment later.
+const SMART_SIMILAR_DEFER_MS = 3500;
 
 function getSeriesSimilarCacheKey(seriesId: string, language: string) {
   return `${SERIES_SIMILAR_CACHE_PREFIX}:${language}:${seriesId}`;
@@ -596,7 +602,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const { t } = useTranslation();
   const { language } = useAppSettings();
   const watchedStampImage = getWatchedStampImage(language);
-  const { isEpisodeWatched, toggleEpisodeWatched, markSeasonWatched, unmarkSeasonWatched } = useWatchedEpisodes();
+  const { isEpisodeWatched, toggleEpisodeWatched, applySeasonEpisodeStates } = useWatchedEpisodes();
   const { isInWatchlist, toggleWatchlist } = useSeriesWatchlist();
   const { isLiked, toggleLikedSeries } = useLikedSeries();
   const {
@@ -604,9 +610,8 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
     getSeriesSeasonWatchEntry,
     getSeriesSeasonWatchEntries,
     saveSeriesToWatchHistory,
-    saveSeriesSeasonToWatchHistory,
+    saveSeriesWatchedBatch,
     removeFromWatchHistory,
-    removeSeriesSeasonFromWatchHistory,
   } = useWatchHistory();
   const [details, setDetails] = useState<SeriesDetails | null>(null);
   const [ratings, setRatings] = useState<SeriesExternalRatings | null>(null);
@@ -625,6 +630,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const loveProgress = useSharedValue(0);
   const trailerRequestRef = useRef<Promise<string | null> | null>(null);
   const detailRequestRef = useRef(0);
+  const smartSimilarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconcileSeriesWatchRef = useRef<"idle" | "saving" | "removing">("idle");
 
   const loadTrailer = useCallback(() => {
@@ -711,25 +717,38 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
         }
       }).catch(() => undefined);
 
-      void getSmartSimilarSeries(route.params.seriesId, detailResponse).then((similarResponse) => {
+      // Smart-similar fans out into keyword/credit lookups for ~20 candidates.
+      // Deferring it keeps the detail screen's first paint (details + ratings +
+      // quick-similar) inside the proxy rate budget.
+      if (smartSimilarTimerRef.current) {
+        clearTimeout(smartSimilarTimerRef.current);
+      }
+      smartSimilarTimerRef.current = setTimeout(() => {
+        smartSimilarTimerRef.current = null;
         if (detailRequestRef.current !== requestId) {
           return;
         }
 
-        const nextSimilarSeries = similarResponse
-          .filter((item) => String(item.id) !== route.params.seriesId)
-          .slice(0, 12);
-        setSimilarSeries(nextSimilarSeries);
-        void writePersistedRuntimeCache(similarCacheKey, nextSimilarSeries);
-      }).catch(() => {
-        if (detailRequestRef.current === requestId) {
-          setSimilarSeries((current) => current);
-        }
-      }).finally(() => {
-        if (detailRequestRef.current === requestId) {
-          setIsRelatedLoading(false);
-        }
-      });
+        void getSmartSimilarSeries(route.params.seriesId, detailResponse).then((similarResponse) => {
+          if (detailRequestRef.current !== requestId) {
+            return;
+          }
+
+          const nextSimilarSeries = similarResponse
+            .filter((item) => String(item.id) !== route.params.seriesId)
+            .slice(0, 12);
+          setSimilarSeries(nextSimilarSeries);
+          void writePersistedRuntimeCache(similarCacheKey, nextSimilarSeries);
+        }).catch(() => {
+          if (detailRequestRef.current === requestId) {
+            setSimilarSeries((current) => current);
+          }
+        }).finally(() => {
+          if (detailRequestRef.current === requestId) {
+            setIsRelatedLoading(false);
+          }
+        });
+      }, SMART_SIMILAR_DEFER_MS);
 
       void getSeriesEpisodeFallbackImagesWithImdb(detailResponse.title, detailResponse.imdbId).then((fallbackImages) => {
         if (detailRequestRef.current !== requestId) {
@@ -760,6 +779,13 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
 
   useEffect(() => {
     void loadSeries();
+
+    return () => {
+      if (smartSimilarTimerRef.current) {
+        clearTimeout(smartSimilarTimerRef.current);
+        smartSimilarTimerRef.current = null;
+      }
+    };
   }, [loadSeries]);
 
   useEffect(() => {
@@ -965,6 +991,13 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
         year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
       };
 
+      // Collect every decision first, then commit as one episode-state write
+      // plus one watch-history batch — no per-season awaited network work, so
+      // a hiccup can't leave season 1 saved and seasons 2..N dropped.
+      const episodeChanges: SeasonEpisodeStateChange[] = [];
+      const seasonsToSave: SeriesSeasonWatchedSave[] = [];
+      const seasonNumbersToRemove: number[] = [];
+
       for (const season of details.seasons) {
         const draft = drafts.find((item) => item.seasonNumber === season.seasonNumber);
         if (!draft) {
@@ -984,20 +1017,28 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
 
         if (draft.mode === "unwatched") {
           if (hasAnyEpisodeWatched) {
-            await unmarkSeasonWatched(details.id, season.seasonNumber, episodeNumbers);
+            episodeChanges.push({
+              seasonNumber: season.seasonNumber,
+              episodeNumbers,
+              watched: false,
+            });
           }
 
           if (currentSeasonEntry) {
-            await removeSeriesSeasonFromWatchHistory(details.id, season.seasonNumber, auditDetails);
+            seasonNumbersToRemove.push(season.seasonNumber);
           }
           continue;
         }
 
         if (!isSeasonFullyWatched) {
-          await markSeasonWatched(details.id, season.seasonNumber, episodeNumbers);
+          episodeChanges.push({
+            seasonNumber: season.seasonNumber,
+            episodeNumbers,
+            watched: true,
+          });
         }
 
-        const nextPrecision = draft.mode === "month" ? "month" : "none";
+        const nextPrecision: "month" | "none" = draft.mode === "month" ? "month" : "none";
         const nextWatchedAt =
           draft.mode === "month"
             ? draft.watchedAt
@@ -1009,38 +1050,37 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
             normalizeWatchedMonth(new Date(currentSeasonEntry.watchedAt)) !== draft.watchedAt);
 
         if (shouldUpdateSeasonEntry) {
-          await saveSeriesSeasonToWatchHistory(
-            details,
-            season,
-            nextWatchedAt,
-            nextPrecision,
-            auditDetails
-          );
+          seasonsToSave.push({ season, watchedAt: nextWatchedAt, precision: nextPrecision });
         }
       }
 
       const datedOrUndatedSeasons = drafts.filter((draft) => draft.mode !== "unwatched");
+      let titleAction: "save" | "remove" | "none" = "none";
+      let titleWatchedAt: number | undefined;
       if (datedOrUndatedSeasons.length > 0) {
-        const latestWatchedAt = datedOrUndatedSeasons.reduce((latest, draft) => {
+        titleAction = "save";
+        titleWatchedAt = datedOrUndatedSeasons.reduce((latest, draft) => {
           const candidate = draft.mode === "month" ? draft.watchedAt : latest;
           return Math.max(latest, candidate);
         }, Date.now());
-        await saveSeriesToWatchHistory(details, latestWatchedAt, auditDetails, { precision: "none" });
       } else if (currentSeriesWatchEntry) {
-        await removeFromWatchHistory(details.id, "tv", auditDetails);
+        titleAction = "remove";
       }
+
+      await applySeasonEpisodeStates(details.id, episodeChanges);
+      await saveSeriesWatchedBatch(
+        details,
+        { seasonsToSave, seasonNumbersToRemove, titleAction, titleWatchedAt },
+        auditDetails
+      );
     },
     [
+      applySeasonEpisodeStates,
       currentSeriesWatchEntry,
       details,
       getSeriesSeasonWatchEntry,
       isEpisodeWatched,
-      markSeasonWatched,
-      removeFromWatchHistory,
-      removeSeriesSeasonFromWatchHistory,
-      saveSeriesSeasonToWatchHistory,
-      saveSeriesToWatchHistory,
-      unmarkSeasonWatched,
+      saveSeriesWatchedBatch,
     ]
   );
 

@@ -1,20 +1,28 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
 
-import { LruMap } from "../utils/LruMap";
+import { PersistedLruMap } from "../services/persistedLruMap";
 
+// The upstream GitHub dataset has rotated its schema over time. Older revisions
+// used string fields with "Movie Name"/"Movie Link"; the current one uses
+// numeric Rank/"IMDb Rating" with "name"/"link". Accept both shapes so a future
+// rotation doesn't silently drop us back to the bundled fallback list.
 type ImdbTop250MovieEntry = {
-  Rank: string;
-  "Movie Name": string;
-  "IMDb Rating": string;
-  "Movie Link": string;
+  Rank?: string | number;
+  "Movie Name"?: string;
+  name?: string;
+  "IMDb Rating"?: string | number;
+  "Movie Link"?: string;
+  link?: string;
 };
 
 type ImdbTop250ShowEntry = {
-  Rank: string;
-  "Show Name": string;
-  "IMDb Rating": string;
-  "Show Link": string;
+  Rank?: string | number;
+  "Show Name"?: string;
+  name?: string;
+  "IMDb Rating"?: string | number;
+  "Show Link"?: string;
+  link?: string;
 };
 
 export type ImdbTop250Item = {
@@ -78,9 +86,14 @@ let moviesLastFetch = 0;
 let showsLastFetch = 0;
 let popularMoviesLastFetch = 0;
 
-// Bounded: individual IMDb ratings accumulate as the user browses. LruMap keeps
-// hot ratings and evicts the oldest. has()/get() negative-caching is preserved.
-const imdbRatingCache = new LruMap<string, number | null>(2000);
+// Bounded: individual IMDb ratings accumulate as the user browses. Persisted so
+// a cold start doesn't refetch the same ratings; ratings drift slowly, so a 24h
+// snapshot TTL keeps them honest. has()/get() negative-caching is preserved.
+const imdbRatingCache = new PersistedLruMap<number | null>({
+  storageKey: "@streambox/api-cache-imdb-ratings-v1",
+  maxEntries: 2000,
+  ttlMs: 24 * 60 * 60 * 1000,
+});
 // Bounded by concurrency: each entry is removed in its own finally block.
 const inFlightImdbRatingRequests = new Map<string, Promise<number | null>>();
 
@@ -89,27 +102,34 @@ function extractImdbId(link: string): string | null {
   return match?.[1] ?? null;
 }
 
-function parseMovieEntry(entry: ImdbTop250MovieEntry): ImdbTop250Item | null {
-  const imdbId = extractImdbId(entry["Movie Link"]);
-  if (!imdbId) return null;
+function toRank(value: unknown, fallbackIndex: number): number {
+  const rank = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
+  return Number.isFinite(rank) && rank > 0 ? rank : fallbackIndex + 1;
+}
+
+function parseMovieEntry(entry: ImdbTop250MovieEntry, index: number): ImdbTop250Item | null {
+  const imdbId = extractImdbId(entry["Movie Link"] ?? entry.link ?? "");
+  const title = entry["Movie Name"] ?? entry.name;
+  if (!imdbId || !title) return null;
 
   return {
-    rank: parseInt(entry.Rank, 10),
-    title: decodeHtmlEntities(entry["Movie Name"]),
+    rank: toRank(entry.Rank, index),
+    title: decodeHtmlEntities(title),
     imdbId,
-    imdbRating: parseFloat(entry["IMDb Rating"]) || 0,
+    imdbRating: toRating(entry["IMDb Rating"]),
   };
 }
 
-function parseShowEntry(entry: ImdbTop250ShowEntry): ImdbTop250Item | null {
-  const imdbId = extractImdbId(entry["Show Link"]);
-  if (!imdbId) return null;
+function parseShowEntry(entry: ImdbTop250ShowEntry, index: number): ImdbTop250Item | null {
+  const imdbId = extractImdbId(entry["Show Link"] ?? entry.link ?? "");
+  const title = entry["Show Name"] ?? entry.name;
+  if (!imdbId || !title) return null;
 
   return {
-    rank: parseInt(entry.Rank, 10),
-    title: decodeHtmlEntities(entry["Show Name"]),
+    rank: toRank(entry.Rank, index),
+    title: decodeHtmlEntities(title),
     imdbId,
-    imdbRating: parseFloat(entry["IMDb Rating"]) || 0,
+    imdbRating: toRating(entry["IMDb Rating"]),
   };
 }
 

@@ -11,9 +11,7 @@ import {
   GENRE_ID_MAP,
   MediaItem,
   MediaType,
-  getTmdbImageUrl,
-  getMovieSummary,
-  getSeriesSummary
+  getTmdbImageUrl
 } from "../api/tmdb";
 import { formatRating } from "../api/mediaFormatting";
 import { SafeContainer } from "../components/common/SafeContainer";
@@ -23,9 +21,9 @@ import { useLikedSeries } from "../hooks/useLikedSeries";
 import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
 import { useWatchHistory, type WatchHistoryEntry } from "../hooks/useWatchHistory";
 import { useWatchlist } from "../hooks/useWatchlist";
-import { normalizeAppLanguage, type AppLanguage } from "../localization/types";
+import { normalizeAppLanguage } from "../localization/types";
 import type { ProfileStackParamList } from "../navigation/types";
-import { mapWithConcurrency } from "../utils/concurrency";
+import { hydrateMediaIds } from "../services/mediaHydration";
 
 type Props = NativeStackScreenProps<ProfileStackParamList, "ProfileSeeAll">;
 type ProfileShelfSort = "recent" | "rating" | "year" | "title";
@@ -324,43 +322,35 @@ const FilterFooterLabel = styled.Text<{ $primary?: boolean }>`
 // Hydration
 // ---------------------------------------------------------------------------
 
-type Cache = Map<string, MediaItem>;
-const SEE_ALL_HYDRATION_CONCURRENCY = 6;
+// Hydrate watchlist/liked id lists in chunks so cards stream in instead of
+// blocking on the whole list. hydrateMediaIds is backed by a persistent,
+// per-language cache, so repeat visits resolve instantly.
+const SEE_ALL_HYDRATION_CHUNK = 24;
 
-async function hydrateList(
-  ids: (number | string)[],
-  type: MediaType,
-  cache: Cache,
-  language: AppLanguage
-): Promise<MediaItem[]> {
-  const fetcher = type === "movie" ? getMovieSummary : getSeriesSummary;
-
-  const items = await mapWithConcurrency(
-    ids,
-    SEE_ALL_HYDRATION_CONCURRENCY,
-    async (id) => {
-      const key = `${language}:${type}-${id}`;
-      if (cache.has(key)) {
-        return cache.get(key) ?? null;
-      }
-      try {
-        const numericId = Number(id);
-        if (!Number.isFinite(numericId)) {
-          return null;
-        }
-        const item = await fetcher(numericId);
-
-        if (item) {
-          cache.set(key, item);
-        }
-        return item;
-      } catch {
-        return null;
-      }
-    }
-  );
-
-  return items.filter((item): item is MediaItem => item !== null);
+/** Build display items for a watched/title shelf straight from watch-history
+ *  entries — they already store poster/title/year/rating, so no network is
+ *  needed (the costly TMDB fetch happened once when the title was watched or
+ *  imported). */
+function buildWatchedItemsFromHistory(entries: WatchHistoryEntry[]): MediaItem[] {
+  const seen = new Set<string>();
+  const items: MediaItem[] = [];
+  for (const entry of entries) {
+    const sourceId = getWatchHistoryMediaId(entry) ?? entry.id;
+    const key = String(sourceId);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({
+      id: sourceId,
+      title: entry.title,
+      posterPath: entry.posterPath,
+      backdropPath: null,
+      rating: entry.voteAverage,
+      overview: "",
+      year: entry.year,
+      mediaType: entry.mediaType,
+    });
+  }
+  return items;
 }
 
 function deriveGenresFromMediaItem(item: MediaItem): string[] {
@@ -449,8 +439,6 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
   const [draftFilters, setDraftFilters] = useState<ProfileShelfFilters>(DEFAULT_SHELF_FILTERS);
   const [filterVisible, setFilterVisible] = useState(false);
 
-  const cacheRef = useRef<Cache>(new Map());
-
   const { watchlist: movieWatchlist, reload: reloadWl } = useWatchlist();
   const { watchlist: seriesWatchlist, reload: reloadSwl } = useSeriesWatchlist();
   const { likedMovies, reload: reloadLm } = useLikedMovies();
@@ -483,45 +471,12 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
   useEffect(() => {
     let cancelled = false;
 
+    // Watched renders instantly from stored watch-history entries — no network.
     if (section === "watched") {
       const mediaType: MediaType = filter === "tv" ? "tv" : "movie";
       const watchedEntries = watchHistory.filter((entry) => entry.mediaType === mediaType);
-      const watchedIds = Array.from(
-        new Set(
-          watchedEntries
-            .map(getWatchHistoryMediaId)
-            .filter((id): id is number | string => id !== null)
-        )
-      );
-
-      setIsLoading(true);
-      hydrateList(watchedIds, mediaType, cacheRef.current, resolvedContentLanguage).then((localizedItems) => {
-        if (cancelled) {
-          return;
-        }
-
-        const localizedById = new Map(localizedItems.map((item) => [String(item.id), item]));
-        const watchedItems: MediaItem[] = watchedEntries.map((entry) => {
-          const sourceId = getWatchHistoryMediaId(entry);
-          const localizedItem = sourceId === null ? null : localizedById.get(String(sourceId)) ?? null;
-
-          return {
-            id: sourceId ?? entry.id,
-            title: localizedItem?.title ?? entry.title,
-            posterPath: localizedItem?.posterPath ?? entry.posterPath,
-            backdropPath: localizedItem?.backdropPath ?? null,
-            rating: localizedItem?.rating ?? entry.voteAverage,
-            overview: localizedItem?.overview ?? "",
-            year: localizedItem?.year ?? entry.year,
-            mediaType: entry.mediaType,
-            genreIds: localizedItem?.genreIds,
-          };
-        });
-
-        setItems(watchedItems);
-        setIsLoading(false);
-      });
-
+      setItems(buildWatchedItemsFromHistory(watchedEntries));
+      setIsLoading(false);
       return () => { cancelled = true; };
     }
 
@@ -531,14 +486,26 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
       return;
     }
 
+    // Watchlist/liked are stored as bare ids, so they must be hydrated. Stream
+    // the results in chunks so the grid fills progressively rather than blocking
+    // on hundreds of lookups; the persistent cache makes repeat visits instant.
+    const isMovie = filter === "movie";
     setIsLoading(true);
+    setItems([]);
 
-    hydrateList(ids, filter === "movie" ? "movie" : "tv", cacheRef.current, resolvedContentLanguage).then((result) => {
-      if (!cancelled) {
-        setItems(result);
+    void (async () => {
+      const collected: MediaItem[] = [];
+      for (let start = 0; start < ids.length; start += SEE_ALL_HYDRATION_CHUNK) {
+        if (cancelled) return;
+        const chunk = ids.slice(start, start + SEE_ALL_HYDRATION_CHUNK);
+        const hydrated = await hydrateMediaIds(isMovie ? chunk : [], isMovie ? [] : chunk);
+        if (cancelled) return;
+        collected.push(...hydrated);
+        setItems([...collected]);
         setIsLoading(false);
       }
-    });
+      if (!cancelled) setIsLoading(false);
+    })();
 
     return () => { cancelled = true; };
   }, [ids, filter, resolvedContentLanguage, section, watchHistory]);
@@ -556,7 +523,9 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
           item,
           order: index,
           watchedAt: entry?.watchedAt,
-          genres: deriveGenresFromMediaItem(item),
+          // Watched items carry genre names on the stored entry, so use those
+          // directly (their MediaItem has no genreIds since it isn't hydrated).
+          genres: entry?.genres ?? deriveGenresFromMediaItem(item),
         };
       });
     }

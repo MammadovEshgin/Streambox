@@ -188,6 +188,26 @@ const WatchedButton = styled(Pressable)<{ $active: boolean }>`
   justify-content: center;
 `;
 
+const WatchTogetherButton = styled(Pressable)`
+  height: 46px;
+  margin-top: 10px;
+  border-radius: 3px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.primaryMuted};
+  background-color: ${({ theme }) => theme.colors.primarySoft};
+`;
+
+const WatchTogetherText = styled.Text`
+  color: ${({ theme }) => theme.colors.primary};
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+`;
+
 const WatchedMetaText = styled.Text`
   margin-top: 8px;
   color: ${({ theme }) => theme.colors.textSecondary};
@@ -254,6 +274,12 @@ const ErrorText = styled.Text`
 
 type MovieDetailProps = NativeStackScreenProps<HomeStackParamList, "MovieDetail">;
 
+// Smart-similar fans out into keyword/credit lookups for ~20 candidates.
+// Deferring it keeps the detail screen's first paint (details + ratings +
+// quick-similar) inside the proxy rate budget; quick-similar fills the rail
+// immediately and smart-similar refines it a moment later.
+const SMART_SIMILAR_DEFER_MS = 3500;
+
 function formatReleaseDate(value: string, fallbackLabel: string): string {
   if (!value) {
     return fallbackLabel;
@@ -304,6 +330,7 @@ export function MovieDetailScreen({ route, navigation }: MovieDetailProps) {
   const loveProgress = useSharedValue(0);
   const trailerRequestRef = useRef<Promise<string | null> | null>(null);
   const detailRequestRef = useRef(0);
+  const smartSimilarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadTrailer = useCallback(() => {
     setIsTrailerLoading(true);
@@ -377,23 +404,33 @@ export function MovieDetailScreen({ route, navigation }: MovieDetailProps) {
         }
       }).catch(() => undefined);
 
-      void getSmartSimilarMovies(route.params.movieId, detailResponse).then((similarResponse) => {
+      if (smartSimilarTimerRef.current) {
+        clearTimeout(smartSimilarTimerRef.current);
+      }
+      smartSimilarTimerRef.current = setTimeout(() => {
+        smartSimilarTimerRef.current = null;
         if (detailRequestRef.current !== requestId) {
           return;
         }
 
-        const nextSimilarMovies = similarResponse.filter((item) => String(item.id) !== route.params.movieId);
-        setSimilarMovies(nextSimilarMovies);
-        void writePersistedRuntimeCache(similarCacheKey, nextSimilarMovies);
-      }).catch(() => {
-        if (detailRequestRef.current === requestId) {
-          setSimilarMovies((current) => current);
-        }
-      }).finally(() => {
-        if (detailRequestRef.current === requestId) {
-          setIsRelatedLoading(false);
-        }
-      });
+        void getSmartSimilarMovies(route.params.movieId, detailResponse).then((similarResponse) => {
+          if (detailRequestRef.current !== requestId) {
+            return;
+          }
+
+          const nextSimilarMovies = similarResponse.filter((item) => String(item.id) !== route.params.movieId);
+          setSimilarMovies(nextSimilarMovies);
+          void writePersistedRuntimeCache(similarCacheKey, nextSimilarMovies);
+        }).catch(() => {
+          if (detailRequestRef.current === requestId) {
+            setSimilarMovies((current) => current);
+          }
+        }).finally(() => {
+          if (detailRequestRef.current === requestId) {
+            setIsRelatedLoading(false);
+          }
+        });
+      }, SMART_SIMILAR_DEFER_MS);
 
     } catch (error) {
       if (detailRequestRef.current !== requestId) {
@@ -413,6 +450,13 @@ export function MovieDetailScreen({ route, navigation }: MovieDetailProps) {
 
   useEffect(() => {
     void loadDetails();
+
+    return () => {
+      if (smartSimilarTimerRef.current) {
+        clearTimeout(smartSimilarTimerRef.current);
+        smartSimilarTimerRef.current = null;
+      }
+    };
   }, [loadDetails]);
 
   const watchButtonAnimatedStyle = useAnimatedStyle(() => {
@@ -717,6 +761,29 @@ if (!details) {
                       />
                     </WatchedButton>
                   </ActionRow>
+                  <WatchTogetherButton
+                    onPress={() => {
+                      navigation.navigate("WatchRoomSetup", {
+                        mode: "create",
+                        media: {
+                          mediaType: "movie",
+                          tmdbId: details.id,
+                          title: details.title,
+                          posterPath: details.posterPath,
+                          backdropPath: details.backdropPath,
+                          imdbId: details.imdbId,
+                          year: details.releaseDate ? details.releaseDate.slice(0, 4) : null,
+                          originalTitle: details.originalTitle,
+                          castNames: details.cast.slice(0, 4).map((c) => c.name),
+                          genre: details.genres.slice(0, 2).join(" · ") || null,
+                          tagline: details.tagline ?? null,
+                        },
+                      });
+                    }}
+                  >
+                    <Feather name="users" size={18} color={currentTheme.colors.primary} />
+                    <WatchTogetherText>{t("watchTogether.watchTogether")}</WatchTogetherText>
+                  </WatchTogetherButton>
                   {currentWatchedEntry ? (
                     <WatchedMetaText>{formatWatchHistoryEntryLabel(currentWatchedEntry, t)}</WatchedMetaText>
                   ) : null}

@@ -21,8 +21,11 @@ import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
 
 import { MovieLoader } from "../components/common/MovieLoader";
+import { ContinueWatchingModal } from "../components/common/ContinueWatchingModal";
 import { QualityWarningModal } from "../components/common/QualityWarningModal";
-import { getRandomCinemaInsight } from "../constants/cinemaInsights";
+import { WatchRoomLayer } from "../components/watchTogether/WatchRoomLayer";
+import { WatchRoomBoundary } from "../components/watchTogether/WatchRoomBoundary";
+import { useContinueWatching } from "../hooks/useContinueWatching";
 import { useRecentlyWatched } from "../hooks/useRecentlyWatched";
 
 import { HomeStackParamList } from "../navigation/types";
@@ -38,8 +41,11 @@ import {
   type WebPlayerResult
 } from "../services/WebPlayerService";
 import { setPlayerActive } from "../services/playerActivityFlag";
+import {
+  hideSystemNavigationBar,
+  showSystemNavigationBar,
+} from "../utils/systemNavigationBar";
 import { getProviderConfig } from "../services/providerConfigService";
-import { useAppSettings } from "../settings/AppSettingsContext";
 import {
   normalizeSubtitleUrl,
   parseSubtitleDocument,
@@ -99,7 +105,7 @@ function getSubtitleTrackLabel(track: SubtitleTrack): string {
 
 
 // ---------------------------------------------------------------------------
-// Loading overlay with cinema facts
+// Loading overlay
 // ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
   root: {
@@ -132,36 +138,6 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     letterSpacing: 0.2,
     textAlign: "center"
-  },
-  factContainer: {
-    flexDirection: "row",
-    alignItems: "stretch",
-    marginTop: 40,
-    maxWidth: 300
-  },
-  factAccent: {
-    width: 2.5,
-    borderRadius: 2,
-    marginRight: 14,
-    opacity: 0.6
-  },
-  factBody: {
-    flex: 1
-  },
-  factLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 1.2,
-    textTransform: "uppercase",
-    marginBottom: 6,
-    opacity: 0.7
-  },
-  factText: {
-    color: "rgba(255,255,255,0.55)",
-    fontSize: 13.5,
-    lineHeight: 20,
-    letterSpacing: 0.1,
-    fontWeight: "400"
   },
   loaderText: {
     marginTop: 14,
@@ -335,51 +311,71 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#0A0A0F",
+    backgroundColor: "#08090C",
     zIndex: 20,
-    paddingHorizontal: 40
+    paddingHorizontal: 44
   },
-  notAvailableEmoji: {
-    fontSize: 64,
-    marginBottom: 20
+  notAvailableBadge: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 26,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)"
+  },
+  notAvailableBadgeInner: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    alignItems: "center",
+    justifyContent: "center"
   },
   notAvailableTitle: {
     color: "#FFFFFF",
-    fontSize: 22,
-    fontWeight: "800",
-    letterSpacing: 0.5,
-    marginBottom: 12
+    fontFamily: "Outfit_700Bold",
+    fontSize: 23,
+    letterSpacing: -0.3,
+    marginBottom: 10,
+    textAlign: "center"
   },
   notAvailableSubtitle: {
-    color: "rgba(255,255,255,0.75)",
+    color: "rgba(255,255,255,0.82)",
+    fontFamily: "Outfit_500Medium",
     fontSize: 15,
     textAlign: "center",
     lineHeight: 22,
-    marginBottom: 8
+    marginBottom: 6
   },
   notAvailableHint: {
-    color: "rgba(255,255,255,0.4)",
+    color: "rgba(255,255,255,0.42)",
+    fontFamily: "Outfit_400Regular",
     fontSize: 13,
     textAlign: "center",
-    lineHeight: 18,
-    marginBottom: 28
+    lineHeight: 19,
+    marginBottom: 30
   },
   goBackButton: {
-    paddingHorizontal: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 30,
     paddingVertical: 13,
     backgroundColor: "#FF4D00",
-    borderRadius: 12,
+    borderRadius: 999,
     shadowColor: "#FF4D00",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
     elevation: 8
   },
   goBackText: {
     color: "#FFFFFF",
+    fontFamily: "Outfit_700Bold",
     fontSize: 15,
-    fontWeight: "700",
-    letterSpacing: 0.3
+    letterSpacing: 0.2
   }
 });
 
@@ -392,17 +388,6 @@ function PlayerLoadingOverlay({
   seasonNumber?: number;
   episodeNumber?: number
 }) {
-  const { t } = useTranslation();
-  const theme = useTheme();
-  const { language } = useAppSettings();
-  const [showFact, setShowFact] = useState(false);
-  const [fact] = useState(() => getRandomCinemaInsight(language));
-
-  useEffect(() => {
-    const timer = setTimeout(() => setShowFact(true), 2500);
-    return () => clearTimeout(timer);
-  }, []);
-
   return (
     <View style={styles.loaderOverlay}>
       <View style={styles.loaderContent}>
@@ -413,16 +398,6 @@ function PlayerLoadingOverlay({
           </Text>
         </Reanimated.View>
       </View>
-
-      {showFact && (
-        <Reanimated.View entering={FadeIn.duration(800).delay(100)} style={styles.factContainer}>
-          <View style={[styles.factAccent, { backgroundColor: theme.colors.primary }]} />
-          <View style={styles.factBody}>
-            <Text style={[styles.factLabel, { color: theme.colors.primary }]}>{t("player.didYouKnow")}</Text>
-            <Text style={styles.factText}>{fact}</Text>
-          </View>
-        </Reanimated.View>
-      )}
     </View>
   );
 }
@@ -538,14 +513,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, []);
 
   useEffect(() => {
-    if (!hasTrackedRef.current && !route.params.trailerUrl) {
+    if (!hasTrackedRef.current && !route.params.trailerUrl && route.params.playbackSource !== "youtube") {
       hasTrackedRef.current = true;
       void addToRecentlyWatched(Number(route.params.tmdbId), route.params.mediaType, {
         title: route.params.title,
         imdbId: route.params.imdbId ?? null,
       });
     }
-  }, [addToRecentlyWatched, route.params.tmdbId, route.params.mediaType, route.params.trailerUrl]);
+  }, [addToRecentlyWatched, route.params.tmdbId, route.params.mediaType, route.params.trailerUrl, route.params.playbackSource]);
 
   // â”€â”€ Auto-hide overlay controls â”€â”€
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -691,6 +666,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     dizipalRecoveryTriggeredRef.current = false;
     directFallbackPromiseRef.current = null;
 
+    if (route.params.playbackSource === "youtube" && route.params.videoId) {
+      // Azerbaijani Classics: play straight through the in-app YouTube player,
+      // no provider resolution (these titles aren't on the scraper providers).
+      setIsResolving(false);
+      setPlayerResult({ url: route.params.videoId, source: "youtube_embed" });
+      setCurrentStreamUrl(null);
+      return;
+    }
+
     if (route.params.trailerUrl) {
       // Show trailer directly
       setIsResolving(false);
@@ -753,6 +737,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     if (!playerResult || playerResult.source === "not_found") return;
 
     StatusBar.setHidden(true, "fade");
+    // Hide the Android system navigation bar too (immersive). Without this the
+    // button-style nav bar stays painted over the bottom of the video on phones
+    // configured for 3-button navigation; gesture-nav devices benefit as well.
+    // Fully guarded — a no-op on builds/platforms without the native module.
+    void hideSystemNavigationBar();
 
     if (playerResult.source !== "youtube_embed") {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
@@ -762,6 +751,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
     return () => {
       StatusBar.setHidden(false, "fade");
+      void showSystemNavigationBar();
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
   }, [playerResult]);
@@ -1094,6 +1084,28 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     }
   }, [videoPlayer, playerResult?.source]);
 
+  // ── Continue watching (native player only) ──
+  const isNativeStreamSource = playerResult?.source === "dizipal_direct" || playerResult?.source === "direct";
+  const {
+    promptPositionSeconds: resumePromptPosition,
+    chooseResume: handleResumeChoice,
+    chooseStartOver: handleStartOverChoice,
+    handlePlaybackReady: handleContinueWatchingReady,
+  } = useContinueWatching({
+    player: videoPlayer,
+    enabled: isNativeStreamSource && !route.params.trailerUrl && !route.params.watchRoomCode,
+    mediaType: route.params.mediaType,
+    tmdbId: Number(route.params.tmdbId),
+    title: route.params.title,
+    seasonNumber: route.params.seasonNumber,
+    episodeNumber: route.params.episodeNumber,
+    originalTitle: route.params.originalTitle,
+    imdbId: route.params.imdbId,
+    year: route.params.year,
+    castNames: route.params.castNames,
+    resumeAtSeconds: route.params.resumeAtSeconds,
+  });
+
   // Load the source when directStreamUrl becomes available
   const streamReferer = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.referer ?? "" : "";
   const directStreamType = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.streamType ?? "" : "";
@@ -1142,7 +1154,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         debugLog("[Player] Available subtitle tracks:", JSON.stringify(videoPlayer.availableSubtitleTracks));
         setAvailableSubtitleTracks(videoPlayer.availableSubtitleTracks);
         setSelectedSubtitleTrack(videoPlayer.subtitleTrack ?? null);
-        videoPlayer.play();
+        // Continue-watching may hold playback for the resume prompt, or seek
+        // to the saved position and start itself.
+        if (!handleContinueWatchingReady()) {
+          videoPlayer.play();
+        }
         setIsPlaybackReady(true);
       }
       if (ev.status === "error") {
@@ -1194,7 +1210,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       subtitleSub.remove();
       subtitleTrackSub.remove();
     };
-  }, [videoPlayer]);
+  }, [videoPlayer, handleContinueWatchingReady]);
 
   useEffect(() => {
     if (!selectedExternalSubtitle || selectedExternalSubtitle.url.includes(".m3u8")) {
@@ -1400,6 +1416,16 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           surfaceType="textureView"
           onTouchEnd={toggleCloseBtn}
         />
+        {route.params.watchRoomCode && route.params.watchRoomNickname ? (
+          <WatchRoomBoundary onExit={handleClose}>
+            <WatchRoomLayer
+              player={videoPlayer}
+              code={route.params.watchRoomCode}
+              nickname={route.params.watchRoomNickname}
+              onExit={handleClose}
+            />
+          </WatchRoomBoundary>
+        ) : null}
         {isLoading && (
           <PlayerLoadingOverlay
             title={route.params.title}
@@ -1567,6 +1593,12 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             </View>
           </View>
         )}
+        <ContinueWatchingModal
+          visible={resumePromptPosition != null}
+          positionSeconds={resumePromptPosition ?? 0}
+          onResume={handleResumeChoice}
+          onStartOver={handleStartOverChoice}
+        />
       </View>
     );
   }
@@ -1592,7 +1624,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         </>
       )}
 
-      {/* Loading overlay with facts */}
+      {/* Loading overlay */}
       {isLoading && (
         <PlayerLoadingOverlay
           title={route.params.title}
@@ -1618,19 +1650,24 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
       {/* Not Available */}
       {isNotAvailable && !isResolving && (
-        <View style={styles.notAvailableOverlay}>
-          <Text style={styles.notAvailableEmoji}>🎬</Text>
-          <Text style={styles.notAvailableTitle}>Not Available Yet</Text>
-          <Text style={styles.notAvailableSubtitle}>
-            Sorry, "{route.params.title}" is not available in our movie catalog yet.
+        <Reanimated.View entering={FadeIn.duration(320)} style={styles.notAvailableOverlay}>
+          <View style={styles.notAvailableBadge}>
+            <View style={[styles.notAvailableBadgeInner, { backgroundColor: theme.colors.primary + "22" }]}>
+              <Feather name="film" size={34} color={theme.colors.primary} />
+            </View>
+          </View>
+          <Text style={styles.notAvailableTitle}>Not available yet</Text>
+          <Text style={styles.notAvailableSubtitle} numberOfLines={2}>
+            “{route.params.title}” isn’t in our catalog yet.
           </Text>
           <Text style={styles.notAvailableHint}>
-            We're always adding new content. Please check back later!
+            We add new titles all the time — check back soon.
           </Text>
-          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.8} accessibilityRole="button" accessibilityLabel={t("common.goBack")}>
+          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.85} accessibilityRole="button" accessibilityLabel={t("common.goBack")}>
+            <Feather name="arrow-left" size={16} color="#FFFFFF" />
             <Text style={styles.goBackText}>Go Back</Text>
           </TouchableOpacity>
-        </View>
+        </Reanimated.View>
       )}
 
       {/* YouTube Native Player for trailers */}

@@ -3,7 +3,7 @@ import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ActivityIndicator, Image, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
 
@@ -17,6 +17,8 @@ import {
   searchMulti
 } from "../api/tmdb";
 import { formatRating } from "../api/mediaFormatting";
+import { CachedRemoteImage } from "../components/common/CachedRemoteImage";
+import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { HomeStackParamList } from "../navigation/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
@@ -44,12 +46,13 @@ const BackButton = styled(Pressable)`
 const HeaderTitle = styled.Text`
   flex: 1;
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 18px;
-  font-weight: 700;
 `;
 
 const ResultCount = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 13px;
 `;
 
@@ -72,7 +75,7 @@ const Card = styled(Pressable)`
   overflow: hidden;
 `;
 
-const CardPoster = styled(Image)`
+const CardPoster = styled(CachedRemoteImage)`
   width: 100px;
   height: 150px;
 `;
@@ -93,13 +96,14 @@ const CardContent = styled.View`
 
 const CardTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 16px;
-  font-weight: 700;
   line-height: 22px;
 `;
 
 const CardYear = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 14px;
   margin-top: 4px;
 `;
@@ -122,8 +126,8 @@ const RatingBadge = styled.View`
 
 const RatingText = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_600SemiBold;
   font-size: 13px;
-  font-weight: 700;
 `;
 
 const TypeBadge = styled.View`
@@ -134,13 +138,14 @@ const TypeBadge = styled.View`
 
 const TypeText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_500Medium;
   font-size: 12px;
-  font-weight: 600;
   text-transform: uppercase;
 `;
 
 const CardOverview = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 13px;
   line-height: 18px;
   margin-top: 8px;
@@ -168,17 +173,34 @@ const EmptyIconCircle = styled.View`
 
 const EmptyTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 20px;
-  font-weight: 700;
   text-align: center;
 `;
 
 const EmptySubtitle = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 15px;
   text-align: center;
   margin-top: 8px;
   line-height: 22px;
+`;
+
+const RetryActionButton = styled(Pressable)`
+  margin-top: 24px;
+  min-height: 48px;
+  padding: 0 36px;
+  border-radius: 999px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${({ theme }) => theme.colors.primary};
+`;
+
+const RetryActionText = styled.Text`
+  color: ${({ theme }) => theme.colors.textOnPrimary};
+  font-family: Outfit_700Bold;
+  font-size: 15px;
 `;
 
 const SuggestionWrap = styled.View`
@@ -195,6 +217,7 @@ const SuggestionRow = styled.View`
 
 const SuggestionText = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 14px;
   margin-left: 10px;
 `;
@@ -219,13 +242,14 @@ const FoundHeader = styled(Animated.View)`
 
 const FoundTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
   font-size: 22px;
-  font-weight: 700;
   text-align: center;
 `;
 
 const FoundSubtitle = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
   font-size: 14px;
   text-align: center;
   margin-top: 4px;
@@ -245,6 +269,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
 
   const [results, setResults] = useState<MediaItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -276,21 +301,27 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
     [query, filters]
   );
 
+  const loadInitial = useCallback(async () => {
+    setIsLoading(true);
+    setLoadFailed(false);
+    try {
+      const response = await fetchResults(1);
+      setResults(response.items);
+      setCurrentPage(response.page);
+      setTotalPages(response.totalPages);
+    } catch {
+      // A failed request must render as an ERROR with a retry — not as the
+      // "no results found" empty state.
+      setResults([]);
+      setLoadFailed(true);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [fetchResults]);
+
   useEffect(() => {
-    (async () => {
-      setIsLoading(true);
-      try {
-        const response = await fetchResults(1);
-        setResults(response.items);
-        setCurrentPage(response.page);
-        setTotalPages(response.totalPages);
-      } catch {
-        setResults([]);
-      } finally {
-        setIsLoading(false);
-      }
-    })();
-  }, [fetchResults, language]);
+    void loadInitial();
+  }, [loadInitial, language]);
 
   const loadMore = useCallback(async () => {
     if (isLoadingMore || currentPage >= totalPages) return;
@@ -326,7 +357,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
         <CardContainer entering={FadeInDown.delay(index * 40).duration(300)}>
           <Card onPress={() => navigateToDetail(item)}>
             {posterUri ? (
-              <CardPoster source={{ uri: posterUri }} resizeMode="cover" />
+              <CardPoster uri={posterUri} contentFit="cover" />
             ) : (
               <CardPosterPlaceholder>
                 <Feather name="film" size={24} color={currentTheme.colors.textSecondary} />
@@ -371,7 +402,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
           <HeaderTitle>{t("common.searching")}</HeaderTitle>
         </Header>
         <LoadingContainer>
-          <ActivityIndicator color={currentTheme.colors.primary} size="large" />
+          <MovieLoader />
         </LoadingContainer>
       </SafeContainer>
     );
@@ -389,7 +420,21 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
         </ResultCount>
       </Header>
 
-      {results.length === 0 ? (
+      {loadFailed ? (
+        <EmptyContainer entering={FadeIn.duration(400)}>
+          <EmptyIconCircle>
+            <Feather name="wifi-off" size={32} color={currentTheme.colors.textSecondary} />
+          </EmptyIconCircle>
+          <EmptyTitle>{t("search.searchFailedTitle")}</EmptyTitle>
+          <EmptySubtitle>{t("search.searchFailedBody")}</EmptySubtitle>
+          <RetryActionButton
+            onPress={() => void loadInitial()}
+            style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}
+          >
+            <RetryActionText>{t("common.retry")}</RetryActionText>
+          </RetryActionButton>
+        </EmptyContainer>
+      ) : results.length === 0 ? (
         <EmptyContainer entering={FadeIn.duration(400)}>
           <EmptyIconCircle>
             <Feather name="film" size={32} color={currentTheme.colors.textSecondary} />
@@ -434,7 +479,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
             ListFooterComponent={
               isLoadingMore ? (
                 <LoadingFooter>
-                  <ActivityIndicator color={currentTheme.colors.primary} size="small" />
+                  <MovieLoader size={28} />
                 </LoadingFooter>
               ) : (
                 <View style={{ height: 24 }} />

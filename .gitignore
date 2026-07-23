@@ -40,8 +40,9 @@ Thumbs.db
 .vscode/
 .idea/
 
-# local media assets
-posters/
+# local media assets (root-level originals only; bundled card art lives in
+# assets/images/franchise/posters/ and IS committed)
+/posters/
 roadmap timeline.webp
 assets/frenchise.png
 assets/images/franchise/frenchise-card-bg.jpg
@@ -53,3 +54,9 @@ supabase/.temp/
 
 # Claude Code local config — machine-specific permissions, never committed.
 .claude/settings.local.json
+
+# Local data-generation inputs/outputs (AZ classics sources) + personal exports
+list/
+outputs/
+scripts/__pycache__/
+letterboxd-*/

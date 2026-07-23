@@ -370,6 +370,18 @@ export async function signOut() {
 
 export async function getSession() {
   const { data, error } = await supabase.auth.getSession();
-  if (error) throw error;
+  if (error) {
+    // A dead/missing refresh token isn't an exceptional condition — it just
+    // means there's no usable session. supabase-js has already removed it from
+    // storage; surface "logged out" rather than throwing a scary AuthApiError.
+    const code = (error as { code?: string }).code;
+    const message = error.message?.toLowerCase() ?? "";
+    const isInvalidRefreshToken =
+      code === "refresh_token_not_found"
+      || code === "refresh_token_already_used"
+      || (message.includes("invalid refresh token") && message.includes("refresh token"));
+    if (isInvalidRefreshToken) return null;
+    throw error;
+  }
   return data.session;
 }

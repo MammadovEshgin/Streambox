@@ -9,6 +9,7 @@ import ViewShot from "react-native-view-shot";
 
 import { getPersonaCardImage } from "../../constants/imageAssets";
 import type { WatchHistoryEntry } from "../../hooks/useWatchHistory";
+import { classifyViewerPersona, type ViewerPersonaId } from "../../services/personaClassifier";
 import { normalizeAppLanguage } from "../../localization/types";
 import { useAppSettings } from "../../settings/AppSettingsContext";
 import { withAlpha } from "../../theme/Theme";
@@ -195,16 +196,7 @@ type Props = {
   itemLabelPlural: string;
 };
 
-type PersonaId =
-  | "thrillSeeker"
-  | "dreamer"
-  | "romantic"
-  | "laughHunter"
-  | "detective"
-  | "cultureBuff"
-  | "horrorFanatic"
-  | "blockbusterFan"
-  | "eclecticExplorer";
+type PersonaId = ViewerPersonaId;
 
 type Persona = {
   id: PersonaId;
@@ -250,6 +242,17 @@ const PERSONAS = {
     motto: "You trust stories that bruise softly and linger long.",
     traits: ["feeling", "intimacy", "yearning"],
     accent: "#FF855C",
+  },
+  dramaDevotee: {
+    id: "dramaDevotee",
+    name: "The Drama Devotee",
+    description:
+      "You watch for the human core - grief, triumph, and the quiet moments where a life changes direction. Spectacle fades; what stays with you is truth.",
+    arcana: "Arcana X",
+    cardTitle: "The Weeping Mask",
+    motto: "You know the heaviest stories are the ones that feel true.",
+    traits: ["depth", "truth", "catharsis"],
+    accent: "#9FB2C8",
   },
   laughHunter: {
     id: "laughHunter",
@@ -319,21 +322,12 @@ const PERSONAS = {
   },
 } satisfies Record<PersonaId, Persona>;
 
-const PERSONA_RULES: { genres: string[]; persona: Persona }[] = [
-  { genres: ["Action", "Thriller"], persona: PERSONAS.thrillSeeker },
-  { genres: ["Science Fiction", "Fantasy"], persona: PERSONAS.dreamer },
-  { genres: ["Romance", "Drama"], persona: PERSONAS.romantic },
-  { genres: ["Comedy"], persona: PERSONAS.laughHunter },
-  { genres: ["Crime", "Mystery"], persona: PERSONAS.detective },
-  { genres: ["Documentary", "History"], persona: PERSONAS.cultureBuff },
-  { genres: ["Horror"], persona: PERSONAS.horrorFanatic },
-];
-
 const LOCALIZED_PERSONA_COPY: Record<"tr", Record<PersonaId, Pick<Persona, "name" | "description" | "motto" | "traits">>> = {
   tr: {
     thrillSeeker: { name: "Heyecan avcısı", description: "Hızın, riskin ve keskin dönüşlerin peşindesin. İzlediğin her şeyde hareket ve gerilim arıyorsun.", motto: "Hız pusulan, gerilim ise nefesindir.", traits: ["adrenalin", "gerilim", "etki"] },
     dreamer: { name: "Hayalperest", description: "Seni imkansız gelecekler, mitik dünyalar ve gerçekliği genişleten hikayeler çekiyor. Sıradan olandan uzaklaşmak için izliyorsun.", motto: "Var olmayan ufukları biriktiriyorsun.", traits: ["merak", "mit", "kaçış"] },
     romantic: { name: "Romantik", description: "Duygusal ağırlığı, özlemi ve jenerikten sonra bile kalan yumuşak anları seviyorsun. Bağ kurmak senin için gösteriden daha önemli.", motto: "İnsanın içine işleyen hikayelere güveniyorsun.", traits: ["duygu", "yakınlık", "özlem"] },
+    dramaDevotee: { name: "Dram tutkunu", description: "İnsan hikayelerinin özünü arıyorsun: keder, zafer ve bir hayatın yön değiştirdiği sessiz anlar. Gösteri geçer, sende kalan gerçekliktir.", motto: "En ağır hikayelerin gerçek hissettiren hikayeler olduğunu biliyorsun.", traits: ["derinlik", "gerçeklik", "arınma"] },
     laughHunter: { name: "Kahkaha avcısı", description: "Ritmi, cazibeyi ve rahatlamayı seviyorsun. Dünya ağırlaştığında bile zevkin mizaha ve parlaklığa dönüyor.", motto: "Zamanlamanın da bir zeka biçimi olduğunu biliyorsun.", traits: ["mizah", "ışık", "kıvılcım"] },
     detective: { name: "Dedektif", description: "Gölgelerle sabırlısın ve saklı düzeni arıyorsun. Şüphe, ipuçları ve gri alanlar dikkatini keskinleştiriyor.", motto: "Cevaplar için değil, eksik parçayı bulmak için izliyorsun.", traits: ["ipuçları", "belirsizlik", "keskinlik"] },
     cultureBuff: { name: "Kültür meraklısı", description: "Film ve dizileri birer hafıza taşıyıcısı gibi görüyorsun. Gerçek hayatlar ve tarihsel izler seni daha uzun süre tutuyor.", motto: "Zamanın geride bıraktığını anlamak için izliyorsun.", traits: ["hafıza", "bağlam", "içgörü"] },
@@ -354,51 +348,7 @@ function localizePersona(persona: Persona, language: string): Persona {
 }
 
 function classifyPersona(history: WatchHistoryEntry[]): Persona {
-  const genreCounts: Record<string, number> = {};
-  let totalGenreHits = 0;
-
-  // Tally all genres across history
-  for (const entry of history) {
-    for (const genre of entry.genres) {
-      genreCounts[genre] = (genreCounts[genre] ?? 0) + 1;
-      totalGenreHits++;
-    }
-  }
-
-  if (totalGenreHits === 0) {
-    return PERSONAS.eclecticExplorer;
-  }
-
-  // Find the highest counted genre overall
-  let topGenre = "";
-  let topCount = 0;
-  for (const [genre, count] of Object.entries(genreCounts)) {
-    if (count > topCount) {
-      topCount = count;
-      topGenre = genre;
-    }
-  }
-
-  // Find a specific persona rule matching the absolute top genre
-  for (const rule of PERSONA_RULES) {
-    if (rule.genres.includes(topGenre)) {
-      return rule.persona;
-    }
-  }
-
-  // Fallback to average score check to assign blockbuster/eclectic
-  const avgRating = history.reduce((sum, entry) => sum + entry.voteAverage, 0) / history.length;
-  const popularGenres = ["Action", "Adventure", "Comedy", "Drama"];
-  const hasPopularGenre = popularGenres.some((genre) => (genreCounts[genre] ?? 0) > 0);
-  
-  if (avgRating >= 7 && hasPopularGenre) {
-    const topRatio = topCount / totalGenreHits;
-    if (topRatio < 0.4) {
-      return PERSONAS.blockbusterFan;
-    }
-  }
-
-  return PERSONAS.eclecticExplorer;
+  return PERSONAS[classifyViewerPersona(history)];
 }
 
 export function ViewerPersona({ history, itemLabelPlural }: Props) {

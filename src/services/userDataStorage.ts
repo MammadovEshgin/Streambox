@@ -4,7 +4,10 @@ export const LIKED_MOVIES_STORAGE_KEY = "streambox/liked-movies";
 export const LIKED_SERIES_STORAGE_KEY = "streambox/liked-series";
 export const WATCH_HISTORY_STORAGE_KEY = "streambox/watch-history";
 export const RECENTLY_WATCHED_STORAGE_KEY = "streambox/recently-watched";
+export const CONTINUE_WATCHING_STORAGE_KEY = "streambox/continue-watching";
 export const WATCHED_EPISODES_STORAGE_KEY = "@watched_episodes";
 export const MOVIE_OF_DAY_CURRENT_STORAGE_KEY = "streambox/movie-of-day/current";
 export const MOVIE_OF_DAY_HISTORY_STORAGE_KEY = "streambox/movie-of-day/history";
 export const SERIES_OF_DAY_CURRENT_STORAGE_KEY = "streambox/series-of-day/current";
+// Watch Together: remembers the last session nickname to prefill the join sheet.
+export const WATCH_TOGETHER_NICKNAME_STORAGE_KEY = "streambox/watch-together/last-nickname";
