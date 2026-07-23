@@ -58,6 +58,14 @@ const SIGN_OUT_WELCOME_KEY = "@streambox/sign-out-welcome-v1";
 const LAST_STARTUP_ERROR_KEY = "@streambox/last-startup-error-v1";
 const FIRST_LAUNCH_FALLBACK_MS = 2200;
 const FONT_LOAD_FALLBACK_MS = 2600;
+// Hold the heavy app tree (Navigation + Home hub) out of the mount until the
+// launch splash's entrance + heartbeat beats (~2.3s, see LAUNCH_SPLASH timeline)
+// have played. Mounting hundreds of native views under a live Reanimated
+// animation is what made the reveal stutter on slower / storage-full phones;
+// deferring the mount to the splash's settle pause keeps the UI thread clear
+// for the most visible beats. The splash is an opaque overlay above the content,
+// so the slightly later mount still paints well before the fade — no black flash.
+const CONTENT_MOUNT_GATE_MS = 2400;
 
 const INTERNAL_UPDATE_CHANNELS = new Set(["preview", "staging", "internal"]);
 
@@ -269,6 +277,9 @@ function AppShell() {
   // — eliminating the skeleton flash that previously occurred while their
   // own AsyncStorage read was in flight on first render.
   const [hubCachesHydrated, setHubCachesHydrated] = useState(false);
+  // Opens once the splash's signature beats have played, at which point the
+  // heavy authenticated tree may mount without janking the reveal.
+  const [contentGateOpen, setContentGateOpen] = useState(false);
   const isResettingPasswordRef = useRef(false);
   const previousSessionUserIdRef = useRef<string | null>(null);
   const appStartedAtRef = useRef(Date.now());
@@ -282,6 +293,11 @@ function AppShell() {
     return () => {
       clearTimeout(timeout);
     };
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setContentGateOpen(true), CONTENT_MOUNT_GATE_MS);
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -534,9 +550,16 @@ function AppShell() {
   // splash is an opaque absolute overlay above it — so by the time the reveal
   // fades out, the first frame beneath is already painted (mounting only after
   // the splash unmounted flashed the black window background for a frame).
+  const appDataReady = isUserDataReady && hubCachesHydrated;
+  // The authenticated tree waits for BOTH its data AND the splash mount gate;
+  // welcome/auth are single cheap screens and mount as soon as their phase
+  // resolves. Until the app tree is allowed to mount, the loading fallback
+  // stands in beneath the opaque splash (so nothing flashes).
+  const appMountGateOpen = contentGateOpen || splashComplete;
+  const showAppContent = launchPhase === "app" && appDataReady && appMountGateOpen;
   const isContentPending =
     launchPhase === "loading"
-    || (launchPhase === "app" && (!isUserDataReady || !hubCachesHydrated));
+    || (launchPhase === "app" && !showAppContent);
   const showLoadingFallback = isContentPending;
   const showResolvedScreen = !isContentPending;
   const startupBoundaryResetKey = `${session?.user.id ?? "guest"}:${startupRetryNonce}`;
@@ -577,7 +600,7 @@ function AppShell() {
           ) : null}
         </>
       ) : null}
-      {showResolvedScreen && launchPhase === "app" ? (
+      {showAppContent ? (
         <StartupErrorBoundary
           resetKey={startupBoundaryResetKey}
           title={t("startupError.title")}
