@@ -44,7 +44,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
 
 | Runtime | Branch | Fleet | Hard rule |
 |---------|--------|-------|-----------|
-| **1.2.0** | `release/1.2.0-watch-together` | Watch Together APK build | Adds native `react-native-webrtc` + `expo-camera`. **Isolated — never ported back to 1.1.0/1.0.2.** `runtimeVersion` in `app.config.js` is a fixed `"1.2.0"`, so publishing from this branch auto-isolates. See **§2A**. |
+| **1.2.0** | `v1.2.0` (renamed 2026-07-23 from `release/1.2.0-watch-together`; folds in `feat/azerbaijani-classics`) | Watch Together APK build | Adds native `react-native-webrtc` + `expo-camera`. **Isolated — never ported back to 1.1.0/1.0.2.** `runtimeVersion` in `app.config.js` is a fixed `"1.2.0"`, so publishing from this branch auto-isolates. See **§2A**. |
 | **1.1.0** | `release/1.1.0-navbar` (primary working branch) | Nav-bar APK build | Normal track. `runtimeVersion` in `app.config.js` is `1.1.0`. |
 | **1.0.2** | `release/1.0.2-legacy` | Legacy fleet, **no nav-bar** | **MUST NEVER contain nav-bar code** (see below). |
 
@@ -63,14 +63,35 @@ the `app.config.js` runtime, not the branch you happen to be on.
 2. **Any change that adds or upgrades a native module cannot go OTA.** It requires a new native build **and** a `runtimeVersion` bump (e.g. `1.2.0`). Do **not** reuse `1.1.0` for a build that adds a native module — existing `1.1.0` installs would crash on the next OTA when they call the missing module. Prefer pure-JS solutions to stay OTA-deliverable (this is why the loader was rebuilt with SVG+Reanimated instead of Lottie).
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 
-### Current deployed state (last updated 2026-07-21, Azerbaijani Classics update)
+### Current deployed state (last updated 2026-07-23, 1.2.0 UX + stability batch)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `release/1.2.0-watch-together` @ `8681531` | `3752ea2e-18f6-4929-8714-fc3809820e26` |
+| 1.2.0 | `v1.2.0` @ `b7ef808` | `409f6556-fd0a-450b-a1d7-7275d4120768` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
 
+- **2026-07-23 (1.2.0 only):** UX + stability batch. (1) **Watch Together chat is
+  now durably delivered** — un-acked chat lines queue in `watchRoomService` and
+  flush the moment a fresh healthy channel subscribes; the partner de-dupes by
+  `(from, at)`, so a line typed across a reconnect/radio blip is no longer
+  silently lost (the reported "I sent it but they never got it"). Send-side only;
+  old bundles interop, no wire-format change. (2) **YouTube fullscreen** — trailers
+  + Azerbaijani Classics gain an app-owned expand button (rotates to landscape,
+  fills the screen; the iframe's own fullscreen is disabled) with always-visible
+  close/expand controls (the iframe swallows taps). (3) **"Not available" player
+  screen redesigned** — themed badge, Outfit type, pill Go-Back button, fade-in.
+  (4) **Movie/Series of the Day** rebalanced toward acclaimed + popular titles
+  (heavier rating + popularity weights, rating floor 7.6, higher popularity floor,
+  algorithm version → `quality-v3` so today's cached pick recomputes). (5) **Launch
+  splash smoothness** — the heavy Navigation + Home-hub mount is deferred past the
+  splash's entrance/heartbeat beats (`CONTENT_MOUNT_GATE_MS`) so hundreds of native
+  views no longer contend with the Reanimated reveal on slower/fuller phones; the
+  splash stays an opaque overlay so there is still no black flash. Pure JS — no
+  native/dependency/SQL change. Branch `release/1.2.0-watch-together` renamed to
+  `v1.2.0` and `feat/azerbaijani-classics` recorded as merged (already a strict
+  superset, so `-s ours`). Deploy: 1.2.0 `b7ef808` → group
+  `409f6556-fd0a-450b-a1d7-7275d4120768`.
 - **2026-07-21 (1.2.0 only):** Removed 30 incorrectly-included films that are not genuine Azerbaijani classics from `azClassics` catalog. Deploy: 1.2.0 `8681531` → group `3752ea2e-18f6-4929-8714-fc3809820e26`.
 - **2026-07-13 (ALL THREE fleets):** Dizibal resolver repair + anime support.
   Dizibal retired `/api/stream/m3u8` (now 404 "Video bulunamadı" for every
