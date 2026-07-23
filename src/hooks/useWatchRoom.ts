@@ -61,13 +61,21 @@ export function useWatchRoom(handlers: WatchRoomSignalHandlers = {}) {
       onMembersChange: setMembers,
       onSignal: (signal) => {
         switch (signal.type) {
-          case "chat":
-            // Capped so a chat-heavy multi-hour session can't grow memory unbounded.
-            setChatMessages((prev) => [
-              ...prev,
-              { id: `${signal.from}-${signal.at}`, fromUserId: signal.from, text: signal.text, at: signal.at, mine: false },
-            ].slice(-200));
+          case "chat": {
+            // Capped so a chat-heavy multi-hour session can't grow memory
+            // unbounded. De-dupe by id: the sender's durable queue may re-send a
+            // line whose first delivery actually landed (ack lost, not the line).
+            const chatId = `${signal.from}-${signal.at}`;
+            setChatMessages((prev) =>
+              prev.some((message) => message.id === chatId)
+                ? prev
+                : [
+                    ...prev,
+                    { id: chatId, fromUserId: signal.from, text: signal.text, at: signal.at, mine: false },
+                  ].slice(-200)
+            );
             break;
+          }
           case "reaction":
             handlersRef.current.onReaction?.(signal.emoji, signal.from);
             break;

@@ -50,6 +50,17 @@ const SUBSCRIBE_TIMEOUT_MS = 12_000;
 // socket status callback arrives.
 const LIVENESS_INTERVAL_MS = 20_000;
 const LIVENESS_TIMEOUT_MS = 5_000;
+// Chat is the one signal a user notices losing. A playback heartbeat is re-sent
+// every 3s and a reaction is ephemeral, but a chat line dropped during a
+// transient channel blip is gone for good — which is exactly the reported
+// "I sent it but they never got it". Hold un-acked chat lines and re-send them
+// on the next healthy channel. Bounded so a long offline stretch can't grow
+// unbounded; the partner de-dupes by (from, at) so a re-send is idempotent.
+const MAX_PENDING_CHAT = 30;
+
+function chatSignalKey(signal: WatchRoomSignal): string {
+  return signal.type === "chat" ? `${signal.from}:${signal.at}` : "";
+}
 
 export class WatchRoomService {
   private channel: RealtimeChannel | null = null;
@@ -61,6 +72,7 @@ export class WatchRoomService {
   private reconnectAttempts = 0;
   private hadConnected = false;
   private closedByUser = false;
+  private pendingChat: WatchRoomSignal[] = [];
   private self: PresenceMeta | null = null;
   private room: WatchRoom | null = null;
   private connectionState: WatchRoomConnectionState = "idle";
@@ -252,6 +264,9 @@ export class WatchRoomService {
           this.reconnectAttempts = 0;
           this.emitConnectionState("connected");
           this.startLivenessWatchdog(channel);
+          // A fresh healthy channel is the moment to drain anything that
+          // couldn't be delivered while it was down (chat typed mid-reconnect).
+          this.flushPendingChat();
           if (!settled) {
             settled = true;
             clearTimeout(timer);
@@ -301,29 +316,56 @@ export class WatchRoomService {
 
   send(signal: WatchRoomSignal): void {
     const channel = this.channel;
-    if (
-      !channel ||
-      this.connectionState !== "connected" ||
-      channel.state !== "joined" ||
-      !supabase.realtime.isConnected()
-    ) {
-      // Playback/readiness can render before the first subscribe completes.
-      // Those repeating signals may be dropped, but must not tear down the
+    const canSend =
+      !!channel &&
+      this.connectionState === "connected" &&
+      channel.state === "joined" &&
+      supabase.realtime.isConnected();
+    if (!canSend) {
+      // Chat can't afford to be dropped — queue it for the next healthy channel.
+      // Playback/readiness can render before the first subscribe completes;
+      // those repeating signals may be dropped, but must not tear down the
       // channel that is still performing its initial join.
-      if (this.hadConnected) this.handleTransportFailure(channel);
+      if (signal.type === "chat") this.enqueueChat(signal);
+      else if (this.hadConnected) this.handleTransportFailure(channel);
       return;
     }
     void channel
       .send({ type: "broadcast", event: "signal", payload: signal }, { timeout: LIVENESS_TIMEOUT_MS })
       .then((result) => {
-        if (result !== "ok") this.handleTransportFailure(channel);
+        if (result !== "ok") {
+          // The server never acknowledged it — hold chat for a retry so the line
+          // isn't silently lost, then rebuild the (evidently sick) channel.
+          if (signal.type === "chat") this.enqueueChat(signal);
+          this.handleTransportFailure(channel);
+        }
       })
-      .catch(() => this.handleTransportFailure(channel));
+      .catch(() => {
+        if (signal.type === "chat") this.enqueueChat(signal);
+        this.handleTransportFailure(channel);
+      });
+  }
+
+  private enqueueChat(signal: WatchRoomSignal): void {
+    const key = chatSignalKey(signal);
+    if (!key || this.pendingChat.some((pending) => chatSignalKey(pending) === key)) return;
+    this.pendingChat.push(signal);
+    if (this.pendingChat.length > MAX_PENDING_CHAT) this.pendingChat.shift();
+  }
+
+  private flushPendingChat(): void {
+    if (this.pendingChat.length === 0) return;
+    // Drain first: a line that fails again re-queues itself for the NEXT connect
+    // event (not this pass), so there is no tight resend loop.
+    const queued = this.pendingChat;
+    this.pendingChat = [];
+    queued.forEach((signal) => this.send(signal));
   }
 
   async disconnect(): Promise<void> {
     this.lifecycleGeneration += 1;
     this.closedByUser = true;
+    this.pendingChat = [];
     if (this.authTimer) {
       clearTimeout(this.authTimer);
       this.authTimer = null;
