@@ -418,11 +418,6 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const [isPlaybackReady, setIsPlaybackReady] = useState(false);
   const [canGoBack, setCanGoBack] = useState(false);
   const [videoFit, setVideoFit] = useState<'contain' | 'cover'>('contain');
-  // YouTube playback (trailers + Azerbaijani Classics) starts as a portrait
-  // 16:9 letterbox; the expand button rotates the whole screen to landscape so
-  // the video fills it, matching the fullscreen affordance the other players
-  // already have. The iframe re-sizes off useWindowDimensions automatically.
-  const [isYoutubeFullscreen, setIsYoutubeFullscreen] = useState(false);
   const [availableSubtitleTracks, setAvailableSubtitleTracks] = useState<SubtitleTrack[]>([]);
   const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState<SubtitleTrack | null>(null);
   const [isSubtitleMenuOpen, setIsSubtitleMenuOpen] = useState(false);
@@ -670,7 +665,6 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     hdfilmRuntimeDiscoveryKeysRef.current.clear();
     dizipalRecoveryTriggeredRef.current = false;
     directFallbackPromiseRef.current = null;
-    setIsYoutubeFullscreen(false);
 
     if (route.params.playbackSource === "youtube" && route.params.videoId) {
       // Azerbaijani Classics: play straight through the in-app YouTube player,
@@ -749,10 +743,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     // Fully guarded — a no-op on builds/platforms without the native module.
     void hideSystemNavigationBar();
 
-    // Provider streams are always landscape; YouTube orientation is owned by the
-    // dedicated effect below so the expand button can flip it live.
     if (playerResult.source !== "youtube_embed") {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    } else {
+      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     }
 
     return () => {
@@ -761,18 +755,6 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
   }, [playerResult]);
-
-  // YouTube: portrait by default, landscape while expanded. Split out from the
-  // effect above so toggling the expand button re-locks orientation without
-  // re-running the status-bar / immersive-mode setup.
-  useEffect(() => {
-    if (playerResult?.source !== "youtube_embed") return;
-    void ScreenOrientation.lockAsync(
-      isYoutubeFullscreen
-        ? ScreenOrientation.OrientationLock.LANDSCAPE
-        : ScreenOrientation.OrientationLock.PORTRAIT_UP
-    );
-  }, [playerResult?.source, isYoutubeFullscreen]);
 
   // Safety net: bound how long the loader can sit on top of a WebView. The
   // injected JS posts `player_ready` once JWPlayer initialises — but if the
@@ -858,8 +840,12 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     return () => clearTimeout(timer);
   }, [playerResult?.source, isPlaybackReady, recoverFromDizipalFailure]);
 
-  const toggleYoutubeFullscreen = useCallback(() => {
-    setIsYoutubeFullscreen((current) => !current);
+  const handleFullScreenChange = useCallback((isFullScreen: boolean) => {
+    if (isFullScreen) {
+      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    } else {
+      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    }
   }, []);
 
   // Android back
@@ -1619,10 +1605,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   return (
     <View style={styles.root}>
-      {/* Close â€” auto-hides after 3s, tap screen to toggle. YouTube keeps its
-          own always-visible controls (below) because the iframe swallows taps,
-          so an auto-hidden button could never be summoned back. */}
-      {showCloseBtn && playerResult?.source !== "youtube_embed" && (
+      {/* Close â€” auto-hides after 3s, tap screen to toggle */}
+      {showCloseBtn && (
         <>
           <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
             <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
@@ -1686,40 +1670,25 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         </Reanimated.View>
       )}
 
-      {/* YouTube Native Player for trailers + Azerbaijani Classics */}
+      {/* YouTube Native Player for trailers */}
       {playerResult && playerResult.source === "youtube_embed" && (
-        <>
-          <View style={[styles.webView, { justifyContent: "center" }]}>
-            <YoutubeIframe
-              height={windowHeight > windowWidth ? windowWidth * (9 / 16) : windowHeight}
-              width={windowWidth}
-              videoId={playerResult.url}
-              play={true}
-              onReady={handlePlaybackReady}
-              onError={handleError}
-              initialPlayerParams={{
-                // Fullscreen is driven by our own expand button (which rotates
-                // the whole screen), not the iframe's — keeps the affordance
-                // identical to the app's other players.
-                preventFullScreen: true,
-                controls: true,
-                modestbranding: true,
-                rel: false
-              }}
-            />
-          </View>
-          {/* Always-visible controls (the iframe eats taps). */}
-          <View style={styles.closeButton}>
-            <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
-              <Feather name="x" size={18} color="#FFFFFF" />
-            </TouchableOpacity>
-          </View>
-          <View style={styles.scalingButton}>
-            <TouchableOpacity onPress={toggleYoutubeFullscreen} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.toggleFit")}>
-              <Feather name={isYoutubeFullscreen ? "minimize-2" : "maximize-2"} size={18} color="#FFFFFF" />
-            </TouchableOpacity>
-          </View>
-        </>
+        <View style={[styles.webView, { justifyContent: "center" }]}>
+          <YoutubeIframe
+            height={windowHeight > windowWidth ? windowWidth * (9 / 16) : windowHeight}
+            width={windowWidth}
+            videoId={playerResult.url}
+            play={true}
+            onReady={handlePlaybackReady}
+            onError={handleError}
+            onFullScreenChange={handleFullScreenChange}
+            initialPlayerParams={{
+              preventFullScreen: false,
+              controls: true,
+              modestbranding: true,
+              rel: false
+            }}
+          />
+        </View>
       )}
 
       {/* WebView for Dizipal embed (direct embed URL â€” full JWPlayer with subs/audio) */}
