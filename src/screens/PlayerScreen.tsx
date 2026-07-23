@@ -311,51 +311,71 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#0A0A0F",
+    backgroundColor: "#08090C",
     zIndex: 20,
-    paddingHorizontal: 40
+    paddingHorizontal: 44
   },
-  notAvailableEmoji: {
-    fontSize: 64,
-    marginBottom: 20
+  notAvailableBadge: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 26,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)"
+  },
+  notAvailableBadgeInner: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    alignItems: "center",
+    justifyContent: "center"
   },
   notAvailableTitle: {
     color: "#FFFFFF",
-    fontSize: 22,
-    fontWeight: "800",
-    letterSpacing: 0.5,
-    marginBottom: 12
+    fontFamily: "Outfit_700Bold",
+    fontSize: 23,
+    letterSpacing: -0.3,
+    marginBottom: 10,
+    textAlign: "center"
   },
   notAvailableSubtitle: {
-    color: "rgba(255,255,255,0.75)",
+    color: "rgba(255,255,255,0.82)",
+    fontFamily: "Outfit_500Medium",
     fontSize: 15,
     textAlign: "center",
     lineHeight: 22,
-    marginBottom: 8
+    marginBottom: 6
   },
   notAvailableHint: {
-    color: "rgba(255,255,255,0.4)",
+    color: "rgba(255,255,255,0.42)",
+    fontFamily: "Outfit_400Regular",
     fontSize: 13,
     textAlign: "center",
-    lineHeight: 18,
-    marginBottom: 28
+    lineHeight: 19,
+    marginBottom: 30
   },
   goBackButton: {
-    paddingHorizontal: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 30,
     paddingVertical: 13,
     backgroundColor: "#FF4D00",
-    borderRadius: 12,
+    borderRadius: 999,
     shadowColor: "#FF4D00",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
     elevation: 8
   },
   goBackText: {
     color: "#FFFFFF",
+    fontFamily: "Outfit_700Bold",
     fontSize: 15,
-    fontWeight: "700",
-    letterSpacing: 0.3
+    letterSpacing: 0.2
   }
 });
 
@@ -398,6 +418,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const [isPlaybackReady, setIsPlaybackReady] = useState(false);
   const [canGoBack, setCanGoBack] = useState(false);
   const [videoFit, setVideoFit] = useState<'contain' | 'cover'>('contain');
+  // YouTube playback (trailers + Azerbaijani Classics) starts as a portrait
+  // 16:9 letterbox; the expand button rotates the whole screen to landscape so
+  // the video fills it, matching the fullscreen affordance the other players
+  // already have. The iframe re-sizes off useWindowDimensions automatically.
+  const [isYoutubeFullscreen, setIsYoutubeFullscreen] = useState(false);
   const [availableSubtitleTracks, setAvailableSubtitleTracks] = useState<SubtitleTrack[]>([]);
   const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState<SubtitleTrack | null>(null);
   const [isSubtitleMenuOpen, setIsSubtitleMenuOpen] = useState(false);
@@ -645,6 +670,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     hdfilmRuntimeDiscoveryKeysRef.current.clear();
     dizipalRecoveryTriggeredRef.current = false;
     directFallbackPromiseRef.current = null;
+    setIsYoutubeFullscreen(false);
 
     if (route.params.playbackSource === "youtube" && route.params.videoId) {
       // Azerbaijani Classics: play straight through the in-app YouTube player,
@@ -723,10 +749,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     // Fully guarded — a no-op on builds/platforms without the native module.
     void hideSystemNavigationBar();
 
+    // Provider streams are always landscape; YouTube orientation is owned by the
+    // dedicated effect below so the expand button can flip it live.
     if (playerResult.source !== "youtube_embed") {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-    } else {
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     }
 
     return () => {
@@ -735,6 +761,18 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     };
   }, [playerResult]);
+
+  // YouTube: portrait by default, landscape while expanded. Split out from the
+  // effect above so toggling the expand button re-locks orientation without
+  // re-running the status-bar / immersive-mode setup.
+  useEffect(() => {
+    if (playerResult?.source !== "youtube_embed") return;
+    void ScreenOrientation.lockAsync(
+      isYoutubeFullscreen
+        ? ScreenOrientation.OrientationLock.LANDSCAPE
+        : ScreenOrientation.OrientationLock.PORTRAIT_UP
+    );
+  }, [playerResult?.source, isYoutubeFullscreen]);
 
   // Safety net: bound how long the loader can sit on top of a WebView. The
   // injected JS posts `player_ready` once JWPlayer initialises — but if the
@@ -820,12 +858,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     return () => clearTimeout(timer);
   }, [playerResult?.source, isPlaybackReady, recoverFromDizipalFailure]);
 
-  const handleFullScreenChange = useCallback((isFullScreen: boolean) => {
-    if (isFullScreen) {
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-    } else {
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-    }
+  const toggleYoutubeFullscreen = useCallback(() => {
+    setIsYoutubeFullscreen((current) => !current);
   }, []);
 
   // Android back
@@ -1585,8 +1619,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   return (
     <View style={styles.root}>
-      {/* Close â€” auto-hides after 3s, tap screen to toggle */}
-      {showCloseBtn && (
+      {/* Close â€” auto-hides after 3s, tap screen to toggle. YouTube keeps its
+          own always-visible controls (below) because the iframe swallows taps,
+          so an auto-hidden button could never be summoned back. */}
+      {showCloseBtn && playerResult?.source !== "youtube_embed" && (
         <>
           <Animated.View style={[styles.closeButton, { opacity: closeBtnOpacity }]}>
             <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
@@ -1630,40 +1666,60 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
       {/* Not Available */}
       {isNotAvailable && !isResolving && (
-        <View style={styles.notAvailableOverlay}>
-          <Text style={styles.notAvailableEmoji}>🎬</Text>
-          <Text style={styles.notAvailableTitle}>Not Available Yet</Text>
-          <Text style={styles.notAvailableSubtitle}>
-            Sorry, "{route.params.title}" is not available in our movie catalog yet.
+        <Reanimated.View entering={FadeIn.duration(320)} style={styles.notAvailableOverlay}>
+          <View style={styles.notAvailableBadge}>
+            <View style={[styles.notAvailableBadgeInner, { backgroundColor: theme.colors.primary + "22" }]}>
+              <Feather name="film" size={34} color={theme.colors.primary} />
+            </View>
+          </View>
+          <Text style={styles.notAvailableTitle}>Not available yet</Text>
+          <Text style={styles.notAvailableSubtitle} numberOfLines={2}>
+            “{route.params.title}” isn’t in our catalog yet.
           </Text>
           <Text style={styles.notAvailableHint}>
-            We're always adding new content. Please check back later!
+            We add new titles all the time — check back soon.
           </Text>
-          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.8} accessibilityRole="button" accessibilityLabel={t("common.goBack")}>
+          <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.85} accessibilityRole="button" accessibilityLabel={t("common.goBack")}>
+            <Feather name="arrow-left" size={16} color="#FFFFFF" />
             <Text style={styles.goBackText}>Go Back</Text>
           </TouchableOpacity>
-        </View>
+        </Reanimated.View>
       )}
 
-      {/* YouTube Native Player for trailers */}
+      {/* YouTube Native Player for trailers + Azerbaijani Classics */}
       {playerResult && playerResult.source === "youtube_embed" && (
-        <View style={[styles.webView, { justifyContent: "center" }]}>
-          <YoutubeIframe
-            height={windowHeight > windowWidth ? windowWidth * (9 / 16) : windowHeight}
-            width={windowWidth}
-            videoId={playerResult.url}
-            play={true}
-            onReady={handlePlaybackReady}
-            onError={handleError}
-            onFullScreenChange={handleFullScreenChange}
-            initialPlayerParams={{
-              preventFullScreen: false,
-              controls: true,
-              modestbranding: true,
-              rel: false
-            }}
-          />
-        </View>
+        <>
+          <View style={[styles.webView, { justifyContent: "center" }]}>
+            <YoutubeIframe
+              height={windowHeight > windowWidth ? windowWidth * (9 / 16) : windowHeight}
+              width={windowWidth}
+              videoId={playerResult.url}
+              play={true}
+              onReady={handlePlaybackReady}
+              onError={handleError}
+              initialPlayerParams={{
+                // Fullscreen is driven by our own expand button (which rotates
+                // the whole screen), not the iframe's — keeps the affordance
+                // identical to the app's other players.
+                preventFullScreen: true,
+                controls: true,
+                modestbranding: true,
+                rel: false
+              }}
+            />
+          </View>
+          {/* Always-visible controls (the iframe eats taps). */}
+          <View style={styles.closeButton}>
+            <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.close")}>
+              <Feather name="x" size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.scalingButton}>
+            <TouchableOpacity onPress={toggleYoutubeFullscreen} activeOpacity={0.8} style={styles.closeButtonInner} accessibilityRole="button" accessibilityLabel={t("player.a11y.toggleFit")}>
+              <Feather name={isYoutubeFullscreen ? "minimize-2" : "maximize-2"} size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+        </>
       )}
 
       {/* WebView for Dizipal embed (direct embed URL â€” full JWPlayer with subs/audio) */}
