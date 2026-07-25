@@ -44,6 +44,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
 
 | Runtime | Branch | Fleet | Hard rule |
 |---------|--------|-------|-----------|
+| **1.3.0 (planned)** | `v1.3.0` (to be cut from `v1.2.0`) | Social-platform APK — **not yet built** | Adds native `expo-notifications` + the social follow platform. Feature work targets this runtime ONLY (see fleet policy, rule 4). `runtimeVersion` bumps to `"1.3.0"` on this branch. |
 | **1.2.0** | `v1.2.0` (renamed 2026-07-23 from `release/1.2.0-watch-together`; folds in `feat/azerbaijani-classics`) | Watch Together APK build | Adds native `react-native-webrtc` + `expo-camera`. **Isolated — never ported back to 1.1.0/1.0.2.** `runtimeVersion` in `app.config.js` is a fixed `"1.2.0"`, so publishing from this branch auto-isolates. See **§2A**. |
 | **1.1.0** | `release/1.1.0-navbar` (primary working branch) | Nav-bar APK build | Normal track. `runtimeVersion` in `app.config.js` is `1.1.0`. |
 | **1.0.2** | `release/1.0.2-legacy` | Legacy fleet, **no nav-bar** | **MUST NEVER contain nav-bar code** (see below). |
@@ -62,6 +63,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
    It must print nothing.
 2. **Any change that adds or upgrades a native module cannot go OTA.** It requires a new native build **and** a `runtimeVersion` bump (e.g. `1.2.0`). Do **not** reuse `1.1.0` for a build that adds a native module — existing `1.1.0` installs would crash on the next OTA when they call the missing module. Prefer pure-JS solutions to stay OTA-deliverable (this is why the loader was rebuilt with SVG+Reanimated instead of Lottie).
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
+4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — starting with **1.3.0** (branch `v1.3.0`, social follow platform, new APK). Older runtimes (1.0.2 / 1.1.0 / 1.2.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
 ### Current deployed state (last updated 2026-07-23, 1.2.0 UX + stability batch)
 
