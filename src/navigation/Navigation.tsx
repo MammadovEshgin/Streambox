@@ -6,15 +6,18 @@ import { useTranslation } from "react-i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "styled-components/native";
 
+import { ActivityScreen } from "../screens/ActivityScreen";
 import { ActorDetailScreen } from "../screens/ActorDetailScreen";
 import { AzClassicDetailScreen } from "../screens/AzClassicDetailScreen";
 import { AzClassicsGridScreen } from "../screens/AzClassicsGridScreen";
 import { DiscoverGridScreen } from "../screens/DiscoverGridScreen";
+import { FollowListScreen } from "../screens/FollowListScreen";
 import { FranchiseCatalogScreen } from "../screens/FranchiseCatalogScreen";
 import { FranchiseTimelineScreen } from "../screens/FranchiseTimelineScreen";
 import { HomeScreen } from "../screens/HomeScreen";
 import { MovieDetailScreen } from "../screens/MovieDetailScreen";
 import { MoviesScreen } from "../screens/MoviesScreen";
+import { NotificationsScreen } from "../screens/NotificationsScreen";
 import { PlayerScreen } from "../screens/PlayerScreen";
 import { ProfileScreen } from "../screens/ProfileScreen";
 import { ProfileSeeAllScreen } from "../screens/ProfileSeeAllScreen";
@@ -23,6 +26,7 @@ import { SearchResultsScreen } from "../screens/SearchResultsScreen";
 import { SeriesDetailScreen } from "../screens/SeriesDetailScreen";
 import { SeriesScreen } from "../screens/SeriesScreen";
 import { StatsScreen } from "../screens/StatsScreen";
+import { UserProfileScreen } from "../screens/UserProfileScreen";
 import { WatchRoomScreen } from "../screens/WatchRoomScreen";
 
 import { WatchedGridScreen } from "../screens/WatchedGridScreen";
@@ -48,6 +52,8 @@ function HomeStackScreen() {
       <HomeStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <HomeStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <HomeStack.Screen name="AzClassicsGrid" component={AzClassicsGridScreen} />
+      <HomeStack.Screen name="UserProfile" component={UserProfileScreen} />
+      <HomeStack.Screen name="FollowList" component={FollowListScreen} />
       <HomeStack.Screen name="Player" component={PlayerScreen} />
       <HomeStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </HomeStack.Navigator>
@@ -67,6 +73,8 @@ function MoviesStackScreen() {
       <MoviesStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <MoviesStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <MoviesStack.Screen name="AzClassicsGrid" component={AzClassicsGridScreen} />
+      <MoviesStack.Screen name="UserProfile" component={UserProfileScreen} />
+      <MoviesStack.Screen name="FollowList" component={FollowListScreen} />
       <MoviesStack.Screen name="Player" component={PlayerScreen} />
       <MoviesStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </MoviesStack.Navigator>
@@ -82,6 +90,8 @@ function SeriesStackScreen() {
       <SeriesStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <SeriesStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <SeriesStack.Screen name="ActorDetail" component={ActorDetailScreen} />
+      <SeriesStack.Screen name="UserProfile" component={UserProfileScreen} />
+      <SeriesStack.Screen name="FollowList" component={FollowListScreen} />
       <SeriesStack.Screen name="Player" component={PlayerScreen} />
       <SeriesStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </SeriesStack.Navigator>
@@ -98,6 +108,10 @@ function ProfileStackScreen() {
       <ProfileStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <ProfileStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <ProfileStack.Screen name="ActorDetail" component={ActorDetailScreen} />
+      <ProfileStack.Screen name="UserProfile" component={UserProfileScreen} />
+      <ProfileStack.Screen name="FollowList" component={FollowListScreen} />
+      <ProfileStack.Screen name="ActivityFeed" component={ActivityScreen} />
+      <ProfileStack.Screen name="Notifications" component={NotificationsScreen} />
       <ProfileStack.Screen name="Player" component={PlayerScreen} />
       <ProfileStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </ProfileStack.Navigator>
@@ -119,7 +133,7 @@ function StatsStackScreen() {
   );
 }
 
-const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "AzClassicDetail", "AzClassicsGrid", "Player", "WatchRoomSetup", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline"]);
+const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "AzClassicDetail", "AzClassicsGrid", "Player", "WatchRoomSetup", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline", "UserProfile", "FollowList", "ActivityFeed", "Notifications"]);
 const STACK_TABS = new Set<keyof RootTabParamList>(["Discover", "Movies", "Series", "Stats", "Profile"]);
 
 export function Navigation() {
