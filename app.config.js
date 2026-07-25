@@ -61,6 +61,10 @@ const baseConfig = {
     "expo-video",
     "expo-font",
     "expo-web-browser",
+    // Social platform (runtime 1.3.0 only) — Android push. Adds
+    // POST_NOTIFICATIONS at prebuild; the "social" channel is created at
+    // runtime in src/services/pushNotifications.ts.
+    "expo-notifications",
     // Watch Together (runtime 1.2.0 only) — native camera/mic. These add
     // CAMERA / RECORD_AUDIO permissions and iOS usage strings at prebuild.
     [
