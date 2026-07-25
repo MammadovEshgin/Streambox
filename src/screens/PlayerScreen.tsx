@@ -25,6 +25,7 @@ import { ContinueWatchingModal } from "../components/common/ContinueWatchingModa
 import { QualityWarningModal } from "../components/common/QualityWarningModal";
 import { WatchRoomLayer } from "../components/watchTogether/WatchRoomLayer";
 import { WatchRoomBoundary } from "../components/watchTogether/WatchRoomBoundary";
+import { useAutoMarkWatched } from "../hooks/useAutoMarkWatched";
 import { useContinueWatching } from "../hooks/useContinueWatching";
 import { useRecentlyWatched } from "../hooks/useRecentlyWatched";
 
@@ -1104,6 +1105,17 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     year: route.params.year,
     castNames: route.params.castNames,
     resumeAtSeconds: route.params.resumeAtSeconds,
+  });
+
+  // Auto-mark watched at 95% + 2min engaged (movies + episodes + watch rooms;
+  // trailers/YouTube excluded). Shares the timeUpdate ticks; fires once/session.
+  useAutoMarkWatched({
+    player: videoPlayer,
+    enabled: isNativeStreamSource && !route.params.trailerUrl,
+    mediaType: route.params.mediaType,
+    tmdbId: Number(route.params.tmdbId),
+    seasonNumber: route.params.seasonNumber,
+    episodeNumber: route.params.episodeNumber,
   });
 
   // Load the source when directStreamUrl becomes available
