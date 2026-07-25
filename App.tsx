@@ -6,7 +6,7 @@ import { SpecialElite_400Regular } from "@expo-google-fonts/special-elite";
 import { Caveat_500Medium, Caveat_600SemiBold, Caveat_700Bold } from "@expo-google-fonts/caveat";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { NavigationContainer, type Theme as NavigationTheme } from "@react-navigation/native";
+import { NavigationContainer, useNavigationContainerRef, type Theme as NavigationTheme } from "@react-navigation/native";
 import * as SplashScreen from "expo-splash-screen";
 import * as Updates from "expo-updates";
 import { StatusBar } from "expo-status-bar";
@@ -20,7 +20,9 @@ import styled from "styled-components/native";
 
 import { LaunchSplash, SplashLoading } from "./src/components/common/LaunchSplash";
 import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
+import { InviteHost } from "./src/components/social/InviteHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
+import { userInboxService } from "./src/services/userInboxService";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
 import { Navigation } from "./src/navigation/Navigation";
 import i18n from "./src/localization/i18n";
@@ -260,6 +262,20 @@ function AppShell() {
   const { activeTheme, language, setJoinedDate, setProfileName, joinedDate } = useAppSettings();
   const { session, isLoading: authLoading, signOut } = useAuth();
   const { isReady: isUserDataReady } = useUserDataSync();
+  const navigationRef = useNavigationContainerRef();
+
+  // Start the app-wide realtime inbox (social notifications + Watch Together
+  // invites) whenever a user is signed in; tear it down on sign-out. Foreground
+  // lifecycle is handled inside the service.
+  const sessionUserId = session?.user?.id ?? null;
+  useEffect(() => {
+    if (sessionUserId) {
+      userInboxService.start(sessionUserId);
+      return () => userInboxService.stop();
+    }
+    userInboxService.stop();
+    return undefined;
+  }, [sessionUserId]);
   const { t } = useTranslation();
   const [launchPhase, setLaunchPhase] = useState<LaunchPhase>("loading");
   // The launch splash plays its full reveal regardless of how fast data loads;
@@ -612,12 +628,15 @@ function AppShell() {
           onSignOut={signOut}
           onError={handleStartupError}
         >
-          <NavigationContainer theme={navigationTheme} linking={watchTogetherLinking}>
+          <NavigationContainer ref={navigationRef} theme={navigationTheme} linking={watchTogetherLinking}>
             <Navigation />
           </NavigationContainer>
           {/* Popups wait for the splash: a LiveOps modal is a native layer that
               would otherwise appear ABOVE the splash overlay mid-reveal. */}
           <LiveOpsHost enabled={isUserDataReady && splashComplete} />
+          {/* Incoming Watch Together invite popup — routes into the room on
+              accept via the navigation ref (same path as the deep link). */}
+          <InviteHost enabled={Boolean(session?.user) && splashComplete} navigationRef={navigationRef} />
         </StartupErrorBoundary>
       ) : null}
       {/* Top-most opaque overlay — content mounts and paints beneath it. */}
