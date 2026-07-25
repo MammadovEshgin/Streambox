@@ -12,10 +12,12 @@ import {
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
 
+import { searchUsers, type PeopleSearchResult } from "../../api/social";
 import { MediaItem, getTmdbImageUrl, searchMulti } from "../../api/tmdb";
 import { formatRating } from "../../api/mediaFormatting";
 import { CachedRemoteImage } from "../common/CachedRemoteImage";
 import { MovieLoader } from "../common/MovieLoader";
+import { SocialAvatar } from "../social/SocialAvatar";
 
 /* ------------------------------------------------------------------ */
 /*  Styled Components                                                 */
@@ -235,12 +237,45 @@ const SearchHintText = styled.Text`
 /*  Types                                                             */
 /* ------------------------------------------------------------------ */
 
+const PeopleLabel = styled.Text`
+  padding: 10px 14px 6px;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_700Bold;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+`;
+
+const PersonRow = styled.Pressable`
+  flex-direction: row;
+  align-items: center;
+  padding: 8px 14px;
+`;
+
+const PersonInfo = styled.View`
+  flex: 1;
+  margin-left: 10px;
+`;
+
+const PersonNameText = styled.Text`
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
+  font-size: 14px;
+`;
+
+const PersonHandleText = styled.Text`
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_400Regular;
+  font-size: 12px;
+`;
+
 type HomeHeaderProps = {
   query: string;
   onChangeQuery: (value: string) => void;
   onOpenFilter?: () => void;
   onSearchSubmit?: (query: string) => void;
   onSelectItem?: (item: MediaItem) => void;
+  onSelectPerson?: (userId: string) => void;
   hasActiveFilters?: boolean;
 };
 
@@ -254,6 +289,7 @@ export function HomeHeader({
   onOpenFilter,
   onSearchSubmit,
   onSelectItem,
+  onSelectPerson,
   hasActiveFilters = false,
 }: HomeHeaderProps) {
   const currentTheme = useTheme();
@@ -273,8 +309,35 @@ export function HomeHeader({
   // the results of a newer one (out-of-order responses are common on mobile
   // networks where request latency varies wildly).
   const searchSeqRef = useRef(0);
+  const [people, setPeople] = useState<PeopleSearchResult[]>([]);
+  const peopleSeqRef = useRef(0);
 
+  // "@handle" queries are people-only (media is skipped below).
+  const isPeopleOnly = query.trim().startsWith("@");
   const showDropdown = isFocused && query.trim().length > 0;
+
+  // Debounced live PEOPLE search, seq-guarded like the media search. Strips a
+  // leading @; needs >= 2 chars after the strip (matches the search_users RPC).
+  useEffect(() => {
+    const raw = query.trim();
+    const stripped = raw.startsWith("@") ? raw.slice(1) : raw;
+    if (stripped.length < 2) {
+      peopleSeqRef.current += 1;
+      setPeople([]);
+      return;
+    }
+    const seq = ++peopleSeqRef.current;
+    const timer = setTimeout(() => {
+      void searchUsers(raw)
+        .then((rows) => {
+          if (peopleSeqRef.current === seq) setPeople(rows);
+        })
+        .catch(() => {
+          if (peopleSeqRef.current === seq) setPeople([]);
+        });
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [query]);
 
   const performSearch = useCallback(async (trimmed: string) => {
     const seq = ++searchSeqRef.current;
@@ -307,10 +370,10 @@ export function HomeHeader({
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
     const trimmed = query.trim();
-    if (trimmed.length < 2) {
+    if (trimmed.length < 2 || isPeopleOnly) {
       searchSeqRef.current += 1;
       setResults([]);
-      setHasSearched(false);
+      setHasSearched(isPeopleOnly);
       setSearchFailed(false);
       setCurrentPage(1);
       setTotalPages(0);
@@ -326,7 +389,7 @@ export function HomeHeader({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, performSearch]);
+  }, [query, performSearch, isPeopleOnly]);
 
   // Load next page when scrolling to the end
   const handleLoadMore = useCallback(async () => {
@@ -364,6 +427,15 @@ export function HomeHeader({
       onSearchSubmit?.(query.trim());
     }
   }, [query, onSearchSubmit]);
+
+  const handleSelectPerson = useCallback(
+    (userId: string) => {
+      Keyboard.dismiss();
+      setIsFocused(false);
+      onSelectPerson?.(userId);
+    },
+    [onSelectPerson]
+  );
 
   const handleSelectItem = useCallback(
     (item: MediaItem) => {
@@ -473,11 +545,11 @@ export function HomeHeader({
           exiting={FadeOut.duration(100)}
           pointerEvents="box-none"
         >
-          {isSearching && results.length === 0 ? (
+          {isSearching && results.length === 0 && people.length === 0 ? (
             <LoadingRow>
               <MovieLoader size={28} />
             </LoadingRow>
-          ) : searchFailed && results.length === 0 ? (
+          ) : searchFailed && results.length === 0 && people.length === 0 ? (
             <EmptyRow>
               <Feather name="wifi-off" size={24} color={currentTheme.colors.textSecondary} />
               <EmptyText style={{ marginTop: 8 }}>{t("search.searchFailedTitle")}</EmptyText>
@@ -489,7 +561,7 @@ export function HomeHeader({
                 <RetrySearchText>{t("common.retry")}</RetrySearchText>
               </RetrySearchButton>
             </EmptyRow>
-          ) : hasSearched && results.length === 0 ? (
+          ) : hasSearched && results.length === 0 && people.length === 0 ? (
             <EmptyRow>
               <Feather name="search" size={24} color={currentTheme.colors.textSecondary} />
               <EmptyText style={{ marginTop: 8 }}>
@@ -499,7 +571,7 @@ export function HomeHeader({
                 {t("search.tryDifferentKeywords")}
               </EmptyText>
             </EmptyRow>
-          ) : results.length > 0 ? (
+          ) : results.length > 0 || people.length > 0 ? (
             <ResultsScroll
               onScroll={({ nativeEvent }) => {
                 const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
@@ -508,6 +580,28 @@ export function HomeHeader({
               }}
               scrollEventThrottle={400}
             >
+              {people.length > 0 && (
+                <>
+                  <PeopleLabel>{t("social.peopleSectionTitle")}</PeopleLabel>
+                  {people.map((person) => (
+                    <PersonRow key={person.userId} onPress={() => handleSelectPerson(person.userId)}>
+                      <SocialAvatar
+                        avatarPath={person.avatarPath}
+                        avatarVersion={person.avatarVersion}
+                        displayName={person.displayName}
+                        size={38}
+                      />
+                      <PersonInfo>
+                        <PersonNameText numberOfLines={1}>{person.displayName}</PersonNameText>
+                        {person.username ? (
+                          <PersonHandleText numberOfLines={1}>@{person.username}</PersonHandleText>
+                        ) : null}
+                      </PersonInfo>
+                    </PersonRow>
+                  ))}
+                  {results.length > 0 && <ResultSeparator />}
+                </>
+              )}
               {results.map((item, index) => (
                 <View key={`${item.mediaType}-${item.id}`}>
                   {index > 0 && <ResultSeparator />}
@@ -519,7 +613,7 @@ export function HomeHeader({
                   <MovieLoader size={28} />
                 </LoadingRow>
               )}
-              {query.trim().length >= 2 && (
+              {!isPeopleOnly && query.trim().length >= 2 && (
                 <SearchHintRow>
                   <Feather name="corner-down-left" size={14} color={currentTheme.colors.textSecondary} />
                   <SearchHintText>{t("search.pressEnterForFullResults")}</SearchHintText>
