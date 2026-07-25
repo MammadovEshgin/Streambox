@@ -369,23 +369,30 @@ any late transition (2-min TTL, enforced by the atomic status predicate
   once/session, reuses the manual mark-watched builders. Wired into PlayerScreen.
 
 ### What is IMPLEMENTED vs REMAINING (as of 2026-07-26)
-Implemented + typecheck/lint/265→312 tests green: migration; all pure logic +
-tests; `src/api/social.ts`; realtime/push services; **NotificationsScreen,
-ActivityScreen, FollowListScreen, UserProfileScreen** + navigation; ProfileScreen
-header (username, bell+badge → Notifications, activity → ActivityFeed, tappable
-follow stats); **@-people search** row; auto-mark-watched; push Worker + plugin.
+Implemented + typecheck/lint clean, 312 tests green:
+- Migration; all pure logic + tests; `src/api/social.ts`; realtime/push services.
+- **Screens:** NotificationsScreen, ActivityScreen, FollowListScreen,
+  UserProfileScreen + navigation. ProfileScreen header (username, bell+badge →
+  Notifications, activity → ActivityFeed, tappable follow stats).
+- **People search everywhere:** the Home **live search dropdown** and the full
+  `SearchResultsScreen` both surface users (usernames + `@handle`, tap → profile).
+- **Watch Together invites — full loop:** sender `WatchInviteSection` (mutual
+  follows + waiting overlay w/ countdown + cancel) in `WatchRoomScreen`; recipient
+  `InviteHost` popup at app root; `userInboxService` started app-wide with the
+  session (App.tsx); accept routes into the room via the nav ref.
+- **Player autonomy — complete:** auto-mark-watched (95%+2min); `useNextEpisode`
+  + `NextEpisodePill` (manual + auto-advance countdown, persisted toggle) +
+  `EpisodePickerSheet` (right-side in-layer drawer). Native series path only,
+  excluded in watch rooms.
+- Push Worker + expo-notifications plugin (guarded to no-op in Expo Go).
 
-**Remaining wiring (foundations all in place — reducers/API/services/strings):**
-- **Next-episode pill + auto-advance countdown + in-player episode picker**
-  (`nextEpisodeCountdownReducer` + `getSeriesSeasonEpisodes` ready; needs the
-  in-player overlay UI + `navigation.setParams({ episodeNumber })` switch).
-- **Watch Together invite UX**: the "Invite a friend" (mutual-follows) section in
-  `WatchRoomScreen`, the sender **waiting overlay**, and the recipient **InviteHost**
-  popup in `App.tsx` (model on `LiveOpsHost`), plus starting `userInboxService`
-  + push tap-routing at app root. `src/api/social.ts` invite RPCs + the
-  `watchInvites` reducer + strings are done.
-- **Public "See all" paged grids** off the UserProfile rails (rails load 24 items
-  today).
+- **Public "See all" paged grids** (`UserPublicListScreen`) off the UserProfile
+  rails — keyset-paginated via `get_user_public_list`.
+
+**Remaining (nice-to-haves, foundations in place):**
+- Push receipt reconciliation (prune dead Expo tokens) in the Worker.
+- Reanimated circular-progress polish on the countdown pill (functional today
+  with a text countdown).
 
 ---
 
