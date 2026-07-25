@@ -139,6 +139,14 @@ const RailCount = styled.Text`
   font-size: 13px;
 `;
 
+const RailSeeAll = styled.Pressable``;
+
+const RailSeeAllText = styled.Text`
+  color: ${({ theme }) => theme.colors.primary};
+  font-size: 13px;
+  font-weight: 600;
+`;
+
 const PosterCard = styled.Pressable`
   width: 96px;
   margin-right: 10px;
@@ -267,11 +275,21 @@ export function UserProfileScreen({ route, navigation }: Props) {
     [navigation]
   );
 
-  const renderRail = (titleKey: string, list: PublicListItem[], emptyKey: string) => (
+  const renderRail = (titleKey: string, kind: PublicListKind, list: PublicListItem[], emptyKey: string) => (
     <Rail>
       <RailHeader>
         <RailTitle>{t(titleKey)}</RailTitle>
-        <RailCount>{list.length}</RailCount>
+        {list.length >= 24 && profile ? (
+          <RailSeeAll
+            onPress={() =>
+              navigation.navigate("UserPublicList", { userId: profile.userId, list: kind, title: t(titleKey) })
+            }
+          >
+            <RailSeeAllText>{t("social.seeAll")}</RailSeeAllText>
+          </RailSeeAll>
+        ) : (
+          <RailCount>{list.length}</RailCount>
+        )}
       </RailHeader>
       {list.length === 0 ? (
         <RailEmpty>{t(emptyKey)}</RailEmpty>
@@ -366,9 +384,9 @@ export function UserProfileScreen({ route, navigation }: Props) {
           </FollowButton>
         )}
 
-        {renderRail("profile.watched", lists.watched, "social.emptyWatched")}
-        {renderRail("profile.watchlist", lists.watchlist, "social.emptyWatchlist")}
-        {renderRail("profile.liked", lists.liked, "social.emptyLiked")}
+        {renderRail("profile.watched", "watched", lists.watched, "social.emptyWatched")}
+        {renderRail("profile.watchlist", "watchlist", lists.watchlist, "social.emptyWatchlist")}
+        {renderRail("profile.liked", "liked", lists.liked, "social.emptyLiked")}
       </ScrollView>
     </SafeContainer>
   );

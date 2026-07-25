@@ -27,6 +27,7 @@ import { SeriesDetailScreen } from "../screens/SeriesDetailScreen";
 import { SeriesScreen } from "../screens/SeriesScreen";
 import { StatsScreen } from "../screens/StatsScreen";
 import { UserProfileScreen } from "../screens/UserProfileScreen";
+import { UserPublicListScreen } from "../screens/UserPublicListScreen";
 import { WatchRoomScreen } from "../screens/WatchRoomScreen";
 
 import { WatchedGridScreen } from "../screens/WatchedGridScreen";
@@ -54,6 +55,7 @@ function HomeStackScreen() {
       <HomeStack.Screen name="AzClassicsGrid" component={AzClassicsGridScreen} />
       <HomeStack.Screen name="UserProfile" component={UserProfileScreen} />
       <HomeStack.Screen name="FollowList" component={FollowListScreen} />
+      <HomeStack.Screen name="UserPublicList" component={UserPublicListScreen} />
       <HomeStack.Screen name="Player" component={PlayerScreen} />
       <HomeStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </HomeStack.Navigator>
@@ -75,6 +77,7 @@ function MoviesStackScreen() {
       <MoviesStack.Screen name="AzClassicsGrid" component={AzClassicsGridScreen} />
       <MoviesStack.Screen name="UserProfile" component={UserProfileScreen} />
       <MoviesStack.Screen name="FollowList" component={FollowListScreen} />
+      <MoviesStack.Screen name="UserPublicList" component={UserPublicListScreen} />
       <MoviesStack.Screen name="Player" component={PlayerScreen} />
       <MoviesStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </MoviesStack.Navigator>
@@ -92,6 +95,7 @@ function SeriesStackScreen() {
       <SeriesStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <SeriesStack.Screen name="UserProfile" component={UserProfileScreen} />
       <SeriesStack.Screen name="FollowList" component={FollowListScreen} />
+      <SeriesStack.Screen name="UserPublicList" component={UserPublicListScreen} />
       <SeriesStack.Screen name="Player" component={PlayerScreen} />
       <SeriesStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </SeriesStack.Navigator>
@@ -110,6 +114,7 @@ function ProfileStackScreen() {
       <ProfileStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <ProfileStack.Screen name="UserProfile" component={UserProfileScreen} />
       <ProfileStack.Screen name="FollowList" component={FollowListScreen} />
+      <ProfileStack.Screen name="UserPublicList" component={UserPublicListScreen} />
       <ProfileStack.Screen name="ActivityFeed" component={ActivityScreen} />
       <ProfileStack.Screen name="Notifications" component={NotificationsScreen} />
       <ProfileStack.Screen name="Player" component={PlayerScreen} />
@@ -133,7 +138,7 @@ function StatsStackScreen() {
   );
 }
 
-const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "AzClassicDetail", "AzClassicsGrid", "Player", "WatchRoomSetup", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline", "UserProfile", "FollowList", "ActivityFeed", "Notifications"]);
+const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "AzClassicDetail", "AzClassicsGrid", "Player", "WatchRoomSetup", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline", "UserProfile", "FollowList", "UserPublicList", "ActivityFeed", "Notifications"]);
 const STACK_TABS = new Set<keyof RootTabParamList>(["Discover", "Movies", "Series", "Stats", "Profile"]);
 
 export function Navigation() {
