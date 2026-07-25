@@ -30,9 +30,11 @@ import { SharedSessionsSection } from "../components/watchTogether/SharedSession
 import { evaluateBadges, selectStripBadgeIds } from "../services/badgeEngine";
 import { useLikedMovies } from "../hooks/useLikedMovies";
 import { useLikedSeries } from "../hooks/useLikedSeries";
+import { useMyProfileSocial } from "../hooks/useMyProfileSocial";
 import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
 import { useWatchHistory } from "../hooks/useWatchHistory";
 import { useWatchlist } from "../hooks/useWatchlist";
+import { formatHandle } from "../utils/usernames";
 import type { ProfileSeeAllSection, ProfileStackParamList } from "../navigation/types";
 import { normalizeAppLanguage } from "../localization/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
@@ -222,6 +224,44 @@ const StatLabel = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
   font-family: Outfit_400Regular;
   font-size: 14px;
+`;
+
+const ProfileHandle = styled.Text`
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_500Medium;
+  font-size: 13px;
+  margin-top: 2px;
+`;
+
+const HeaderBadge = styled.View`
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 17px;
+  height: 17px;
+  border-radius: 9px;
+  padding-horizontal: 4px;
+  align-items: center;
+  justify-content: center;
+  background-color: ${({ theme }) => theme.colors.primary};
+`;
+
+const HeaderBadgeText = styled.Text`
+  color: ${({ theme }) => theme.colors.textOnPrimary};
+  font-family: Outfit_700Bold;
+  font-size: 10px;
+`;
+
+const FollowStatsRow = styled.View`
+  flex-direction: row;
+  gap: 22px;
+  margin-top: 16px;
+`;
+
+const FollowStatItem = styled.Pressable`
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
 `;
 
 const SectionWrap = styled.View`
@@ -542,6 +582,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const currentTheme = useTheme();
   const { t, i18n: translationI18n } = useTranslation();
   const insets = useSafeAreaInsets();
+  const social = useMyProfileSocial();
   const {
     profileImageUri,
     profileImageVersion,
@@ -1091,6 +1132,17 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           </BannerWrap>
 
           <BannerTopActions>
+            <BannerIconButton onPress={() => navigation.navigate("ActivityFeed")}>
+              <Feather name="users" size={17} color="#ffffff" />
+            </BannerIconButton>
+            <BannerIconButton onPress={() => navigation.navigate("Notifications")}>
+              <Feather name="bell" size={17} color="#ffffff" />
+              {social.unread > 0 && (
+                <HeaderBadge>
+                  <HeaderBadgeText>{social.unread > 9 ? "9+" : social.unread}</HeaderBadgeText>
+                </HeaderBadge>
+              )}
+            </BannerIconButton>
             <BannerIconButton onPress={openEditModal}>
               <Feather name="edit-2" size={16} color="#ffffff" />
             </BannerIconButton>
@@ -1120,6 +1172,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           {/* Name, Bio, Meta info */}
           <ProfileInfo>
             <ProfileTitle>{profileName}</ProfileTitle>
+            {!!social.username && <ProfileHandle>{formatHandle(social.username)}</ProfileHandle>}
             {!!profileBio && <ProfileBio>{profileBio}</ProfileBio>}
 
             <MetaStack>
@@ -1160,6 +1213,29 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 <StatLabel>{t("profile.liked")}</StatLabel>
               </StatItem>
             </StatsRow>
+
+            {!!social.userId && (
+              <FollowStatsRow>
+                <FollowStatItem
+                  onPress={() =>
+                    social.userId &&
+                    navigation.navigate("FollowList", { userId: social.userId, kind: "followers" })
+                  }
+                >
+                  <StatNumber>{social.followers}</StatNumber>
+                  <StatLabel>{t("social.followers")}</StatLabel>
+                </FollowStatItem>
+                <FollowStatItem
+                  onPress={() =>
+                    social.userId &&
+                    navigation.navigate("FollowList", { userId: social.userId, kind: "following" })
+                  }
+                >
+                  <StatNumber>{social.following}</StatNumber>
+                  <StatLabel>{t("social.followingLabel")}</StatLabel>
+                </FollowStatItem>
+              </FollowStatsRow>
+            )}
           </ProfileInfo>
         </Header>
 
