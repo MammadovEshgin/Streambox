@@ -309,7 +309,7 @@ export type AppNotification = {
   createdAt: string;
 };
 
-type NotificationRow = {
+export type NotificationRow = {
   id: number;
   type: NotificationType;
   actor_id: string | null;
@@ -318,7 +318,7 @@ type NotificationRow = {
   created_at: string;
 };
 
-function mapNotification(row: NotificationRow): AppNotification {
+export function mapNotification(row: NotificationRow): AppNotification {
   return {
     id: Number(row.id),
     type: row.type,
@@ -388,7 +388,7 @@ export type WatchInvite = {
   respondedAt: string | null;
 };
 
-type WatchInviteRow = {
+export type WatchInviteRow = {
   id: string;
   from_user: string;
   to_user: string;
