@@ -44,7 +44,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
 
 | Runtime | Branch | Fleet | Hard rule |
 |---------|--------|-------|-----------|
-| **1.3.0 (planned)** | `v1.3.0` (to be cut from `v1.2.0`) | Social-platform APK — **not yet built** | Adds native `expo-notifications` + the social follow platform. Feature work targets this runtime ONLY (see fleet policy, rule 4). `runtimeVersion` bumps to `"1.3.0"` on this branch. |
+| **1.3.0** | `v1.3.0` (cut from `v1.2.0` on 2026-07-25) | Social-platform APK — **not yet built** | Adds native `expo-notifications` + `expo-device` + the social follow platform + player autonomy. Feature work targets this runtime ONLY (see fleet policy, rule 4). `runtimeVersion` is `"1.3.0"` on this branch. See **§2B**. Migration `20260725120000` must be applied before testing. |
 | **1.2.0** | `v1.2.0` (renamed 2026-07-23 from `release/1.2.0-watch-together`; folds in `feat/azerbaijani-classics`) | Watch Together APK build | Adds native `react-native-webrtc` + `expo-camera`. **Isolated — never ported back to 1.1.0/1.0.2.** `runtimeVersion` in `app.config.js` is a fixed `"1.2.0"`, so publishing from this branch auto-isolates. See **§2A**. |
 | **1.1.0** | `release/1.1.0-navbar` (primary working branch) | Nav-bar APK build | Normal track. `runtimeVersion` in `app.config.js` is `1.1.0`. |
 | **1.0.2** | `release/1.0.2-legacy` | Legacy fleet, **no nav-bar** | **MUST NEVER contain nav-bar code** (see below). |
@@ -288,6 +288,104 @@ Implemented from the technical audit (`outputs/shared-sessions-tech-review-2026-
   service-only and is not dispatched as a signal. Both devices should still run
   the current bundle so acknowledgements, capture gating, and recovery UI are
   symmetric.
+
+---
+
+## 2B. Social follow platform + player autonomy — runtime 1.3.0 (NEW)
+
+The 1.3.0 headline features: a Letterboxd-style **social follow platform**
+(usernames, a public follow graph, an activity feed, in-app notifications,
+mutual-follow Watch Together invites, Android push) and **player autonomy**
+(auto-mark-watched, next-episode, in-player episode picker). Everything is
+additive and 1.3.0-only per the fleet policy. Built on branch `v1.3.0`.
+
+### Isolation / native
+- Adds native `expo-notifications` + `expo-device` (Android push) on top of the
+  1.2.0 native stack → new APK, `runtimeVersion "1.3.0"`. No install exists on
+  1.3.0 yet, so any `eas update` from this branch is auto-isolated.
+- The DB is shared by ALL fleets. A 1.3.0 user can follow / be followed by a
+  user still on 1.2.0 — server rows are runtime-agnostic and the older app
+  simply never renders them (nothing breaks). Invites are only *actionable*
+  between two 1.3.0 users.
+
+### Migration (apply MANUALLY, never `db push`)
+`supabase/migrations/20260725120000_social_follow_platform.sql` — one file, sorts
+after remote head `20260710190000`. Adds:
+- **usernames**: `user_profiles.username` (+ `username_changed_at`), case-insensitive
+  unique index, format constraint `^[a-z0-9_]{3,20}$`, a backfill from the email
+  local part for existing rows, and `handle_streambox_user_created` extended to
+  generate one on signup.
+- **`user_follows`** (public read, RPC-only writes), **`user_activity`** (+ INSERT/
+  DELETE triggers off `user_watch_history` / `user_media_library`), **`user_notifications`**,
+  **`watch_invites`** (unique partial index = one pending invite per pair),
+  **`user_push_tokens`**.
+- A `profile_assets_peer_read` storage policy so peers' avatars/banners are
+  readable (bucket stays private; client uses signed URLs).
+- Realtime publication add for `user_notifications` + `watch_invites`.
+- Ends with `notify pgrst, 'reload schema';`.
+
+**Curated public reads, NOT RLS loosening.** The existing user-data tables keep
+owner-only RLS. All cross-user reads go through SECURITY DEFINER RPCs that project
+only the public surface (Shared Sessions / memories are excluded).
+
+### RPC inventory (all `grant execute … to authenticated`, hint tokens on failure)
+`set_my_username` · `get_public_profile` · `get_user_public_list` · `search_users` ·
+`follow_user` / `unfollow_user` · `get_follow_list` · `get_mutual_follows` ·
+`get_following_activity` (composite `(created_at,id)` keyset) · `mark_notifications_read` ·
+`send_watch_invite` / `respond_watch_invite` / `cancel_watch_invite` / `get_watch_invite` ·
+`register_push_token`. Client wrappers: `src/api/social.ts`.
+
+### Invite state machine
+`pending → accepted | declined | cancelled | expired` (terminal). Only the
+**recipient** may accept/decline; only the **sender** may cancel; **expiry wins**
+any late transition (2-min TTL, enforced by the atomic status predicate
+`status='pending' and expires_at > now()`). Pure reducer + exhaustive tests:
+`src/utils/watchInvites.ts` / `tests/watchInvites.test.ts`.
+
+### Realtime + push pipeline
+- `src/services/realtimeAuth.ts` — shared token refresh/`setAuth` (extracted from
+  WatchRoomService's pattern; needed because `autoRefreshToken:false` app-wide).
+- `src/services/userInboxService.ts` — app-wide singleton on `postgres_changes`
+  (notifications + invite INSERT/UPDATE both directions), foreground-only,
+  generation-guarded reconnect. Screens/overlays poll as a floor (Notifications
+  60s; invite waiting overlay 5s).
+- `src/services/pushNotifications.ts` — permission (requested on first open of the
+  Notifications screen, not at launch), Expo token, `social` Android channel,
+  graceful no-op in Expo Go / when denied.
+- **Worker `workers/push-notifications/`** (written, NOT deployed): Supabase
+  Database Webhook on `user_notifications` INSERT → Expo Push API; service-role
+  key stays in Worker secrets, shared `x-streambox-webhook-secret` gate. Setup:
+  1. `wrangler secret put SUPABASE_SERVICE_ROLE_KEY` + `WEBHOOK_SECRET`; set
+     `SUPABASE_URL` var; `wrangler deploy`.
+  2. Supabase → Database → Webhooks → new hook on `public.user_notifications`
+     INSERT → POST the Worker URL with header `x-streambox-webhook-secret`.
+  (See `workers/push-notifications/README.md`.)
+
+### Player autonomy
+- `src/utils/playerProgress.ts` (+ tests): `shouldAutoMarkWatched` (>=95% AND
+  >=120s **real engaged** time — seeks don't count), `shouldShowNextEpisode`
+  (<=45s left OR >=98.5%), `nextEpisodeCountdownReducer`.
+- `src/hooks/useAutoMarkWatched.ts` — shares the native player's 1s ticks, fires
+  once/session, reuses the manual mark-watched builders. Wired into PlayerScreen.
+
+### What is IMPLEMENTED vs REMAINING (as of 2026-07-26)
+Implemented + typecheck/lint/265→312 tests green: migration; all pure logic +
+tests; `src/api/social.ts`; realtime/push services; **NotificationsScreen,
+ActivityScreen, FollowListScreen, UserProfileScreen** + navigation; ProfileScreen
+header (username, bell+badge → Notifications, activity → ActivityFeed, tappable
+follow stats); **@-people search** row; auto-mark-watched; push Worker + plugin.
+
+**Remaining wiring (foundations all in place — reducers/API/services/strings):**
+- **Next-episode pill + auto-advance countdown + in-player episode picker**
+  (`nextEpisodeCountdownReducer` + `getSeriesSeasonEpisodes` ready; needs the
+  in-player overlay UI + `navigation.setParams({ episodeNumber })` switch).
+- **Watch Together invite UX**: the "Invite a friend" (mutual-follows) section in
+  `WatchRoomScreen`, the sender **waiting overlay**, and the recipient **InviteHost**
+  popup in `App.tsx` (model on `LiveOpsHost`), plus starting `userInboxService`
+  + push tap-routing at app root. `src/api/social.ts` invite RPCs + the
+  `watchInvites` reducer + strings are done.
+- **Public "See all" paged grids** off the UserProfile rails (rails load 24 items
+  today).
 
 ---
 
