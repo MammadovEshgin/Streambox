@@ -21,6 +21,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import styled, { useTheme } from "styled-components/native";
 
 import { getTmdbImageUrl } from "../api/tmdb";
+import { WatchInviteSection } from "../components/social/WatchInviteSection";
 import { withAlpha } from "../theme/Theme";
 import { WatchRoomService } from "../services/watchRoomService";
 import { WATCH_TOGETHER_NICKNAME_STORAGE_KEY } from "../services/userDataStorage";
@@ -384,6 +385,17 @@ export function WatchRoomScreen({ route, navigation }: Props) {
               <StarMark size={10} color={theme.colors.gold} />
             </Animated.View>
           </FooterRow>
+
+          {mode === "create" && media ? (
+            <WatchInviteSection
+              media={media}
+              canInvite={isValidNickname(nickname)}
+              createRoom={() => serviceRef.current!.createRoom(media, normalizeNickname(nickname))}
+              onEnterRoom={(roomCode) =>
+                goToSession(roomCode, media, normalizeNickname(nickname), media.castNames)
+              }
+            />
+          ) : null}
         </Animated.View>
       </ScrollView>
     </Root>
