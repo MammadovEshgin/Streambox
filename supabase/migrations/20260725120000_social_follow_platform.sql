@@ -1174,7 +1174,27 @@ revoke all on function public.register_push_token(text, text) from anon;
 grant execute on function public.register_push_token(text, text) to authenticated;
 
 -- ════════════════════════════════════════════════════════════════════════════
--- 8. REALTIME PUBLICATION (RLS still applies to postgres_changes)
+-- 8. PROFILE-ASSET VISIBILITY (public profiles need peers' avatars/banners)
+-- ════════════════════════════════════════════════════════════════════════════
+-- The profile-assets bucket is private and previously readable ONLY by its
+-- owner (profile_assets_select_own from 20260312). Public profiles / follow
+-- lists / the activity feed all render OTHER users' avatars + banners, so add a
+-- read policy for exactly those two subfolders to every authenticated user.
+-- The bucket stays private (bio/settings never lived here anyway; only
+-- {uid}/avatars/… and {uid}/banners/… objects exist), and the client resolves
+-- peers' images with short-lived signed URLs.
+drop policy if exists "profile_assets_peer_read" on storage.objects;
+create policy "profile_assets_peer_read"
+  on storage.objects
+  for select
+  to authenticated
+  using (
+    bucket_id = 'profile-assets'
+    and (storage.foldername(name))[2] in ('avatars', 'banners')
+  );
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- 9. REALTIME PUBLICATION (RLS still applies to postgres_changes)
 -- ════════════════════════════════════════════════════════════════════════════
 
 do $$
