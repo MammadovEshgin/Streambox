@@ -2,9 +2,12 @@ import { Feather, Ionicons } from "@expo/vector-icons";
 import { getFocusedRouteNameFromRoute } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "styled-components/native";
+
+import { getUnreadBadge, subscribeUnreadBadge } from "../services/notificationBadge";
 
 import { ActivityScreen } from "../screens/ActivityScreen";
 import { ActorDetailScreen } from "../screens/ActorDetailScreen";
@@ -148,6 +151,11 @@ export function Navigation() {
   const tabBarBottomPadding = Math.max(insets.bottom + 5, 15);
   const tabBarHeight = 58 + tabBarBottomPadding;
 
+  // WhatsApp-style unread badge on the Profile tab; persists until the user
+  // opens Notifications (which clears the shared store).
+  const [unreadBadge, setUnreadBadge] = useState(getUnreadBadge());
+  useEffect(() => subscribeUnreadBadge(setUnreadBadge), []);
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -175,6 +183,21 @@ export function Navigation() {
           letterSpacing: 0.2
         },
         tabBarLabel: t(`nav.${route.name.toLowerCase()}`),
+        tabBarBadge:
+          route.name === "Profile" && unreadBadge > 0
+            ? unreadBadge > 99
+              ? "99+"
+              : unreadBadge
+            : undefined,
+        tabBarBadgeStyle: {
+          backgroundColor: currentTheme.colors.primary,
+          color: currentTheme.colors.textOnPrimary,
+          fontSize: 10,
+          fontFamily: currentTheme.typography.MetaSmall.fontFamily,
+          minWidth: 16,
+          height: 16,
+          lineHeight: 15
+        },
         tabBarIcon: ({ color, focused }) => {
           const ioniconsMap: Partial<Record<keyof RootTabParamList, [keyof typeof Ionicons.glyphMap, keyof typeof Ionicons.glyphMap]>> = {
             Movies: ["film-outline", "film"],

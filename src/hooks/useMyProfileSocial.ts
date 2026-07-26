@@ -1,11 +1,12 @@
 import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useState } from "react";
 
+import { getCurrentUserId, getPublicProfile } from "../api/social";
 import {
-  fetchUnreadNotificationCount,
-  getCurrentUserId,
-  getPublicProfile,
-} from "../api/social";
+  getUnreadBadge,
+  refreshUnreadBadge,
+  subscribeUnreadBadge,
+} from "../services/notificationBadge";
 import { warmSocialFeedCaches } from "../services/socialFeedCache";
 import { userInboxService } from "../services/userInboxService";
 
@@ -28,7 +29,7 @@ export function useMyProfileSocial(): MyProfileSocial {
   const [username, setUsername] = useState<string | null>(null);
   const [followers, setFollowers] = useState(0);
   const [following, setFollowing] = useState(0);
-  const [unread, setUnread] = useState(0);
+  const [unread, setUnread] = useState(getUnreadBadge());
   const [tick, setTick] = useState(0);
 
   // Resolve the current user id and start the app-wide inbox once known.
@@ -44,34 +45,27 @@ export function useMyProfileSocial(): MyProfileSocial {
     };
   }, []);
 
-  // Live unread badge: bump on every incoming notification.
-  useEffect(() => {
-    const unsubscribe = userInboxService.addListener({
-      onNotification: () => setUnread((count) => count + 1),
-    });
-    return unsubscribe;
-  }, []);
+  // Unread badge comes from the shared app-wide store (also drives the Profile
+  // tab badge), so the bell and the tab always agree.
+  useEffect(() => subscribeUnreadBadge(setUnread), []);
 
-  // Refresh counts + unread whenever the profile is focused (or refresh()).
-  // Also warm the Notifications/Activity first-page caches so those screens
-  // open instantly from here (no-op once warm).
+  // Refresh counts whenever the profile is focused (or refresh()); resync the
+  // unread badge from the server and warm the Notifications/Activity first-page
+  // caches so those screens open instantly (no-op once warm).
   useEffect(() => {
     if (!isFocused || !userId) return;
     let cancelled = false;
     void warmSocialFeedCaches().catch(() => undefined);
+    void refreshUnreadBadge();
     void (async () => {
       try {
-        const [profile, unreadCount] = await Promise.all([
-          getPublicProfile(userId),
-          fetchUnreadNotificationCount(),
-        ]);
+        const profile = await getPublicProfile(userId);
         if (cancelled) return;
         if (profile) {
           setUsername(profile.username);
           setFollowers(profile.counts.followers);
           setFollowing(profile.counts.following);
         }
-        setUnread(unreadCount);
       } catch {
         // keep last-known values
       }

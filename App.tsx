@@ -22,6 +22,11 @@ import { LaunchSplash, SplashLoading } from "./src/components/common/LaunchSplas
 import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
 import { InviteHost } from "./src/components/social/InviteHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
+import {
+  clearUnreadBadge,
+  incrementUnreadBadge,
+  refreshUnreadBadge,
+} from "./src/services/notificationBadge";
 import { setSocialFeedCacheUser } from "./src/services/socialFeedCache";
 import { userInboxService } from "./src/services/userInboxService";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
@@ -273,9 +278,17 @@ function AppShell() {
     setSocialFeedCacheUser(sessionUserId);
     if (sessionUserId) {
       userInboxService.start(sessionUserId);
-      return () => userInboxService.stop();
+      // Drive the app-wide unread badge: baseline from the server, then bump on
+      // each realtime notification (the Notifications screen clears it on read).
+      void refreshUnreadBadge();
+      const off = userInboxService.addListener({ onNotification: () => incrementUnreadBadge() });
+      return () => {
+        off();
+        userInboxService.stop();
+      };
     }
     userInboxService.stop();
+    clearUnreadBadge();
     return undefined;
   }, [sessionUserId]);
   const { t } = useTranslation();

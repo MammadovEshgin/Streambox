@@ -13,7 +13,7 @@ import {
 } from "../src/utils/playerProgress";
 
 // ── shouldAutoMarkWatched ──────────────────────────────────────────────────
-test("auto-mark: 95% progress with >=2min engagement marks watched", () => {
+test("auto-mark: 95% progress with >=1min engagement marks watched", () => {
   assert.ok(
     shouldAutoMarkWatched({ positionSeconds: 6840, durationSeconds: 7200, engagedSeconds: 300 })
   );
@@ -75,13 +75,15 @@ test("auto-mark: NaN engagement / negative position guarded", () => {
 });
 
 // ── shouldShowNextEpisode ──────────────────────────────────────────────────
-test("next-episode pill shows within the last 60s", () => {
-  assert.ok(shouldShowNextEpisode({ positionSeconds: 2750, durationSeconds: 2800 })); // 50s left
-  assert.ok(!shouldShowNextEpisode({ positionSeconds: 2680, durationSeconds: 2800 })); // 120s left, 95.7%
+test("next-episode pill shows within the last 45s (progress-independent)", () => {
+  // 1000s runtime: 40s left (<=45s) but only 96% progress — the time window fires.
+  assert.ok(shouldShowNextEpisode({ positionSeconds: 960, durationSeconds: 1000 }));
+  // 60s left (>45s) and 94% progress — neither trigger fires.
+  assert.ok(!shouldShowNextEpisode({ positionSeconds: 940, durationSeconds: 1000 }));
 });
 
-test("next-episode pill shows past 97% even with >60s left", () => {
-  // 10000s runtime: 97.5% => 250s remaining (>60s) but progress triggers.
+test("next-episode pill shows past 97% even with >45s left", () => {
+  // 10000s runtime: 97.5% => 250s remaining (>45s) but progress triggers.
   assert.ok(shouldShowNextEpisode({ positionSeconds: 9750, durationSeconds: 10000 }));
   // Just under 97% with plenty of time left does not trigger.
   assert.ok(!shouldShowNextEpisode({ positionSeconds: 9690, durationSeconds: 10000 })); // 96.9%, 310s left
