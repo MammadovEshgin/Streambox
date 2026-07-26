@@ -174,6 +174,9 @@ export function WatchInviteSection({ media, canInvite, createRoom, onEnterRoom }
   const [now, setNow] = useState(Date.now());
   const inviteRef = useRef<WatchInvite | null>(null);
   inviteRef.current = invite;
+  // Reuse the room across retries so declining/cancelling and inviting again
+  // (or inviting a different mutual) doesn't orphan a fresh room each time.
+  const roomRef = useRef<WatchRoom | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -245,7 +248,8 @@ export function WatchInviteSection({ media, canInvite, createRoom, onEnterRoom }
       setFriendName(friend.displayName);
       setPhase("sending");
       try {
-        const room = await createRoom();
+        const room = roomRef.current ?? (await createRoom());
+        roomRef.current = room;
         const sent = await sendWatchInvite({
           toUser: friend.userId,
           roomCode: room.code,
@@ -261,6 +265,9 @@ export function WatchInviteSection({ media, canInvite, createRoom, onEnterRoom }
         setNow(Date.now());
         setPhase("waiting");
       } catch {
+        // A reused room may have expired (membership check fails) — drop it so
+        // the next attempt provisions a fresh one.
+        roomRef.current = null;
         setPhase("idle");
       }
     },

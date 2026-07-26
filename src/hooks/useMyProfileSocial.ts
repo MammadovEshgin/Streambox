@@ -6,6 +6,7 @@ import {
   getCurrentUserId,
   getPublicProfile,
 } from "../api/social";
+import { warmSocialFeedCaches } from "../services/socialFeedCache";
 import { userInboxService } from "../services/userInboxService";
 
 // Small profile-header data source for the signed-in user: username + follower/
@@ -52,9 +53,12 @@ export function useMyProfileSocial(): MyProfileSocial {
   }, []);
 
   // Refresh counts + unread whenever the profile is focused (or refresh()).
+  // Also warm the Notifications/Activity first-page caches so those screens
+  // open instantly from here (no-op once warm).
   useEffect(() => {
     if (!isFocused || !userId) return;
     let cancelled = false;
+    void warmSocialFeedCaches().catch(() => undefined);
     void (async () => {
       try {
         const [profile, unreadCount] = await Promise.all([

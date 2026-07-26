@@ -252,16 +252,17 @@ const HeaderBadgeText = styled.Text`
   font-size: 10px;
 `;
 
-const FollowStatsRow = styled.View`
-  flex-direction: row;
-  gap: 22px;
-  margin-top: 16px;
-`;
-
-const FollowStatItem = styled.Pressable`
-  flex-direction: row;
-  align-items: baseline;
-  gap: 6px;
+const FollowIconButton = styled.Pressable`
+  margin-left: auto;
+  align-self: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
+  align-items: center;
+  justify-content: center;
+  border-width: 1px;
+  border-color: ${({ theme }) => theme.colors.border};
+  background-color: ${({ theme }) => theme.colors.surfaceRaised};
 `;
 
 const SectionWrap = styled.View`
@@ -1212,30 +1213,20 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 <StatNumber>{likedCount}</StatNumber>
                 <StatLabel>{t("profile.liked")}</StatLabel>
               </StatItem>
-            </StatsRow>
-
-            {!!social.userId && (
-              <FollowStatsRow>
-                <FollowStatItem
+              {!!social.userId && (
+                <FollowIconButton
                   onPress={() =>
                     social.userId &&
                     navigation.navigate("FollowList", { userId: social.userId, kind: "followers" })
                   }
+                  accessibilityRole="button"
+                  accessibilityLabel={`${t("social.followers")} · ${t("social.followingLabel")}`}
+                  hitSlop={6}
                 >
-                  <StatNumber>{social.followers}</StatNumber>
-                  <StatLabel>{t("social.followers")}</StatLabel>
-                </FollowStatItem>
-                <FollowStatItem
-                  onPress={() =>
-                    social.userId &&
-                    navigation.navigate("FollowList", { userId: social.userId, kind: "following" })
-                  }
-                >
-                  <StatNumber>{social.following}</StatNumber>
-                  <StatLabel>{t("social.followingLabel")}</StatLabel>
-                </FollowStatItem>
-              </FollowStatsRow>
-            )}
+                  <Feather name="users" size={15} color={currentTheme.colors.primary} />
+                </FollowIconButton>
+              )}
+            </StatsRow>
           </ProfileInfo>
         </Header>
 

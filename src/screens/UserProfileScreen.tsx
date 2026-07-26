@@ -275,11 +275,17 @@ export function UserProfileScreen({ route, navigation }: Props) {
     [navigation]
   );
 
-  const renderRail = (titleKey: string, kind: PublicListKind, list: PublicListItem[], emptyKey: string) => (
+  const renderRail = (
+    titleKey: string,
+    kind: PublicListKind,
+    list: PublicListItem[],
+    emptyKey: string,
+    total: number
+  ) => (
     <Rail>
       <RailHeader>
         <RailTitle>{t(titleKey)}</RailTitle>
-        {list.length >= 24 && profile ? (
+        {total > list.length && profile ? (
           <RailSeeAll
             onPress={() =>
               navigation.navigate("UserPublicList", { userId: profile.userId, list: kind, title: t(titleKey) })
@@ -288,7 +294,7 @@ export function UserProfileScreen({ route, navigation }: Props) {
             <RailSeeAllText>{t("social.seeAll")}</RailSeeAllText>
           </RailSeeAll>
         ) : (
-          <RailCount>{list.length}</RailCount>
+          <RailCount>{total}</RailCount>
         )}
       </RailHeader>
       {list.length === 0 ? (
@@ -384,9 +390,9 @@ export function UserProfileScreen({ route, navigation }: Props) {
           </FollowButton>
         )}
 
-        {renderRail("profile.watched", "watched", lists.watched, "social.emptyWatched")}
-        {renderRail("profile.watchlist", "watchlist", lists.watchlist, "social.emptyWatchlist")}
-        {renderRail("profile.liked", "liked", lists.liked, "social.emptyLiked")}
+        {renderRail("profile.watched", "watched", lists.watched, "social.emptyWatched", profile.counts.watched)}
+        {renderRail("profile.watchlist", "watchlist", lists.watchlist, "social.emptyWatchlist", profile.counts.watchlist)}
+        {renderRail("profile.liked", "liked", lists.liked, "social.emptyLiked", profile.counts.liked)}
       </ScrollView>
     </SafeContainer>
   );

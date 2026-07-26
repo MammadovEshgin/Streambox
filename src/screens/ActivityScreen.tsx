@@ -10,6 +10,7 @@ import { getFollowingActivity } from "../api/social";
 import { getTmdbImageUrl } from "../api/tmdb";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
+import { getCachedActivity, setCachedActivity } from "../services/socialFeedCache";
 import { SocialAvatar } from "../components/social/SocialAvatar";
 import { formatRelativeTime } from "../components/social/socialTime";
 import {
@@ -130,8 +131,11 @@ export function ActivityScreen({ navigation }: Props) {
   const { t } = useTranslation();
   const currentTheme = useTheme();
   const isFocused = useIsFocused();
-  const [items, setItems] = useState<ActivityItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Render the cached first page instantly (warmed from ProfileScreen); the
+  // initial load below reconciles in the background. Spinner only on a truly
+  // cold session.
+  const [items, setItems] = useState<ActivityItem[]>(() => getCachedActivity() ?? []);
+  const [loading, setLoading] = useState(() => getCachedActivity() === null);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const reachedEnd = useRef(false);
@@ -141,6 +145,7 @@ export function ActivityScreen({ navigation }: Props) {
       const rows = await getFollowingActivity({ limit: PAGE_SIZE });
       reachedEnd.current = rows.length < PAGE_SIZE;
       setItems(rows);
+      setCachedActivity(rows);
     } catch {
       // keep current
     } finally {
@@ -206,7 +211,7 @@ export function ActivityScreen({ navigation }: Props) {
           <Pressable onPress={() => openProfile(actorId)}>
             <SocialAvatar avatarPath={avatarPath} avatarVersion={avatarVersion} displayName={name} size={44} />
           </Pressable>
-          <RowBody onPress={() => (row.kind === "group" ? openProfile(actorId) : openProfile(actorId))}>
+          <RowBody onPress={() => openProfile(actorId)}>
             {row.kind === "single" ? (
               <RowText numberOfLines={2}>
                 <Strong>{name}</Strong> {eventVerb(t, row.item.eventType)} <Strong>{row.item.title}</Strong>
