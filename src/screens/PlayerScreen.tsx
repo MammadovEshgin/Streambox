@@ -1123,17 +1123,23 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   });
 
   // Next episode + in-player episode picker (native series path; excluded in
-  // watch rooms to avoid desyncing partners). Switching re-resolves the whole
-  // provider pipeline in place via setParams (the resolve effect keys on
-  // route.params, and the existing cancelled flag covers the re-resolve race).
+  // watch rooms to avoid desyncing partners). Switching REPLACES this route with
+  // a fresh Player mount — identical to closing the player and tapping the next
+  // episode — so none of the per-mount resolver state (fallback promise refs,
+  // recovery guards, WebView caches) can leak into the new episode's resolve.
   const [episodePickerOpen, setEpisodePickerOpen] = useState(false);
   const { isEpisodeWatched } = useWatchedEpisodes();
   const switchToEpisode = useCallback(
     (season: number, episode: number) => {
       setEpisodePickerOpen(false);
-      navigation.setParams({ seasonNumber: season, episodeNumber: episode, resumeAtSeconds: undefined });
+      navigation.replace("Player", {
+        ...route.params,
+        seasonNumber: season,
+        episodeNumber: episode,
+        resumeAtSeconds: undefined,
+      });
     },
-    [navigation]
+    [navigation, route.params]
   );
   const isSeriesNativePath =
     isNativeStreamSource && !route.params.trailerUrl && !route.params.watchRoomCode && route.params.mediaType === "tv";
@@ -1533,7 +1539,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             )}
 
             {isSeriesNativePath && nextEpisode.seasons.length > 0 && (
-              <Animated.View style={[styles.ccButton, { right: 202, opacity: closeBtnOpacity }]}>
+              <Animated.View
+                style={[
+                  styles.ccButton,
+                  // Sit right after the quality gear when it exists, else take
+                  // its slot so there's no gap in the control strip.
+                  { right: (playerResult?.qualityOptions?.length ?? 0) > 1 ? 200 : 154, opacity: closeBtnOpacity },
+                ]}
+              >
                 <TouchableOpacity
                   onPress={() => setEpisodePickerOpen(true)}
                   activeOpacity={0.8}

@@ -16,6 +16,7 @@ import { SafeContainer } from "../components/common/SafeContainer";
 import { SocialAvatar } from "../components/social/SocialAvatar";
 import { formatRelativeTime } from "../components/social/socialTime";
 import { registerForPushNotifications } from "../services/pushNotifications";
+import { getCachedNotifications, setCachedNotifications } from "../services/socialFeedCache";
 import { userInboxService } from "../services/userInboxService";
 import type { ProfileStackParamList } from "../navigation/types";
 
@@ -110,15 +111,19 @@ export function NotificationsScreen({ navigation }: Props) {
   const { t } = useTranslation();
   const currentTheme = useTheme();
   const isFocused = useIsFocused();
-  const [items, setItems] = useState<AppNotification[]>([]);
-  const [loading, setLoading] = useState(true);
-  const seenIds = useRef<Set<number>>(new Set());
+  // Render the cached first page instantly (warmed from ProfileScreen); the
+  // network load below reconciles in the background. Spinner only on a truly
+  // cold session.
+  const [items, setItems] = useState<AppNotification[]>(() => getCachedNotifications() ?? []);
+  const [loading, setLoading] = useState(() => getCachedNotifications() === null);
+  const seenIds = useRef<Set<number>>(new Set((getCachedNotifications() ?? []).map((row) => row.id)));
 
   const load = useCallback(async () => {
     try {
       const rows = await fetchNotifications({ limit: 50 });
       seenIds.current = new Set(rows.map((row) => row.id));
       setItems(rows);
+      setCachedNotifications(rows);
     } catch {
       // keep whatever we already have
     } finally {

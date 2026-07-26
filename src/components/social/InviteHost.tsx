@@ -5,10 +5,11 @@ import { useTranslation } from "react-i18next";
 import { Image, Modal } from "react-native";
 import styled from "styled-components/native";
 
-import { getWatchInvite, respondWatchInvite, type WatchInvite } from "../../api/social";
+import { getPublicProfile, getWatchInvite, respondWatchInvite, type WatchInvite } from "../../api/social";
 import { getTmdbImageUrl } from "../../api/tmdb";
 import { userInboxService } from "../../services/userInboxService";
 import { inviteStatusAtTime, inviteRemainingSeconds } from "../../utils/watchInvites";
+import { SocialAvatar } from "./SocialAvatar";
 
 // Recipient-side incoming-invite popup, mounted at app root (sibling of the
 // NavigationContainer, gated on the splash like LiveOpsHost). Shows the newest
@@ -42,6 +43,20 @@ const Backdrop = styled.View`
 
 const Body = styled.View`
   padding: 16px 18px 18px;
+`;
+
+const SenderRow = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+`;
+
+const SenderName = styled.Text`
+  flex: 1;
+  color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_600SemiBold;
+  font-size: 14px;
 `;
 
 const Eyebrow = styled.Text`
@@ -106,32 +121,45 @@ type Props = {
   navigationRef: NavigationContainerRefWithCurrent<any>;
 };
 
-function actorName(invite: WatchInvite, payload: Record<string, unknown> | null): string {
-  if (payload) {
-    if (typeof payload.displayName === "string" && payload.displayName) return payload.displayName;
-    if (typeof payload.username === "string" && payload.username) return `@${payload.username}`;
-  }
-  return "Someone";
-}
+type SenderInfo = {
+  displayName: string;
+  username: string | null;
+  avatarPath: string | null;
+  avatarVersion: number;
+};
 
 export function InviteHost({ enabled, navigationRef }: Props) {
   const { t } = useTranslation();
   const [invite, setInvite] = useState<WatchInvite | null>(null);
-  const [senderPayload, setSenderPayload] = useState<Record<string, unknown> | null>(null);
+  const [sender, setSender] = useState<SenderInfo | null>(null);
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState(false);
   const inviteRef = useRef<WatchInvite | null>(null);
   inviteRef.current = invite;
 
-  // Incoming invites (+ updates that cancel/expire the shown one).
+  // Incoming invites (+ updates that cancel/expire the shown one). The
+  // watch_invites row carries no sender identity (that lives only in the
+  // notification payload), so resolve the sender's public profile for the
+  // name + avatar — otherwise the popup reads "Someone".
   useEffect(() => {
     if (!enabled) return;
     const unsubscribe = userInboxService.addListener({
       onInviteIncoming: (incoming) => {
         // Newest pending invite wins the popup.
         setInvite(incoming);
-        setSenderPayload(null);
+        setSender(null);
         setNow(Date.now());
+        void getPublicProfile(incoming.fromUser)
+          .then((profile) => {
+            if (!profile || inviteRef.current?.id !== incoming.id) return;
+            setSender({
+              displayName: profile.displayName,
+              username: profile.username,
+              avatarPath: profile.avatarPath,
+              avatarVersion: profile.avatarVersion,
+            });
+          })
+          .catch(() => undefined);
       },
       onInviteUpdate: (updated) => {
         if (inviteRef.current && updated.id === inviteRef.current.id && updated.status !== "pending") {
@@ -208,7 +236,7 @@ export function InviteHost({ enabled, navigationRef }: Props) {
   const state = { status: invite.status, expiresAt: Date.parse(invite.expiresAt) };
   const secondsLeft = inviteRemainingSeconds(state, now);
   const backdropUri = getTmdbImageUrl(invite.backdropPath ?? invite.posterPath, "w780");
-  const name = actorName(invite, senderPayload);
+  const name = sender?.displayName || (sender?.username ? `@${sender.username}` : t("social.someone"));
 
   return (
     <Modal visible transparent animationType="fade" statusBarTranslucent onRequestClose={dismiss}>
@@ -221,6 +249,15 @@ export function InviteHost({ enabled, navigationRef }: Props) {
           </Backdrop>
           <Body>
             <Eyebrow>{t("social.inviteIncomingTitle")}</Eyebrow>
+            <SenderRow>
+              <SocialAvatar
+                avatarPath={sender?.avatarPath ?? null}
+                avatarVersion={sender?.avatarVersion ?? 0}
+                displayName={name}
+                size={36}
+              />
+              <SenderName numberOfLines={1}>{name}</SenderName>
+            </SenderRow>
             <Title numberOfLines={2}>
               {invite.title}
               {invite.year ? ` (${invite.year})` : ""}

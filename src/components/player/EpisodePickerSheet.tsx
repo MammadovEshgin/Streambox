@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { FlashList } from "@shopify/flash-list";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Dimensions, Image, Pressable, StyleSheet, Switch, Text, View } from "react-native";
+import { Dimensions, Image, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 
 import { getSeriesSeasonEpisodes, getTmdbImageUrl, type SeriesEpisode, type SeriesSeason } from "../../api/tmdb";
 
@@ -86,33 +86,34 @@ export function EpisodePickerSheet({
         </View>
 
         {seasons.length > 1 ? (
-          <View style={styles.seasonRow}>
-            <FlashList
-              data={seasons}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              keyExtractor={(s) => String(s.seasonNumber)}
-              renderItem={({ item }) => {
-                const active = item.seasonNumber === selectedSeason;
-                return (
-                  <Pressable
-                    style={[styles.seasonChip, active && styles.seasonChipActive]}
-                    onPress={() => setSelectedSeason(item.seasonNumber)}
-                  >
-                    <Text style={[styles.seasonChipText, active && styles.seasonChipTextActive]}>
-                      {t("playerAutonomy.season", { number: item.seasonNumber })}
-                    </Text>
-                  </Pressable>
-                );
-              }}
-            />
-          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.seasonRow}
+            contentContainerStyle={styles.seasonRowContent}
+          >
+            {seasons.map((item) => {
+              const active = item.seasonNumber === selectedSeason;
+              return (
+                <Pressable
+                  key={String(item.seasonNumber)}
+                  style={[styles.seasonChip, active && styles.seasonChipActive]}
+                  onPress={() => setSelectedSeason(item.seasonNumber)}
+                >
+                  <Text style={[styles.seasonChipText, active && styles.seasonChipTextActive]}>
+                    {t("playerAutonomy.season", { number: item.seasonNumber })}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
         ) : null}
 
         <FlashList
           data={episodes}
           keyExtractor={(e) => `${e.seasonNumber}-${e.episodeNumber}`}
           extraData={`${currentSeason}-${currentEpisode}-${loading}`}
+          contentContainerStyle={styles.episodeListContent}
           renderItem={({ item }) => {
             const isCurrent = item.seasonNumber === currentSeason && item.episodeNumber === currentEpisode;
             const watched = isEpisodeWatched(seriesId, item.seasonNumber, item.episodeNumber);
@@ -179,15 +180,20 @@ const styles = StyleSheet.create({
     borderBottomColor: "rgba(255,255,255,0.08)",
   },
   autoLabel: { color: "#F6F7F4", fontFamily: "Outfit_500Medium", fontSize: 13 },
-  seasonRow: { paddingVertical: 10, paddingLeft: 12, height: 52 },
+  // flexGrow: 0 keeps the horizontal chip strip from stealing vertical space
+  // from the episode list; the content padding gives the chips their own
+  // breathing room instead of a fixed height that clipped them.
+  seasonRow: { flexGrow: 0 },
+  seasonRowContent: { paddingHorizontal: 12, paddingVertical: 10, alignItems: "center" },
   seasonChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 999,
     marginRight: 8,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.16)",
   },
+  episodeListContent: { paddingBottom: 28 },
   seasonChipActive: { backgroundColor: "rgba(255,255,255,0.14)", borderColor: "rgba(255,255,255,0.4)" },
   seasonChipText: { color: "rgba(255,255,255,0.75)", fontFamily: "Outfit_600SemiBold", fontSize: 12 },
   seasonChipTextActive: { color: "#fff" },

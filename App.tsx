@@ -22,6 +22,7 @@ import { LaunchSplash, SplashLoading } from "./src/components/common/LaunchSplas
 import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
 import { InviteHost } from "./src/components/social/InviteHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
+import { setSocialFeedCacheUser } from "./src/services/socialFeedCache";
 import { userInboxService } from "./src/services/userInboxService";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
 import { Navigation } from "./src/navigation/Navigation";
@@ -269,6 +270,7 @@ function AppShell() {
   // lifecycle is handled inside the service.
   const sessionUserId = session?.user?.id ?? null;
   useEffect(() => {
+    setSocialFeedCacheUser(sessionUserId);
     if (sessionUserId) {
       userInboxService.start(sessionUserId);
       return () => userInboxService.stop();
