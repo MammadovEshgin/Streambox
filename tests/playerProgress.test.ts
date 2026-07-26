@@ -28,15 +28,19 @@ test("auto-mark: 95% progress with >=2min engagement marks watched", () => {
 });
 
 test("auto-mark: seeking to the end with little engagement does NOT mark", () => {
-  // 110/120min position but only 30s of real watching.
+  // 110/120min position but only 30s of real watching (below the 60s floor).
   assert.ok(
     !shouldAutoMarkWatched({ positionSeconds: 6600, durationSeconds: 7200, engagedSeconds: 30 })
   );
+  // Just under the 1-minute floor still does not mark.
+  assert.ok(
+    !shouldAutoMarkWatched({ positionSeconds: 7200, durationSeconds: 7200, engagedSeconds: 59 })
+  );
 });
 
-test("auto-mark: watching 2min then seeking to the end DOES mark", () => {
+test("auto-mark: watching 1min then seeking to the end DOES mark", () => {
   assert.ok(
-    shouldAutoMarkWatched({ positionSeconds: 7200, durationSeconds: 7200, engagedSeconds: 120 })
+    shouldAutoMarkWatched({ positionSeconds: 7200, durationSeconds: 7200, engagedSeconds: 60 })
   );
 });
 
@@ -71,14 +75,16 @@ test("auto-mark: NaN engagement / negative position guarded", () => {
 });
 
 // ── shouldShowNextEpisode ──────────────────────────────────────────────────
-test("next-episode pill shows within the last 45s", () => {
-  assert.ok(shouldShowNextEpisode({ positionSeconds: 2760, durationSeconds: 2800 })); // 40s left
-  assert.ok(!shouldShowNextEpisode({ positionSeconds: 2700, durationSeconds: 2800 })); // 100s left, 96.4%
+test("next-episode pill shows within the last 60s", () => {
+  assert.ok(shouldShowNextEpisode({ positionSeconds: 2750, durationSeconds: 2800 })); // 50s left
+  assert.ok(!shouldShowNextEpisode({ positionSeconds: 2680, durationSeconds: 2800 })); // 120s left, 95.7%
 });
 
-test("next-episode pill shows past 98.5% even with >45s left", () => {
-  // 10000s runtime: 98.6% => 140s remaining (>45s) but progress triggers.
-  assert.ok(shouldShowNextEpisode({ positionSeconds: 9860, durationSeconds: 10000 }));
+test("next-episode pill shows past 97% even with >60s left", () => {
+  // 10000s runtime: 97.5% => 250s remaining (>60s) but progress triggers.
+  assert.ok(shouldShowNextEpisode({ positionSeconds: 9750, durationSeconds: 10000 }));
+  // Just under 97% with plenty of time left does not trigger.
+  assert.ok(!shouldShowNextEpisode({ positionSeconds: 9690, durationSeconds: 10000 })); // 96.9%, 310s left
 });
 
 test("next-episode: non-finite / zero duration never shows", () => {

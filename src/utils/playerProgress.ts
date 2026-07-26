@@ -15,7 +15,9 @@
 
 // ── Auto-mark watched ───────────────────────────────────────────────────────
 export const AUTO_MARK_WATCHED_PROGRESS = 0.95;
-export const AUTO_MARK_WATCHED_MIN_ENGAGED_SECONDS = 120;
+// Real-engagement floor before a title counts as watched (anti-seek-to-end).
+// 60s (1 min) per product decision 2026-07-26.
+export const AUTO_MARK_WATCHED_MIN_ENGAGED_SECONDS = 60;
 
 export type AutoMarkWatchedInput = {
   positionSeconds: number;
@@ -41,9 +43,10 @@ export function shouldAutoMarkWatched(input: AutoMarkWatchedInput): boolean {
 }
 
 // ── Next-episode end detection ──────────────────────────────────────────────
-// Tunable. Whichever fires first shows the pill.
-export const NEXT_EPISODE_REMAINING_SECONDS = 45;
-export const NEXT_EPISODE_MIN_PROGRESS = 0.985;
+// Tunable. Whichever fires first shows the card. 2026-07-26: reveal at 1 minute
+// remaining (60s) and at 97% progress.
+export const NEXT_EPISODE_REMAINING_SECONDS = 60;
+export const NEXT_EPISODE_MIN_PROGRESS = 0.97;
 export const AUTO_ADVANCE_COUNTDOWN_SECONDS = 10;
 
 export type NextEpisodeInput = {
@@ -52,8 +55,8 @@ export type NextEpisodeInput = {
 };
 
 /**
- * True when the "Next Episode" affordance should appear: within the last 45s OR
- * past 98.5% progress. Guards non-finite / zero duration (some HLS streams never
+ * True when the "Next Episode" affordance should appear: within the last 60s OR
+ * past 97% progress. Guards non-finite / zero duration (some HLS streams never
  * report one) — no pill without a known duration.
  */
 export function shouldShowNextEpisode(input: NextEpisodeInput): boolean {
