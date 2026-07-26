@@ -15,6 +15,7 @@ import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { SocialAvatar } from "../components/social/SocialAvatar";
 import { formatRelativeTime } from "../components/social/socialTime";
+import { clearUnreadBadge } from "../services/notificationBadge";
 import { registerForPushNotifications } from "../services/pushNotifications";
 import { getCachedNotifications, setCachedNotifications } from "../services/socialFeedCache";
 import { userInboxService } from "../services/userInboxService";
@@ -136,6 +137,7 @@ export function NotificationsScreen({ navigation }: Props) {
   useEffect(() => {
     void load();
     void markNotificationsRead(null).catch(() => undefined);
+    clearUnreadBadge();
     void registerForPushNotifications();
 
     const unsubscribe = userInboxService.addListener({
@@ -143,6 +145,9 @@ export function NotificationsScreen({ navigation }: Props) {
         if (seenIds.current.has(notification.id)) return;
         seenIds.current.add(notification.id);
         setItems((current) => [notification, ...current]);
+        // The user is looking at the inbox, so keep it read (badge stays clear).
+        clearUnreadBadge();
+        void markNotificationsRead([notification.id]).catch(() => undefined);
       },
     });
     return unsubscribe;
@@ -157,6 +162,7 @@ export function NotificationsScreen({ navigation }: Props) {
 
   const handleMarkAll = useCallback(async () => {
     setItems((current) => current.map((row) => ({ ...row, readAt: row.readAt ?? new Date().toISOString() })));
+    clearUnreadBadge();
     await markNotificationsRead(null).catch(() => undefined);
   }, []);
 

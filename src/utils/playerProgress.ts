@@ -43,9 +43,9 @@ export function shouldAutoMarkWatched(input: AutoMarkWatchedInput): boolean {
 }
 
 // ── Next-episode end detection ──────────────────────────────────────────────
-// Tunable. Whichever fires first shows the card. 2026-07-26: reveal at 1 minute
-// remaining (60s) and at 97% progress.
-export const NEXT_EPISODE_REMAINING_SECONDS = 60;
+// Tunable. Whichever fires first shows the card. Reveal within the last 45s or
+// at 97% progress (2026-07-26: progress trigger lowered from 98.5% to 97%).
+export const NEXT_EPISODE_REMAINING_SECONDS = 45;
 export const NEXT_EPISODE_MIN_PROGRESS = 0.97;
 export const AUTO_ADVANCE_COUNTDOWN_SECONDS = 10;
 
@@ -55,7 +55,7 @@ export type NextEpisodeInput = {
 };
 
 /**
- * True when the "Next Episode" affordance should appear: within the last 60s OR
+ * True when the "Next Episode" affordance should appear: within the last 45s OR
  * past 97% progress. Guards non-finite / zero duration (some HLS streams never
  * report one) — no pill without a known duration.
  */
