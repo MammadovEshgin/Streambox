@@ -1,6 +1,6 @@
 # StreamBox
 
-A high-performance mobile streaming app for discovering, watching, and tracking movies and series. Built with React Native + Expo SDK 54, with a multi-provider stream resolver that finds playable sources across HDFilmCehennemi, Dizipal, and Stremio addons.
+A high-performance mobile streaming app for discovering, watching, and tracking movies and series. Built with React Native + Expo SDK 54, with a multi-provider stream resolver that finds playable sources across HDFilmCehennemi, Dizipal, and Dizibal.
 
 <p>
   <img alt="Expo SDK" src="https://img.shields.io/badge/Expo-54-000020?logo=expo" />
@@ -18,7 +18,7 @@ A high-performance mobile streaming app for discovering, watching, and tracking 
 - **Cinematic native UI** — glassmorphism, hero parallax, smooth Reanimated transitions, dark-mode-first.
 - **Discovery that learns** — taste profiles, daily picks that roll over at local midnight, "Top New This Week", smart-similar carousels, franchise timelines.
 - **Real IMDb ratings on every poster** — resolved per item via `imdbapi.dev` with OMDB + TMDB fallbacks, cached aggressively.
-- **Multi-provider stream resolver** — HDFilmCehennemi native decoder, Dizipal, NuvioStreams/Stremify (Stremio addons). No WebView fallback unless every native source fails. See [Stream Resolver](#stream-resolver-architecture).
+- **Multi-provider stream resolver** — HDFilmCehennemi native decoder, Dizipal (direct + embed), and Dizibal, all resolved natively. No WebView fallback unless every native source fails. See [Stream Resolver](#stream-resolver-architecture).
 - **Native expo-video player** — landscape lock, HLS quality picker, subtitle tracks parsed from master playlists, headers (Referer) forwarded for hot-link-protected CDNs.
 - **Player autonomy** — auto-mark-watched at 95% (after real engaged time, so seeks don't count), a next-episode pill with auto-advance countdown, and an in-player episode picker.
 - **Watch Together** — private two-person rooms with synced playback, WebRTC face-cam/audio, and shared polaroid "memories"; media is peer-to-peer, Supabase only carries tiny sync/signaling messages.
