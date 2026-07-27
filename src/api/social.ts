@@ -169,6 +169,7 @@ export async function getUserPublicList(params: {
   media?: MediaType | null;
   before?: string | null;
   limit?: number;
+  offset?: number;
 }): Promise<PublicListItem[]> {
   const { data, error } = await supabase.rpc("get_user_public_list", {
     p_user_id: params.userId,
@@ -176,6 +177,7 @@ export async function getUserPublicList(params: {
     p_media: params.media ?? null,
     p_before: params.before ?? null,
     p_limit: params.limit ?? 40,
+    p_offset: params.offset ?? 0,
   });
   if (error) throw normalizeSocialError(error);
   const rows = (data ?? []) as {
