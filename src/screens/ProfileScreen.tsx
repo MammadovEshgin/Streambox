@@ -30,12 +30,9 @@ import { SharedSessionsSection } from "../components/watchTogether/SharedSession
 import { evaluateBadges, selectStripBadgeIds } from "../services/badgeEngine";
 import { useLikedMovies } from "../hooks/useLikedMovies";
 import { useLikedSeries } from "../hooks/useLikedSeries";
-import { useMyProfileSocial } from "../hooks/useMyProfileSocial";
 import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
 import { useWatchHistory } from "../hooks/useWatchHistory";
 import { useWatchlist } from "../hooks/useWatchlist";
-import { formatHandle, normalizeUsername, validateUsername } from "../utils/usernames";
-import { setMyUsername, SocialRpcError } from "../api/social";
 import type { ProfileSeeAllSection, ProfileStackParamList } from "../navigation/types";
 import { normalizeAppLanguage } from "../localization/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
@@ -225,41 +222,6 @@ const StatLabel = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
   font-family: Outfit_400Regular;
   font-size: 14px;
-`;
-
-const ProfileHandle = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
-  font-family: Outfit_500Medium;
-  font-size: 13px;
-  margin-top: 2px;
-`;
-
-const HeaderBadge = styled.View`
-  position: absolute;
-  top: -3px;
-  right: -3px;
-  min-width: 17px;
-  height: 17px;
-  border-radius: 9px;
-  padding-horizontal: 4px;
-  align-items: center;
-  justify-content: center;
-  background-color: ${({ theme }) => theme.colors.primary};
-`;
-
-const HeaderBadgeText = styled.Text`
-  color: ${({ theme }) => theme.colors.textOnPrimary};
-  font-family: Outfit_700Bold;
-  font-size: 10px;
-`;
-
-// A flush stat-like entry (no chrome) sitting right after the Liked stat with
-// the same row gap, so Watched · Watchlist · Liked · followers-icon read as one
-// evenly spaced group.
-const FollowStatButton = styled.Pressable`
-  align-items: center;
-  justify-content: center;
-  padding-vertical: 1px;
 `;
 
 const SectionWrap = styled.View`
@@ -520,13 +482,6 @@ const SuggestionStatus = styled.Text`
   font-size: 12px;
 `;
 
-const FieldHint = styled.Text<{ $error?: boolean }>`
-  margin-top: 6px;
-  color: ${({ theme, $error }) => ($error ? "#ff6b6b" : theme.colors.textSecondary)};
-  font-size: 11px;
-  line-height: 15px;
-`;
-
 // â”€â”€ Helpers â”€â”€
 
 function formatJoinedDate(iso: string): string {
@@ -587,7 +542,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const currentTheme = useTheme();
   const { t, i18n: translationI18n } = useTranslation();
   const insets = useSafeAreaInsets();
-  const social = useMyProfileSocial();
   const {
     profileImageUri,
     profileImageVersion,
@@ -623,7 +577,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
   // Edit profile draft state
   const [draftName, setDraftName] = useState(profileName);
-  const [draftUsername, setDraftUsername] = useState("");
   const [draftBio, setDraftBio] = useState(profileBio);
   const [draftLocation, setDraftLocation] = useState(profileLocation);
   const [draftBirthday, setDraftBirthday] = useState(profileBirthday);
@@ -932,51 +885,22 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     clearLocationSearch();
     setLocationSuggestions([]);
     setDraftName(profileName);
-    setDraftUsername(social.username ?? "");
     setDraftBio(profileBio);
     setDraftLocation(profileLocation);
     setDraftBirthday(profileBirthday);
     setShowEditModal(true);
-  }, [clearLocationSearch, profileName, social.username, profileBio, profileLocation, profileBirthday]);
+  }, [clearLocationSearch, profileName, profileBio, profileLocation, profileBirthday]);
 
   const draftLocationRef = useRef(draftLocation);
   const draftNameRef = useRef(draftName);
   const draftBioRef = useRef(draftBio);
   const draftBirthdayRef = useRef(draftBirthday);
-  const draftUsernameRef = useRef(draftUsername);
 
   // Keep refs in sync so the save callback always reads fresh values
   draftLocationRef.current = draftLocation;
   draftNameRef.current = draftName;
   draftBioRef.current = draftBio;
   draftBirthdayRef.current = draftBirthday;
-  draftUsernameRef.current = draftUsername;
-
-  // Map a client validation error / server hint token to a localized message.
-  const usernameErrorMessage = useCallback(
-    (token: string | null): string => {
-      switch (token) {
-        case "too_short":
-          return t("social.handleErrorTooShort");
-        case "too_long":
-          return t("social.handleErrorTooLong");
-        case "invalid_chars":
-        case "invalid_format":
-          return t("social.handleErrorInvalid");
-        case "reserved":
-          return t("social.handleErrorReserved");
-        case "taken":
-          return t("social.handleErrorTaken");
-        case "cooldown":
-          return t("social.handleErrorCooldown");
-        case "rate_limited":
-          return t("social.handleErrorRateLimited");
-        default:
-          return t("social.handleErrorGeneric");
-      }
-    },
-    [t]
-  );
 
   const handleSaveProfile = useCallback(async () => {
     const loc = draftLocationRef.current.trim();
@@ -997,33 +921,8 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
       profileBirthday: bday,
     });
 
-    // Handle changes go through the dedicated RPC (uniqueness + 30-day cooldown
-    // are server-decided). Only fire when it actually changed; surface the exact
-    // reason on failure. A successful change is reflected immediately (and
-    // becomes searchable) via the social refresh.
-    let usernameError: string | null = null;
-    const uname = normalizeUsername(draftUsernameRef.current);
-    const currentUname = normalizeUsername(social.username ?? "");
-    if (uname && uname !== currentUname) {
-      const validation = validateUsername(uname);
-      if (!validation.valid) {
-        usernameError = usernameErrorMessage(validation.error);
-      } else {
-        try {
-          await setMyUsername(uname);
-          social.refresh();
-        } catch (error) {
-          const hint = error instanceof SocialRpcError ? error.hint : null;
-          usernameError = usernameErrorMessage(hint);
-        }
-      }
-    }
-
     setShowEditModal(false);
-    if (usernameError) {
-      Alert.alert(t("social.handleErrorTitle"), usernameError);
-    }
-  }, [clearLocationSearch, updateProfile, social, usernameErrorMessage, t]);
+  }, [clearLocationSearch, updateProfile]);
 
   // â”€â”€ List helpers â”€â”€
 
@@ -1176,15 +1075,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const joinedText = formatJoinedDate(joinedDate);
   const birthdayText = formatBirthday(profileBirthday);
 
-  // Live handle validation for the edit modal (format only; uniqueness/cooldown
-  // are decided by the RPC on save).
-  const draftUnameNorm = normalizeUsername(draftUsername);
-  const usernameChanged = draftUnameNorm !== normalizeUsername(social.username ?? "");
-  const usernameValidation =
-    usernameChanged && draftUnameNorm.length > 0 ? validateUsername(draftUnameNorm) : null;
-  const usernameLiveError =
-    usernameValidation && !usernameValidation.valid ? usernameErrorMessage(usernameValidation.error) : null;
-
   return (
     <SafeContainer>
       <Content>
@@ -1201,17 +1091,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           </BannerWrap>
 
           <BannerTopActions>
-            <BannerIconButton onPress={() => navigation.navigate("ActivityFeed")}>
-              <Feather name="activity" size={17} color="#ffffff" />
-            </BannerIconButton>
-            <BannerIconButton onPress={() => navigation.navigate("Notifications")}>
-              <Feather name="bell" size={17} color="#ffffff" />
-              {social.unread > 0 && (
-                <HeaderBadge>
-                  <HeaderBadgeText>{social.unread > 9 ? "9+" : social.unread}</HeaderBadgeText>
-                </HeaderBadge>
-              )}
-            </BannerIconButton>
             <BannerIconButton onPress={openEditModal}>
               <Feather name="edit-2" size={16} color="#ffffff" />
             </BannerIconButton>
@@ -1241,7 +1120,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           {/* Name, Bio, Meta info */}
           <ProfileInfo>
             <ProfileTitle>{profileName}</ProfileTitle>
-            {!!social.username && <ProfileHandle>{formatHandle(social.username)}</ProfileHandle>}
             {!!profileBio && <ProfileBio>{profileBio}</ProfileBio>}
 
             <MetaStack>
@@ -1281,19 +1159,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 <StatNumber>{likedCount}</StatNumber>
                 <StatLabel>{t("profile.liked")}</StatLabel>
               </StatItem>
-              {!!social.userId && (
-                <FollowStatButton
-                  onPress={() =>
-                    social.userId &&
-                    navigation.navigate("FollowList", { userId: social.userId, kind: "followers" })
-                  }
-                  accessibilityRole="button"
-                  accessibilityLabel={`${t("social.followers")} · ${t("social.followingLabel")}`}
-                  hitSlop={8}
-                >
-                  <Feather name="users" size={18} color={currentTheme.colors.textPrimary} />
-                </FollowStatButton>
-              )}
             </StatsRow>
           </ProfileInfo>
         </Header>
@@ -1665,26 +1530,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                     autoCapitalize="words"
                     maxLength={50}
                   />
-                </EditField>
-
-                <EditField>
-                  <EditFieldLabel>{t("social.handleLabel")}</EditFieldLabel>
-                  <EditFieldInput
-                    value={draftUsername}
-                    onChangeText={(text) =>
-                      setDraftUsername(text.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 20))
-                    }
-                    placeholder="night_owl"
-                    placeholderTextColor={currentTheme.colors.textSecondary}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    maxLength={20}
-                  />
-                  {usernameLiveError ? (
-                    <FieldHint $error>{usernameLiveError}</FieldHint>
-                  ) : (
-                    <FieldHint>{t("social.handleHint")}</FieldHint>
-                  )}
                 </EditField>
 
                 <EditField>

@@ -66,14 +66,6 @@ export type HomeStackParamList = {
     id: string;
   };
   AzClassicsGrid: undefined;
-  UserProfile: { userId: string };
-  FollowList: { userId: string; kind: "followers" | "following" };
-  UserPublicList: {
-    userId: string;
-    list: "watched" | "watchlist" | "liked";
-    title?: string;
-    media?: "movie" | "tv";
-  };
   Player: {
     mediaType: MediaType,
     tmdbId: string,
@@ -108,16 +100,6 @@ export type ProfileStackParamList = {
     filter: "movie" | "tv";
   };
   ProfileSettings: undefined;
-  UserProfile: { userId: string };
-  FollowList: { userId: string; kind: "followers" | "following" };
-  UserPublicList: {
-    userId: string;
-    list: "watched" | "watchlist" | "liked";
-    title?: string;
-    media?: "movie" | "tv";
-  };
-  ActivityFeed: undefined;
-  Notifications: undefined;
   MovieDetail: {
     movieId: string;
   };

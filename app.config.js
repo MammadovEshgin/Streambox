@@ -3,10 +3,9 @@ const baseConfig = {
   slug: "streambox",
   scheme: "streambox",
   version: "1.3.0",
-  // "1.3.0" is a FOURTH, isolated native runtime introduced for the social
-  // follow platform + player-autonomy features (branch v1.3.0). On top of
-  // everything in 1.2.0 it adds native `expo-notifications` + `expo-device`
-  // for Android push. Because EAS Update delivers a bundle only to installs on
+  // "1.3.0" is a FOURTH, isolated native runtime introduced for the
+  // player-autonomy features (branch v1.3.0), on top of everything in 1.2.0.
+  // Because EAS Update delivers a bundle only to installs on
   // the matching runtimeVersion, this APK is fully isolated: no install exists
   // on 1.3.0 until the new APK is built, so any `eas update` published from
   // this branch is invisible to the 1.2.0 / 1.1.0 / 1.0.2 fleets and cannot
@@ -61,10 +60,6 @@ const baseConfig = {
     "expo-video",
     "expo-font",
     "expo-web-browser",
-    // Social platform (runtime 1.3.0 only) — Android push. Adds
-    // POST_NOTIFICATIONS at prebuild; the "social" channel is created at
-    // runtime in src/services/pushNotifications.ts.
-    "expo-notifications",
     // Watch Together (runtime 1.2.0 only) — native camera/mic. These add
     // CAMERA / RECORD_AUDIO permissions and iOS usage strings at prebuild.
     [
