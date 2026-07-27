@@ -193,6 +193,7 @@ export function useNextEpisode({
   }, [countdown.phase]);
 
   const cancelCountdown = useCallback(() => dispatch({ type: "cancel" }), []);
+  const dismissNextEpisode = useCallback(() => dispatch({ type: "dismiss" }), []);
 
   return {
     nextEpisode,
@@ -201,6 +202,7 @@ export function useNextEpisode({
     autoPlayEnabled,
     toggleAutoPlay,
     cancelCountdown,
+    dismissNextEpisode,
     playNext,
   };
 }

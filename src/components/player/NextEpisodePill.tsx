@@ -31,9 +31,10 @@ type Props = {
   nextEpisode: EpisodeSummary;
   onPlayNext: () => void;
   onCancel: () => void;
+  onDismiss: () => void;
 };
 
-export function NextEpisodePill({ countdown, nextEpisode, onPlayNext, onCancel }: Props) {
+export function NextEpisodePill({ countdown, nextEpisode, onPlayNext, onCancel, onDismiss }: Props) {
   const { t } = useTranslation();
   const theme = useTheme();
   const counting = countdown.phase === "counting";
@@ -78,6 +79,15 @@ export function NextEpisodePill({ countdown, nextEpisode, onPlayNext, onCancel }
                 : t("playerAutonomy.upNext")}
             </Text>
           </View>
+          <Pressable
+            style={styles.closeButton}
+            onPress={onDismiss}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel={t("playerAutonomy.dismiss")}
+          >
+            <Feather name="x" size={14} color="#fff" />
+          </Pressable>
         </View>
 
         <Text style={styles.title} numberOfLines={2}>
@@ -160,6 +170,17 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit_700Bold",
     fontSize: 10.5,
     letterSpacing: 0.3,
+  },
+  closeButton: {
+    position: "absolute",
+    right: 6,
+    top: 6,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   title: {
     color: "#F6F7F4",

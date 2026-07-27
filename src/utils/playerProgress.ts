@@ -44,9 +44,9 @@ export function shouldAutoMarkWatched(input: AutoMarkWatchedInput): boolean {
 
 // ── Next-episode end detection ──────────────────────────────────────────────
 // Tunable. Whichever fires first shows the card. Reveal within the last 45s or
-// at 97% progress (2026-07-26: progress trigger lowered from 98.5% to 97%).
+// at 98% progress.
 export const NEXT_EPISODE_REMAINING_SECONDS = 45;
-export const NEXT_EPISODE_MIN_PROGRESS = 0.97;
+export const NEXT_EPISODE_MIN_PROGRESS = 0.98;
 export const AUTO_ADVANCE_COUNTDOWN_SECONDS = 10;
 
 export type NextEpisodeInput = {
@@ -56,7 +56,7 @@ export type NextEpisodeInput = {
 
 /**
  * True when the "Next Episode" affordance should appear: within the last 45s OR
- * past 97% progress. Guards non-finite / zero duration (some HLS streams never
+ * past 98% progress. Guards non-finite / zero duration (some HLS streams never
  * report one) — no pill without a known duration.
  */
 export function shouldShowNextEpisode(input: NextEpisodeInput): boolean {
@@ -76,7 +76,8 @@ export type NextEpisodeCountdownPhase =
   | "hidden"
   | "prompt" // manual pill visible (auto-play off)
   | "counting" // auto-advance countdown running
-  | "cancelled" // user cancelled auto-advance
+  | "cancelled" // user tapped "Watch credits" — countdown stopped, card kept
+  | "dismissed" // user closed the card (X) — countdown stopped, card gone
   | "fired"; // countdown completed -> switch now
 
 export type NextEpisodeCountdownState = {
@@ -87,7 +88,8 @@ export type NextEpisodeCountdownState = {
 export type NextEpisodeCountdownAction =
   | { type: "show"; autoPlay: boolean } // end-detection fired
   | { type: "tick" } // 1s elapsed while counting
-  | { type: "cancel" } // user tapped Cancel
+  | { type: "cancel" } // user tapped "Watch credits" (keeps the manual card)
+  | { type: "dismiss" } // user tapped the close (X) icon — hides the card
   | { type: "hide" } // seeked back out of the trigger zone
   | { type: "reset" }; // new episode / player session
 
@@ -108,9 +110,14 @@ export function nextEpisodeCountdownReducer(
       // ("fired") is left alone.
       return state.phase === "fired" ? state : createNextEpisodeCountdownState();
     case "show":
-      // Once cancelled / counting / fired, a repeated end-detection tick is a
-      // no-op — don't restart a countdown the user already dismissed.
-      if (state.phase === "cancelled" || state.phase === "counting" || state.phase === "fired") {
+      // Once cancelled / dismissed / counting / fired, a repeated end-detection
+      // tick is a no-op — don't restart something the user already acted on.
+      if (
+        state.phase === "cancelled" ||
+        state.phase === "dismissed" ||
+        state.phase === "counting" ||
+        state.phase === "fired"
+      ) {
         return state;
       }
       return action.autoPlay
@@ -127,6 +134,10 @@ export function nextEpisodeCountdownReducer(
         return { phase: "cancelled", secondsLeft: state.secondsLeft };
       }
       return state;
+    case "dismiss":
+      // Close (X): valid from any live phase; stops the countdown and hides the
+      // card. A completed switch ("fired") is left alone.
+      return state.phase === "fired" ? state : { phase: "dismissed", secondsLeft: state.secondsLeft };
     default:
       return state;
   }

@@ -82,11 +82,11 @@ test("next-episode pill shows within the last 45s (progress-independent)", () =>
   assert.ok(!shouldShowNextEpisode({ positionSeconds: 940, durationSeconds: 1000 }));
 });
 
-test("next-episode pill shows past 97% even with >45s left", () => {
-  // 10000s runtime: 97.5% => 250s remaining (>45s) but progress triggers.
-  assert.ok(shouldShowNextEpisode({ positionSeconds: 9750, durationSeconds: 10000 }));
-  // Just under 97% with plenty of time left does not trigger.
-  assert.ok(!shouldShowNextEpisode({ positionSeconds: 9690, durationSeconds: 10000 })); // 96.9%, 310s left
+test("next-episode pill shows past 98% even with >45s left", () => {
+  // 10000s runtime: 98.5% => 150s remaining (>45s) but progress triggers.
+  assert.ok(shouldShowNextEpisode({ positionSeconds: 9850, durationSeconds: 10000 }));
+  // Just under 98% with plenty of time left does not trigger.
+  assert.ok(!shouldShowNextEpisode({ positionSeconds: 9750, durationSeconds: 10000 })); // 97.5%, 250s left
 });
 
 test("next-episode: non-finite / zero duration never shows", () => {
@@ -148,6 +148,35 @@ test("countdown: cancel stops the countdown and a repeat show does not restart i
   ]);
   assert.equal(cancelled.phase, "cancelled");
   assert.ok(isNextEpisodePillVisible(cancelled));
+});
+
+test("countdown: dismiss (X) hides the card, stops the countdown, and blocks re-show", () => {
+  const dismissed = drive([
+    { type: "show", autoPlay: true },
+    { type: "tick" },
+    { type: "dismiss" },
+    { type: "show", autoPlay: true }, // must NOT re-open
+    { type: "tick" }, // must NOT resume the countdown
+  ]);
+  assert.equal(dismissed.phase, "dismissed");
+  assert.ok(!isNextEpisodePillVisible(dismissed));
+});
+
+test("countdown: dismiss from the manual prompt hides it", () => {
+  const state = drive([{ type: "show", autoPlay: false }, { type: "dismiss" }]);
+  assert.equal(state.phase, "dismissed");
+  assert.ok(!isNextEpisodePillVisible(state));
+});
+
+test("countdown: dismiss after fired is a no-op (switch already committed)", () => {
+  let state = nextEpisodeCountdownReducer(createNextEpisodeCountdownState(), {
+    type: "show",
+    autoPlay: true,
+  });
+  for (let i = 0; i < AUTO_ADVANCE_COUNTDOWN_SECONDS; i += 1) {
+    state = nextEpisodeCountdownReducer(state, { type: "tick" });
+  }
+  assert.equal(nextEpisodeCountdownReducer(state, { type: "dismiss" }).phase, "fired");
 });
 
 test("countdown: seeking back out of the zone hides and forgets a prior cancel", () => {
