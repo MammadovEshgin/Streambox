@@ -1672,6 +1672,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             nextEpisode={nextEpisode.nextEpisode}
             onPlayNext={nextEpisode.playNext}
             onCancel={nextEpisode.cancelCountdown}
+            onDismiss={nextEpisode.dismissNextEpisode}
           />
         )}
         {isSeriesNativePath && (
