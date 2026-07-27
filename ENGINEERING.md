@@ -44,7 +44,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
 
 | Runtime | Branch | Fleet | Hard rule |
 |---------|--------|-------|-----------|
-| **1.2.0** | `v1.2.0` (renamed 2026-07-23 from `release/1.2.0-watch-together`; folds in `feat/azerbaijani-classics`) | Watch Together APK build | Adds native `react-native-webrtc` + `expo-camera`. **Isolated — never ported back to 1.1.0/1.0.2.** `runtimeVersion` in `app.config.js` is a fixed `"1.2.0"`, so publishing from this branch auto-isolates. See **§2A**. |
+| **1.2.0** | `v1.2.0` (renamed 2026-07-23 from `release/1.2.0-watch-together`; folds in `feat/azerbaijani-classics`) | Watch Together APK build | Adds native `react-native-webrtc` + `expo-camera`. **Isolated — never ported back to 1.1.0/1.0.2.** `runtimeVersion` in `app.config.js` is a fixed `"1.2.0"`, so publishing from this branch auto-isolates. See **§2A**. **Player autonomy** (auto-mark-watched, next-episode, episode picker) was folded in 2026-07-28 (JS-only, ships as a 1.2.0 OTA); see **§2B**. The abandoned 1.3.0 social platform was removed the same day (teardown migration `20260728090000`). |
 | **1.1.0** | `release/1.1.0-navbar` (primary working branch) | Nav-bar APK build | Normal track. `runtimeVersion` in `app.config.js` is `1.1.0`. |
 | **1.0.2** | `release/1.0.2-legacy` | Legacy fleet, **no nav-bar** | **MUST NEVER contain nav-bar code** (see below). |
 
@@ -62,6 +62,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
    It must print nothing.
 2. **Any change that adds or upgrades a native module cannot go OTA.** It requires a new native build **and** a `runtimeVersion` bump (e.g. `1.2.0`). Do **not** reuse `1.1.0` for a build that adds a native module — existing `1.1.0` installs would crash on the next OTA when they call the missing module. Prefer pure-JS solutions to stay OTA-deliverable (this is why the loader was rebuilt with SVG+Reanimated instead of Lottie).
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
+4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
 ### Current deployed state (last updated 2026-07-23, 1.2.0 UX + stability batch)
 
@@ -286,6 +287,48 @@ Implemented from the technical audit (`outputs/shared-sessions-tech-review-2026-
   service-only and is not dispatched as a signal. Both devices should still run
   the current bundle so acknowledgements, capture gating, and recovery UI are
   symmetric.
+
+---
+
+## 2B. Player autonomy — part of runtime 1.2.0
+
+**Player autonomy** — auto-mark-watched, the next-episode pill / auto-advance,
+and the in-player episode picker — ships on the **1.2.0** runtime (branch
+`v1.2.0`). It is JS-only (no native modules beyond the 1.2.0 stack), so it goes
+out as a normal 1.2.0 OTA. It was built on the short-lived `v1.3.0` branch
+(2026-07-25 → 2026-07-28) and folded into `v1.2.0` when the separate 1.3.0
+runtime was abandoned; `v1.3.0` was then deleted.
+
+> **Social platform removed (2026-07-28).** An earlier iteration of 1.3.0 also
+> carried a Letterboxd-style social layer (usernames, a follow graph, an activity
+> feed, in-app notifications, mutual-follow Watch Together invites, Android push).
+> It was dropped in full at the user's request — every screen/service/hook/util,
+> the `social.*` i18n, the `expo-notifications` / `expo-device` deps + plugin, and
+> all of the DB objects are gone, without touching any other feature. The DB
+> teardown is `supabase/migrations/20260728090000_drop_social_platform.sql` (drops
+> `user_follows` / `user_activity` / `user_notifications` / `watch_invites` /
+> `user_push_tokens`, every follow/activity/notify/invite/search/username RPC, the
+> activity triggers on the core tables, the `profile_assets_peer_read` storage
+> policy, and the `user_profiles.username` columns; restores the pre-social signup
+> trigger). Apply it with `npx supabase db push` (it is idempotent / `IF EXISTS`).
+> **Watch Together CORE** (join-by-code + synced playback + memories) was left
+> intact — only the follow-gated invite bridge went with the social layer.
+
+### Player autonomy
+- `src/utils/playerProgress.ts` (+ `tests/playerProgress.test.ts`):
+  `shouldAutoMarkWatched` (>=95% AND >=60s **real engaged** time — seeks don't
+  count), `shouldShowNextEpisode` (<=45s left OR >=97%), `nextEpisodeCountdownReducer`.
+- `src/hooks/useAutoMarkWatched.ts` — shares the native player's 1s ticks, fires
+  once/session, reuses the manual mark-watched builders.
+- `src/hooks/useNextEpisode.ts` + `src/components/player/NextEpisodePill.tsx` —
+  manual "Up next" + auto-advance countdown with a persisted
+  `@streambox/auto-play-next` toggle.
+- `src/components/player/EpisodePickerSheet.tsx` — right-side in-layer episode
+  drawer; switching an episode does a full `navigation.replace("Player", …)` so the
+  resolver remounts cleanly (no stale "not available"). Native series path only;
+  excluded in watch rooms.
+
+All wired into `PlayerScreen`; typecheck + eslint clean.
 
 ---
 

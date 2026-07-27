@@ -6,7 +6,7 @@ import { SpecialElite_400Regular } from "@expo-google-fonts/special-elite";
 import { Caveat_500Medium, Caveat_600SemiBold, Caveat_700Bold } from "@expo-google-fonts/caveat";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { NavigationContainer, type Theme as NavigationTheme } from "@react-navigation/native";
+import { NavigationContainer, useNavigationContainerRef, type Theme as NavigationTheme } from "@react-navigation/native";
 import * as SplashScreen from "expo-splash-screen";
 import * as Updates from "expo-updates";
 import { StatusBar } from "expo-status-bar";
@@ -260,6 +260,7 @@ function AppShell() {
   const { activeTheme, language, setJoinedDate, setProfileName, joinedDate } = useAppSettings();
   const { session, isLoading: authLoading, signOut } = useAuth();
   const { isReady: isUserDataReady } = useUserDataSync();
+  const navigationRef = useNavigationContainerRef();
   const { t } = useTranslation();
   const [launchPhase, setLaunchPhase] = useState<LaunchPhase>("loading");
   // The launch splash plays its full reveal regardless of how fast data loads;
@@ -612,7 +613,7 @@ function AppShell() {
           onSignOut={signOut}
           onError={handleStartupError}
         >
-          <NavigationContainer theme={navigationTheme} linking={watchTogetherLinking}>
+          <NavigationContainer ref={navigationRef} theme={navigationTheme} linking={watchTogetherLinking}>
             <Navigation />
           </NavigationContainer>
           {/* Popups wait for the splash: a LiveOps modal is a native layer that

@@ -12,6 +12,9 @@ const baseConfig = {
   // the 1.0.2 legacy fleet, so those old APKs cannot be broken by Watch
   // Together code that calls native modules they don't have. Publish OTAs for
   // THIS APK with runtime 1.2.0; keep 1.1.0 and 1.0.2 on their own tracks.
+  // NOTE: player-autonomy (auto-mark-watched, next-episode, episode picker) was
+  // folded into 1.2.0 (2026-07-28) — it is JS-only, no native change, so it
+  // ships as a normal 1.2.0 OTA. The abandoned 1.3.0 runtime was dropped.
   runtimeVersion: "1.2.0",
   orientation: "portrait",
   userInterfaceStyle: "dark",
