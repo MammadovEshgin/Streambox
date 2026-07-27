@@ -461,7 +461,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
         </EmptyContainer>
       ) : (
         <ListContainer>
-          {query && (
+          {query && results.length > 0 && (
             <FoundHeader entering={FadeIn.duration(300)}>
               <FoundTitle>{t("search.resultsFor", { query })}</FoundTitle>
               <FoundSubtitle>

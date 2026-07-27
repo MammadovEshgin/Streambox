@@ -384,6 +384,7 @@ export function WatchRoomScreen({ route, navigation }: Props) {
               <StarMark size={10} color={theme.colors.gold} />
             </Animated.View>
           </FooterRow>
+
         </Animated.View>
       </ScrollView>
     </Root>

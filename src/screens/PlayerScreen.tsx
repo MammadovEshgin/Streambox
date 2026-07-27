@@ -25,7 +25,12 @@ import { ContinueWatchingModal } from "../components/common/ContinueWatchingModa
 import { QualityWarningModal } from "../components/common/QualityWarningModal";
 import { WatchRoomLayer } from "../components/watchTogether/WatchRoomLayer";
 import { WatchRoomBoundary } from "../components/watchTogether/WatchRoomBoundary";
+import { useAutoMarkWatched } from "../hooks/useAutoMarkWatched";
 import { useContinueWatching } from "../hooks/useContinueWatching";
+import { useNextEpisode } from "../hooks/useNextEpisode";
+import { useWatchedEpisodes } from "../hooks/useWatchedEpisodes";
+import { EpisodePickerSheet } from "../components/player/EpisodePickerSheet";
+import { NextEpisodePill } from "../components/player/NextEpisodePill";
 import { useRecentlyWatched } from "../hooks/useRecentlyWatched";
 
 import { HomeStackParamList } from "../navigation/types";
@@ -1106,6 +1111,47 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     resumeAtSeconds: route.params.resumeAtSeconds,
   });
 
+  // Auto-mark watched at 95% + 2min engaged (movies + episodes + watch rooms;
+  // trailers/YouTube excluded). Shares the timeUpdate ticks; fires once/session.
+  useAutoMarkWatched({
+    player: videoPlayer,
+    enabled: isNativeStreamSource && !route.params.trailerUrl,
+    mediaType: route.params.mediaType,
+    tmdbId: Number(route.params.tmdbId),
+    seasonNumber: route.params.seasonNumber,
+    episodeNumber: route.params.episodeNumber,
+  });
+
+  // Next episode + in-player episode picker (native series path; excluded in
+  // watch rooms to avoid desyncing partners). Switching REPLACES this route with
+  // a fresh Player mount — identical to closing the player and tapping the next
+  // episode — so none of the per-mount resolver state (fallback promise refs,
+  // recovery guards, WebView caches) can leak into the new episode's resolve.
+  const [episodePickerOpen, setEpisodePickerOpen] = useState(false);
+  const { isEpisodeWatched } = useWatchedEpisodes();
+  const switchToEpisode = useCallback(
+    (season: number, episode: number) => {
+      setEpisodePickerOpen(false);
+      navigation.replace("Player", {
+        ...route.params,
+        seasonNumber: season,
+        episodeNumber: episode,
+        resumeAtSeconds: undefined,
+      });
+    },
+    [navigation, route.params]
+  );
+  const isSeriesNativePath =
+    isNativeStreamSource && !route.params.trailerUrl && !route.params.watchRoomCode && route.params.mediaType === "tv";
+  const nextEpisode = useNextEpisode({
+    player: videoPlayer,
+    enabled: isSeriesNativePath,
+    seriesId: Number(route.params.tmdbId),
+    seasonNumber: route.params.seasonNumber,
+    episodeNumber: route.params.episodeNumber,
+    onSwitchEpisode: switchToEpisode,
+  });
+
   // Load the source when directStreamUrl becomes available
   const streamReferer = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.referer ?? "" : "";
   const directStreamType = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.streamType ?? "" : "";
@@ -1492,6 +1538,27 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               </Animated.View>
             )}
 
+            {isSeriesNativePath && nextEpisode.seasons.length > 0 && (
+              <Animated.View
+                style={[
+                  styles.ccButton,
+                  // Sit right after the quality gear when it exists, else take
+                  // its slot so there's no gap in the control strip.
+                  { right: (playerResult?.qualityOptions?.length ?? 0) > 1 ? 200 : 154, opacity: closeBtnOpacity },
+                ]}
+              >
+                <TouchableOpacity
+                  onPress={() => setEpisodePickerOpen(true)}
+                  activeOpacity={0.8}
+                  style={styles.closeButtonInner}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("playerAutonomy.episodes")}
+                >
+                  <MaterialIcons name="playlist-play" size={22} color="#FFFFFF" />
+                </TouchableOpacity>
+              </Animated.View>
+            )}
+
             {(isSubtitleMenuOpen || isQualityMenuOpen) && (
               <View style={styles.subtitleMenu}>
                 {isSubtitleMenuOpen && (
@@ -1599,6 +1666,28 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           onResume={handleResumeChoice}
           onStartOver={handleStartOverChoice}
         />
+        {!isLoading && isSeriesNativePath && nextEpisode.nextEpisode && (
+          <NextEpisodePill
+            countdown={nextEpisode.countdown}
+            nextEpisode={nextEpisode.nextEpisode}
+            onPlayNext={nextEpisode.playNext}
+            onCancel={nextEpisode.cancelCountdown}
+          />
+        )}
+        {isSeriesNativePath && (
+          <EpisodePickerSheet
+            visible={episodePickerOpen}
+            onClose={() => setEpisodePickerOpen(false)}
+            seriesId={Number(route.params.tmdbId)}
+            seasons={nextEpisode.seasons}
+            currentSeason={route.params.seasonNumber ?? 1}
+            currentEpisode={route.params.episodeNumber ?? 1}
+            autoPlayEnabled={nextEpisode.autoPlayEnabled}
+            onToggleAutoPlay={nextEpisode.toggleAutoPlay}
+            isEpisodeWatched={isEpisodeWatched}
+            onSelectEpisode={switchToEpisode}
+          />
+        )}
       </View>
     );
   }
