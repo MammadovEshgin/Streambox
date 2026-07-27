@@ -30,6 +30,7 @@ import {
   hydrateMediaIds,
 } from "../services/mediaHydration";
 import {
+  mediaCountFor,
   optimisticFollowState,
   rollbackFollowState,
   splitHydratableIds,
@@ -43,9 +44,11 @@ type Props = NativeStackScreenProps<HomeStackParamList, "UserProfile">;
 const BANNER_HEIGHT = 160;
 const AVATAR_SIZE = 80;
 const AVATAR_OVERLAP = AVATAR_SIZE / 2;
-// The server caps a page at 100. One page covers the vast majority of profiles
-// in full; anything beyond is reachable via each section's "See all".
-const LIST_FETCH_LIMIT = 100;
+// Each rail shows a small, cheap preview of the selected media type; the real
+// totals come from the profile's per-media counts, and the full list streams in
+// on scroll behind "See all". Keeps opening a peer profile fast even for someone
+// with hundreds of titles.
+const PREVIEW_SIZE = 18;
 
 // â”€â”€ Styled components (kept visually identical to the signed-in ProfileScreen) â”€â”€
 const Content = styled.ScrollView.attrs({
@@ -290,6 +293,16 @@ const EmptySection = styled.View`
   justify-content: center;
 `;
 
+const LoadingSection = styled.View`
+  height: 282px;
+  border-radius: 5px;
+  border-width: 1px;
+  border-color: rgba(255, 255, 255, 0.06);
+  background-color: rgba(255, 255, 255, 0.02);
+  align-items: center;
+  justify-content: center;
+`;
+
 const EmptyIcon = styled.View`
   margin-bottom: 8px;
   opacity: 0.3;
@@ -324,7 +337,6 @@ const ErrorText = styled.Text`
   text-align: center;
 `;
 
-type Lists = Record<PublicListKind, PublicListItem[]>;
 type MediaFilter = "movie" | "tv";
 
 function formatJoinedDate(iso: string): string {
@@ -338,6 +350,7 @@ function formatJoinedDate(iso: string): string {
   }
 }
 
+
 export function UserProfileScreen({ route, navigation }: Props) {
   const { userId } = route.params;
   const { t, i18n: translationI18n } = useTranslation();
@@ -345,7 +358,10 @@ export function UserProfileScreen({ route, navigation }: Props) {
 
   const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [bannerUri, setBannerUri] = useState<string | null>(null);
-  const [lists, setLists] = useState<Lists>({ watched: [], watchlist: [], liked: [] });
+  // Small per-(section, media) preview pages, keyed `${kind}-${filter}`. Fetched
+  // lazily for whichever toggle is active; the full lists live behind "See all".
+  const [previews, setPreviews] = useState<Record<string, PublicListItem[]>>({});
+  const fetchingRef = useRef<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [followBusy, setFollowBusy] = useState(false);
@@ -354,9 +370,9 @@ export function UserProfileScreen({ route, navigation }: Props) {
   const [watchlistFilter, setWatchlistFilter] = useState<MediaFilter>("movie");
   const [likedFilter, setLikedFilter] = useState<MediaFilter>("movie");
 
-  // Posters are hydrated by tmdbId (the public-list snapshot often has no poster
-  // for Letterboxd-imported / backfilled / detail-less rows) exactly like the
-  // signed-in profile does, so a peer's lists never render as blank cards.
+  // Poster/title hydration for watchlist/liked (their snapshot is usually empty
+  // for Letterboxd / backfill / detail-less rows). Watched rows already carry a
+  // real poster_path, so they render without a TMDB round-trip.
   const cacheRef = useRef(getSharedHydratedMediaCache());
   const [hydrationTick, setHydrationTick] = useState(0);
   const resolvedContentLanguage = useMemo(
@@ -364,25 +380,33 @@ export function UserProfileScreen({ route, navigation }: Props) {
     [translationI18n.language, translationI18n.resolvedLanguage]
   );
 
+  const activeFilters = useMemo<[PublicListKind, MediaFilter][]>(
+    () => [
+      ["watched", watchedFilter],
+      ["watchlist", watchlistFilter],
+      ["liked", likedFilter],
+    ],
+    [watchedFilter, watchlistFilter, likedFilter]
+  );
+
+  // 1) Load the profile itself first — the frame (header + accurate counts)
+  //    paints immediately; the rail previews stream in behind it.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setFailed(false);
+    setProfile(null);
+    setPreviews({});
+    fetchingRef.current.clear();
     void (async () => {
       try {
-        const [prof, watched, watchlist, liked] = await Promise.all([
-          getPublicProfile(userId),
-          getUserPublicList({ userId, list: "watched", limit: LIST_FETCH_LIMIT }),
-          getUserPublicList({ userId, list: "watchlist", limit: LIST_FETCH_LIMIT }),
-          getUserPublicList({ userId, list: "liked", limit: LIST_FETCH_LIMIT }),
-        ]);
+        const prof = await getPublicProfile(userId);
         if (cancelled) return;
         if (!prof) {
           setFailed(true);
           return;
         }
         setProfile(prof);
-        setLists({ watched, watchlist, liked });
         if (prof.bannerPath) {
           void resolveProfileAssetUrl(prof.bannerPath, prof.bannerVersion).then((uri) => {
             if (!cancelled) setBannerUri(uri);
@@ -399,17 +423,48 @@ export function UserProfileScreen({ route, navigation }: Props) {
     };
   }, [userId]);
 
-  // Warm the shared hydrated-media cache, then bump the tick so the memoised
-  // rails re-read it. Only watchlist/liked are hydrated: watched rows already
-  // carry a real poster_path + title from user_watch_history, so hydrating them
-  // would just burn TMDB-proxy quota for no visible gain.
+  // 2) Fetch a preview for each section's active media toggle, once each, on
+  //    demand (switching a toggle fetches that type the first time it's shown).
+  //    Sections the counts say are empty skip the network entirely.
+  useEffect(() => {
+    if (!profile) return;
+    let cancelled = false;
+    activeFilters.forEach(([kind, filter]) => {
+      const key = `${kind}-${filter}`;
+      if (previews[key] !== undefined || fetchingRef.current.has(key)) return;
+      if (mediaCountFor(profile.counts, kind, filter) === 0) {
+        setPreviews((current) => ({ ...current, [key]: [] }));
+        return;
+      }
+      fetchingRef.current.add(key);
+      void getUserPublicList({ userId, list: kind, media: filter, limit: PREVIEW_SIZE })
+        .then((rows) => {
+          if (!cancelled) setPreviews((current) => ({ ...current, [key]: rows }));
+        })
+        .catch(() => {
+          if (!cancelled) setPreviews((current) => ({ ...current, [key]: [] }));
+        })
+        .finally(() => {
+          fetchingRef.current.delete(key);
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [profile, userId, activeFilters, previews]);
+
+  // 3) Hydrate posters for whatever watchlist/liked preview rows are loaded.
   useEffect(() => {
     const movieSet = new Set<number>();
     const seriesSet = new Set<number>();
     (["watchlist", "liked"] as const).forEach((kind) => {
-      const { movieIds, seriesIds } = splitHydratableIds(lists[kind]);
-      movieIds.forEach((id) => movieSet.add(id));
-      seriesIds.forEach((id) => seriesSet.add(id));
+      (["movie", "tv"] as const).forEach((filter) => {
+        const rows = previews[`${kind}-${filter}`];
+        if (!rows) return;
+        const { movieIds, seriesIds } = splitHydratableIds(rows);
+        movieIds.forEach((id) => movieSet.add(id));
+        seriesIds.forEach((id) => seriesSet.add(id));
+      });
     });
     if (movieSet.size === 0 && seriesSet.size === 0) return;
 
@@ -422,7 +477,7 @@ export function UserProfileScreen({ route, navigation }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [lists, resolvedContentLanguage]);
+  }, [previews, resolvedContentLanguage]);
 
   const toggleFollow = useCallback(async () => {
     if (!profile || followBusy) return;
@@ -468,30 +523,23 @@ export function UserProfileScreen({ route, navigation }: Props) {
   // Rebuilt as the cache warms (`hydrationTick`) or the language changes.
   const hydratedById = useMemo(() => {
     const map = new Map<string, MediaItem>();
-    (["watched", "watchlist", "liked"] as const).forEach((kind) => {
-      const { movieIds, seriesIds } = splitHydratableIds(lists[kind]);
+    Object.values(previews).forEach((rows) => {
+      const { movieIds, seriesIds } = splitHydratableIds(rows);
       for (const media of getHydratedMediaItemsFromCache(movieIds, seriesIds, cacheRef.current)) {
         map.set(`${media.mediaType}-${media.id}`, media);
       }
     });
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lists, hydrationTick, resolvedContentLanguage]);
+  }, [previews, hydrationTick, resolvedContentLanguage]);
 
-  // Every fetched row becomes a card (never hidden behind hydration), so a
-  // section's count matches what's shown and the whole list is visible. Watched
-  // rows carry a real poster_path so they paint instantly; watchlist/liked rows
-  // usually have an empty snapshot, so their poster/title fill in from `hydratedById`
-  // as TMDB resolves. tmdb-id-less rows can't be opened/hydrated, so they're dropped.
+  // Turn a preview page into rail cards. Watched rows carry a real poster_path so
+  // they paint instantly; watchlist/liked rows fill their poster/title in from
+  // `hydratedById` as TMDB resolves. tmdb-id-less rows can't be opened/hydrated.
   const buildRail = useCallback(
-    (kind: PublicListKind, filter: MediaFilter): MediaItem[] =>
-      lists[kind]
-        .filter(
-          (row) =>
-            row.mediaType === (filter === "movie" ? "movie" : "tv") &&
-            Number.isFinite(row.tmdbId) &&
-            row.tmdbId > 0
-        )
+    (rows: PublicListItem[] | undefined): MediaItem[] =>
+      (rows ?? [])
+        .filter((row) => Number.isFinite(row.tmdbId) && row.tmdbId > 0)
         .map((row) => {
           const hydrated = hydratedById.get(`${row.mediaType}-${row.tmdbId}`);
           return {
@@ -506,16 +554,7 @@ export function UserProfileScreen({ route, navigation }: Props) {
             genreIds: hydrated?.genreIds,
           } satisfies MediaItem;
         }),
-    [lists, hydratedById]
-  );
-
-  const sectionItems = useMemo(
-    () => ({
-      watched: buildRail("watched", watchedFilter),
-      watchlist: buildRail("watchlist", watchlistFilter),
-      liked: buildRail("liked", likedFilter),
-    }),
-    [buildRail, watchedFilter, watchlistFilter, likedFilter]
+    [hydratedById]
   );
 
   const mediaLabel = useCallback(
@@ -533,17 +572,21 @@ export function UserProfileScreen({ route, navigation }: Props) {
     emptyMovieKey: string,
     emptySeriesKey: string
   ) => {
-    const items = sectionItems[kind];
+    if (!profile) return null;
+    const key = `${kind}-${filter}`;
+    const total = mediaCountFor(profile.counts, kind, filter);
+    const rows = previews[key];
+    const items = buildRail(rows);
     return (
       <SectionWrap>
         <SectionHeader>
           <SectionTitle>{t(titleKey)}</SectionTitle>
           <SectionDot />
-          <SectionMeta>{t("profile.sectionCount", { count: items.length, label: mediaLabel(filter) })}</SectionMeta>
-          {profile && (
+          <SectionMeta>{t("profile.sectionCount", { count: total, label: mediaLabel(filter) })}</SectionMeta>
+          {total > 0 && (
             <SeeAllButton
               onPress={() =>
-                navigation.navigate("UserPublicList", { userId: profile.userId, list: kind, title: t(titleKey) })
+                navigation.navigate("UserPublicList", { userId: profile.userId, list: kind, title: t(titleKey), media: filter })
               }
             >
               <SeeAllText>{t("common.seeAll")}</SeeAllText>
@@ -558,13 +601,17 @@ export function UserProfileScreen({ route, navigation }: Props) {
             <ToggleLabel $active={filter === "tv"}>{t("common.series")}</ToggleLabel>
           </ToggleChip>
         </ToggleRow>
-        {items.length === 0 ? (
+        {total === 0 ? (
           <EmptySection>
             <EmptyIcon>
               <Feather name={emptyIcon} size={24} color={currentTheme.colors.textSecondary} />
             </EmptyIcon>
             <EmptyText>{filter === "movie" ? t(emptyMovieKey) : t(emptySeriesKey)}</EmptyText>
           </EmptySection>
+        ) : rows === undefined ? (
+          <LoadingSection>
+            <MovieLoader />
+          </LoadingSection>
         ) : (
           <RailWrap>
             <FlatList

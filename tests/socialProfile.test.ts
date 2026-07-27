@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  mediaCountFor,
   optimisticFollowState,
   rollbackFollowState,
   splitHydratableIds,
   type FollowableProfile,
   type HydratableRow,
+  type MediaCounts,
 } from "../src/utils/socialProfile";
 
 // ── splitHydratableIds ──────────────────────────────────────────────────────
@@ -50,6 +52,31 @@ test("splitHydratableIds: single-type inputs", () => {
     ]),
     { movieIds: [], seriesIds: [7] }
   );
+});
+
+// ── mediaCountFor ───────────────────────────────────────────────────────────
+const counts: MediaCounts = {
+  watchedMovies: 200,
+  watchedSeries: 50,
+  watchlistMovies: 12,
+  watchlistSeries: 3,
+  likedMovies: 7,
+  likedSeries: 9,
+};
+
+test("mediaCountFor: returns the exact per-(section, media) total (the 250 = 200+50 case)", () => {
+  assert.equal(mediaCountFor(counts, "watched", "movie"), 200);
+  assert.equal(mediaCountFor(counts, "watched", "tv"), 50);
+  assert.equal(mediaCountFor(counts, "watchlist", "movie"), 12);
+  assert.equal(mediaCountFor(counts, "watchlist", "tv"), 3);
+  assert.equal(mediaCountFor(counts, "liked", "movie"), 7);
+  assert.equal(mediaCountFor(counts, "liked", "tv"), 9);
+});
+
+test("mediaCountFor: missing fields count as 0 (older profile payloads)", () => {
+  assert.equal(mediaCountFor({}, "watched", "movie"), 0);
+  assert.equal(mediaCountFor({ likedSeries: 4 }, "liked", "tv"), 4);
+  assert.equal(mediaCountFor({ likedSeries: 4 }, "liked", "movie"), 0);
 });
 
 // ── follow optimistic / rollback ────────────────────────────────────────────

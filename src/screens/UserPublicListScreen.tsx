@@ -96,7 +96,7 @@ const LoadingWrap = styled.View`
 `;
 
 export function UserPublicListScreen({ route, navigation }: Props) {
-  const { userId, list, title } = route.params;
+  const { userId, list, title, media } = route.params;
   const { t } = useTranslation();
   const currentTheme = useTheme();
   const [items, setItems] = useState<PublicListItem[]>([]);
@@ -112,7 +112,7 @@ export function UserPublicListScreen({ route, navigation }: Props) {
 
   const load = useCallback(async () => {
     try {
-      const rows = await getUserPublicList({ userId, list, limit: PAGE_SIZE });
+      const rows = await getUserPublicList({ userId, list, media: media ?? null, limit: PAGE_SIZE });
       reachedEnd.current = rows.length < PAGE_SIZE;
       setItems(rows);
     } catch {
@@ -120,7 +120,7 @@ export function UserPublicListScreen({ route, navigation }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [userId, list]);
+  }, [userId, list, media]);
 
   useEffect(() => {
     void load();
@@ -165,7 +165,13 @@ export function UserPublicListScreen({ route, navigation }: Props) {
     try {
       // Offset paging (not a timestamp keyset): Letterboxd/backfill rows share an
       // identical collected_at, so a `< before` cursor would skip every tied row.
-      const next = await getUserPublicList({ userId, list, offset: items.length, limit: PAGE_SIZE });
+      const next = await getUserPublicList({
+        userId,
+        list,
+        media: media ?? null,
+        offset: items.length,
+        limit: PAGE_SIZE,
+      });
       reachedEnd.current = next.length < PAGE_SIZE;
       setItems((current) => [...current, ...next]);
     } catch {
@@ -173,7 +179,7 @@ export function UserPublicListScreen({ route, navigation }: Props) {
     } finally {
       setLoadingMore(false);
     }
-  }, [items, list, loadingMore, userId]);
+  }, [items, list, loadingMore, media, userId]);
 
   const openMedia = useCallback(
     (item: PublicListItem) => {

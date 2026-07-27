@@ -104,6 +104,14 @@ export type PublicProfileCounts = {
   liked: number;
   followers: number;
   following: number;
+  // Per-media-type breakdown (additive; older callers ignore these). Lets the
+  // profile sections show accurate Movies/Series counts without fetching rows.
+  watchedMovies: number;
+  watchedSeries: number;
+  watchlistMovies: number;
+  watchlistSeries: number;
+  likedMovies: number;
+  likedSeries: number;
 };
 
 export type PublicProfile = {
@@ -149,6 +157,12 @@ export async function getPublicProfile(userId: string): Promise<PublicProfile | 
       liked: Number(counts.liked ?? 0),
       followers: Number(counts.followers ?? 0),
       following: Number(counts.following ?? 0),
+      watchedMovies: Number(counts.watchedMovies ?? 0),
+      watchedSeries: Number(counts.watchedSeries ?? 0),
+      watchlistMovies: Number(counts.watchlistMovies ?? 0),
+      watchlistSeries: Number(counts.watchlistSeries ?? 0),
+      likedMovies: Number(counts.likedMovies ?? 0),
+      likedSeries: Number(counts.likedSeries ?? 0),
     },
   };
 }
