@@ -32,6 +32,32 @@ export function splitHydratableIds(rows: readonly HydratableRow[]): SplitIds {
   return { movieIds, seriesIds };
 }
 
+export type PublicListKind = "watched" | "watchlist" | "liked";
+
+export type MediaCounts = {
+  watchedMovies: number;
+  watchedSeries: number;
+  watchlistMovies: number;
+  watchlistSeries: number;
+  likedMovies: number;
+  likedSeries: number;
+};
+
+/**
+ * The accurate per-(section, media) total from the server-side profile counts,
+ * so a section header shows the real number ("200 movies") without fetching a
+ * single row. Missing fields count as 0.
+ */
+export function mediaCountFor(
+  counts: Partial<MediaCounts>,
+  kind: PublicListKind,
+  filter: MediaKind
+): number {
+  if (kind === "watched") return (filter === "movie" ? counts.watchedMovies : counts.watchedSeries) ?? 0;
+  if (kind === "watchlist") return (filter === "movie" ? counts.watchlistMovies : counts.watchlistSeries) ?? 0;
+  return (filter === "movie" ? counts.likedMovies : counts.likedSeries) ?? 0;
+}
+
 export type FollowableProfile = {
   isFollowing: boolean;
   counts: { followers: number };
