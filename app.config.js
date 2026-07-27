@@ -2,18 +2,20 @@ const baseConfig = {
   name: "StreamBox",
   slug: "streambox",
   scheme: "streambox",
-  version: "1.3.0",
-  // "1.3.0" is a FOURTH, isolated native runtime introduced for the
-  // player-autonomy features (branch v1.3.0), on top of everything in 1.2.0.
-  // Because EAS Update delivers a bundle only to installs on
-  // the matching runtimeVersion, this APK is fully isolated: no install exists
-  // on 1.3.0 until the new APK is built, so any `eas update` published from
-  // this branch is invisible to the 1.2.0 / 1.1.0 / 1.0.2 fleets and cannot
-  // break them. Per the 2026-07-25 fleet policy, new feature work targets THIS
-  // runtime only; older fleets get shared OTAs for provider/critical fixes
-  // exclusively. Publish OTAs for THIS APK with runtime 1.3.0; keep the older
-  // runtimes on their own tracks.
-  runtimeVersion: "1.3.0",
+  version: "1.2.0",
+  // "1.2.0" is a THIRD, isolated native runtime introduced for the Watch
+  // Together feature. It bundles native modules the older fleets do not ship —
+  // react-native-webrtc (peer-to-peer camera/mic) and expo-camera (polaroid
+  // stills) — on top of everything in 1.1.0. Because EAS Update delivers a
+  // bundle only to installs on the matching runtimeVersion, this APK is fully
+  // isolated: an OTA published here can NEVER reach the 1.1.0 nav-bar fleet or
+  // the 1.0.2 legacy fleet, so those old APKs cannot be broken by Watch
+  // Together code that calls native modules they don't have. Publish OTAs for
+  // THIS APK with runtime 1.2.0; keep 1.1.0 and 1.0.2 on their own tracks.
+  // NOTE: player-autonomy (auto-mark-watched, next-episode, episode picker) was
+  // folded into 1.2.0 (2026-07-28) — it is JS-only, no native change, so it
+  // ships as a normal 1.2.0 OTA. The abandoned 1.3.0 runtime was dropped.
+  runtimeVersion: "1.2.0",
   orientation: "portrait",
   userInterfaceStyle: "dark",
   icon: "./assets/app-icons/app-icon-1024.png",
