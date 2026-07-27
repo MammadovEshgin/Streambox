@@ -44,8 +44,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
 
 | Runtime | Branch | Fleet | Hard rule |
 |---------|--------|-------|-----------|
-| **1.3.0** | `v1.3.0` (cut from `v1.2.0` on 2026-07-25) | Player-autonomy APK — **not yet built** | Player autonomy (auto-mark-watched, next-episode, episode picker). Feature work targets this runtime ONLY (see fleet policy, rule 4). `runtimeVersion` is `"1.3.0"` on this branch. See **§2B**. The social follow platform that originally shipped here was removed 2026-07-28 (teardown migration `20260728090000`). |
-| **1.2.0** | `v1.2.0` (renamed 2026-07-23 from `release/1.2.0-watch-together`; folds in `feat/azerbaijani-classics`) | Watch Together APK build | Adds native `react-native-webrtc` + `expo-camera`. **Isolated — never ported back to 1.1.0/1.0.2.** `runtimeVersion` in `app.config.js` is a fixed `"1.2.0"`, so publishing from this branch auto-isolates. See **§2A**. |
+| **1.2.0** | `v1.2.0` (renamed 2026-07-23 from `release/1.2.0-watch-together`; folds in `feat/azerbaijani-classics`) | Watch Together APK build | Adds native `react-native-webrtc` + `expo-camera`. **Isolated — never ported back to 1.1.0/1.0.2.** `runtimeVersion` in `app.config.js` is a fixed `"1.2.0"`, so publishing from this branch auto-isolates. See **§2A**. **Player autonomy** (auto-mark-watched, next-episode, episode picker) was folded in 2026-07-28 (JS-only, ships as a 1.2.0 OTA); see **§2B**. The abandoned 1.3.0 social platform was removed the same day (teardown migration `20260728090000`). |
 | **1.1.0** | `release/1.1.0-navbar` (primary working branch) | Nav-bar APK build | Normal track. `runtimeVersion` in `app.config.js` is `1.1.0`. |
 | **1.0.2** | `release/1.0.2-legacy` | Legacy fleet, **no nav-bar** | **MUST NEVER contain nav-bar code** (see below). |
 
@@ -63,7 +62,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
    It must print nothing.
 2. **Any change that adds or upgrades a native module cannot go OTA.** It requires a new native build **and** a `runtimeVersion` bump (e.g. `1.2.0`). Do **not** reuse `1.1.0` for a build that adds a native module — existing `1.1.0` installs would crash on the next OTA when they call the missing module. Prefer pure-JS solutions to stay OTA-deliverable (this is why the loader was rebuilt with SVG+Reanimated instead of Lottie).
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
-4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — starting with **1.3.0** (branch `v1.3.0`, player autonomy, new APK). Older runtimes (1.0.2 / 1.1.0 / 1.2.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
+4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
 ### Current deployed state (last updated 2026-07-23, 1.2.0 UX + stability batch)
 
@@ -291,12 +290,14 @@ Implemented from the technical audit (`outputs/shared-sessions-tech-review-2026-
 
 ---
 
-## 2B. Player autonomy — runtime 1.3.0
+## 2B. Player autonomy — part of runtime 1.2.0
 
-Runtime 1.3.0 (branch `v1.3.0`, cut from `v1.2.0` on 2026-07-25) ships **player
-autonomy** only: auto-mark-watched, the next-episode pill / auto-advance, and the
-in-player episode picker. New APK, `runtimeVersion "1.3.0"`; no native modules
-beyond the 1.2.0 stack.
+**Player autonomy** — auto-mark-watched, the next-episode pill / auto-advance,
+and the in-player episode picker — ships on the **1.2.0** runtime (branch
+`v1.2.0`). It is JS-only (no native modules beyond the 1.2.0 stack), so it goes
+out as a normal 1.2.0 OTA. It was built on the short-lived `v1.3.0` branch
+(2026-07-25 → 2026-07-28) and folded into `v1.2.0` when the separate 1.3.0
+runtime was abandoned; `v1.3.0` was then deleted.
 
 > **Social platform removed (2026-07-28).** An earlier iteration of 1.3.0 also
 > carried a Letterboxd-style social layer (usernames, a follow graph, an activity
