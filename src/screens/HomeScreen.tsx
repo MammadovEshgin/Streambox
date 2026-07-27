@@ -599,7 +599,6 @@ export function HomeScreen({ navigation }: HomeScreenProps) {
             onOpenFilter={() => setFilterVisible(true)}
             onSearchSubmit={handleSearchSubmit}
             onSelectItem={handleSelectItem}
-            onSelectPerson={(userId) => navigation.navigate("UserProfile", { userId })}
             hasActiveFilters={checkActiveFilters(filters)}
           />
 

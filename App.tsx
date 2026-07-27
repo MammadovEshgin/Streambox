@@ -20,15 +20,7 @@ import styled from "styled-components/native";
 
 import { LaunchSplash, SplashLoading } from "./src/components/common/LaunchSplash";
 import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
-import { InviteHost } from "./src/components/social/InviteHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
-import {
-  clearUnreadBadge,
-  incrementUnreadBadge,
-  refreshUnreadBadge,
-} from "./src/services/notificationBadge";
-import { setSocialFeedCacheUser } from "./src/services/socialFeedCache";
-import { userInboxService } from "./src/services/userInboxService";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
 import { Navigation } from "./src/navigation/Navigation";
 import i18n from "./src/localization/i18n";
@@ -269,28 +261,6 @@ function AppShell() {
   const { session, isLoading: authLoading, signOut } = useAuth();
   const { isReady: isUserDataReady } = useUserDataSync();
   const navigationRef = useNavigationContainerRef();
-
-  // Start the app-wide realtime inbox (social notifications + Watch Together
-  // invites) whenever a user is signed in; tear it down on sign-out. Foreground
-  // lifecycle is handled inside the service.
-  const sessionUserId = session?.user?.id ?? null;
-  useEffect(() => {
-    setSocialFeedCacheUser(sessionUserId);
-    if (sessionUserId) {
-      userInboxService.start(sessionUserId);
-      // Drive the app-wide unread badge: baseline from the server, then bump on
-      // each realtime notification (the Notifications screen clears it on read).
-      void refreshUnreadBadge();
-      const off = userInboxService.addListener({ onNotification: () => incrementUnreadBadge() });
-      return () => {
-        off();
-        userInboxService.stop();
-      };
-    }
-    userInboxService.stop();
-    clearUnreadBadge();
-    return undefined;
-  }, [sessionUserId]);
   const { t } = useTranslation();
   const [launchPhase, setLaunchPhase] = useState<LaunchPhase>("loading");
   // The launch splash plays its full reveal regardless of how fast data loads;
@@ -649,9 +619,6 @@ function AppShell() {
           {/* Popups wait for the splash: a LiveOps modal is a native layer that
               would otherwise appear ABOVE the splash overlay mid-reveal. */}
           <LiveOpsHost enabled={isUserDataReady && splashComplete} />
-          {/* Incoming Watch Together invite popup — routes into the room on
-              accept via the navigation ref (same path as the deep link). */}
-          <InviteHost enabled={Boolean(session?.user) && splashComplete} navigationRef={navigationRef} />
         </StartupErrorBoundary>
       ) : null}
       {/* Top-most opaque overlay — content mounts and paints beneath it. */}

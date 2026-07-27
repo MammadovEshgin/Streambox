@@ -2,25 +2,19 @@ import { Feather, Ionicons } from "@expo/vector-icons";
 import { getFocusedRouteNameFromRoute } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "styled-components/native";
 
-import { getUnreadBadge, subscribeUnreadBadge } from "../services/notificationBadge";
-
-import { ActivityScreen } from "../screens/ActivityScreen";
 import { ActorDetailScreen } from "../screens/ActorDetailScreen";
 import { AzClassicDetailScreen } from "../screens/AzClassicDetailScreen";
 import { AzClassicsGridScreen } from "../screens/AzClassicsGridScreen";
 import { DiscoverGridScreen } from "../screens/DiscoverGridScreen";
-import { FollowListScreen } from "../screens/FollowListScreen";
 import { FranchiseCatalogScreen } from "../screens/FranchiseCatalogScreen";
 import { FranchiseTimelineScreen } from "../screens/FranchiseTimelineScreen";
 import { HomeScreen } from "../screens/HomeScreen";
 import { MovieDetailScreen } from "../screens/MovieDetailScreen";
 import { MoviesScreen } from "../screens/MoviesScreen";
-import { NotificationsScreen } from "../screens/NotificationsScreen";
 import { PlayerScreen } from "../screens/PlayerScreen";
 import { ProfileScreen } from "../screens/ProfileScreen";
 import { ProfileSeeAllScreen } from "../screens/ProfileSeeAllScreen";
@@ -29,8 +23,6 @@ import { SearchResultsScreen } from "../screens/SearchResultsScreen";
 import { SeriesDetailScreen } from "../screens/SeriesDetailScreen";
 import { SeriesScreen } from "../screens/SeriesScreen";
 import { StatsScreen } from "../screens/StatsScreen";
-import { UserProfileScreen } from "../screens/UserProfileScreen";
-import { UserPublicListScreen } from "../screens/UserPublicListScreen";
 import { WatchRoomScreen } from "../screens/WatchRoomScreen";
 
 import { WatchedGridScreen } from "../screens/WatchedGridScreen";
@@ -56,9 +48,6 @@ function HomeStackScreen() {
       <HomeStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <HomeStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <HomeStack.Screen name="AzClassicsGrid" component={AzClassicsGridScreen} />
-      <HomeStack.Screen name="UserProfile" component={UserProfileScreen} />
-      <HomeStack.Screen name="FollowList" component={FollowListScreen} />
-      <HomeStack.Screen name="UserPublicList" component={UserPublicListScreen} />
       <HomeStack.Screen name="Player" component={PlayerScreen} />
       <HomeStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </HomeStack.Navigator>
@@ -78,9 +67,6 @@ function MoviesStackScreen() {
       <MoviesStack.Screen name="ActorDetail" component={ActorDetailScreen} />
       <MoviesStack.Screen name="AzClassicDetail" component={AzClassicDetailScreen} />
       <MoviesStack.Screen name="AzClassicsGrid" component={AzClassicsGridScreen} />
-      <MoviesStack.Screen name="UserProfile" component={UserProfileScreen} />
-      <MoviesStack.Screen name="FollowList" component={FollowListScreen} />
-      <MoviesStack.Screen name="UserPublicList" component={UserPublicListScreen} />
       <MoviesStack.Screen name="Player" component={PlayerScreen} />
       <MoviesStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </MoviesStack.Navigator>
@@ -96,9 +82,6 @@ function SeriesStackScreen() {
       <SeriesStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <SeriesStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <SeriesStack.Screen name="ActorDetail" component={ActorDetailScreen} />
-      <SeriesStack.Screen name="UserProfile" component={UserProfileScreen} />
-      <SeriesStack.Screen name="FollowList" component={FollowListScreen} />
-      <SeriesStack.Screen name="UserPublicList" component={UserPublicListScreen} />
       <SeriesStack.Screen name="Player" component={PlayerScreen} />
       <SeriesStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </SeriesStack.Navigator>
@@ -115,11 +98,6 @@ function ProfileStackScreen() {
       <ProfileStack.Screen name="MovieDetail" component={MovieDetailScreen} />
       <ProfileStack.Screen name="SeriesDetail" component={SeriesDetailScreen} />
       <ProfileStack.Screen name="ActorDetail" component={ActorDetailScreen} />
-      <ProfileStack.Screen name="UserProfile" component={UserProfileScreen} />
-      <ProfileStack.Screen name="FollowList" component={FollowListScreen} />
-      <ProfileStack.Screen name="UserPublicList" component={UserPublicListScreen} />
-      <ProfileStack.Screen name="ActivityFeed" component={ActivityScreen} />
-      <ProfileStack.Screen name="Notifications" component={NotificationsScreen} />
       <ProfileStack.Screen name="Player" component={PlayerScreen} />
       <ProfileStack.Screen name="WatchRoomSetup" component={WatchRoomScreen} />
     </ProfileStack.Navigator>
@@ -141,7 +119,7 @@ function StatsStackScreen() {
   );
 }
 
-const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "AzClassicDetail", "AzClassicsGrid", "Player", "WatchRoomSetup", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline", "UserProfile", "FollowList", "UserPublicList", "ActivityFeed", "Notifications"]);
+const DETAIL_ROUTES = new Set(["MovieDetail", "SeriesDetail", "ActorDetail", "AzClassicDetail", "AzClassicsGrid", "Player", "WatchRoomSetup", "SearchResults", "ProfileSeeAll", "DiscoverGrid", "FranchiseCatalog", "FranchiseTimeline"]);
 const STACK_TABS = new Set<keyof RootTabParamList>(["Discover", "Movies", "Series", "Stats", "Profile"]);
 
 export function Navigation() {
@@ -150,11 +128,6 @@ export function Navigation() {
   const insets = useSafeAreaInsets();
   const tabBarBottomPadding = Math.max(insets.bottom + 5, 15);
   const tabBarHeight = 58 + tabBarBottomPadding;
-
-  // WhatsApp-style unread badge on the Profile tab; persists until the user
-  // opens Notifications (which clears the shared store).
-  const [unreadBadge, setUnreadBadge] = useState(getUnreadBadge());
-  useEffect(() => subscribeUnreadBadge(setUnreadBadge), []);
 
   return (
     <Tab.Navigator
@@ -183,21 +156,6 @@ export function Navigation() {
           letterSpacing: 0.2
         },
         tabBarLabel: t(`nav.${route.name.toLowerCase()}`),
-        tabBarBadge:
-          route.name === "Profile" && unreadBadge > 0
-            ? unreadBadge > 99
-              ? "99+"
-              : unreadBadge
-            : undefined,
-        tabBarBadgeStyle: {
-          backgroundColor: currentTheme.colors.primary,
-          color: currentTheme.colors.textOnPrimary,
-          fontSize: 10,
-          fontFamily: currentTheme.typography.MetaSmall.fontFamily,
-          minWidth: 16,
-          height: 16,
-          lineHeight: 15
-        },
         tabBarIcon: ({ color, focused }) => {
           const ioniconsMap: Partial<Record<keyof RootTabParamList, [keyof typeof Ionicons.glyphMap, keyof typeof Ionicons.glyphMap]>> = {
             Movies: ["film-outline", "film"],

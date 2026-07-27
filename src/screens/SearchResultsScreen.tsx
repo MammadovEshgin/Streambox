@@ -3,11 +3,10 @@ import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, ScrollView, View } from "react-native";
+import { Pressable, View } from "react-native";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import styled, { useTheme } from "styled-components/native";
 
-import { searchUsers, type PeopleSearchResult } from "../api/social";
 import {
   DiscoverFilters,
   MediaItem,
@@ -21,7 +20,6 @@ import { formatRating } from "../api/mediaFormatting";
 import { CachedRemoteImage } from "../components/common/CachedRemoteImage";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
-import { SocialAvatar } from "../components/social/SocialAvatar";
 import { HomeStackParamList } from "../navigation/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
@@ -261,38 +259,6 @@ const FoundSubtitle = styled.Text`
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
 
-const PeopleSection = styled.View`
-  padding: 12px 0 8px;
-`;
-
-const PeopleSectionTitle = styled.Text`
-  padding: 0 16px 10px;
-  color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: Outfit_700Bold;
-  font-size: 15px;
-`;
-
-const PersonCard = styled.Pressable`
-  width: 76px;
-  align-items: center;
-  margin-right: 12px;
-`;
-
-const PersonName = styled.Text`
-  margin-top: 6px;
-  color: ${({ theme }) => theme.colors.textPrimary};
-  font-family: Outfit_500Medium;
-  font-size: 12px;
-  text-align: center;
-`;
-
-const PersonHandle = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
-  font-family: Outfit_400Regular;
-  font-size: 11px;
-  text-align: center;
-`;
-
 type SearchResultsScreenProps = NativeStackScreenProps<HomeStackParamList, "SearchResults">;
 
 export function SearchResultsScreen({ navigation, route }: SearchResultsScreenProps) {
@@ -307,10 +273,6 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [people, setPeople] = useState<PeopleSearchResult[]>([]);
-
-  // A query starting with "@" searches PEOPLE only (media is skipped).
-  const isPeopleOnly = !!query && query.trim().startsWith("@");
 
   const fetchResults = useCallback(
     async (page: number) => {
@@ -342,13 +304,6 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
   const loadInitial = useCallback(async () => {
     setIsLoading(true);
     setLoadFailed(false);
-    // "@handle" queries are people-only — don't run a media search.
-    if (isPeopleOnly) {
-      setResults([]);
-      setTotalPages(0);
-      setIsLoading(false);
-      return;
-    }
     try {
       const response = await fetchResults(1);
       setResults(response.items);
@@ -362,31 +317,11 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
     } finally {
       setIsLoading(false);
     }
-  }, [fetchResults, isPeopleOnly]);
+  }, [fetchResults]);
 
   useEffect(() => {
     void loadInitial();
   }, [loadInitial, language]);
-
-  // People search runs alongside media whenever there's a text query. Guards
-  // against stale responses when the query changes.
-  useEffect(() => {
-    if (!query) {
-      setPeople([]);
-      return;
-    }
-    let cancelled = false;
-    void searchUsers(query)
-      .then((rows) => {
-        if (!cancelled) setPeople(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setPeople([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [query]);
 
   const loadMore = useCallback(async () => {
     if (isLoadingMore || currentPage >= totalPages) return;
@@ -413,36 +348,6 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
     },
     [navigation]
   );
-
-  const navigateToPerson = useCallback(
-    (userId: string) => navigation.navigate("UserProfile", { userId }),
-    [navigation]
-  );
-
-  const peopleRow =
-    people.length > 0 ? (
-      <PeopleSection>
-        <PeopleSectionTitle>{t("social.peopleSectionTitle")}</PeopleSectionTitle>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ paddingHorizontal: 16 }}
-        >
-          {people.map((person) => (
-            <PersonCard key={person.userId} onPress={() => navigateToPerson(person.userId)}>
-              <SocialAvatar
-                avatarPath={person.avatarPath}
-                avatarVersion={person.avatarVersion}
-                displayName={person.displayName}
-                size={56}
-              />
-              <PersonName numberOfLines={1}>{person.displayName}</PersonName>
-              {person.username ? <PersonHandle numberOfLines={1}>@{person.username}</PersonHandle> : null}
-            </PersonCard>
-          ))}
-        </ScrollView>
-      </PeopleSection>
-    ) : null;
 
   const renderItem = useCallback(
     ({ item, index }: ListRenderItemInfo<MediaItem>) => {
@@ -515,7 +420,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
         </ResultCount>
       </Header>
 
-      {loadFailed && people.length === 0 ? (
+      {loadFailed ? (
         <EmptyContainer entering={FadeIn.duration(400)}>
           <EmptyIconCircle>
             <Feather name="wifi-off" size={32} color={currentTheme.colors.textSecondary} />
@@ -529,7 +434,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
             <RetryActionText>{t("common.retry")}</RetryActionText>
           </RetryActionButton>
         </EmptyContainer>
-      ) : results.length === 0 && people.length === 0 ? (
+      ) : results.length === 0 ? (
         <EmptyContainer entering={FadeIn.duration(400)}>
           <EmptyIconCircle>
             <Feather name="film" size={32} color={currentTheme.colors.textSecondary} />
@@ -556,7 +461,6 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
         </EmptyContainer>
       ) : (
         <ListContainer>
-          {peopleRow}
           {query && results.length > 0 && (
             <FoundHeader entering={FadeIn.duration(300)}>
               <FoundTitle>{t("search.resultsFor", { query })}</FoundTitle>
