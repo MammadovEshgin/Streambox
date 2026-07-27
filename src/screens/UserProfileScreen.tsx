@@ -1,8 +1,8 @@
 import { Feather } from "@expo/vector-icons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Image, Pressable, ScrollView } from "react-native";
+import { Alert, FlatList, type ListRenderItemInfo } from "react-native";
 import styled, { useTheme } from "styled-components/native";
 
 import {
@@ -10,100 +10,187 @@ import {
   getPublicProfile,
   getUserPublicList,
   resolveProfileAssetUrl,
+  SocialRpcError,
   unfollowUser,
   type PublicListItem,
   type PublicListKind,
   type PublicProfile,
 } from "../api/social";
-import { getTmdbImageUrl } from "../api/tmdb";
+import type { MediaItem } from "../api/tmdb";
+import { MediaCard } from "../components/home/MediaCard";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { SocialAvatar } from "../components/social/SocialAvatar";
+import { formatLocalizedDate } from "../localization/format";
+import i18n from "../localization/i18n";
+import { normalizeAppLanguage } from "../localization/types";
+import {
+  getHydratedMediaItemsFromCache,
+  getSharedHydratedMediaCache,
+  hydrateMediaIds,
+} from "../services/mediaHydration";
+import {
+  optimisticFollowState,
+  rollbackFollowState,
+  splitHydratableIds,
+} from "../utils/socialProfile";
+import { formatHandle } from "../utils/usernames";
 import type { HomeStackParamList } from "../navigation/types";
 
 type Props = NativeStackScreenProps<HomeStackParamList, "UserProfile">;
 
-const HeaderBar = styled.View`
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 5;
-  padding: 8px 12px;
+// â”€â”€ Layout constants (mirrors ProfileScreen) â”€â”€
+const BANNER_HEIGHT = 160;
+const AVATAR_SIZE = 80;
+const AVATAR_OVERLAP = AVATAR_SIZE / 2;
+const LIST_FETCH_LIMIT = 40;
+
+// â”€â”€ Styled components (kept visually identical to the signed-in ProfileScreen) â”€â”€
+const Content = styled.ScrollView.attrs({
+  showsVerticalScrollIndicator: false,
+})`
+  flex: 1;
 `;
 
-const CircleButton = styled.Pressable`
-  width: 38px;
-  height: 38px;
-  border-radius: 19px;
+const Header = styled.View`
+  padding-bottom: 12px;
+`;
+
+const BannerWrap = styled.View`
+  height: ${BANNER_HEIGHT}px;
+  background-color: ${({ theme }) => theme.colors.surface};
+  overflow: hidden;
+`;
+
+const BannerImage = styled.Image`
+  width: 100%;
+  height: 100%;
+`;
+
+const BannerPlaceholder = styled.View`
+  flex: 1;
   align-items: center;
   justify-content: center;
-  background-color: rgba(0, 0, 0, 0.5);
-`;
-
-const Banner = styled.View`
-  width: 100%;
-  height: 150px;
   background-color: ${({ theme }) => theme.colors.surfaceRaised};
 `;
 
-const AvatarWrap = styled.View`
-  margin-top: -36px;
-  padding-left: 16px;
+const BackButton = styled.Pressable`
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 10;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 18px;
+  background-color: rgba(0, 0, 0, 0.5);
 `;
 
-const Identity = styled.View`
-  padding: 8px 16px 0;
+const AvatarArea = styled.View`
+  margin-top: -${AVATAR_OVERLAP}px;
+  padding-horizontal: 16px;
+  flex-direction: row;
+  align-items: flex-start;
 `;
 
-const DisplayName = styled.Text`
-  color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: -0.4px;
+const AvatarCircle = styled.View`
+  width: ${AVATAR_SIZE}px;
+  height: ${AVATAR_SIZE}px;
+  border-radius: ${AVATAR_SIZE / 2}px;
+  overflow: hidden;
+  background-color: ${({ theme }) => theme.colors.background};
+  border-width: 3px;
+  border-color: ${({ theme }) => theme.colors.background};
+  align-items: center;
+  justify-content: center;
 `;
 
-const Handle = styled.Text`
-  margin-top: 2px;
-  color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 13px;
-`;
-
-const Bio = styled.Text`
+const ProfileInfo = styled.View`
+  padding-horizontal: 16px;
   margin-top: 10px;
+`;
+
+const ProfileTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
+  font-family: Outfit_700Bold;
+  font-size: 22px;
+  letter-spacing: -0.5px;
+  margin-top: 4px;
+`;
+
+const ProfileHandle = styled.Text`
+  color: ${({ theme }) => theme.colors.textSecondary};
+  font-family: Outfit_500Medium;
+  font-size: 13px;
+  margin-top: 2px;
+`;
+
+const ProfileBio = styled.Text`
+  margin-top: 8px;
+  color: #ffffff;
+  font-family: Outfit_400Regular;
+  font-size: 15px;
+  line-height: 22px;
+`;
+
+const MetaStack = styled.View`
+  align-items: flex-start;
+  margin-top: 16px;
+  gap: 8px;
+`;
+
+const MetaItem = styled.View`
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding-vertical: 2px;
+`;
+
+const MetaText = styled.Text`
+  color: rgba(255, 255, 255, 0.7);
+  font-family: Outfit_500Medium;
   font-size: 14px;
-  line-height: 20px;
 `;
 
 const StatsRow = styled.View`
   flex-direction: row;
-  gap: 22px;
-  margin-top: 14px;
-  padding: 0 16px;
+  justify-content: flex-start;
+  gap: 20px;
+  margin-top: 20px;
+  padding-bottom: 20px;
+  border-bottom-width: 1px;
+  border-bottom-color: ${({ theme }) => theme.colors.border};
 `;
 
-const StatPill = styled.Pressable`
+const StatItem = styled.View`
   flex-direction: row;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
 `;
 
-const StatValue = styled.Text`
+const StatNumber = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 16px;
-  font-weight: 700;
+  font-family: Outfit_700Bold;
+  font-size: 15px;
 `;
 
 const StatLabel = styled.Text`
   color: ${({ theme }) => theme.colors.textSecondary};
-  font-size: 13px;
+  font-family: Outfit_400Regular;
+  font-size: 14px;
+`;
+
+const FollowStatButton = styled.Pressable`
+  align-items: center;
+  justify-content: center;
+  padding-vertical: 1px;
 `;
 
 const FollowButton = styled.Pressable<{ $following: boolean }>`
-  margin: 16px 16px 4px;
+  margin: 16px 16px 0;
   min-height: 44px;
-  border-radius: 12px;
+  border-radius: 5px;
   align-items: center;
   justify-content: center;
   border-width: 1px;
@@ -113,59 +200,116 @@ const FollowButton = styled.Pressable<{ $following: boolean }>`
 
 const FollowLabel = styled.Text<{ $following: boolean }>`
   color: ${({ $following, theme }) => ($following ? theme.colors.textPrimary : theme.colors.textOnPrimary)};
+  font-family: Outfit_700Bold;
   font-size: 14px;
-  font-weight: 700;
 `;
 
-const Rail = styled.View`
-  margin-top: 22px;
+const SectionWrap = styled.View`
+  margin-top: 30px;
+  padding-horizontal: 16px;
 `;
 
-const RailHeader = styled.View`
+const SectionHeader = styled.View`
   flex-direction: row;
   align-items: baseline;
-  justify-content: space-between;
-  padding: 0 16px 10px;
+  margin-bottom: 16px;
 `;
 
-const RailTitle = styled.Text`
+const SectionTitle = styled.Text`
   color: ${({ theme }) => theme.colors.textPrimary};
-  font-size: 16px;
-  font-weight: 700;
+  font-family: Outfit_700Bold;
+  font-size: 22px;
+  line-height: 28px;
+  letter-spacing: -0.6px;
 `;
 
-const RailCount = styled.Text`
-  color: ${({ theme }) => theme.colors.textSecondary};
+const SectionDot = styled.View`
+  width: 4px;
+  height: 4px;
+  border-radius: 2px;
+  background-color: ${({ theme }) => theme.colors.primary};
+  margin-horizontal: 8px;
+  margin-bottom: 3px;
+`;
+
+const SectionMeta = styled.Text`
+  color: rgba(255, 255, 255, 0.3);
+  font-family: Outfit_500Medium;
   font-size: 13px;
 `;
 
-const RailSeeAll = styled.Pressable``;
+const SeeAllButton = styled.Pressable`
+  margin-left: auto;
+  padding: 2px 0;
+`;
 
-const RailSeeAllText = styled.Text`
+const SeeAllText = styled.Text`
   color: ${({ theme }) => theme.colors.primary};
+  font-family: Outfit_600SemiBold;
   font-size: 13px;
-  font-weight: 600;
 `;
 
-const PosterCard = styled.Pressable`
-  width: 96px;
-  margin-right: 10px;
+const ToggleRow = styled.View`
+  flex-direction: row;
+  gap: 6px;
+  margin-bottom: 14px;
 `;
 
-const PosterFrame = styled.View`
-  width: 96px;
-  height: 144px;
-  border-radius: 8px;
-  overflow: hidden;
-  background-color: ${({ theme }) => theme.colors.surface};
+const ToggleChip = styled.Pressable<{ $active: boolean }>`
+  padding: 6px 14px;
+  border-radius: 5px;
+  background-color: ${({ $active, theme }) => ($active ? `${theme.colors.primary}15` : "rgba(255,255,255,0.04)")};
   border-width: 1px;
-  border-color: ${({ theme }) => theme.colors.border};
+  border-color: ${({ $active, theme }) => ($active ? `${theme.colors.primary}30` : "transparent")};
 `;
 
-const RailEmpty = styled.Text`
-  padding: 0 16px;
-  color: ${({ theme }) => theme.colors.textSecondary};
+const ToggleLabel = styled.Text<{ $active: boolean }>`
+  color: ${({ $active, theme }) => ($active ? theme.colors.primary : "rgba(255,255,255,0.35)")};
+  font-family: Outfit_600SemiBold;
+  font-size: 12px;
+  letter-spacing: 0.2px;
+`;
+
+const RailWrap = styled.View`
+  height: 282px;
+`;
+
+const RailCardWrap = styled.View`
+  margin-right: 12px;
+`;
+
+const EmptySection = styled.View`
+  height: 140px;
+  border-radius: 5px;
+  border-width: 1px;
+  border-color: rgba(255, 255, 255, 0.06);
+  background-color: rgba(255, 255, 255, 0.02);
+  align-items: center;
+  justify-content: center;
+`;
+
+const LoadingSection = styled.View`
+  height: 282px;
+  border-radius: 5px;
+  border-width: 1px;
+  border-color: rgba(255, 255, 255, 0.06);
+  background-color: rgba(255, 255, 255, 0.02);
+  align-items: center;
+  justify-content: center;
+`;
+
+const EmptyIcon = styled.View`
+  margin-bottom: 8px;
+  opacity: 0.3;
+`;
+
+const EmptyText = styled.Text`
+  color: rgba(255, 255, 255, 0.25);
   font-size: 13px;
+`;
+
+const BottomSpacer = styled.View`
+  height: 40px;
 `;
 
 const LoadingWrap = styled.View`
@@ -189,17 +333,44 @@ const ErrorText = styled.Text`
 `;
 
 type Lists = Record<PublicListKind, PublicListItem[]>;
+type MediaFilter = "movie" | "tv";
+
+function formatJoinedDate(iso: string): string {
+  if (!iso) return "";
+  try {
+    return i18n.t("profile.joinedOn", {
+      date: formatLocalizedDate(new Date(iso), { day: "numeric", month: "long", year: "numeric" }),
+    });
+  } catch {
+    return "";
+  }
+}
 
 export function UserProfileScreen({ route, navigation }: Props) {
   const { userId } = route.params;
-  const { t } = useTranslation();
+  const { t, i18n: translationI18n } = useTranslation();
   const currentTheme = useTheme();
+
   const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [bannerUri, setBannerUri] = useState<string | null>(null);
   const [lists, setLists] = useState<Lists>({ watched: [], watchlist: [], liked: [] });
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [followBusy, setFollowBusy] = useState(false);
+
+  const [watchedFilter, setWatchedFilter] = useState<MediaFilter>("movie");
+  const [watchlistFilter, setWatchlistFilter] = useState<MediaFilter>("movie");
+  const [likedFilter, setLikedFilter] = useState<MediaFilter>("movie");
+
+  // Posters are hydrated by tmdbId (the public-list snapshot often has no poster
+  // for Letterboxd-imported / backfilled / detail-less rows) exactly like the
+  // signed-in profile does, so a peer's lists never render as blank cards.
+  const cacheRef = useRef(getSharedHydratedMediaCache());
+  const [hydrationTick, setHydrationTick] = useState(0);
+  const resolvedContentLanguage = useMemo(
+    () => normalizeAppLanguage(translationI18n.resolvedLanguage ?? translationI18n.language),
+    [translationI18n.language, translationI18n.resolvedLanguage]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -209,9 +380,9 @@ export function UserProfileScreen({ route, navigation }: Props) {
       try {
         const [prof, watched, watchlist, liked] = await Promise.all([
           getPublicProfile(userId),
-          getUserPublicList({ userId, list: "watched", limit: 24 }),
-          getUserPublicList({ userId, list: "watchlist", limit: 24 }),
-          getUserPublicList({ userId, list: "liked", limit: 24 }),
+          getUserPublicList({ userId, list: "watched", limit: LIST_FETCH_LIMIT }),
+          getUserPublicList({ userId, list: "watchlist", limit: LIST_FETCH_LIMIT }),
+          getUserPublicList({ userId, list: "liked", limit: LIST_FETCH_LIMIT }),
         ]);
         if (cancelled) return;
         if (!prof) {
@@ -236,88 +407,161 @@ export function UserProfileScreen({ route, navigation }: Props) {
     };
   }, [userId]);
 
+  // Warm the shared hydrated-media cache from every list, then bump the tick so
+  // the memoised rails re-read the now-warmer cache.
+  useEffect(() => {
+    const movieSet = new Set<number>();
+    const seriesSet = new Set<number>();
+    (["watched", "watchlist", "liked"] as const).forEach((kind) => {
+      const { movieIds, seriesIds } = splitHydratableIds(lists[kind]);
+      movieIds.forEach((id) => movieSet.add(id));
+      seriesIds.forEach((id) => seriesSet.add(id));
+    });
+    if (movieSet.size === 0 && seriesSet.size === 0) return;
+
+    let cancelled = false;
+    void hydrateMediaIds([...movieSet], [...seriesSet], cacheRef.current)
+      .then(() => {
+        if (!cancelled) startTransition(() => setHydrationTick((tick) => tick + 1));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [lists, resolvedContentLanguage]);
+
   const toggleFollow = useCallback(async () => {
     if (!profile || followBusy) return;
     const next = !profile.isFollowing;
     setFollowBusy(true);
-    setProfile((current) =>
-      current
-        ? {
-            ...current,
-            isFollowing: next,
-            counts: { ...current.counts, followers: current.counts.followers + (next ? 1 : -1) },
-          }
-        : current
-    );
+    setProfile((current) => (current ? optimisticFollowState(current, next) : current));
     try {
       if (next) await followUser(profile.userId);
       else await unfollowUser(profile.userId);
-    } catch {
-      setProfile((current) =>
-        current
-          ? {
-              ...current,
-              isFollowing: !next,
-              counts: { ...current.counts, followers: current.counts.followers + (next ? -1 : 1) },
-            }
-          : current
+    } catch (error) {
+      // Roll the optimistic update back and tell the user why — a silent revert
+      // (count flicks to 1 then back to 0) is worse than an explicit reason.
+      setProfile((current) => (current ? rollbackFollowState(current, next) : current));
+      const hint = error instanceof SocialRpcError ? error.hint : null;
+      Alert.alert(
+        t("social.followErrorTitle"),
+        hint === "rate_limited" ? t("social.followRateLimited") : t("social.followFailed")
       );
     } finally {
       setFollowBusy(false);
     }
-  }, [followBusy, profile]);
+  }, [followBusy, profile, t]);
 
   const openMedia = useCallback(
-    (item: PublicListItem) => {
-      if (item.mediaType === "movie") navigation.navigate("MovieDetail", { movieId: String(item.tmdbId) });
-      else navigation.navigate("SeriesDetail", { seriesId: String(item.tmdbId) });
+    (item: MediaItem) => {
+      if (item.mediaType === "movie") navigation.navigate("MovieDetail", { movieId: String(item.id) });
+      else navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
     },
     [navigation]
   );
 
-  const renderRail = (
-    titleKey: string,
-    kind: PublicListKind,
-    list: PublicListItem[],
-    emptyKey: string,
-    total: number
-  ) => (
-    <Rail>
-      <RailHeader>
-        <RailTitle>{t(titleKey)}</RailTitle>
-        {total > list.length && profile ? (
-          <RailSeeAll
-            onPress={() =>
-              navigation.navigate("UserPublicList", { userId: profile.userId, list: kind, title: t(titleKey) })
-            }
-          >
-            <RailSeeAllText>{t("social.seeAll")}</RailSeeAllText>
-          </RailSeeAll>
-        ) : (
-          <RailCount>{total}</RailCount>
-        )}
-      </RailHeader>
-      {list.length === 0 ? (
-        <RailEmpty>{t(emptyKey)}</RailEmpty>
-      ) : (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16 }}>
-          {list.map((item) => (
-            <PosterCard key={`${item.mediaType}-${item.tmdbId}`} onPress={() => openMedia(item)}>
-              <PosterFrame>
-                {item.posterPath ? (
-                  <Image
-                    source={{ uri: getTmdbImageUrl(item.posterPath, "w185") ?? undefined }}
-                    style={{ width: 96, height: 144 }}
-                    resizeMode="cover"
-                  />
-                ) : null}
-              </PosterFrame>
-            </PosterCard>
-          ))}
-        </ScrollView>
-      )}
-    </Rail>
+  const renderCard = useCallback(
+    ({ item }: ListRenderItemInfo<MediaItem>) => (
+      <RailCardWrap>
+        <MediaCard item={item} onPress={() => openMedia(item)} />
+      </RailCardWrap>
+    ),
+    [openMedia]
   );
+  const keyExtractor = useCallback((item: MediaItem) => `${item.mediaType}-${item.id}`, []);
+
+  // Hydrated, filter-split section items (re-read as the cache warms / language
+  // changes). Depends on `lists` + `hydrationTick` so it fills in progressively.
+  const sectionItems = useMemo(() => {
+    const build = (kind: PublicListKind, filter: MediaFilter): MediaItem[] => {
+      const { movieIds, seriesIds } = splitHydratableIds(lists[kind]);
+      return filter === "movie"
+        ? getHydratedMediaItemsFromCache(movieIds, [], cacheRef.current)
+        : getHydratedMediaItemsFromCache([], seriesIds, cacheRef.current);
+    };
+    const expected = (kind: PublicListKind, filter: MediaFilter) => {
+      const { movieIds, seriesIds } = splitHydratableIds(lists[kind]);
+      return filter === "movie" ? movieIds.length : seriesIds.length;
+    };
+    return {
+      watched: { items: build("watched", watchedFilter), expected: expected("watched", watchedFilter) },
+      watchlist: { items: build("watchlist", watchlistFilter), expected: expected("watchlist", watchlistFilter) },
+      liked: { items: build("liked", likedFilter), expected: expected("liked", likedFilter) },
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lists, hydrationTick, resolvedContentLanguage, watchedFilter, watchlistFilter, likedFilter]);
+
+  const mediaLabel = useCallback(
+    (filter: MediaFilter) =>
+      filter === "movie" ? t("common.movies").toLowerCase() : t("common.series").toLowerCase(),
+    [t]
+  );
+
+  const renderSection = (
+    kind: PublicListKind,
+    titleKey: string,
+    filter: MediaFilter,
+    setFilter: (value: MediaFilter) => void,
+    emptyIcon: keyof typeof Feather.glyphMap,
+    emptyMovieKey: string,
+    emptySeriesKey: string
+  ) => {
+    const { items, expected } = sectionItems[kind];
+    return (
+      <SectionWrap>
+        <SectionHeader>
+          <SectionTitle>{t(titleKey)}</SectionTitle>
+          <SectionDot />
+          <SectionMeta>{t("profile.sectionCount", { count: items.length, label: mediaLabel(filter) })}</SectionMeta>
+          {profile && (
+            <SeeAllButton
+              onPress={() =>
+                navigation.navigate("UserPublicList", { userId: profile.userId, list: kind, title: t(titleKey) })
+              }
+            >
+              <SeeAllText>{t("common.seeAll")}</SeeAllText>
+            </SeeAllButton>
+          )}
+        </SectionHeader>
+        <ToggleRow>
+          <ToggleChip $active={filter === "movie"} onPress={() => setFilter("movie")}>
+            <ToggleLabel $active={filter === "movie"}>{t("common.movies")}</ToggleLabel>
+          </ToggleChip>
+          <ToggleChip $active={filter === "tv"} onPress={() => setFilter("tv")}>
+            <ToggleLabel $active={filter === "tv"}>{t("common.series")}</ToggleLabel>
+          </ToggleChip>
+        </ToggleRow>
+        {items.length === 0 ? (
+          expected > 0 ? (
+            <LoadingSection>
+              <MovieLoader />
+            </LoadingSection>
+          ) : (
+            <EmptySection>
+              <EmptyIcon>
+                <Feather name={emptyIcon} size={24} color={currentTheme.colors.textSecondary} />
+              </EmptyIcon>
+              <EmptyText>{filter === "movie" ? t(emptyMovieKey) : t(emptySeriesKey)}</EmptyText>
+            </EmptySection>
+          )
+        ) : (
+          <RailWrap>
+            <FlatList
+              data={items}
+              horizontal
+              initialNumToRender={4}
+              maxToRenderPerBatch={4}
+              windowSize={3}
+              removeClippedSubviews
+              keyExtractor={keyExtractor}
+              renderItem={renderCard}
+              showsHorizontalScrollIndicator={false}
+            />
+          </RailWrap>
+        )}
+      </SectionWrap>
+    );
+  };
 
   if (loading) {
     return (
@@ -332,11 +576,9 @@ export function UserProfileScreen({ route, navigation }: Props) {
   if (failed || !profile) {
     return (
       <SafeContainer>
-        <HeaderBar>
-          <CircleButton onPress={() => navigation.goBack()}>
-            <Feather name="arrow-left" size={20} color="#fff" />
-          </CircleButton>
-        </HeaderBar>
+        <BackButton onPress={() => navigation.goBack()}>
+          <Feather name="arrow-left" size={20} color="#fff" />
+        </BackButton>
         <ErrorWrap>
           <Feather name="user-x" size={34} color={currentTheme.colors.textSecondary} />
           <ErrorText>{t("social.profileLoadFailed")}</ErrorText>
@@ -345,55 +587,125 @@ export function UserProfileScreen({ route, navigation }: Props) {
     );
   }
 
+  const joinedText = formatJoinedDate(profile.joinedAt);
+
   return (
     <SafeContainer>
-      <HeaderBar>
-        <CircleButton onPress={() => navigation.goBack()}>
-          <Feather name="arrow-left" size={20} color="#fff" />
-        </CircleButton>
-      </HeaderBar>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 32 }}>
-        <Banner>
-          {bannerUri ? <Image source={{ uri: bannerUri }} style={{ width: "100%", height: 150 }} resizeMode="cover" /> : null}
-        </Banner>
-        <AvatarWrap>
-          <SocialAvatar
-            avatarPath={profile.avatarPath}
-            avatarVersion={profile.avatarVersion}
-            displayName={profile.displayName}
-            size={72}
-          />
-        </AvatarWrap>
+      <Content>
+        <Header>
+          <BannerWrap>
+            {bannerUri ? (
+              <BannerImage source={{ uri: bannerUri }} resizeMode="cover" />
+            ) : (
+              <BannerPlaceholder>
+                <Feather name="image" size={28} color={currentTheme.colors.textSecondary} />
+              </BannerPlaceholder>
+            )}
+          </BannerWrap>
+          <BackButton onPress={() => navigation.goBack()}>
+            <Feather name="arrow-left" size={20} color="#fff" />
+          </BackButton>
 
-        <Identity>
-          <DisplayName numberOfLines={1}>{profile.displayName}</DisplayName>
-          {profile.username ? <Handle numberOfLines={1}>@{profile.username}</Handle> : null}
-          {profile.bio ? <Bio numberOfLines={4}>{profile.bio}</Bio> : null}
-        </Identity>
+          <AvatarArea>
+            <AvatarCircle>
+              <SocialAvatar
+                avatarPath={profile.avatarPath}
+                avatarVersion={profile.avatarVersion}
+                displayName={profile.displayName}
+                size={AVATAR_SIZE - 6}
+              />
+            </AvatarCircle>
+          </AvatarArea>
 
-        <StatsRow>
-          <StatPill onPress={() => navigation.navigate("FollowList", { userId: profile.userId, kind: "followers" })}>
-            <StatValue>{profile.counts.followers}</StatValue>
-            <StatLabel>{t("social.followers")}</StatLabel>
-          </StatPill>
-          <StatPill onPress={() => navigation.navigate("FollowList", { userId: profile.userId, kind: "following" })}>
-            <StatValue>{profile.counts.following}</StatValue>
-            <StatLabel>{t("social.followingLabel")}</StatLabel>
-          </StatPill>
-        </StatsRow>
+          <ProfileInfo>
+            <ProfileTitle numberOfLines={1}>{profile.displayName}</ProfileTitle>
+            {!!profile.username && <ProfileHandle numberOfLines={1}>{formatHandle(profile.username)}</ProfileHandle>}
+            {!!profile.bio && <ProfileBio numberOfLines={4}>{profile.bio}</ProfileBio>}
 
-        {!profile.isSelf && (
-          <FollowButton $following={profile.isFollowing} onPress={toggleFollow} disabled={followBusy}>
-            <FollowLabel $following={profile.isFollowing}>
-              {profile.isFollowing ? t("social.following") : profile.followsMe ? t("social.followBack") : t("social.follow")}
-            </FollowLabel>
-          </FollowButton>
+            {(!!profile.location || !!joinedText) && (
+              <MetaStack>
+                {!!profile.location && (
+                  <MetaItem>
+                    <Feather name="map-pin" size={14} color={currentTheme.colors.primary} />
+                    <MetaText>{profile.location}</MetaText>
+                  </MetaItem>
+                )}
+                {!!joinedText && (
+                  <MetaItem>
+                    <Feather name="calendar" size={14} color={currentTheme.colors.primary} />
+                    <MetaText>{joinedText}</MetaText>
+                  </MetaItem>
+                )}
+              </MetaStack>
+            )}
+
+            <StatsRow>
+              <StatItem>
+                <StatNumber>{profile.counts.watched}</StatNumber>
+                <StatLabel>{t("profile.watched")}</StatLabel>
+              </StatItem>
+              <StatItem>
+                <StatNumber>{profile.counts.watchlist}</StatNumber>
+                <StatLabel>{t("profile.watchlist")}</StatLabel>
+              </StatItem>
+              <StatItem>
+                <StatNumber>{profile.counts.liked}</StatNumber>
+                <StatLabel>{t("profile.liked")}</StatLabel>
+              </StatItem>
+              <FollowStatButton
+                onPress={() => navigation.navigate("FollowList", { userId: profile.userId, kind: "followers" })}
+                accessibilityRole="button"
+                accessibilityLabel={`${t("social.followers")} · ${t("social.followingLabel")}`}
+                hitSlop={8}
+              >
+                <Feather name="users" size={18} color={currentTheme.colors.textPrimary} />
+              </FollowStatButton>
+            </StatsRow>
+          </ProfileInfo>
+
+          {!profile.isSelf && (
+            <FollowButton $following={profile.isFollowing} onPress={toggleFollow} disabled={followBusy}>
+              <FollowLabel $following={profile.isFollowing}>
+                {profile.isFollowing
+                  ? t("social.following")
+                  : profile.followsMe
+                    ? t("social.followBack")
+                    : t("social.follow")}
+              </FollowLabel>
+            </FollowButton>
+          )}
+        </Header>
+
+        {renderSection(
+          "watched",
+          "profile.watched",
+          watchedFilter,
+          setWatchedFilter,
+          "play-circle",
+          "profile.noMoviesWatchedYet",
+          "profile.noSeriesWatchedYet"
+        )}
+        {renderSection(
+          "watchlist",
+          "profile.watchlist",
+          watchlistFilter,
+          setWatchlistFilter,
+          "bookmark",
+          "profile.noMoviesInWatchlist",
+          "profile.noSeriesInWatchlist"
+        )}
+        {renderSection(
+          "liked",
+          "profile.liked",
+          likedFilter,
+          setLikedFilter,
+          "heart",
+          "profile.noMoviesLikedYet",
+          "profile.noSeriesLikedYet"
         )}
 
-        {renderRail("profile.watched", "watched", lists.watched, "social.emptyWatched", profile.counts.watched)}
-        {renderRail("profile.watchlist", "watchlist", lists.watchlist, "social.emptyWatchlist", profile.counts.watchlist)}
-        {renderRail("profile.liked", "liked", lists.liked, "social.emptyLiked", profile.counts.liked)}
-      </ScrollView>
+        <BottomSpacer />
+      </Content>
     </SafeContainer>
   );
 }

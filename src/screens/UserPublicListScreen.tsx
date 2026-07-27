@@ -1,14 +1,19 @@
 import { Feather } from "@expo/vector-icons";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Dimensions, FlatList, Image, ListRenderItemInfo } from "react-native";
 import styled, { useTheme } from "styled-components/native";
 
 import { getUserPublicList, type PublicListItem } from "../api/social";
-import { getTmdbImageUrl } from "../api/tmdb";
+import { getTmdbImageUrl, type MediaItem } from "../api/tmdb";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
+import {
+  getHydratedMediaItemsFromCache,
+  getSharedHydratedMediaCache,
+  hydrateMediaIds,
+} from "../services/mediaHydration";
 import type { HomeStackParamList } from "../navigation/types";
 
 type Props = NativeStackScreenProps<HomeStackParamList, "UserPublicList">;
@@ -99,6 +104,12 @@ export function UserPublicListScreen({ route, navigation }: Props) {
   const [loadingMore, setLoadingMore] = useState(false);
   const reachedEnd = useRef(false);
 
+  // Posters/titles come from TMDB by tmdbId, not the public-list snapshot: for
+  // watchlist/liked the snapshot is often empty (Letterboxd / backfill / in-app
+  // toggles that saved no details), so the raw rows would render as blank cards.
+  const cacheRef = useRef(getSharedHydratedMediaCache());
+  const [hydrationTick, setHydrationTick] = useState(0);
+
   const load = useCallback(async () => {
     try {
       const rows = await getUserPublicList({ userId, list, limit: PAGE_SIZE });
@@ -114,6 +125,39 @@ export function UserPublicListScreen({ route, navigation }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Warm the shared hydrated-media cache whenever the visible rows change.
+  useEffect(() => {
+    const movieIds: number[] = [];
+    const seriesIds: number[] = [];
+    for (const item of items) {
+      if (!Number.isFinite(item.tmdbId) || item.tmdbId <= 0) continue;
+      if (item.mediaType === "movie") movieIds.push(item.tmdbId);
+      else seriesIds.push(item.tmdbId);
+    }
+    if (movieIds.length === 0 && seriesIds.length === 0) return;
+    let cancelled = false;
+    void hydrateMediaIds(movieIds, seriesIds, cacheRef.current)
+      .then(() => {
+        if (!cancelled) setHydrationTick((tick) => tick + 1);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
+
+  const hydratedById = useMemo(() => {
+    const cached = getHydratedMediaItemsFromCache(
+      items.filter((item) => item.mediaType === "movie").map((item) => item.tmdbId),
+      items.filter((item) => item.mediaType === "tv").map((item) => item.tmdbId),
+      cacheRef.current
+    );
+    const map = new Map<string, MediaItem>();
+    for (const media of cached) map.set(`${media.mediaType}-${media.id}`, media);
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, hydrationTick]);
 
   const handleEndReached = useCallback(async () => {
     if (reachedEnd.current || loadingMore || items.length === 0) return;
@@ -140,7 +184,9 @@ export function UserPublicListScreen({ route, navigation }: Props) {
 
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<PublicListItem>) => {
-      const posterUri = getTmdbImageUrl(item.posterPath, "w342");
+      const hydrated = hydratedById.get(`${item.mediaType}-${item.tmdbId}`);
+      const posterUri = getTmdbImageUrl(hydrated?.posterPath ?? item.posterPath, "w342");
+      const title = hydrated?.title ?? item.title;
       return (
         <CardRoot onPress={() => openMedia(item)}>
           <PosterFrame>
@@ -148,11 +194,11 @@ export function UserPublicListScreen({ route, navigation }: Props) {
               <Image source={{ uri: posterUri }} style={{ width: cardWidth, height: cardHeight }} resizeMode="cover" />
             ) : null}
           </PosterFrame>
-          {item.title ? <Title numberOfLines={1}>{item.title}</Title> : null}
+          {title ? <Title numberOfLines={1}>{title}</Title> : null}
         </CardRoot>
       );
     },
-    [openMedia]
+    [hydratedById, openMedia]
   );
 
   const headerTitle =
