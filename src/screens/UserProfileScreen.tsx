@@ -43,7 +43,9 @@ type Props = NativeStackScreenProps<HomeStackParamList, "UserProfile">;
 const BANNER_HEIGHT = 160;
 const AVATAR_SIZE = 80;
 const AVATAR_OVERLAP = AVATAR_SIZE / 2;
-const LIST_FETCH_LIMIT = 40;
+// The server caps a page at 100. One page covers the vast majority of profiles
+// in full; anything beyond is reachable via each section's "See all".
+const LIST_FETCH_LIMIT = 100;
 
 // â”€â”€ Styled components (kept visually identical to the signed-in ProfileScreen) â”€â”€
 const Content = styled.ScrollView.attrs({
@@ -288,16 +290,6 @@ const EmptySection = styled.View`
   justify-content: center;
 `;
 
-const LoadingSection = styled.View`
-  height: 282px;
-  border-radius: 5px;
-  border-width: 1px;
-  border-color: rgba(255, 255, 255, 0.06);
-  background-color: rgba(255, 255, 255, 0.02);
-  align-items: center;
-  justify-content: center;
-`;
-
 const EmptyIcon = styled.View`
   margin-bottom: 8px;
   opacity: 0.3;
@@ -407,12 +399,14 @@ export function UserProfileScreen({ route, navigation }: Props) {
     };
   }, [userId]);
 
-  // Warm the shared hydrated-media cache from every list, then bump the tick so
-  // the memoised rails re-read the now-warmer cache.
+  // Warm the shared hydrated-media cache, then bump the tick so the memoised
+  // rails re-read it. Only watchlist/liked are hydrated: watched rows already
+  // carry a real poster_path + title from user_watch_history, so hydrating them
+  // would just burn TMDB-proxy quota for no visible gain.
   useEffect(() => {
     const movieSet = new Set<number>();
     const seriesSet = new Set<number>();
-    (["watched", "watchlist", "liked"] as const).forEach((kind) => {
+    (["watchlist", "liked"] as const).forEach((kind) => {
       const { movieIds, seriesIds } = splitHydratableIds(lists[kind]);
       movieIds.forEach((id) => movieSet.add(id));
       seriesIds.forEach((id) => seriesSet.add(id));
@@ -470,26 +464,59 @@ export function UserProfileScreen({ route, navigation }: Props) {
   );
   const keyExtractor = useCallback((item: MediaItem) => `${item.mediaType}-${item.id}`, []);
 
-  // Hydrated, filter-split section items (re-read as the cache warms / language
-  // changes). Depends on `lists` + `hydrationTick` so it fills in progressively.
-  const sectionItems = useMemo(() => {
-    const build = (kind: PublicListKind, filter: MediaFilter): MediaItem[] => {
+  // Look up whatever posters/titles have hydrated so far, keyed by media id.
+  // Rebuilt as the cache warms (`hydrationTick`) or the language changes.
+  const hydratedById = useMemo(() => {
+    const map = new Map<string, MediaItem>();
+    (["watched", "watchlist", "liked"] as const).forEach((kind) => {
       const { movieIds, seriesIds } = splitHydratableIds(lists[kind]);
-      return filter === "movie"
-        ? getHydratedMediaItemsFromCache(movieIds, [], cacheRef.current)
-        : getHydratedMediaItemsFromCache([], seriesIds, cacheRef.current);
-    };
-    const expected = (kind: PublicListKind, filter: MediaFilter) => {
-      const { movieIds, seriesIds } = splitHydratableIds(lists[kind]);
-      return filter === "movie" ? movieIds.length : seriesIds.length;
-    };
-    return {
-      watched: { items: build("watched", watchedFilter), expected: expected("watched", watchedFilter) },
-      watchlist: { items: build("watchlist", watchlistFilter), expected: expected("watchlist", watchlistFilter) },
-      liked: { items: build("liked", likedFilter), expected: expected("liked", likedFilter) },
-    };
+      for (const media of getHydratedMediaItemsFromCache(movieIds, seriesIds, cacheRef.current)) {
+        map.set(`${media.mediaType}-${media.id}`, media);
+      }
+    });
+    return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lists, hydrationTick, resolvedContentLanguage, watchedFilter, watchlistFilter, likedFilter]);
+  }, [lists, hydrationTick, resolvedContentLanguage]);
+
+  // Every fetched row becomes a card (never hidden behind hydration), so a
+  // section's count matches what's shown and the whole list is visible. Watched
+  // rows carry a real poster_path so they paint instantly; watchlist/liked rows
+  // usually have an empty snapshot, so their poster/title fill in from `hydratedById`
+  // as TMDB resolves. tmdb-id-less rows can't be opened/hydrated, so they're dropped.
+  const buildRail = useCallback(
+    (kind: PublicListKind, filter: MediaFilter): MediaItem[] =>
+      lists[kind]
+        .filter(
+          (row) =>
+            row.mediaType === (filter === "movie" ? "movie" : "tv") &&
+            Number.isFinite(row.tmdbId) &&
+            row.tmdbId > 0
+        )
+        .map((row) => {
+          const hydrated = hydratedById.get(`${row.mediaType}-${row.tmdbId}`);
+          return {
+            id: row.tmdbId,
+            title: hydrated?.title ?? row.title ?? "",
+            posterPath: hydrated?.posterPath ?? row.posterPath ?? null,
+            backdropPath: hydrated?.backdropPath ?? null,
+            rating: hydrated?.rating ?? 0,
+            overview: hydrated?.overview ?? "",
+            year: hydrated?.year ?? "",
+            mediaType: row.mediaType,
+            genreIds: hydrated?.genreIds,
+          } satisfies MediaItem;
+        }),
+    [lists, hydratedById]
+  );
+
+  const sectionItems = useMemo(
+    () => ({
+      watched: buildRail("watched", watchedFilter),
+      watchlist: buildRail("watchlist", watchlistFilter),
+      liked: buildRail("liked", likedFilter),
+    }),
+    [buildRail, watchedFilter, watchlistFilter, likedFilter]
+  );
 
   const mediaLabel = useCallback(
     (filter: MediaFilter) =>
@@ -506,7 +533,7 @@ export function UserProfileScreen({ route, navigation }: Props) {
     emptyMovieKey: string,
     emptySeriesKey: string
   ) => {
-    const { items, expected } = sectionItems[kind];
+    const items = sectionItems[kind];
     return (
       <SectionWrap>
         <SectionHeader>
@@ -532,18 +559,12 @@ export function UserProfileScreen({ route, navigation }: Props) {
           </ToggleChip>
         </ToggleRow>
         {items.length === 0 ? (
-          expected > 0 ? (
-            <LoadingSection>
-              <MovieLoader />
-            </LoadingSection>
-          ) : (
-            <EmptySection>
-              <EmptyIcon>
-                <Feather name={emptyIcon} size={24} color={currentTheme.colors.textSecondary} />
-              </EmptyIcon>
-              <EmptyText>{filter === "movie" ? t(emptyMovieKey) : t(emptySeriesKey)}</EmptyText>
-            </EmptySection>
-          )
+          <EmptySection>
+            <EmptyIcon>
+              <Feather name={emptyIcon} size={24} color={currentTheme.colors.textSecondary} />
+            </EmptyIcon>
+            <EmptyText>{filter === "movie" ? t(emptyMovieKey) : t(emptySeriesKey)}</EmptyText>
+          </EmptySection>
         ) : (
           <RailWrap>
             <FlatList

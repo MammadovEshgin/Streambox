@@ -7,6 +7,7 @@ import styled, { useTheme } from "styled-components/native";
 
 import {
   followUser,
+  getCurrentUserId,
   getFollowList,
   unfollowUser,
   type FollowListEntry,
@@ -129,7 +130,18 @@ export function FollowListScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [pending, setPending] = useState<Set<string>>(new Set());
+  const [myId, setMyId] = useState<string | null>(null);
   const reachedEnd = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getCurrentUserId().then((id) => {
+      if (!cancelled) setMyId(id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const load = useCallback(
     async (targetKind: FollowListKind) => {
@@ -195,25 +207,31 @@ export function FollowListScreen({ route, navigation }: Props) {
   );
 
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<FollowListEntry>) => (
-      <Row onPress={() => navigation.navigate("UserProfile", { userId: item.userId })}>
-        <SocialAvatar avatarPath={item.avatarPath} avatarVersion={item.avatarVersion} displayName={item.displayName} size={46} />
-        <RowBody>
-          <NameText numberOfLines={1}>{item.displayName}</NameText>
-          {item.username ? <HandleText numberOfLines={1}>@{item.username}</HandleText> : null}
-        </RowBody>
-        <FollowBtn $following={item.isFollowing} onPress={() => toggleFollow(item)} disabled={pending.has(item.userId)}>
-          <FollowBtnLabel $following={item.isFollowing}>
-            {item.isFollowing
-              ? t("social.following")
-              : item.followsMe
-                ? t("social.followBack")
-                : t("social.follow")}
-          </FollowBtnLabel>
-        </FollowBtn>
-      </Row>
-    ),
-    [navigation, pending, t, toggleFollow]
+    ({ item }: ListRenderItemInfo<FollowListEntry>) => {
+      const isSelf = myId != null && item.userId === myId;
+      return (
+        <Row onPress={() => navigation.navigate("UserProfile", { userId: item.userId })}>
+          <SocialAvatar avatarPath={item.avatarPath} avatarVersion={item.avatarVersion} displayName={item.displayName} size={46} />
+          <RowBody>
+            <NameText numberOfLines={1}>{item.displayName}</NameText>
+            {item.username ? <HandleText numberOfLines={1}>@{item.username}</HandleText> : null}
+          </RowBody>
+          {/* You can't follow yourself, so never show a follow control on your own row. */}
+          {!isSelf && (
+            <FollowBtn $following={item.isFollowing} onPress={() => toggleFollow(item)} disabled={pending.has(item.userId)}>
+              <FollowBtnLabel $following={item.isFollowing}>
+                {item.isFollowing
+                  ? t("social.following")
+                  : item.followsMe
+                    ? t("social.followBack")
+                    : t("social.follow")}
+              </FollowBtnLabel>
+            </FollowBtn>
+          )}
+        </Row>
+      );
+    },
+    [myId, navigation, pending, t, toggleFollow]
   );
 
   return (

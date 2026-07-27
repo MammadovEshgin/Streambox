@@ -163,8 +163,9 @@ export function UserPublicListScreen({ route, navigation }: Props) {
     if (reachedEnd.current || loadingMore || items.length === 0) return;
     setLoadingMore(true);
     try {
-      const before = items[items.length - 1].activityAt;
-      const next = await getUserPublicList({ userId, list, before, limit: PAGE_SIZE });
+      // Offset paging (not a timestamp keyset): Letterboxd/backfill rows share an
+      // identical collected_at, so a `< before` cursor would skip every tied row.
+      const next = await getUserPublicList({ userId, list, offset: items.length, limit: PAGE_SIZE });
       reachedEnd.current = next.length < PAGE_SIZE;
       setItems((current) => [...current, ...next]);
     } catch {
