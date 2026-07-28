@@ -1,0 +1,63 @@
+# Streambox Supabase project configuration.
+#
+# This file was previously missing, which meant project settings lived only in the
+# dashboard and could not be reviewed or restored from the repo. See
+# docs/DB_AUDIT_2026-07-28.md (P3).
+#
+# `project_id` is the linked project ref. It is not a secret -- it is the public
+# subdomain of the API URL and already ships in the app bundle via
+# EXPO_PUBLIC_SUPABASE_URL.
+
+project_id = "zbeexmqmcwtlsbbuuqor"
+
+[db]
+# Must match production. `supabase db reset` builds a local Postgres at this version,
+# so a mismatch here would let a migration pass locally and fail in production.
+port = 54322
+shadow_port = 54320
+major_version = 17
+
+[db.seed]
+# supabase/seed.sql holds reference data only (themes, provider configs, announcements,
+# franchise catalogue, storage buckets) -- never user data.
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+# `private` is deliberately absent: it holds rate_limit_windows and must never be
+# reachable through PostgREST.
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[studio]
+enabled = true
+port = 54323
+
+[storage]
+enabled = true
+# Matches the production cap on both buckets.
+file_size_limit = "8MiB"
+
+[auth]
+enabled = true
+site_url = "streambox://"
+additional_redirect_urls = ["streambox://"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false
+
+# Google sign-in is configured in the dashboard, not here. A [auth.external.google] block
+# would need `secret = "env(SUPABASE_AUTH_GOOGLE_SECRET)"`, and the CLI warns on every
+# command when that variable is unset -- which it always is, since the secret is not kept
+# locally. Client IDs live in .env as EXPO_PUBLIC_GOOGLE_AUTH_{WEB,IOS}_CLIENT_ID.
+
+[analytics]
+enabled = false
