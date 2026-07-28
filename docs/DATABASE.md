@@ -171,6 +171,31 @@ Until this passes, treat the baseline as *very likely* correct rather than *prov
 
 ---
 
+## No-op write suppression
+
+`user_watch_history`, `user_media_library` and `user_episode_progress` each carry an
+`aa_skip_noop_update` BEFORE UPDATE trigger that cancels updates which would not change any
+content column (`updated_at`/`created_at` excluded from the comparison).
+
+It exists because `backfillSnapshotToRemote()` re-upserts a user's entire watch history on
+bootstrap, and PostgREST emits `ON CONFLICT DO UPDATE` with no `WHERE` — so every row was
+rewritten even when identical. Measured before the fix: **221,447 updates against 2,325 live
+rows (95×), only 1.2% of them HOT**, meaning all 9 of that table's indexes were maintained on
+nearly every one.
+
+Two things to keep in mind:
+
+- **The `aa_` prefix is load-bearing.** Postgres fires triggers in alphabetical order, and
+  this must run before `set_<table>_updated_at` — otherwise `updated_at` is already stamped
+  and every row compares as changed. Do not rename it.
+- **`updated_at` now means "last actual change", not "last sync."** Verified safe: nothing in
+  the app reads or orders by it, `get_my_streambox_bootstrap` emits it as a payload field
+  while ordering by `collected_at`/`watched_at`, and `prune_recently_viewed_library_entries`
+  uses it only as a tiebreaker behind a deterministic `tmdb_id`.
+
+Re-measure with `supabase/verify/write_amplification.sql`. pg_stat counters are cumulative
+and were not reset, so read the `since_baseline` columns.
+
 ## Backups vs. reproducibility
 
 These are different problems and the repo solves only the second.
