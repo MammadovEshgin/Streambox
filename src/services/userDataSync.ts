@@ -764,7 +764,7 @@ async function backfillSnapshotToRemote(userId: string, snapshot: LocalUserSnaps
   ];
   const watchHistoryRows = buildWatchHistoryRows(userId, snapshot.watchHistory);
   const episodeRows = Object.keys(snapshot.watchedEpisodes).filter(k => snapshot.watchedEpisodes[k]).map(k => k.split("_")).filter(p => p.length === 3).map(([t,s,e]) => ({ user_id: userId, series_tmdb_id: Number(t), season_number: Number(s), episode_number: Number(e), snapshot: {} }));
-  const recRows = buildDailyRecommendationRows(snapshot).map(r => ({ user_id: userId, ...r }));
+  const recRows: Array<Record<string, any>> = buildDailyRecommendationRows(snapshot).map(r => ({ user_id: userId, ...r }));
 
   await supabase.from("user_profiles").upsert({ id: userId, ...profileRow }, { onConflict: "id" });
   await supabase.from("user_settings").upsert(settingsRow, { onConflict: "user_id" });
@@ -772,7 +772,23 @@ async function backfillSnapshotToRemote(userId: string, snapshot: LocalUserSnaps
   await batchUpsertRows("user_media_library", mediaRows, "user_id,list_kind,media_type");
   await batchUpsertRows("user_watch_history", watchHistoryRows, "user_id,media_type");
   if (episodeRows.length > 0) await supabase.from("user_episode_progress").upsert(episodeRows, { onConflict: "user_id,series_tmdb_id,season_number,episode_number" });
-  if (recRows.length > 0) await batchUpsertRows("user_daily_recommendations", recRows, "user_id,recommendation_kind,recommendation_date");
+  // user_daily_recommendations is keyed by its 3-column PK
+  // (user_id, recommendation_kind, recommendation_date) — one recommendation per
+  // user/kind/day. It must NOT go through batchUpsertRows, which appends tmdb_id or
+  // internal_id and produces a 4-column conflict target that matches no unique index
+  // (Postgres answers 42P10). Deduplicate on the PK first so a single statement can
+  // never touch the same row twice.
+  if (recRows.length > 0) {
+    const byKey = new Map<string, Record<string, any>>();
+    for (const row of recRows) {
+      byKey.set(`${row.user_id}|${row.recommendation_kind}|${row.recommendation_date}`, row);
+    }
+    await upsertRowsInChunks(
+      "user_daily_recommendations",
+      Array.from(byKey.values()),
+      "user_id,recommendation_kind,recommendation_date"
+    );
+  }
 }
 
 // NOTE: there is deliberately NO "sync the full local list and prune remote
@@ -857,7 +873,9 @@ async function executePendingOperation(op: PendingSyncOperation) {
     case "episode_progress": await supabase.rpc("sync_streambox_episode_progress", { p_series_tmdb_id: op.seriesTmdbId, p_season_number: op.seasonNumber, p_episode_number: op.episodeNumber, p_is_watched: op.isWatched, p_watched_at: op.watchedAt, p_snapshot: {}, p_audit_metadata: op.auditMetadata }); break;
     case "daily_recommendation": {
       const ids = getSyncIds(op.tmdbId);
-      await supabase.from("user_daily_recommendations").upsert({ user_id: op.userId, recommendation_kind: op.recommendationKind, recommendation_date: op.recommendationDate, media_type: op.mediaType, ...ids, imdb_id: op.imdbId, strategy: op.strategy, snapshot: op.snapshot }, { onConflict: `user_id,recommendation_kind,recommendation_date,${ids.tmdb_id ? 'tmdb_id' : 'internal_id'}` });
+      // Conflict target must be the 3-column PK. The old 4-column form (with tmdb_id or
+      // internal_id appended) matched no unique index, so every write returned 42P10.
+      await supabase.from("user_daily_recommendations").upsert({ user_id: op.userId, recommendation_kind: op.recommendationKind, recommendation_date: op.recommendationDate, media_type: op.mediaType, ...ids, imdb_id: op.imdbId, strategy: op.strategy, snapshot: op.snapshot }, { onConflict: "user_id,recommendation_kind,recommendation_date" });
       break;
     }
     case "auth_event": await supabase.rpc("log_streambox_user_event", { action_category: op.actionCategory, action_type: op.actionType, entity_type: op.entityType, entity_key: op.entityKey, metadata: op.metadata }); break;
