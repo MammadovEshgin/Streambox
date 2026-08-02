@@ -68,7 +68,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `PENDING` | `PENDING` |
+| 1.2.0 | `v1.2.0` @ `10e5a49` | `f192271c-b031-4a42-9619-c40c871b4f6c` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
 
@@ -89,7 +89,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
   and the failing op clogged the durable queue; ticking episodes now also
   reconciles watch history, fixing "watched on SeriesDetail, missing from
   Profile". Measured after: 13/13 live titles resolve natively in 0.9–3.2s.
-  Deploy: 1.2.0 `PENDING` → group `PENDING`. 1.1.0/1.0.2 NOT shipped.
+  Deploy: 1.2.0 `10e5a49` → group `f192271c-b031-4a42-9619-c40c871b4f6c`. 1.1.0/1.0.2 NOT shipped.
 
 - **2026-07-23 (1.2.0 only, follow-up):** Reverted the custom YouTube expand/
   fullscreen player from earlier today — it was worse than the stock player, so
