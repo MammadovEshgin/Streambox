@@ -64,13 +64,32 @@ the `app.config.js` runtime, not the branch you happen to be on.
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
-### Current deployed state (last updated 2026-07-23, 1.2.0 UX + stability batch)
+### Current deployed state (last updated 2026-08-02, 1.2.0 provider + playback batch)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `7c6e29c` | `9ad008d5-55d7-496e-b6c8-7c8b03d40c4f` |
+| 1.2.0 | `v1.2.0` @ `PENDING` | `PENDING` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+
+- **2026-08-02 (1.2.0 only):** Provider + playback batch. (1) **HDFilm decoder
+  rebuilt as an interpreter** — the provider swapped its arithmetic de-scramble
+  for a rolling-XOR cipher and randomizes the whole `dc_*()` scheme per request,
+  so the old matcher failed on *every* HDFilm title; films silently played from
+  Dizipal/Dizibal (Turkish-dub-only audio) after burning the full ~15–20s
+  resolver budget. New `src/services/rapidrameScript.ts` parses and replays the
+  live body. (2) **Dizipal handshake repaired** — `/ajax-token` returns JSON now,
+  the token is single-use, and the config POST needs the whole cookie jar.
+  (3) **Native players only** — Dizipal page/embed shells are no longer returned
+  as playable results. (4) **Audio track picker**, defaulting to the original
+  soundtrack instead of the provider's `DEFAULT=YES` Turkish dub, with the choice
+  remembered. (5) **Subtitles auto-enable** when the audio isn't in the app's
+  language. (6) **Season watch history now syncs** — season ids were being sent
+  to a `uuid` column, so prod had 2327 watch-history rows and zero season rows,
+  and the failing op clogged the durable queue; ticking episodes now also
+  reconciles watch history, fixing "watched on SeriesDetail, missing from
+  Profile". Measured after: 13/13 live titles resolve natively in 0.9–3.2s.
+  Deploy: 1.2.0 `PENDING` → group `PENDING`. 1.1.0/1.0.2 NOT shipped.
 
 - **2026-07-23 (1.2.0 only, follow-up):** Reverted the custom YouTube expand/
   fullscreen player from earlier today — it was worse than the stock player, so

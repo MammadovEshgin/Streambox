@@ -12,6 +12,7 @@
 
 import axios from "axios";
 import { getProviderConfig, isProviderConfigReady, recordObservedBaseUrl, refreshProviderConfigs } from "./providerConfigService";
+import { caesarShift, decodeBase64Binary, reverseString, runRapidrameDecoder } from "./rapidrameScript";
 
 // Pulls the post-redirect origin out of an axios response so the caller can
 // teach providerConfigService where the provider actually lives now. Axios
@@ -453,6 +454,23 @@ function generateSearchQueries(title: string, year?: string | null, originalTitl
   return queries;
 }
 
+// How many query variants a provider gets before "nothing at all came back" is
+// treated as "this provider does not have the title".
+//
+// generateSearchQueries emits up to ~8 spellings of the same name. When the
+// first few return literally zero rows, the remaining variants (articles
+// stripped, first three words, …) are progressively WEAKER versions of a query
+// the catalogue already failed to match, so they cost ~300ms each and change
+// nothing. Cutting them off is what keeps the "Not Available" path from
+// spending its whole budget on a title no provider carries. A provider that
+// returned even one row still gets the full sweep — there the extra variants
+// are what break ties between near-matches.
+const EMPTY_SEARCH_QUERY_LIMIT = 2;
+
+function shouldStopSearchingAfterEmptyQueries(queryIndex: number, resultCount: number): boolean {
+  return resultCount === 0 && queryIndex + 1 >= EMPTY_SEARCH_QUERY_LIMIT;
+}
+
 function toAbsoluteUrl(baseUrl: string, href: string): string | null {
   try {
     return new URL(href, baseUrl).toString();
@@ -635,6 +653,7 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
       return Math.max(s1, s2);
     }));
     if (bestSoFar >= 120) break;
+    if (shouldStopSearchingAfterEmptyQueries(qi, allResults.size)) break;
     if (qi >= 4) break;
   }
 
@@ -1042,6 +1061,7 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
       return Math.max(s1, s2);
     }));
     if (bestSoFar >= 120) break;
+    if (shouldStopSearchingAfterEmptyQueries(qi, allResults.size)) break;
     if (qi >= 4) break;
   }
 
@@ -1209,46 +1229,8 @@ function getCachedHdFilmNativeFallback(pageUrl: string, pageHtml: string) {
   return task;
 }
 
-const BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-function decodeBase64Binary(value: string): string {
-  const cleaned = value.replace(/[^A-Za-z0-9+/=]/g, "");
-  let output = "";
-  let buffer = 0;
-  let bits = 0;
-
-  for (const char of cleaned) {
-    if (char === "=") break;
-    const index = BASE64_CHARS.indexOf(char);
-    if (index === -1) continue;
-
-    buffer = (buffer << 6) | index;
-    bits += 6;
-
-    if (bits >= 8) {
-      bits -= 8;
-      output += String.fromCharCode((buffer >> bits) & 0xff);
-    }
-  }
-
-  return output;
-}
-
-function caesarShift(value: string, shift: number): string {
-  const normalized = ((shift % 26) + 26) % 26;
-  return value.replace(/[a-zA-Z]/g, (char) => {
-    const code = char.charCodeAt(0);
-    const base = code <= 90 ? 65 : 97;
-    return String.fromCharCode(((code - base + normalized) % 26) + base);
-  });
-}
-
 function rot13(value: string): string {
   return caesarShift(value, 13);
-}
-
-function reverseString(value: string): string {
-  return value.split("").reverse().join("");
 }
 
 /**
@@ -1481,15 +1463,15 @@ function tryUnpackInlinePackerJs(html: string): string {
 
 /**
  * Interpret the live `dc_*()` decoder body instead of matching it to a fixed
- * scheme. HDFilm now RANDOMIZES the decoder per request — the reverse count,
- * the Caesar shift amount, the unmix constant and the `(i + N)` offset all
- * change on every embed fetch — so no static transform list can keep up.
+ * scheme. HDFilm RANDOMIZES the decoder per request — the reverse count, the
+ * Caesar shifts, the de-scramble constants, and (since Aug 2026) the whole
+ * de-scramble family all change on every embed fetch — so no static transform
+ * list can keep up.
  *
- * The body is plain, un-obfuscated JS composed only of the provider's four
- * primitives (join → [reverse|base64|caesar]* → unmix). We read the ordered
- * operations and their parameters straight out of the source and replay them.
- * Returns null if the body isn't shaped the way we expect, so the caller can
- * fall back to the static schemes.
+ * The body is plain, un-obfuscated JS. `runRapidrameDecoder` parses and replays
+ * it (see rapidrameScript.ts for why that is safe and what subset is allowed).
+ * Returns null if the body steps outside that subset, so the caller can fall
+ * back to the static schemes.
  */
 function decodeRapidrameByInterpretingDcBody(embedHtml: string, sourceVariable: string, valueParts: string[]): string | null {
   const assignmentIndex = embedHtml.indexOf(`var ${sourceVariable}`);
@@ -1518,41 +1500,7 @@ function decodeRapidrameByInterpretingDcBody(embedHtml: string, sourceVariable: 
   }
   if (braceEnd === -1) return null;
 
-  const body = embedHtml.slice(braceStart, braceEnd);
-  const unmixLoopIndex = body.search(/for\s*\(/);
-  const head = unmixLoopIndex >= 0 ? body.slice(0, unmixLoopIndex) : body;
-
-  // Collect the pre-unmix operations in source order.
-  const operations: Array<{ index: number; apply: (value: string) => string }> = [];
-  for (const match of head.matchAll(/\.reverse\s*\(\s*\)/g)) {
-    operations.push({ index: match.index ?? 0, apply: reverseString });
-  }
-  for (const match of head.matchAll(/atob\s*\(/g)) {
-    operations.push({ index: match.index ?? 0, apply: decodeBase64Binary });
-  }
-  for (const match of head.matchAll(/\+\s*(\d+)\s*\)\s*%\s*26\b/g)) {
-    const shift = Number(match[1]);
-    if (Number.isFinite(shift)) {
-      operations.push({ index: match.index ?? 0, apply: (value) => caesarShift(value, shift) });
-    }
-  }
-  operations.sort((left, right) => left.index - right.index);
-
-  const unmixMatch = body.match(/(\d{6,})\s*%\s*\(\s*[A-Za-z_$][\w$]*\s*\+\s*(\d+)\s*\)/);
-  if (!unmixMatch) return null;
-  const constant = Number(unmixMatch[1]);
-  const offset = Number(unmixMatch[2]);
-  if (!Number.isSafeInteger(constant) || !Number.isSafeInteger(offset) || offset <= 0) return null;
-
-  try {
-    let result = valueParts.join("");
-    for (const operation of operations) {
-      result = operation.apply(result);
-    }
-    return unmixRapidrameBytes(result, constant, offset);
-  } catch {
-    return null;
-  }
+  return runRapidrameDecoder(embedHtml.slice(fnStart, braceEnd + 1), valueParts);
 }
 
 function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
@@ -2004,6 +1952,110 @@ type DizipalStreamResult = {
   embedUrl: string | null;
 };
 
+type DizipalPlayerConfigResponse = {
+  success?: boolean;
+  config?: { v?: string; t?: string; p?: string };
+};
+
+/**
+ * Read the CSRF token out of `/ajax-token`.
+ *
+ * The endpoint used to answer with the bare token string; it now answers with
+ * `{"t":"<hex>"}`. The old code did `String(data).trim()` on the parsed object,
+ * which yields the literal "[object Object]" — 15 characters of nonsense that
+ * every player-config POST then rejected with "Invalid token", so no Dizipal
+ * title could produce a native stream and all of them fell back to the
+ * provider's own WebView player. Handle both shapes.
+ */
+function parseDizipalToken(data: unknown): string {
+  if (typeof data === "string") {
+    const trimmed = data.trim();
+    if (!trimmed.startsWith("{")) return trimmed;
+    try {
+      const parsed = JSON.parse(trimmed) as { t?: unknown };
+      return typeof parsed.t === "string" ? parsed.t.trim() : "";
+    } catch {
+      return trimmed;
+    }
+  }
+
+  if (data && typeof data === "object") {
+    const token = (data as { t?: unknown }).t;
+    return typeof token === "string" ? token.trim() : "";
+  }
+
+  return "";
+}
+
+/**
+ * Mint a fresh token and exchange the page's `cfg` for the player config.
+ *
+ * Two properties of the live endpoint drive this shape:
+ *  - the token is SINGLE-USE, so it must be fetched immediately before each
+ *    POST and can never be cached or replayed; and
+ *  - validation covers the whole cookie set (`_ct`, `PHPSESSID` and the
+ *    DDoS-Guard `__ddg*` cookies), not just `_ct`. Hand-setting a `Cookie`
+ *    header REPLACES the platform cookie jar for that request, dropping the
+ *    others and failing validation — verified against the live endpoint. So we
+ *    let the native cookie store (OkHttp / NSURLSession) carry them and only
+ *    fall back to an explicit header if the jar-based attempt is rejected,
+ *    which covers runtimes without a cookie jar.
+ */
+async function requestDizipalPlayerConfig(
+  baseUrl: string,
+  pageUrl: string,
+  cfg: string
+): Promise<DizipalPlayerConfigResponse | null> {
+  const postConfig = (cookieHeader?: string) =>
+    axios.post<DizipalPlayerConfigResponse>(
+      `${baseUrl}/ajax-player-config`,
+      `cfg=${encodeURIComponent(cfg)}`,
+      {
+        timeout: 6000,
+        withCredentials: true,
+        headers: {
+          "User-Agent": UA,
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Requested-With": "XMLHttpRequest",
+          Referer: pageUrl,
+          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+        },
+      }
+    );
+
+  const mintToken = async (): Promise<string> => {
+    const tokenResp = await axios.get(`${baseUrl}/ajax-token`, {
+      timeout: 6000,
+      withCredentials: true,
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
+        Referer: pageUrl,
+      },
+    });
+    return parseDizipalToken(tokenResp.data);
+  };
+
+  try {
+    await mintToken();
+    const response = await postConfig();
+    if (response.data?.success) return response.data;
+
+    // Rejected — the token is now spent, so the retry needs a new one.
+    debugLog("[WebPlayer] Dizipal player-config rejected; retrying with an explicit cookie");
+    const retryToken = await mintToken();
+    if (!retryToken) return response.data ?? null;
+
+    const retry = await postConfig(`_ct=${retryToken}`);
+    return retry.data ?? null;
+  } catch (error: any) {
+    debugLog("[WebPlayer] Dizipal player-config failed:", error?.message ?? error);
+    return null;
+  }
+}
+
 async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResult | null> {
   try {
     const html = await fetchDizipalPageHtml(pageUrl);
@@ -2015,43 +2067,10 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
     const pageOrigin = new URL(pageUrl).origin;
     const baseUrl = pageOrigin.includes("dizipal") ? pageOrigin : getDizipalBaseUrl();
 
-    let csrfToken = "";
-    try {
-      const tokenResp = await axios.get<string>(`${baseUrl}/ajax-token`, {
-        timeout: 6000,
-        headers: {
-          "User-Agent": UA,
-          Accept: "*/*",
-          "X-Requested-With": "XMLHttpRequest",
-          Referer: pageUrl
-        }
-      });
-      csrfToken = typeof tokenResp.data === "string" ? tokenResp.data.trim() : String(tokenResp.data).trim();
-    } catch (e) {
-      return null;
-    }
+    const configResp = await requestDizipalPlayerConfig(baseUrl, pageUrl, cfg);
 
-    const configResp = await axios.post<{
-      success?: boolean;
-      config?: { v?: string; t?: string; p?: string };
-    }>(
-      `${baseUrl}/ajax-player-config`,
-      `cfg=${encodeURIComponent(cfg)}`,
-      {
-        timeout: 6000,
-        headers: {
-          "User-Agent": UA,
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-Requested-With": "XMLHttpRequest",
-          Referer: pageUrl,
-          Cookie: `_ct=${csrfToken}`
-        }
-      }
-    );
-
-    const config = configResp.data?.config;
-    if (!configResp.data?.success || !config?.v) return null;
+    const config = configResp?.config;
+    if (!configResp?.success || !config?.v) return null;
 
     const streamType = (config.t ?? "").toLowerCase();
 
@@ -2090,18 +2109,6 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
   } catch (e) {
     return null;
   }
-}
-
-async function hasPlayableDizipalVideo(pageUrl: string): Promise<boolean> {
-  const html = await fetchDizipalPageHtml(pageUrl);
-  if (!html) return false;
-
-  const cfg = extractDizipalCfg(html);
-  const hasPlayerShell =
-    /id=["']videoContainer["']/i.test(html) &&
-    /id=["']playerCover["']|id=["']mainPlayer["']|id=["']playerContent["']/i.test(html);
-
-  return Boolean(cfg) && hasPlayerShell;
 }
 
 function matchesDizipalEpisodeUrl(url: string, seasonNumber: number, episodeNumber: number): boolean {
@@ -2162,11 +2169,13 @@ async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<Diz
   }
 
   const result = await fetchDizipalStreamUrl(targetUrl);
-  if (result) return { pageUrl: targetUrl, stream: result.stream, embedUrl: result.embedUrl, qualityWarning };
+  if (result?.stream) {
+    return { pageUrl: targetUrl, stream: result.stream, embedUrl: result.embedUrl, qualityWarning };
+  }
 
-  const playable = await hasPlayableDizipalVideo(targetUrl);
-  if (playable) return { pageUrl: targetUrl, stream: null, embedUrl: null, qualityWarning };
-
+  // No extractable stream. There is deliberately no "the page looks playable"
+  // consolation result any more — see the caller: handing back a page or embed
+  // shell only puts the user inside the provider's own player.
   return null;
 }
 
@@ -2306,33 +2315,30 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
   }
 
   // 2. Dizipal — primary fallback when HDFilm produced no native stream.
+  //
+  //    ONLY a real extracted stream counts. Dizipal's page and embed shells
+  //    used to be returned as playable results too, but those render the
+  //    provider's own Playerjs in a WebView with no path back to native
+  //    playback — no stream discovery, no handoff — so the user ended up inside
+  //    a third-party player complete with its pre-roll ads and its own controls.
+  //    (The HDFilm WebView below is different: it injects a discovery script and
+  //    switches to expo-video the moment it finds the stream URL.) When the
+  //    extraction fails we now fall through to the next provider instead.
   {
     const dizipalResult = await resolvePlayableDizipalUrl(request);
-    if (dizipalResult) {
+    if (dizipalResult?.stream) {
       const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
-      if (stream) {
-        return {
-          url: pageUrl,
-          source: "dizipal_direct",
-          streamUrl: stream.streamUrl,
-          streamType: stream.streamType,
-          poster: stream.poster,
-          referer: stream.referer || "",
-          embedUrl: embedUrl ?? undefined,
-          subtitles: stream.subtitles,
-          qualityWarning,
-        };
-      }
-
-      if (embedUrl) {
-        return {
-          url: embedUrl,
-          source: "dizipal_embed",
-          embedUrl,
-          qualityWarning,
-        };
-      }
-      return { url: pageUrl, source: "dizipal", qualityWarning };
+      return {
+        url: pageUrl,
+        source: "dizipal_direct",
+        streamUrl: stream.streamUrl,
+        streamType: stream.streamType,
+        poster: stream.poster,
+        referer: stream.referer || "",
+        embedUrl: embedUrl ?? undefined,
+        subtitles: stream.subtitles,
+        qualityWarning,
+      };
     }
   }
 
@@ -2374,23 +2380,21 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
           }
         }
 
-        const dizipalRetry = await searchDizipal(altTitle, request.mediaType, request.year);
-        if (dizipalRetry) {
-          const retryRequest: WebPlayerRequest = { ...request, title: altTitle, originalTitle: undefined };
-          const dizipalResult = await resolvePlayableDizipalUrl(retryRequest);
-          if (dizipalResult) {
-            const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
-            if (stream) {
-              return {
-                url: pageUrl, source: "dizipal_direct",
-                streamUrl: stream.streamUrl, streamType: stream.streamType,
-                poster: stream.poster, referer: stream.referer || "",
-                embedUrl: embedUrl ?? undefined, subtitles: stream.subtitles, qualityWarning,
-              };
-            }
-            if (embedUrl) return { url: embedUrl, source: "dizipal_embed", embedUrl, qualityWarning };
-            return { url: pageUrl, source: "dizipal", qualityWarning };
-          }
+        // resolvePlayableDizipalUrl runs the search itself, so probing with a
+        // separate searchDizipal call first only duplicated the whole query
+        // sweep (up to five HTTP round-trips) and threw the result away.
+        const retryRequest: WebPlayerRequest = { ...request, title: altTitle, originalTitle: undefined };
+        const dizipalResult = await resolvePlayableDizipalUrl(retryRequest);
+        // Same rule as step 2: a Dizipal page/embed shell is not a playable
+        // result, only an extracted stream is.
+        if (dizipalResult?.stream) {
+          const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
+          return {
+            url: pageUrl, source: "dizipal_direct",
+            streamUrl: stream.streamUrl, streamType: stream.streamType,
+            poster: stream.poster, referer: stream.referer || "",
+            embedUrl: embedUrl ?? undefined, subtitles: stream.subtitles, qualityWarning,
+          };
         }
       }
     } catch { /* silent */ }

@@ -26,29 +26,29 @@ Run these from the repo root, in order. Stop and read if any step fails.
 
 ```powershell
 # 1. Diagnose. Exit 0 = healthy (stop, nothing to do).
-#    Exit 1/3/4/5 = decoder rotated. Exit 2 = network unreachable (you're on
+#    Exit 1/3/4/5 = decoder broken. Exit 2 = network unreachable (you're on
 #    the wrong machine — see "Hard constraints" below).
 npm run check:hdfilm
 
-# 2. Auto-derive a new scheme + patch WebPlayerService.ts in place.
-npm run check:hdfilm -- --write
+# 2. If it IS broken, capture a live decoder body and read it (see below).
+#    Do NOT reach for `--write` first — see "Why brute force no longer works".
 
-# 3. Validate. 82 tests must pass; typecheck must be clean.
+# 3. Validate. All tests must pass; typecheck must be clean.
 npm run typecheck
 npm test
 
-# 4. Ship. The commit message below is the convention; keep it.
-git add src/services/WebPlayerService.ts
-git commit -m "fix(resolver): auto-derived new HDFilm decoder scheme"
-git push origin main
+# 4. Ship.
+git add -A
+git commit -m "fix(resolver): handle new HDFilm decoder shape"
+git push origin <the current release branch>
 
-# 5. Publish the OTA. The user's eas-cli is already logged in; no token needed.
+# 5. Publish the OTA to the runtime the branch pins (check app.config.js first).
 $SHA = (git rev-parse --short HEAD).Trim()
-npx eas-cli update --branch preview --message "auto-recovery: HDFilm decoder rotation ($SHA)" --non-interactive
+npx eas-cli update --branch preview --message "HDFilm decoder recovery ($SHA)" --non-interactive
 ```
 
-That's it. Users get the fix on their next background→foreground cycle (silent
-reload, no modal, no restart prompt — by design).
+Users get the fix on their next background→foreground cycle (silent reload, no
+modal, no restart prompt — by design).
 
 ---
 
@@ -56,23 +56,58 @@ reload, no modal, no restart prompt — by design).
 
 **What's actually breaking.** HDFilm (`hdfilmcehennemi.nl` /
 `hdfilmcehennemi.mobi`) hides each stream URL inside an obfuscated `s_*` array
-on the embed page. The array is decoded by an inline JavaScript function
-`dc_XXXX(value_parts)` that **the provider rotates** every few weeks. When they
-rotate it, the existing decoder schemes in
-`RAPIDRAME_PRE_UNMIX_TRANSFORMS` (in `src/services/WebPlayerService.ts`,
-around line 1011) no longer produce a valid URL, and every HDFilm title falls
-back to the WebView player. On some Androids (POCO F7 / HyperOS specifically)
-the WebView path hits a black-screen-on-pre-roll bug — so the user-facing
-symptom is usually "ads play but the movie never does" or "Still Alice doesn't
-play".
+on the embed page, decoded by an inline `dc_XXXX(value_parts)` function. The
+user-facing symptom of a decode failure is NOT usually "no video" — it is
+**"the wrong provider played"**: HDFilm silently loses, the resolver falls
+through to Dizipal/Dizibal, and the user gets a Turkish-dub-only stream (and a
+much slower load, because every play now walks the whole provider chain).
 
-**Decoder primitives.** The provider only ever composes these four:
-`reverse`, `base64`, `rot13`, then a final fixed `unmix` step
-(shift each char by `399756995 % (i + 5)`). The auto-derive script in
-`scripts/check-hdfilm-resolver.ts` brute-forces compositions of the first
-three against a LIVE `#EXTM3U` manifest oracle. If the rotation uses a
-primitive outside this set, brute force will fail — see "Manual derivation"
-below.
+**The decoder is randomized per request.** Function name, the number and order
+of pre-passes, the Caesar shifts, and the de-scramble constants all change on
+*every single fetch*. A sample of 15 fetches of one title produced 13 distinct
+shapes. There is no "current scheme" to pin down.
+
+**The de-scramble family changes too.** It was arithmetic
+(`c - (CONST % (i + N))`) until Aug 2026, when it became a rolling-XOR cipher:
+
+```js
+var acc = <seed>;
+acc = (acc + <step>) % 256;
+var plain = b ^ acc;
+acc = (acc + b) % 256;   // feedback off the CIPHER byte
+```
+
+**So we interpret, we don't pattern-match.** `src/services/rapidrameScript.ts`
+parses the live function body and replays it: a recursive-descent expression
+evaluator plus a statement interpreter over a restricted subset (numbers,
+strings, arithmetic + bitwise operators, `charCodeAt`, `String.fromCharCode`).
+No `eval`/`Function` — Hermes has neither, and executing provider JS would be a
+code-execution sink. It handles both de-scramble families with no special
+casing, and **fails closed** (returns `null`, caller falls back) if the body
+uses anything outside that subset.
+
+### Why brute force no longer works
+
+`npm run check:hdfilm -- --write` composes `reverse`/`base64`/`rot13` with a
+FIXED unmix constant and appends to `RAPIDRAME_PRE_UNMIX_TRANSFORMS`. Against a
+per-request-randomized decoder that is meaningless: any scheme it "derives"
+describes one response and is wrong for the next. `RAPIDRAME_PRE_UNMIX_TRANSFORMS`
+survives only as a fallback for old embeds. Treat `--write` as deprecated.
+
+### What to do instead
+
+1. Capture a live embed body (the health check prints one, or fetch the iframe
+   URL from a movie page with the mobile UA).
+2. Read the `dc_*()` function. Ask one question: **does it use an operation
+   outside {reverse, atob, caesar, and a loop of plain assignments}?**
+   - **No** → the interpreter should already handle it. The bug is a parse
+     mismatch in `rapidrameScript.ts` — check `collectStringOps`,
+     `parseLoopHeader`, and `runAssignment` against the new body shape.
+   - **Yes** → teach the interpreter that one primitive. Keep it narrow, and
+     keep `assertOnlyKnownCalls` honest so unknown calls still fail closed.
+3. Add a case to `tests/rapidrameScript.test.ts`. Those tests build a payload by
+   running the provider's ENCODE direction and assert the interpreter recovers
+   the URL — so a new shape is a handful of lines.
 
 **Two embed flows.** The extractor handles both:
 1. `hdfilmcehennemi.mobi/video/embed/...` — plain HTML containing
@@ -98,39 +133,24 @@ datacenter / cloud / VPN IPs. **Do not try to work around this** — it's the
 reason the cloud automation was abandoned. Tell the user the recovery must
 run from their machine and stop.
 
-### `--write` fails with "Could not derive a working scheme"
+### How to capture a live decoder body
 
-The rotation introduced a primitive outside the brute-force set. Do manual
-derivation:
-
-1. Open `https://www.hdfilmcehennemi.nl/` in a real desktop browser (NOT curl).
+1. Open `https://www.hdfilmcehennemi.nl/` in a real desktop browser (NOT curl —
+   curl also won't decompress the gzip by default, which has wasted time before;
+   pass `--compressed` if you must).
 2. Pick any movie. View the page source.
 3. Find the player iframe. Two patterns:
    - `<iframe ... src="https://hdfilmcehennemi.mobi/video/embed/XXX/">`
    - `<iframe ... data-src="https://www.hdfilmcehennemi.nl/rplayer/XXX/">`
-4. Open that iframe URL directly in the browser. View source.
-5. If you see `eval(function(p,a,c,k,e,d){...}`, the dc_*() function is
-   inside that packed block. Copy the block, paste into a JS console as
-   `let unpacked = ...; console.log(unpacked)` (remove the outer `eval`)
-   to get the unpacked source.
-6. Find `function dc_XXXXX(value_parts) { ... return unmix; }`. Translate the
-   body into a new `RAPIDRAME_PRE_UNMIX_TRANSFORMS` entry. The existing
-   entries demonstrate the format. Insert yours at the FRONT of the array
-   so it's tried first.
-7. Add a regression test in `tests/webPlayerService.test.ts` that decodes a
-   real captured `parts` array via the new scheme. Use the existing
-   `HDFilm Rapidrame decoder ...` tests as templates.
-8. Continue with steps 3-5 of the happy path.
+4. Open that iframe URL directly. View source.
+5. If you see `eval(function(p,a,c,k,e,d){...}`, the `dc_*()` function is inside
+   that packed block — `tryUnpackInlinePackerJs` expands it in the app; to read
+   it by hand, paste the block minus the outer `eval` into a JS console.
+6. Find `function dc_XXXXX(value_parts) { ... return unmix; }` and follow "What
+   to do instead" above.
 
-### Tests fail after `--write` succeeded
-
-Rare. The brute-force found a scheme that produces a URL for the live probe
-but garbage for one of the regression fixtures. Revert and do manual
-derivation:
-
-```powershell
-git checkout -- src/services/WebPlayerService.ts
-```
+Remember to fetch it **more than once**. The body changes every request, and a
+single sample will mislead you into thinking a constant is fixed.
 
 ### `git push` rejected (non-fast-forward)
 
@@ -149,13 +169,15 @@ You can't do this for them.
 
 ## Hard constraints (DO NOT CHANGE)
 
-- **Runtime version.** `app.config.js` pins `runtimeVersion: "1.0.2"`. Every
-  installed user has an APK with that runtime. Any OTA published against a
-  different runtime will simply not reach them. Do not bump this.
+- **Runtime version.** `app.config.js` pins the runtime the checked-out branch
+  ships to — currently `1.2.0` on `v1.2.0`. An OTA only reaches installs on the
+  matching runtime, so **read `app.config.js` before every `eas update`** and
+  never bump it to "reach more users". There are three live fleets; see
+  [`docs/release-tracks.md`](docs/release-tracks.md).
 - **OTA branch.** Always `preview`. That's the channel installed apps listen
   on (`updates.url` in `app.config.js`).
-- **Test count.** 82 tests. If after your changes the count drops or any
-  fail, do not push.
+- **Test count.** 329 tests as of 2026-08-02. If the count drops or any fail,
+  do not push.
 - **No GitHub Actions.** `.github/workflows/` is intentionally empty.
   Cloudflare blocks GitHub's datacenter IPs from reaching hdfilmcehennemi,
   so any resolver workflow there fails with exit 2 every hour and produces
@@ -168,28 +190,36 @@ You can't do this for them.
 
 ## Architecture pointers (for unusual breakage)
 
-- All decoder logic lives in **`src/services/WebPlayerService.ts`**:
-  - `RAPIDRAME_PRE_UNMIX_TRANSFORMS` (~line 1011) — the scheme array. Newest
-    schemes go at the front. Old schemes are kept as fallbacks for embeds
-    that haven't been re-encoded yet.
-  - `tryUnpackInlinePackerJs` (~line 1090) — expands `eval(function(p,a,c,k,
-    e,d){...})` packer.js blocks. Required for the `/rplayer/` flow.
-  - `extractRapidrameStreamUrl` (~line 1148) — top-level entry that unpacks
-    then runs the source-variable lookup.
-  - `extractHdFilmEmbedUrl` (~line 1180) — finds the iframe in the page HTML.
-    Currently matches `src=`, `data-src=`, `data-lazy-src=`, plus
-    `data-video=`/`data-link=`/`data-url=`.
-  - `buildHdFilmResult` (~line 639) — ALWAYS returns native (`source:
-    "direct"`) when a stream URL was decoded. The `webViewFallbackUrl` field
-    is the last-resort fallback if the native stream itself dies at playback
-    time (broken segment, expired token, geo block) — it is NOT the path
-    taken when extraction fails.
-- Auto-derive logic: **`scripts/check-hdfilm-resolver.ts`**. Self-contained,
-  uses only `axios` and the existing `__internal` exports from
-  `WebPlayerService.ts`.
-- Regression tests: **`tests/webPlayerService.test.ts`**. After adding a new
-  scheme, add a corresponding test using real captured parts so the rotation
-  history is preserved.
+- The decoder interpreter lives in **`src/services/rapidrameScript.ts`**:
+  - `runRapidrameDecoder(functionSource, valueParts)` — the entry point. Parses
+    and replays the live `dc_*()` body.
+  - `runHead` / `collectStringOps` — the pre-passes (reverse / atob / caesar),
+    ordered deepest-nesting-first then left-to-right so both
+    `atob(x.reverse())` and `x.reverse().replace(…)` evaluate correctly.
+  - `parseLoopHeader` / `runAssignment` / `ExpressionEvaluator` — the
+    de-scramble loop. This is what makes the arithmetic and rolling-XOR
+    families work from one code path.
+  - `assertOnlyKnownCalls` — the fail-closed guard. An unrecognised call in a
+    pre-pass aborts the decode instead of being silently skipped (skipping it
+    would produce a plausible-but-WRONG url).
+- Provider glue stays in **`src/services/WebPlayerService.ts`**:
+  - `decodeRapidrameByInterpretingDcBody` — locates the `dc_*()` function and
+    delegates to the interpreter.
+  - `RAPIDRAME_PRE_UNMIX_TRANSFORMS` — legacy static schemes, fallback ONLY.
+  - `tryUnpackInlinePackerJs` — expands `eval(function(p,a,c,k,e,d){...})`
+    packer.js blocks. Required for the `/rplayer/` flow.
+  - `extractRapidrameStreamUrl` — unpacks, then runs the source-variable lookup.
+  - `extractHdFilmEmbedUrl` — finds the iframe in the page HTML. Matches `src=`,
+    `data-src=`, `data-lazy-src=`, plus `data-video=`/`data-link=`/`data-url=`.
+  - `buildHdFilmResult` — ALWAYS returns native (`source: "direct"`) when a
+    stream URL was decoded. `webViewFallbackUrl` is the last-resort fallback if
+    the native stream dies at playback time (broken segment, expired token, geo
+    block) — it is NOT the path taken when extraction fails.
+- Health check: **`scripts/check-hdfilm-resolver.ts`**. Its `--write`
+  auto-derive is deprecated (see above); the health check itself still works and
+  validates through `extractRapidrameStreamUrl`, so it reflects real playback.
+- Regression tests: **`tests/rapidrameScript.test.ts`** (decoder families) and
+  **`tests/webPlayerService.test.ts`** (matching/scoring).
 - App-side OTA delivery: **`src/services/appUpdateService.ts`** (5-min poll)
   and **`src/components/common/LiveOpsHost.tsx`** (silent reload on
   background→foreground transition, suppressed during playback via

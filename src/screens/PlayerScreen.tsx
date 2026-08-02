@@ -2,7 +2,7 @@ import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { Feather, MaterialIcons } from "@expo/vector-icons";
 import axios from "axios";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Animated,
@@ -15,7 +15,7 @@ import {
   View,
   useWindowDimensions
 } from "react-native";
-import { useVideoPlayer, VideoView, type ContentType, type SubtitleTrack } from "expo-video";
+import { useVideoPlayer, VideoView, type AudioTrack, type ContentType, type SubtitleTrack } from "expo-video";
 import YoutubeIframe from "react-native-youtube-iframe";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
@@ -51,6 +51,16 @@ import {
   showSystemNavigationBar,
 } from "../utils/systemNavigationBar";
 import { getProviderConfig } from "../services/providerConfigService";
+import {
+  DEFAULT_AUDIO_PREFERENCE,
+  getAudioTrackLabel,
+  pickPreferredAudioTrack,
+  resolveAudioTrackLanguage,
+  type AudioPreference,
+} from "../utils/audioTracks";
+import { loadAudioPreference, saveAudioPreference } from "../services/audioPreferenceStorage";
+import { pickDefaultSubtitle } from "../utils/subtitleSelection";
+import { useAppSettings } from "../settings/AppSettingsContext";
 import {
   normalizeSubtitleUrl,
   parseSubtitleDocument,
@@ -414,6 +424,9 @@ function PlayerLoadingOverlay({
 export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const theme = useTheme();
   const { t } = useTranslation();
+  // Drives the default-subtitle pick: subtitles come on when the soundtrack
+  // isn't in the language the viewer reads the app in.
+  const { language } = useAppSettings();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const webViewRef = useRef<WebView>(null);
   const [playerResult, setPlayerResult] = useState<WebPlayerResult | null>(null);
@@ -432,6 +445,19 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   const [currentStreamUrl, setCurrentStreamUrl] = useState<string | null>(null);
   const [isQualityMenuOpen, setIsQualityMenuOpen] = useState(false);
+
+  // ── Audio renditions (dual-audio provider streams) ──
+  // Turkish providers ship DUAL masters where the dub is flagged DEFAULT=YES,
+  // so an untouched ExoPlayer dubs every film. We re-pick per the stored
+  // preference (original audio unless the viewer says otherwise).
+  const [availableAudioTracks, setAvailableAudioTracks] = useState<AudioTrack[]>([]);
+  const [selectedAudioTrack, setSelectedAudioTrack] = useState<AudioTrack | null>(null);
+  const [isAudioMenuOpen, setIsAudioMenuOpen] = useState(false);
+  const [audioPreference, setAudioPreference] = useState<AudioPreference>(DEFAULT_AUDIO_PREFERENCE);
+  // Auto-selection runs once per loaded source; after that the viewer's manual
+  // pick wins even if the track list is re-emitted mid-playback.
+  const audioAutoAppliedRef = useRef(false);
+  const subtitleAutoAppliedRef = useRef(false);
 
   // â”€â”€ Track recent playback entry only â”€â”€
   const { addToRecentlyWatched } = useRecentlyWatched();
@@ -571,13 +597,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [controlsOpacity, clearHideTimer, scheduleHideControls]);
 
   const toggleControls = useCallback(() => {
-    if (isSubtitleMenuOpen || isQualityMenuOpen) return;
+    if (isSubtitleMenuOpen || isQualityMenuOpen || isAudioMenuOpen) return;
     if (controlsVisibleRef.current) {
       hideControlsNow();
     } else {
       showControls();
     }
-  }, [isSubtitleMenuOpen, isQualityMenuOpen, showControls, hideControlsNow]);
+  }, [isSubtitleMenuOpen, isQualityMenuOpen, isAudioMenuOpen, showControls, hideControlsNow]);
 
   // Legacy alias so the WebView path keeps working without renaming everything
   const showCloseBtn = controlsVisible;
@@ -647,12 +673,12 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   // Pause auto-hide while a menu is open; resume when closed
   useEffect(() => {
-    if (isSubtitleMenuOpen || isQualityMenuOpen) {
+    if (isSubtitleMenuOpen || isQualityMenuOpen || isAudioMenuOpen) {
       clearHideTimer();
     } else if (controlsVisibleRef.current) {
       scheduleHideControls();
     }
-  }, [isSubtitleMenuOpen, isQualityMenuOpen, clearHideTimer, scheduleHideControls]);
+  }, [isSubtitleMenuOpen, isQualityMenuOpen, isAudioMenuOpen, clearHideTimer, scheduleHideControls]);
 
   // Step 1: Resolve the movie page URL (or use trailer)
   useEffect(() => {
@@ -666,6 +692,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setSelectedExternalSubtitle(null);
     setExternalSubtitleCues([]);
     setActiveSubtitleText(null);
+    setAvailableAudioTracks([]);
+    setSelectedAudioTrack(null);
+    setIsAudioMenuOpen(false);
+    audioAutoAppliedRef.current = false;
+    subtitleAutoAppliedRef.current = false;
     hdfilmNativeFallbackTriggeredRef.current = false;
     hdfilmRuntimeDiscoveryKeysRef.current.clear();
     dizipalRecoveryTriggeredRef.current = false;
@@ -1156,21 +1187,26 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const streamReferer = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.referer ?? "" : "";
   const directStreamType = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.streamType ?? "" : "";
   const directEmbedUrl = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.embedUrl ?? "" : "";
-  const directSubtitleOptions =
-    (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct")
-      ? (playerResult.subtitles ?? [])
-          .filter(s => !s.url.includes(".m3u8")) // Skip HLS subtitle playlists for external side-loading
-          .map((subtitle) => ({
-            ...subtitle,
-            url: normalizeSubtitleUrl(
-              subtitle.url,
-              directEmbedUrl,
-              playerResult.url,
-              streamReferer,
-              directStreamUrl
-            )
-          }))
-      : [];
+  // Memoized so the default-subtitle effect below can depend on it without
+  // re-running (and re-selecting) on every render.
+  const directSubtitleOptions = useMemo(
+    () =>
+      (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct")
+        ? (playerResult.subtitles ?? [])
+            .filter(s => !s.url.includes(".m3u8")) // Skip HLS subtitle playlists for external side-loading
+            .map((subtitle) => ({
+              ...subtitle,
+              url: normalizeSubtitleUrl(
+                subtitle.url,
+                directEmbedUrl,
+                playerResult.url,
+                streamReferer,
+                directStreamUrl
+              )
+            }))
+        : [],
+    [playerResult, directEmbedUrl, streamReferer, directStreamUrl]
+  );
   useEffect(() => {
     if (!videoPlayer || !directStreamUrl) return;
 
@@ -1184,9 +1220,61 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       },
       contentType
     };
+    // A new source means a new track list; let the preference re-apply once.
+    audioAutoAppliedRef.current = false;
+    subtitleAutoAppliedRef.current = false;
+    setAvailableAudioTracks([]);
+    setSelectedAudioTrack(null);
     void videoPlayer.replaceAsync(source);
     // Don't call play() here â€” wait for readyToPlay status so play() doesn't silently fail
   }, [videoPlayer, directStreamUrl, streamReferer, directStreamType]);
+
+  // Restore the viewer's remembered soundtrack choice before the first stream
+  // reports its tracks, so the very first auto-pick already honours it.
+  useEffect(() => {
+    let cancelled = false;
+    void loadAudioPreference().then((preference) => {
+      if (!cancelled) setAudioPreference(preference);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const audioPreferenceRef = useRef(audioPreference);
+  audioPreferenceRef.current = audioPreference;
+
+  /**
+   * Adopt a freshly published track list and, once per source, override the
+   * provider's DEFAULT rendition with the preferred one. Skipping the override
+   * when the pick already matches avoids a needless mid-playback audio switch.
+   */
+  const applyAudioTracks = useCallback(
+    (tracks: AudioTrack[]) => {
+      setAvailableAudioTracks(tracks);
+      try {
+        setSelectedAudioTrack(videoPlayer.audioTrack ?? null);
+      } catch {
+        /* expo-video already torn down */
+      }
+
+      if (audioAutoAppliedRef.current || tracks.length < 2) return;
+
+      const preferred = pickPreferredAudioTrack(tracks, audioPreferenceRef.current);
+      audioAutoAppliedRef.current = true;
+      if (!preferred) return;
+
+      try {
+        if (videoPlayer.audioTrack?.id === preferred.id) return;
+        debugLog("[Player] Selecting preferred audio track:", preferred.label, preferred.language);
+        videoPlayer.audioTrack = preferred;
+        setSelectedAudioTrack(preferred);
+      } catch {
+        /* expo-video already torn down */
+      }
+    },
+    [videoPlayer]
+  );
 
   useEffect(() => {
     if (!videoPlayer) return;
@@ -1200,6 +1288,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         debugLog("[Player] Available subtitle tracks:", JSON.stringify(videoPlayer.availableSubtitleTracks));
         setAvailableSubtitleTracks(videoPlayer.availableSubtitleTracks);
         setSelectedSubtitleTrack(videoPlayer.subtitleTrack ?? null);
+        applyAudioTracks(videoPlayer.availableAudioTracks ?? []);
         // Continue-watching may hold playback for the resume prompt, or seek
         // to the saved position and start itself.
         if (!handleContinueWatchingReady()) {
@@ -1250,13 +1339,26 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       setSelectedSubtitleTrack(ev.subtitleTrack ?? null);
     });
 
+    // HLS audio renditions often arrive after readyToPlay (ExoPlayer publishes
+    // them once the master playlist's alternate groups are parsed), so the
+    // auto-pick has to run from this event too — not just from statusChange.
+    const audioSub = videoPlayer.addListener("availableAudioTracksChange", (ev: any) => {
+      applyAudioTracks(ev.availableAudioTracks ?? []);
+    });
+
+    const audioTrackSub = videoPlayer.addListener("audioTrackChange", (ev: any) => {
+      setSelectedAudioTrack(ev.audioTrack ?? null);
+    });
+
     return () => {
       statusSub.remove();
       playingSub.remove();
       subtitleSub.remove();
       subtitleTrackSub.remove();
+      audioSub.remove();
+      audioTrackSub.remove();
     };
-  }, [videoPlayer, handleContinueWatchingReady]);
+  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks]);
 
   useEffect(() => {
     if (!selectedExternalSubtitle || selectedExternalSubtitle.url.includes(".m3u8")) {
@@ -1350,6 +1452,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     if (playerResult?.source !== "dizipal_direct" && playerResult?.source !== "direct") {
       setIsSubtitleMenuOpen(false);
       setIsQualityMenuOpen(false);
+      setIsAudioMenuOpen(false);
     }
   }, [playerResult?.source]);
 
@@ -1416,6 +1519,117 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setIsSubtitleMenuOpen(false);
     scheduleHideClose();
   }, [videoPlayer, scheduleHideClose]);
+
+  /**
+   * Turn subtitles on by default when the soundtrack isn't in the viewer's
+   * language.
+   *
+   * The player used to start every title with subtitles off. That was already
+   * unhelpful, and it became wrong once audio started defaulting to the
+   * ORIGINAL soundtrack rather than the provider's Turkish dub — a Turkish
+   * viewer would otherwise get English audio and nothing to read. Runs once per
+   * source; any manual pick from the CC menu wins from then on.
+   */
+  useEffect(() => {
+    if (subtitleAutoAppliedRef.current) return;
+    if (!isPlaybackReady) return;
+
+    const audioLanguage = selectedAudioTrack ? resolveAudioTrackLanguage(selectedAudioTrack) : "";
+    if (!audioLanguage) return;
+
+    if (directSubtitleOptions.length > 0) {
+      subtitleAutoAppliedRef.current = true;
+      const preferred = pickDefaultSubtitle(directSubtitleOptions, {
+        appLanguage: language,
+        audioLanguage,
+      });
+      if (preferred) {
+        debugLog("[Player] Auto-enabling subtitle:", preferred.label, preferred.lang);
+        selectExternalSubtitle(preferred);
+      }
+      return;
+    }
+
+    if (availableSubtitleTracks.length > 0) {
+      subtitleAutoAppliedRef.current = true;
+      const preferred = pickDefaultSubtitle(
+        availableSubtitleTracks.map((track) => ({
+          label: getSubtitleTrackLabel(track),
+          lang: track.language ?? "",
+          track,
+        })),
+        { appLanguage: language, audioLanguage }
+      );
+      if (preferred) {
+        debugLog("[Player] Auto-enabling in-manifest subtitle:", preferred.label);
+        selectSubtitleTrack(preferred.track);
+      }
+    }
+  }, [
+    isPlaybackReady,
+    selectedAudioTrack,
+    directSubtitleOptions,
+    availableSubtitleTracks,
+    language,
+    selectExternalSubtitle,
+    selectSubtitleTrack,
+  ]);
+
+  const toggleAudioMenu = useCallback(() => {
+    if (availableAudioTracks.length < 2) return;
+    setIsAudioMenuOpen((current) => {
+      if (!current) {
+        if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      } else {
+        scheduleHideClose();
+      }
+      return !current;
+    });
+    setIsSubtitleMenuOpen(false);
+    setIsQualityMenuOpen(false);
+  }, [availableAudioTracks.length, scheduleHideClose]);
+
+  const selectAudioTrack = useCallback(
+    (track: AudioTrack) => {
+      // Remember the CHOICE, not the track object: ids are per-stream, so the
+      // next title needs a language (or "original") to re-derive the pick from.
+      const language = resolveAudioTrackLanguage(track);
+      const nextPreference: AudioPreference = language
+        ? { kind: "language", language }
+        : DEFAULT_AUDIO_PREFERENCE;
+
+      setAudioPreference(nextPreference);
+      void saveAudioPreference(nextPreference);
+
+      try {
+        const currentTime = videoPlayer.currentTime;
+        videoPlayer.audioTrack = track;
+        // ExoPlayer can restart the rendition at the segment boundary; pinning
+        // the position keeps the switch seamless instead of jumping back.
+        videoPlayer.currentTime = currentTime;
+      } catch {
+        /* expo-video already torn down */
+      }
+
+      setSelectedAudioTrack(track);
+      audioAutoAppliedRef.current = true;
+      setIsAudioMenuOpen(false);
+      scheduleHideClose();
+    },
+    [videoPlayer, scheduleHideClose]
+  );
+
+  // The top-right control strip is laid out on a fixed 46px pitch starting at
+  // right:16. Deriving each optional button's slot (instead of hardcoding its
+  // offset) keeps the strip gap-free whichever combination is present.
+  const CONTROL_SLOT_PITCH = 46;
+  const FIRST_OPTIONAL_SLOT_RIGHT = 154; // after close / fit / CC
+  const hasMultipleAudioTracks = availableAudioTracks.length > 1;
+  const hasQualityOptions = (playerResult?.qualityOptions?.length ?? 0) > 1;
+  const slotRight = (index: number) => FIRST_OPTIONAL_SLOT_RIGHT + index * CONTROL_SLOT_PITCH;
+  const audioButtonRight = slotRight(0);
+  const qualityButtonRight = slotRight(hasMultipleAudioTracks ? 1 : 0);
+  const episodeButtonRight = slotRight((hasMultipleAudioTracks ? 1 : 0) + (hasQualityOptions ? 1 : 0));
 
   const isLoading = isResolving || (!isPlaybackReady && playerResult?.source !== "not_found");
   const isNotAvailable = playerResult?.source === "not_found";
@@ -1489,8 +1703,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             </TouchableOpacity>
           </Animated.View>
         )}
-        {!isLoading && isSubtitleMenuOpen && (
-          <Pressable style={styles.subtitleMenuBackdrop} onPress={() => setIsSubtitleMenuOpen(false)} />
+        {!isLoading && (isSubtitleMenuOpen || isAudioMenuOpen) && (
+          <Pressable
+            style={styles.subtitleMenuBackdrop}
+            onPress={() => {
+              setIsSubtitleMenuOpen(false);
+              setIsAudioMenuOpen(false);
+            }}
+          />
         )}
         {!isLoading && showCloseBtn && (
           <>
@@ -1524,8 +1744,22 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               </TouchableOpacity>
             </Animated.View>
 
-            {playerResult?.qualityOptions && playerResult.qualityOptions.length > 1 && (
-              <Animated.View style={[styles.ccButton, { right: 154, opacity: closeBtnOpacity }]}>
+            {hasMultipleAudioTracks && (
+              <Animated.View style={[styles.ccButton, { right: audioButtonRight, opacity: closeBtnOpacity }]}>
+                <TouchableOpacity
+                  onPress={toggleAudioMenu}
+                  activeOpacity={0.8}
+                  style={styles.closeButtonInner}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("player.a11y.audio")}
+                >
+                  <MaterialIcons name="multitrack-audio" size={20} color="#FFFFFF" />
+                </TouchableOpacity>
+              </Animated.View>
+            )}
+
+            {hasQualityOptions && (
+              <Animated.View style={[styles.ccButton, { right: qualityButtonRight, opacity: closeBtnOpacity }]}>
                 <TouchableOpacity
                   onPress={toggleQualityMenu}
                   activeOpacity={0.8}
@@ -1539,14 +1773,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             )}
 
             {isSeriesNativePath && nextEpisode.seasons.length > 0 && (
-              <Animated.View
-                style={[
-                  styles.ccButton,
-                  // Sit right after the quality gear when it exists, else take
-                  // its slot so there's no gap in the control strip.
-                  { right: (playerResult?.qualityOptions?.length ?? 0) > 1 ? 200 : 154, opacity: closeBtnOpacity },
-                ]}
-              >
+              <Animated.View style={[styles.ccButton, { right: episodeButtonRight, opacity: closeBtnOpacity }]}>
                 <TouchableOpacity
                   onPress={() => setEpisodePickerOpen(true)}
                   activeOpacity={0.8}
@@ -1559,7 +1786,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               </Animated.View>
             )}
 
-            {(isSubtitleMenuOpen || isQualityMenuOpen) && (
+            {(isSubtitleMenuOpen || isQualityMenuOpen || isAudioMenuOpen) && (
               <View style={styles.subtitleMenu}>
                 {isSubtitleMenuOpen && (
                   <>
@@ -1624,6 +1851,35 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
                             </TouchableOpacity>
                           );
                         })}
+                  </>
+                )}
+
+                {isAudioMenuOpen && (
+                  <>
+                    <Text style={styles.subtitleMenuHeader}>{t("player.audio")}</Text>
+                    {availableAudioTracks.map((track, index) => {
+                      const isActive = selectedAudioTrack?.id === track.id;
+                      const language = resolveAudioTrackLanguage(track);
+
+                      return (
+                        <TouchableOpacity
+                          key={track.id}
+                          activeOpacity={0.8}
+                          style={[styles.subtitleMenuItem, isActive && styles.subtitleMenuItemActive]}
+                          onPress={() => selectAudioTrack(track)}
+                        >
+                          <Text style={styles.subtitleMenuItemLabel}>{getAudioTrackLabel(track, index)}</Text>
+                          <View style={styles.subtitleMenuItemTrailing}>
+                            {language ? (
+                              <Text style={styles.subtitleMenuItemMeta}>{language.toUpperCase()}</Text>
+                            ) : null}
+                            {isActive && (
+                              <Feather name="check" size={15} color="#FFFFFF" style={styles.subtitleMenuCheck} />
+                            )}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
                   </>
                 )}
 

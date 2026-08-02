@@ -5,6 +5,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import type { MediaType } from "../api/tmdb";
 import type { WatchHistoryEntry, WatchPrecision } from "../hooks/useWatchHistory";
 import { buildWatchHistorySyncArrays, clampIntOrNull } from "../utils/watchHistoryRows";
+import { buildSeriesSeasonInternalId } from "../utils/watchHistoryOps";
 import { normalizeAppLanguage } from "../localization/types";
 import {
   APP_SETTINGS_STORAGE_KEY,
@@ -24,6 +25,7 @@ import {
   isLocalFileUri,
 } from "../utils/profileSyncPayload";
 import { reconcileQueueAfterFlush } from "../utils/syncQueue";
+import { deriveStableUuidFromKey } from "../utils/uuid";
 import { supabase } from "./supabase";
 import { trackNetworkFailure } from "./telemetryService";
 import {
@@ -56,6 +58,12 @@ type SyncAssetKind = "avatar" | "banner";
 
 type SyncMetadata = Record<string, unknown>;
 
+// `internal_id` is a `uuid` column (and `p_internal_id uuid` on every sync RPC),
+// so a readable composite key like "series-season:1399:1" cannot be sent as-is —
+// Postgres rejects it and the op is re-queued forever, blocking the queue behind
+// it. Hash non-uuid string ids into a stable uuid instead; see
+// deriveStableUuidFromKey for why this is safe and how the readable key is
+// recovered on the way back down (convertRemoteWatchHistory).
 function getSyncIds(id: string | number | null | undefined) {
   if (id === undefined || id === null) return { tmdb_id: null, internal_id: null };
   const sId = String(id).trim();
@@ -66,7 +74,7 @@ function getSyncIds(id: string | number | null | undefined) {
     const numId = parseInt(sId, 10);
     if (!isNaN(numId) && numId > 0) return { tmdb_id: numId, internal_id: null };
   }
-  return { tmdb_id: null, internal_id: sId };
+  return { tmdb_id: null, internal_id: deriveStableUuidFromKey(sId) };
 }
 
 type RecentlyWatchedEntry = { id: number | string; mediaType: MediaType; timestamp: number };
@@ -500,6 +508,32 @@ function mergeRecentlyViewedEntries(p: RecentlyWatchedEntry[], s: RecentlyWatche
   return [...m.values()].sort((a,b) => b.timestamp - a.timestamp).slice(0, MAX_RECENTLY_VIEWED);
 }
 
+/**
+ * Recover the local entry id for a remote watch-history row.
+ *
+ * Season rows are stored under a hashed uuid because `internal_id` is a uuid
+ * column, but locally they must keep the readable `series-season:{id}:{n}` key
+ * that buildSeriesSeasonInternalId produces — the mutation/dedupe paths compare
+ * ids directly, so a row coming back as a bare hash would be treated as a
+ * different entry and the season would duplicate on every bootstrap.
+ */
+function rebuildLocalWatchHistoryId(
+  snapshot: Record<string, unknown>,
+  internalId: string | null,
+  tmdbId: number | null
+): number | string {
+  if (snapshot.historyKind === "season") {
+    const seriesId = typeof snapshot.sourceTmdbId === "number" ? snapshot.sourceTmdbId : tmdbId;
+    const seasonNumber = typeof snapshot.seasonNumber === "number" ? snapshot.seasonNumber : null;
+    if (typeof seriesId === "number" && seriesId > 0 && seasonNumber !== null) {
+      return buildSeriesSeasonInternalId(seriesId, seasonNumber);
+    }
+  }
+
+  if (typeof internalId === "string" && internalId.trim().length > 0) return internalId;
+  return tmdbId as number;
+}
+
 function convertRemoteWatchHistory(entries: RemoteWatchHistoryEntry[]): WatchHistoryEntry[] {
   return entries
     .map((entry) => {
@@ -511,7 +545,11 @@ function convertRemoteWatchHistory(entries: RemoteWatchHistoryEntry[]): WatchHis
     })
     .filter(({ e, tmdbId, internalId }) => ((typeof tmdbId === "number" && tmdbId > 0) || (typeof internalId === "string" && internalId.trim().length > 0)) && e.title.trim().length > 0)
     .map(({ e, tmdbId, internalId, snapshot }) => ({
-      id: typeof internalId === "string" && internalId.trim().length > 0 ? internalId : (tmdbId as number),
+      // Season rows travel under a hashed uuid (see getSyncIds), so rebuild the
+      // canonical local id from the snapshot rather than adopting the hash —
+      // otherwise the same season would land twice after a bootstrap merge, once
+      // per id shape.
+      id: rebuildLocalWatchHistoryId(snapshot, internalId, tmdbId),
       sourceTmdbId: typeof snapshot.sourceTmdbId === "number" ? snapshot.sourceTmdbId as number : tmdbId,
       mediaType: coerceMediaType(e.mediaType),
       historyKind: snapshot.historyKind === "season" ? "season" : "title",
