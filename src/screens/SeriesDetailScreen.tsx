@@ -57,6 +57,8 @@ import { formatLocalizedMonthDayYear } from "../localization/format";
 import { useLikedSeries } from "../hooks/useLikedSeries";
 import { useWatchHistory, type SeriesSeasonWatchedSave } from "../hooks/useWatchHistory";
 import { useWatchedEpisodes, type SeasonEpisodeStateChange } from "../hooks/useWatchedEpisodes";
+import { useSeasonWatchHistorySync } from "../hooks/useSeasonWatchHistorySync";
+import { getSeasonEpisodeNumbers } from "../utils/watchedEpisodes";
 import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
 import { HomeStackParamList } from "../navigation/types";
 import {
@@ -593,10 +595,6 @@ function formatEpisodeMeta(item: SeriesEpisode): string {
   return segments.join(" | ");
 }
 
-function getSeasonEpisodeNumbers(episodeCount: number) {
-  return Array.from({ length: episodeCount }, (_, index) => index + 1);
-}
-
 export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   const currentTheme = useTheme();
   const { t } = useTranslation();
@@ -613,6 +611,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
     saveSeriesWatchedBatch,
     removeFromWatchHistory,
   } = useWatchHistory();
+  const syncSeasonWatchHistory = useSeasonWatchHistorySync();
   const [details, setDetails] = useState<SeriesDetails | null>(null);
   const [ratings, setRatings] = useState<SeriesExternalRatings | null>(null);
   const [similarSeries, setSimilarSeries] = useState<MediaItem[]>([]);
@@ -970,6 +969,17 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
       );
     },
     [navigation]
+  );
+
+  const handleToggleEpisodeWatched = useCallback(
+    async (seasonNumber: number, episodeNumber: number) => {
+      if (!details) return;
+      // toggleEpisodeWatched hands back the post-write map; this render's
+      // `watchedEpisodes` is still the pre-toggle value.
+      const nextState = await toggleEpisodeWatched(details.id, seasonNumber, episodeNumber);
+      await syncSeasonWatchHistory(details, nextState, seasonNumber);
+    },
+    [details, syncSeasonWatchHistory, toggleEpisodeWatched]
   );
 
   const handleOpenWatchedDateModal = useCallback(() => {
@@ -1365,7 +1375,7 @@ export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
                           isWatched={isEpisodeWatched(details.id, episode.seasonNumber, episode.episodeNumber)}
                           watchedStampSource={watchedStampImage}
                           onToggleWatched={() => {
-                            toggleEpisodeWatched(details.id, episode.seasonNumber, episode.episodeNumber);
+                            void handleToggleEpisodeWatched(episode.seasonNumber, episode.episodeNumber);
                           }}
                           onPress={() => {
                             navigation.navigate("Player", {

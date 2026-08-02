@@ -18,7 +18,11 @@ import {
 } from "../services/userDataSync";
 import { WATCH_HISTORY_STORAGE_KEY } from "../services/userDataStorage";
 import { mapWithConcurrency } from "../utils/concurrency";
-import { applyWatchHistoryOps, type WatchHistoryListOp } from "../utils/watchHistoryOps";
+import {
+  applyWatchHistoryOps,
+  buildSeriesSeasonInternalId,
+  type WatchHistoryListOp,
+} from "../utils/watchHistoryOps";
 
 const METADATA_VERSION = 5;
 const LEGACY_METADATA_MIGRATION_CONCURRENCY = 4;
@@ -85,10 +89,6 @@ function normalizeWatchPrecision(value: unknown): WatchPrecision {
 
 function normalizeWatchHistoryKind(value: unknown): WatchHistoryKind {
   return value === "season" ? "season" : "title";
-}
-
-function buildSeriesSeasonInternalId(seriesId: number, seasonNumber: number) {
-  return `series-season:${seriesId}:${seasonNumber}`;
 }
 
 export function buildSeriesSeasonWatchTitle(seriesTitle: string, seasonName: string | null, seasonNumber: number) {

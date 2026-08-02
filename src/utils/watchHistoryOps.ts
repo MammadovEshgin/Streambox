@@ -11,6 +11,16 @@ export type WatchHistoryListOp =
   | { kind: "remove"; id: number | string; mediaType: MediaType };
 
 /**
+ * Local id for a "watched this season" entry. Lives here rather than in
+ * useWatchHistory so the sync layer can rebuild the same key when reading rows
+ * back from Supabase without importing the hook (which would be circular).
+ * Both sides MUST agree on this format or a season duplicates on bootstrap.
+ */
+export function buildSeriesSeasonInternalId(seriesId: number, seasonNumber: number): string {
+  return `series-season:${seriesId}:${seasonNumber}`;
+}
+
+/**
  * Apply upserts/removals to the current entry list in order. Only entries
  * whose (id, mediaType) pair is explicitly targeted by an op are replaced or
  * removed; every other entry passes through untouched. Upserted entries are

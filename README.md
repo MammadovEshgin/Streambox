@@ -105,17 +105,24 @@ scripts/              check-hdfilm-resolver, asset optimizers, health checks
 The resolver lives in [`src/services/WebPlayerService.ts`](src/services/WebPlayerService.ts) and tries providers in priority order — a real native stream from any provider always wins over a WebView fallback from another. Order:
 
 1. **HDFilmCehennemi (native)** — search → decode the `Rapidrame` HLS by interpreting the provider's `dc_*()` obfuscation live from the response body (the scheme is randomized per request, so no static scheme is assumed), then parse the master playlist for resolutions + subtitle tracks.
-2. **Dizipal (native)** — search → resolve `data-cfg` → `getVideoApi` → `.m3u8`.
-3. **Dizipal embed** — when the direct stream isn't extractable but the embed URL is.
-4. **Turkish-title retry** — fetch the TMDB `/translations` localized title (e.g. *Dune* → *Dune: Çöl Gezegeni*) and re-search both providers. Handles cross-language matching plus a Turkish-dotless-i fold so `Yadigârları` matches the ASCII slug `yadigarlari`.
-5. **Dizibal (native)** — third-source REST scraper at `dizibal.com`: search → slug → embed → `/dl?op=get_stream` (with an `Origin` header) → m3u8 served with the embed-host referer. Films live under `/api/movies`, anime series under `/api/anime`. Runs over CDN77 infrastructure that isn't on the Azerbaijani ISP block lists that took out cloudnestra/embed.su. A Telegram bot rotates the base URL via `/set_dizibal` when it moves.
-6. **HDFilm WebView (last resort)** — only when *every* native source failed.
+2. **Dizipal (native)** — search → `data-cfg` → mint a single-use CSRF token → `/ajax-player-config` → `.m3u8`. Only a real extracted stream counts: the page and embed shells are never returned, because they render the provider's own player with no route back to native.
+3. **Turkish-title retry** — fetch the TMDB `/translations` localized title (e.g. *Dune* → *Dune: Çöl Gezegeni*) and re-search both providers. Handles cross-language matching plus a Turkish-dotless-i fold so `Yadigârları` matches the ASCII slug `yadigarlari`.
+4. **Dizibal (native)** — third-source REST scraper at `dizibal.com`: search → slug → embed → `/dl?op=get_stream` (with an `Origin` header) → m3u8 served with the embed-host referer. Films live under `/api/movies`, anime series under `/api/anime`. Runs over CDN77 infrastructure that isn't on the Azerbaijani ISP block lists that took out cloudnestra/embed.su. A Telegram bot rotates the base URL via `/set_dizibal` when it moves.
+5. **HDFilm WebView (last resort)** — only when *every* native source failed. Unlike the Dizipal shells this one earns its place: it injects a discovery script and hands off to `expo-video` the moment it finds the real stream URL.
 
 Hardening guarantees that have a dedicated regression test:
 
 - **Year gate** — if both the target and a candidate have a known year and they disagree, the candidate is rejected outright. Prevents Dune (1984) from substituting for Dune (2021).
 - **Substring/year-coincidence guard** — a substring title match (e.g. *Fury* in *Cuban Fury*) never gets the wrong-year boost; the score stays below the provider cutoff so the resolver falls through.
+- **Native players only** — playback always lands in a surface the app controls (`expo-video`, or the app-owned hls.js surface used to clear Cloudflare cookie gates). No provider's own player, so no pre-roll ads and no per-skin DOM timing bugs.
 - **No JS-execution scrapers** — every stream URL is recovered via JSON/HTTP, not headless browsers. Stable on every Android skin (incl. HyperOS, MIUI) and zero runtime ad overlays.
+
+### Audio and subtitle defaults
+
+Turkish providers ship dual-audio HLS masters that flag the **Turkish dub** as `DEFAULT=YES`, so an untouched ExoPlayer dubs every film. The player re-picks:
+
+- **Audio** — prefers the original soundtrack (`NAME="Original Audio"`, or the first non-Turkish rendition when the provider only labels languages). The viewer's choice is remembered across titles.
+- **Subtitles** — turn on automatically when the soundtrack isn't in the app's language, picking a track in that language. `Forced` tracks (a few sign-only cues) are never auto-selected but stay in the menu.
 
 See [`decoder-recovery.md`](decoder-recovery.md) for the manual rotation playbook when HDFilm changes their obfuscation scheme.
 

@@ -4,6 +4,7 @@ import type { VideoPlayer } from "expo-video";
 import { getMovieDetails, getSeriesDetails, type MediaType } from "../api/tmdb";
 import { accumulateWatchedDelta } from "../utils/continueWatching";
 import { shouldAutoMarkWatched } from "../utils/playerProgress";
+import { useSeasonWatchHistorySync } from "./useSeasonWatchHistorySync";
 import { useWatchHistory } from "./useWatchHistory";
 import { useWatchedEpisodes } from "./useWatchedEpisodes";
 
@@ -36,7 +37,8 @@ export function useAutoMarkWatched({
   episodeNumber,
 }: UseAutoMarkWatchedParams) {
   const { saveMovieToWatchHistory, saveSeriesToWatchHistory } = useWatchHistory();
-  const { isEpisodeWatched, toggleEpisodeWatched } = useWatchedEpisodes();
+  const { isEpisodeWatched, toggleEpisodeWatched, watchedEpisodes } = useWatchedEpisodes();
+  const syncSeasonWatchHistory = useSeasonWatchHistorySync();
 
   const firedRef = useRef(false);
   const inFlightRef = useRef(false);
@@ -47,8 +49,22 @@ export function useAutoMarkWatched({
   // Reset the once-per-session guard + counters whenever the target changes
   // (episode switch via setParams re-runs the player in place).
   const targetKey = `${mediaType}:${tmdbId}:${seasonNumber ?? ""}:${episodeNumber ?? ""}`;
-  const saveRef = useRef({ saveMovieToWatchHistory, saveSeriesToWatchHistory, isEpisodeWatched, toggleEpisodeWatched });
-  saveRef.current = { saveMovieToWatchHistory, saveSeriesToWatchHistory, isEpisodeWatched, toggleEpisodeWatched };
+  const saveRef = useRef({
+    saveMovieToWatchHistory,
+    saveSeriesToWatchHistory,
+    isEpisodeWatched,
+    toggleEpisodeWatched,
+    syncSeasonWatchHistory,
+    watchedEpisodes,
+  });
+  saveRef.current = {
+    saveMovieToWatchHistory,
+    saveSeriesToWatchHistory,
+    isEpisodeWatched,
+    toggleEpisodeWatched,
+    syncSeasonWatchHistory,
+    watchedEpisodes,
+  };
 
   useEffect(() => {
     firedRef.current = false;
@@ -74,15 +90,22 @@ export function useAutoMarkWatched({
           } else {
             // Mark the specific episode (set, not toggle) and upsert the series
             // into watch history the same way the episode-watched UI does.
+            let episodeState = saveRef.current.watchedEpisodes;
             if (
               typeof seasonNumber === "number" &&
               typeof episodeNumber === "number" &&
               !saveRef.current.isEpisodeWatched(tmdbId, seasonNumber, episodeNumber)
             ) {
-              await saveRef.current.toggleEpisodeWatched(tmdbId, seasonNumber, episodeNumber);
+              episodeState = await saveRef.current.toggleEpisodeWatched(tmdbId, seasonNumber, episodeNumber);
             }
             const details = await getSeriesDetails(String(tmdbId));
             await saveRef.current.saveSeriesToWatchHistory(details, watchedAt);
+            // Finishing the last episode of a season should log the SEASON too,
+            // not just the series title — otherwise Stats and the season rail
+            // stay blank for a season the user demonstrably finished.
+            if (typeof seasonNumber === "number") {
+              await saveRef.current.syncSeasonWatchHistory(details, episodeState, seasonNumber);
+            }
           }
         } catch {
           // A failed fetch/save shouldn't wedge the session; allow a retry on a

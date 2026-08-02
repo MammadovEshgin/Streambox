@@ -4,11 +4,61 @@ All notable changes to StreamBox are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Runtime version (EAS Updates compatibility): **1.0.2**
+Runtime versions (EAS Updates compatibility): **1.0.2**, **1.1.0**, **1.2.0** —
+this branch (`v1.2.0`) ships to **1.2.0**. See
+[`docs/release-tracks.md`](docs/release-tracks.md) for which fleet gets what.
 
 ## [Unreleased]
 
+### Fixed — provider resolution, playback audio/subtitles, watched-season sync (2026-08-02)
+
+- **HDFilmCehennemi decoder rebuilt as an interpreter.** The provider replaced
+  its arithmetic de-scramble (`c - (CONST % (i + N))`) with a rolling-XOR
+  cipher, and randomizes the whole `dc_*()` scheme per request (15 live fetches
+  → 13 distinct shapes). The old matcher returned `null` for *every* HDFilm
+  title, so films silently played from Dizipal/Dizibal instead — Turkish-dub
+  audio only — and every play burned the full ~15–20s resolver budget first.
+  New `src/services/rapidrameScript.ts` parses and replays the live function
+  body (no `eval`; Hermes has none and running provider JS would be a
+  code-execution sink) and fails closed on anything outside its subset.
+- **Dizipal player-config handshake repaired.** `/ajax-token` now returns JSON
+  `{"t":…}`; the old code stringified the parsed object and sent the literal
+  `"[object Object]"`, so every config POST answered `"Invalid token"`. The
+  token is also single-use, and validation covers the whole cookie jar
+  (`_ct` + `PHPSESSID` + DDoS-Guard `__ddg*`) — hand-setting a `Cookie` header
+  replaces the native jar and fails.
+- **Native players only.** Dizipal page/embed shells are no longer returned as
+  playable results; they rendered the provider's own Playerjs with no route back
+  to native. Playback now always lands in `expo-video` or the app-owned hls.js
+  surface. Trade-off: a title whose stream can't be extracted shows "Not
+  Available" rather than the provider's player.
+- **Resolver latency.** Removed a duplicated Dizipal search in the
+  Turkish-title retry, and stopped sweeping weaker query variants once a
+  provider has returned zero rows. Measured across 13 live titles: all resolve
+  natively in 0.9–3.2s (was: 3 of them falling to a provider WebView, worst case
+  ~15.8s); "Not Available" now settles in ~3.2s.
+- **Season watch history never synced.** Season entries are keyed
+  `series-season:{id}:{n}`, which was sent to Supabase's `internal_id` — a
+  `uuid` column. Postgres rejected every write and, because failed ops re-queue
+  forever, they also clogged the durable sync queue. Production held 2327
+  watch-history rows and **zero** season rows. Non-uuid ids are now hashed to a
+  stable uuid (`deriveStableUuidFromKey`) and the readable key is rebuilt from
+  the row snapshot on the way back down.
+- **Watched seasons missing from the Profile list.** Ticking episodes wrote only
+  the episode map, so SeriesDetail showed a season as watched while watch
+  history — what Profile and Stats read — had no entry. New
+  `useSeasonWatchHistorySync` reconciles both stores from the episode toggle and
+  from the player's auto-mark, and only ever removes undated entries so an
+  explicitly dated season is never deleted by un-ticking one episode.
+
 ### Added
+
+- **Audio track selection.** Turkish providers flag the dub `DEFAULT=YES`, so
+  ExoPlayer dubbed every film. The player now prefers the original soundtrack,
+  exposes a picker, and remembers the choice across titles.
+- **Automatic subtitles.** Subtitles switch on when the soundtrack isn't in the
+  app's language, picking a track in that language. `Forced` tracks (a handful
+  of sign-only cues) are never auto-selected but remain in the menu.
 
 - ESLint 9 (flat config, built on `eslint-config-expo`) + Prettier with `npm run lint` / `npm run format` scripts.
 - GitHub Actions CI workflow (`.github/workflows/ci.yml`) — runs `typecheck` + `lint` + `test` on every push and PR to `main`.
