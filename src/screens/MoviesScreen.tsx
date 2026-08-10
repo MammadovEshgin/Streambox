@@ -478,8 +478,20 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
     };
   }, [cachedHub, getMoviesHubFreshnessVersion, localizedCacheKey]);
 
-  const applyHubState = useCallback((nextState: MoviesHubCache) => {
-    const freshnessVersion = getMoviesHubFreshnessVersion();
+  /**
+   * `isHeroCurrent: false` means the snapshot still carries the PREVIOUS
+   * movie-of-the-day — the pick either hasn't run yet or couldn't run because
+   * the liked/watched lists were still loading. Stamping that with today's
+   * freshness version made the 20-minute TTL hide a stale hero behind a cache
+   * that claimed to be current, and for an account with no liked or watched
+   * movies the version never changed afterwards either, so yesterday's film
+   * carried forward day after day. Marking it pending keeps the next focus or
+   * foreground re-running the load.
+   */
+  const applyHubState = useCallback((nextState: MoviesHubCache, isHeroCurrent = true) => {
+    const freshnessVersion = isHeroCurrent
+      ? getMoviesHubFreshnessVersion()
+      : `${getMoviesHubFreshnessVersion()}|hero-pending`;
     writeRuntimeCache<MoviesHubCache>(localizedCacheKey, nextState, { version: freshnessVersion });
     void writePersistedRuntimeCache<MoviesHubCache>(localizedCacheKey, nextState, { version: freshnessVersion });
     startTransition(() => {
@@ -525,7 +537,8 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
         ...currentState,
         topNewMovies: topNewFirstPage.ok ? topNewFirstPage.value.items.slice(0, 20) : currentState.topNewMovies,
       };
-      applyHubState(nextState);
+      // The hero is still the previous snapshot's here — the pick is in flight.
+      applyHubState(nextState, false);
       setIsLoading(false);
 
       const [featuredResult, imdbTopResult] = await Promise.all([featuredPromise, imdbTopPromise]);
@@ -541,11 +554,12 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
         topNewMovies: nextState.topNewMovies,
         imdbTopMovies: seededImdbTopMovies.slice(0, 20),
       };
+      const isHeroCurrent = canLoadPersonalizedHero && featuredResult.ok;
       if (canLoadPersonalizedHero) {
         setIsMovieOfDayLoading(false);
       }
       setIsImdbTopLoading(false);
-      applyHubState(nextState);
+      applyHubState(nextState, isHeroCurrent);
 
       if (topNewFirstPage.ok && topNewFirstPage.value.items.length < 16 && topNewFirstPage.value.totalPages > 1) {
         const expandedTopNew = await seedTopNewMovies(16, topNewFirstPage.value);
@@ -553,7 +567,7 @@ export function MoviesScreen({ navigation }: MoviesScreenProps) {
           applyHubState({
             ...nextState,
             topNewMovies: expandedTopNew.slice(0, 20),
-          });
+          }, isHeroCurrent);
         }
       }
     } catch (error) {

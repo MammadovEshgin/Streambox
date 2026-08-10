@@ -675,6 +675,77 @@ test("HDFilm year gate rejects same-title-different-year pages (Dune 2021 vs Dun
   assert.ok(score2021En >= 100, `Dune 2021 should score very high against the English target (got ${score2021En})`);
 });
 
+test("search sweep tries EVERY bare title before the empty-result cutoff (Harakiri fix)", () => {
+  // Harakiri (1962) is on hdfilmcehennemi as "Harakiri", but its TMDB original
+  // title is "切腹". The old ordering emitted "切腹" then "切腹 1962" — two
+  // queries the Turkish catalogue cannot match — and the 2-query empty cutoff
+  // stopped the sweep before "Harakiri" was ever sent. The film reported "Not
+  // Available" while /search/?q=Harakiri returns it, and every film with a
+  // non-Latin original title failed the same way.
+  const plan = __internal.generateSearchQueries("Harakiri", "1962", "切腹");
+  assert.equal(plan.queries[0], "切腹");
+  assert.equal(plan.queries[1], "Harakiri", "the display title must be the SECOND query, before any year variant");
+  assert.equal(plan.bareTitleCount, 2);
+
+  // …and the cutoff must not fire until both bare titles have gone out.
+  assert.equal(
+    __internal.shouldStopSearchingAfterEmptyQueries(0, 0, plan.bareTitleCount),
+    false
+  );
+  assert.equal(
+    __internal.shouldStopSearchingAfterEmptyQueries(1, 0, plan.bareTitleCount),
+    true,
+    "after both bare titles came back empty the sweep should stop"
+  );
+});
+
+test("search sweep keeps its 2-query floor when there is only one bare title", () => {
+  const plan = __internal.generateSearchQueries("Interstellar", "2014", "Interstellar");
+  assert.equal(plan.bareTitleCount, 1, "a duplicate original title must not inflate the count");
+  assert.equal(plan.queries[0], "Interstellar");
+  assert.equal(plan.queries[1], "Interstellar 2014");
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(0, 0, plan.bareTitleCount), false);
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(1, 0, plan.bareTitleCount), true);
+  // A provider that returned rows always gets the full sweep.
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(1, 3, plan.bareTitleCount), false);
+});
+
+test("a one-year metadata gap is the same film, a decade apart is not", () => {
+  // Turkish providers date a film by its local release: HDFilm lists
+  // "Dune: Part Two" as 2023 while TMDB says 2024. The hard year gate used to
+  // reject it outright.
+  assert.equal(__internal.isYearIncompatible("2023", "2024"), false);
+  assert.equal(__internal.isYearIncompatible("2024", "2023"), false);
+  assert.equal(__internal.isYearIncompatible("2024", "2024"), false);
+  assert.equal(__internal.isYearIncompatible("1984", "2021"), true);
+  // Unknown on either side is never a rejection.
+  assert.equal(__internal.isYearIncompatible("", "2024"), false);
+  assert.equal(__internal.isYearIncompatible("2024", null), false);
+});
+
+test("off-by-one provider years survive scoring; exact years still win", () => {
+  const near = {
+    href: "https://hdfilm.example/dune-part-two-16/",
+    title: "Dune Çöl Gezegeni Bölüm İki - Dune: Part Two",
+    resultYear: "2023",
+    text: "dune çöl gezegeni bölüm iki - dune: part two"
+  };
+  const nearScore = __internal.scoreHdFilmResult(near, "Dune: Part Two", "2024");
+  assert.ok(nearScore >= 50, `off-by-one year must clear the 50-pt cutoff (got ${nearScore})`);
+
+  const exact = { ...near, resultYear: "2024" };
+  const exactScore = __internal.scoreHdFilmResult(exact, "Dune: Part Two", "2024");
+  assert.ok(exactScore > nearScore, `exact year must still outrank off-by-one (${exactScore} vs ${nearScore})`);
+
+  // Dizipal's cutoff is 80 — the near-miss penalty has to stay under that too.
+  const dizipalNear = __internal.scoreDizipalResult(
+    { href: "https://dizipal.example/film/dune-colgezegeni-bolum-iki", title: "Dune: Part Two", resultYear: "2023", text: "dune: part two 2023" },
+    "Dune: Part Two",
+    "2024"
+  );
+  assert.ok(dizipalNear >= 80, `Dizipal off-by-one must clear its 80-pt cutoff (got ${dizipalNear})`);
+});
+
 test("HDFilm scoring still works when targetYear is unknown", () => {
   // Sanity guard: when we have no year info (rare but possible for TMDB
   // entries with missing release_date), the year gate must NOT silently

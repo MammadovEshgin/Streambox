@@ -98,6 +98,43 @@ test("original-audio detection matches both English and Turkish wording", () => 
 
 test("menu labels degrade gracefully when the manifest names nothing", () => {
   assert.equal(getAudioTrackLabel({ id: "0", language: "", label: "Turkish" }, 0), "Turkish");
-  assert.equal(getAudioTrackLabel({ id: "0", language: "fr", label: "" }, 1), "FR");
+  assert.equal(getAudioTrackLabel({ id: "0", language: "fr", label: "" }, 1), "French");
   assert.equal(getAudioTrackLabel({ id: "0", language: "", label: "" }, 1), "Audio 2");
+});
+
+// What expo-video actually hands us on Android for an HDFilm DUAL master:
+// AudioTrack.fromFormat builds the label from format.language alone, so with no
+// LANGUAGE attribute in the manifest BOTH renditions arrive as "Unknown". The
+// manifest NAME survives only in the media3 format id, "<GROUP-ID>:<NAME>".
+const ANDROID_DUAL: AudioTrackLike[] = [
+  { id: "group_closedual:Turkish", language: "", label: "Unknown" },
+  { id: "group_closedual:Original Audio", language: "", label: "Unknown" },
+];
+
+test("Android 'Unknown' labels are replaced by the manifest NAME from the track id", () => {
+  assert.equal(getAudioTrackLabel(ANDROID_DUAL[0], 0), "Turkish");
+  assert.equal(getAudioTrackLabel(ANDROID_DUAL[1], 1), "Original Audio");
+});
+
+test("the audio policy still works when every label reads 'Unknown'", () => {
+  // This is the case that silently left the Turkish DEFAULT=YES dub playing:
+  // with nothing but "Unknown" to match on, the pick used to return null.
+  assert.equal(
+    pickPreferredAudioTrack(ANDROID_DUAL, DEFAULT_AUDIO_PREFERENCE)?.id,
+    "group_closedual:Original Audio"
+  );
+  assert.equal(
+    pickPreferredAudioTrack(ANDROID_DUAL, { kind: "language", language: "tr" })?.id,
+    "group_closedual:Turkish"
+  );
+  assert.equal(resolveAudioTrackLanguage(ANDROID_DUAL[0]), "tr");
+  assert.ok(isOriginalAudioTrack(ANDROID_DUAL[1]));
+});
+
+test("track ids that carry no name are never shown as one", () => {
+  // Progressive/MP4 tracks degrade to a bare index, and iOS omits `id` outright.
+  assert.equal(getAudioTrackLabel({ id: "1:0", language: "", label: "Unknown" }, 0), "Audio 1");
+  assert.equal(getAudioTrackLabel({ id: "2", language: "", label: "Unknown" }, 1), "Audio 2");
+  assert.equal(getAudioTrackLabel({ language: "en", label: "English" }, 0), "English");
+  assert.equal(getAudioTrackLabel({ id: "grp:Unknown", language: "", label: "Unknown" }, 0), "Audio 1");
 });

@@ -10,6 +10,48 @@ this branch (`v1.2.0`) ships to **1.2.0**. See
 
 ## [Unreleased]
 
+### Fixed — non-Latin title search, audio menu, default subtitles, daily hero (2026-08-10)
+
+*Not yet published as an OTA.*
+
+- **Films with a non-Latin original title reported "Not Available".** Harakiri
+  (1962) is on HDFilm as `/harakiri-izle-hdf-4/`, but its TMDB original title is
+  `切腹`. `generateSearchQueries` emitted the original-language spelling and its
+  year variant first, and the two-query empty-result cutoff stopped the sweep
+  before the display title was ever searched — so `切腹` and `切腹 1962` both
+  returned zero rows and the film was declared missing. Every Japanese, Korean,
+  Chinese, Cyrillic and Arabic-titled film failed the same way (verified: Oldboy,
+  Parasite, Spirited Away all now resolve). Bare titles now go out first, and the
+  cutoff is a floor that can never fire before each of them has been tried.
+- **A one-year gap in provider metadata no longer rejects the match.** Turkish
+  providers date a film by its local release: HDFilm lists *Dune: Part Two* as
+  2023 against TMDB's 2024, and the hard year gate threw it out. ±1 year is now
+  accepted with a small scoring penalty, so an exact-year listing still wins when
+  both exist and the Dune 1984-vs-2021 protection is untouched.
+- **Audio track menu showed every track as "Unknown".** expo-video's Android
+  `AudioTrack.fromFormat` builds its label from `format.language` alone and drops
+  `format.label`; provider DUAL masters carry `NAME="Turkish"` /
+  `NAME="Original Audio"` but no `LANGUAGE`, so both renditions arrived as
+  `{ language: null, label: "Unknown" }`. The names are recovered from the media3
+  format id (`<GROUP-ID>:<NAME>`). This also repairs the original-audio
+  preference, which had nothing to match on and was silently leaving the
+  provider's `DEFAULT=YES` Turkish dub playing.
+- **Subtitles start off.** The auto-enable-when-audio-isn't-your-language rule is
+  gone; it put text over every foreign-language film watched in original audio on
+  purpose. Provider `DEFAULT=YES` subtitle renditions are cleared on every track
+  republish until the viewer picks one from the CC menu.
+- **Movie/series of the day stopped rotating.** Two causes. (1) The pick was
+  `hash("<type>:<user>:<date>") % shortlistLength`, which collides across
+  consecutive days about one time in six and could repeat a title days later; it
+  now steps by the day number, so consecutive days always differ, and the last
+  seven days' picks are excluded outright. The TMDB-rate-limit fallback path also
+  returned `filteredCandidates[0]` — an index with no date in it at all, i.e. the
+  same film forever. (2) A hub refresh that ran before the liked/watched lists
+  had loaded wrote the *previous* day's hero into the cache stamped with today's
+  freshness version; for an account with no liked or watched titles that version
+  never changed afterwards either, so the stale hero carried forward day after
+  day. Such snapshots are now marked pending so the next focus re-runs the pick.
+
 ### Fixed — provider resolution, playback audio/subtitles, watched-season sync (2026-08-02)
 
 - **HDFilmCehennemi decoder rebuilt as an interpreter.** The provider replaced

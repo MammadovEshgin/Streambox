@@ -398,7 +398,21 @@ function normalizeName(name: string): string {
     .trim();
 }
 
-function generateSearchQueries(title: string, year?: string | null, originalTitle?: string): string[] {
+type SearchQueryPlan = {
+  queries: string[];
+  /**
+   * How many leading entries of `queries` are bare names (the original-language
+   * spelling and the display title). The empty-result cutoff must never fire
+   * before all of them have been sent — see EMPTY_SEARCH_QUERY_LIMIT.
+   */
+  bareTitleCount: number;
+};
+
+function generateSearchQueries(
+  title: string,
+  year?: string | null,
+  originalTitle?: string
+): SearchQueryPlan {
   const queries: string[] = [];
   const seen = new Set<string>();
 
@@ -411,16 +425,23 @@ function generateSearchQueries(title: string, year?: string | null, originalTitl
     }
   }
 
-  // 0. Original-language title — highest priority for non-English sources
-  if (originalTitle) {
-    add(originalTitle);
-    if (year) add(`${originalTitle} ${year}`);
-  }
-
-  // 1. English title — highest-fidelity match
+  // 0. Every BARE name first: the original-language spelling, then the display
+  //    title. Both have to go out before any year-qualified variant, because
+  //    the empty-result cutoff below only budgets a couple of queries.
+  //
+  //    Concrete bug this prevents: Harakiri (1962), whose TMDB original title
+  //    is "切腹". Emitting "切腹" and "切腹 1962" first spent the entire budget
+  //    on a script the Turkish catalogue doesn't carry — both returned zero
+  //    rows, the sweep stopped, and the film reported "Not Available" even
+  //    though /search/?q=Harakiri returns it. Every film with a non-Latin
+  //    original title (Japanese, Korean, Chinese, Cyrillic, Arabic, …) failed
+  //    the same way.
+  if (originalTitle) add(originalTitle);
   add(title);
+  const bareTitleCount = queries.length;
 
-  // 2. Title + year for disambiguation
+  // 1. Year-qualified variants for disambiguation.
+  if (originalTitle && year) add(`${originalTitle} ${year}`);
   if (year) add(`${title} ${year}`);
 
   // 3. Clean punctuation that search engines may choke on
@@ -451,7 +472,7 @@ function generateSearchQueries(title: string, year?: string | null, originalTitl
     .trim();
   if (withoutArticles !== cleanTitle) add(withoutArticles);
 
-  return queries;
+  return { queries, bareTitleCount };
 }
 
 // How many query variants a provider gets before "nothing at all came back" is
@@ -465,10 +486,20 @@ function generateSearchQueries(title: string, year?: string | null, originalTitl
 // spending its whole budget on a title no provider carries. A provider that
 // returned even one row still gets the full sweep — there the extra variants
 // are what break ties between near-matches.
+//
+// The cutoff is a FLOOR, not a cap: `bareTitleCount` raises it so the sweep can
+// never stop before both the original-language title and the display title have
+// each been searched once. Cheap variants of one name are what we want to skip;
+// a different name entirely is not a variant.
 const EMPTY_SEARCH_QUERY_LIMIT = 2;
 
-function shouldStopSearchingAfterEmptyQueries(queryIndex: number, resultCount: number): boolean {
-  return resultCount === 0 && queryIndex + 1 >= EMPTY_SEARCH_QUERY_LIMIT;
+function shouldStopSearchingAfterEmptyQueries(
+  queryIndex: number,
+  resultCount: number,
+  bareTitleCount = 1
+): boolean {
+  const limit = Math.max(EMPTY_SEARCH_QUERY_LIMIT, bareTitleCount);
+  return resultCount === 0 && queryIndex + 1 >= limit;
 }
 
 function toAbsoluteUrl(baseUrl: string, href: string): string | null {
@@ -548,6 +579,33 @@ async function verifyCast(pageUrl: string, castNames: string[]): Promise<number>
 }
 
 /**
+ * How many years apart the provider's listing and TMDB are, or null when
+ * either side doesn't state one.
+ */
+function yearDistance(candidateYear?: string | null, targetYear?: string | null): number | null {
+  const candidate = Number.parseInt(candidateYear ?? "", 10);
+  const target = Number.parseInt(targetYear ?? "", 10);
+  if (!Number.isFinite(candidate) || !Number.isFinite(target)) return null;
+  return Math.abs(candidate - target);
+}
+
+/**
+ * Turkish providers date a film by its LOCAL release, which routinely lands in
+ * the next calendar year (Dune: Part Two is 2024 on TMDB and 2023 on HDFilm).
+ * One year apart is the same film; anything wider is a different one —
+ * remakes, sequels and the Dune 1984/2021 pair are all far outside this.
+ *
+ * A near-miss year is still worse than an exact one: the scoring below keeps
+ * the +50 exact-year boost, so when both listings exist the exact match wins.
+ */
+const NEAR_YEAR_TOLERANCE = 1;
+
+function isYearIncompatible(candidateYear?: string | null, targetYear?: string | null): boolean {
+  const distance = yearDistance(candidateYear, targetYear);
+  return distance !== null && distance > NEAR_YEAR_TOLERANCE;
+}
+
+/**
  * Score an HDFilm search result against the target title + year.
  *
  * HDFilm titles often use the format "Turkish Title - English Title".
@@ -577,13 +635,19 @@ function scoreHdFilmResult(result: SearchResult, target: string, targetYear?: st
   // null for searches whose title isn't actually present, and the Dizipal
   // fallback kicks in correctly.
   if (targetYear && result.resultYear) {
-    if (result.resultYear === targetYear) {
+    const distance = yearDistance(result.resultYear, targetYear);
+    if (distance === 0) {
       if (bestScore >= 60) {
         bestScore += 50; // strong title + correct year → near-certain match
       }
       // bestScore < 60 → no boost. Substring-only matches stay strictly below
       // the findBestHdFilmMatch 50-point cutoff so they can't beat the real
       // match on another provider just because the year coincides.
+    } else if (distance !== null && distance <= NEAR_YEAR_TOLERANCE) {
+      // Off by one — almost always the local release date, not a different
+      // film. Nudge it below an exact-year rival without sinking it under the
+      // 50-point cutoff.
+      bestScore -= 10;
     } else if (bestScore >= 80) {
       // High title match but WRONG year — penalize heavily so year-matching
       // results always win when both exist.
@@ -613,8 +677,13 @@ function scoreDizipalResult(result: SearchResult, target: string, targetYear?: s
   if (bestScore === 0) return 0;
 
   if (targetYear && result.resultYear) {
-    if (result.resultYear === targetYear) {
+    const distance = yearDistance(result.resultYear, targetYear);
+    if (distance === 0) {
       bestScore += 50;
+    } else if (distance !== null && distance <= NEAR_YEAR_TOLERANCE) {
+      // See NEAR_YEAR_TOLERANCE: the local release year, not a different film.
+      // The penalty has to stay small — Dizipal's own cutoff is 80.
+      bestScore -= 10;
     } else if (bestScore >= 80) {
       bestScore -= 55;
     } else if (bestScore >= 50) {
@@ -635,7 +704,7 @@ function scoreDizipalResult(result: SearchResult, target: string, targetYear?: s
  *  - Return only the #1 result — no array, no fallback to wrong movies
  */
 async function findBestHdFilmMatch(title: string, castNames: string[], year?: string | null, originalTitle?: string): Promise<MatchResult | null> {
-  const queries = generateSearchQueries(title, year, originalTitle);
+  const { queries, bareTitleCount } = generateSearchQueries(title, year, originalTitle);
   const allResults = new Map<string, SearchResult>();
 
   for (let qi = 0; qi < queries.length; qi++) {
@@ -653,7 +722,7 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
       return Math.max(s1, s2);
     }));
     if (bestSoFar >= 120) break;
-    if (shouldStopSearchingAfterEmptyQueries(qi, allResults.size)) break;
+    if (shouldStopSearchingAfterEmptyQueries(qi, allResults.size, bareTitleCount)) break;
     if (qi >= 4) break;
   }
 
@@ -676,10 +745,11 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
       // 1984's page title "Dune: Çöl Gezegeni  - Dune 1984" contains the
       // 2021 Turkish title "Dune: Çöl Gezegeni" verbatim → variant score
       // 100, year mismatch → 60, passes — and that movie then plays even
-      // though the user clicked the 2021 poster). When we know both years
-      // and they disagree, the candidate is the wrong movie. Reject it
-      // outright so the resolver falls through to Dizipal / direct.
-      if (year && entry.resultYear && entry.resultYear !== year) return false;
+      // though the user clicked the 2021 poster). When we know both years and
+      // they disagree by more than NEAR_YEAR_TOLERANCE, the candidate is the
+      // wrong movie. Reject it outright so the resolver falls through to
+      // Dizipal / direct.
+      if (isYearIncompatible(entry.resultYear, year)) return false;
       return true;
     })
     .sort((a, b) => b.titleScore - a.titleScore);
@@ -1016,7 +1086,7 @@ async function probeDizipalDirectSlug(
       const pageYear = isYearVerifiedSlug
         ? year ?? null
         : extractDizipalPageYear(typeof response.data === "string" ? response.data : "");
-      if (year && pageYear && pageYear !== year) {
+      if (isYearIncompatible(pageYear, year)) {
         debugLog(
           `[WebPlayer] Dizipal direct-slug ${url} is year ${pageYear}, wanted ${year} — rejected`
         );
@@ -1043,7 +1113,7 @@ async function probeDizipalDirectSlug(
 
 async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: string | null, originalTitle?: string): Promise<MatchResult | null> {
   const safeOriginalTitle = isAlternateTitleSafeForDizipal(title, originalTitle) ? originalTitle : undefined;
-  const queries = generateSearchQueries(title, year, safeOriginalTitle);
+  const { queries, bareTitleCount } = generateSearchQueries(title, year, safeOriginalTitle);
   const allResults = new Map<string, SearchResult>();
 
   for (let qi = 0; qi < queries.length; qi++) {
@@ -1061,7 +1131,7 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
       return Math.max(s1, s2);
     }));
     if (bestSoFar >= 120) break;
-    if (shouldStopSearchingAfterEmptyQueries(qi, allResults.size)) break;
+    if (shouldStopSearchingAfterEmptyQueries(qi, allResults.size, bareTitleCount)) break;
     if (qi >= 4) break;
   }
 
@@ -1086,7 +1156,7 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
       // year's poster (e.g. Dune 2021), never substitute a same-title
       // different-year movie (Dune 1984) just because the title scored
       // high enough after the -55 penalty.
-      if (year && entry.resultYear && entry.resultYear !== year) return false;
+      if (isYearIncompatible(entry.resultYear, year)) return false;
       return isDizipalUrlTitleCompatible(entry.href, title, safeOriginalTitle);
     })
     .sort((a, b) => b.score - a.score);
@@ -2861,6 +2931,9 @@ export const __internal = {
   extractDizipalPageYear,
   extractHdFilmEmbedUrl,
   extractRapidrameStreamUrl,
+  generateSearchQueries,
+  isYearIncompatible,
+  shouldStopSearchingAfterEmptyQueries,
   tryUnpackInlinePackerJs,
   hasStrictTitleIdentity,
   inspectRapidramePlaylist,
