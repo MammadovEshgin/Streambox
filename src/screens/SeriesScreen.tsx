@@ -475,8 +475,17 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
     };
   }, [cachedHub, getSeriesHubFreshnessVersion, localizedCacheKey]);
 
-  const applyHubState = useCallback((nextState: SeriesHubCache) => {
-    const freshnessVersion = getSeriesHubFreshnessVersion();
+  /**
+   * `isHeroCurrent: false` means the snapshot still carries the PREVIOUS
+   * series-of-the-day. Stamping that with today's freshness version let the
+   * 20-minute TTL hide a stale hero behind a cache that claimed to be current
+   * — see the matching comment in MoviesScreen for how that compounded into a
+   * hero that never changed.
+   */
+  const applyHubState = useCallback((nextState: SeriesHubCache, isHeroCurrent = true) => {
+    const freshnessVersion = isHeroCurrent
+      ? getSeriesHubFreshnessVersion()
+      : `${getSeriesHubFreshnessVersion()}|hero-pending`;
     writeRuntimeCache<SeriesHubCache>(localizedCacheKey, nextState, { version: freshnessVersion });
     void writePersistedRuntimeCache<SeriesHubCache>(localizedCacheKey, nextState, { version: freshnessVersion });
     startTransition(() => {
@@ -522,7 +531,8 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
         ...currentState,
         topNewSeries: topNewFirstPage.ok ? topNewFirstPage.value.items.slice(0, 20) : currentState.topNewSeries,
       };
-      applyHubState(nextState);
+      // The hero is still the previous snapshot's here — the pick is in flight.
+      applyHubState(nextState, false);
       setIsLoading(false);
 
       const [featuredResult, imdbTopResult] = await Promise.all([featuredPromise, imdbTopPromise]);
@@ -538,11 +548,12 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
         topNewSeries: nextState.topNewSeries,
         imdbTopSeries: seededImdbTopSeries.slice(0, 20),
       };
+      const isHeroCurrent = canLoadPersonalizedHero && featuredResult.ok;
       if (canLoadPersonalizedHero) {
         setIsSeriesOfDayLoading(false);
       }
       setIsImdbTopLoading(false);
-      applyHubState(nextState);
+      applyHubState(nextState, isHeroCurrent);
 
       if (topNewFirstPage.ok && topNewFirstPage.value.items.length < 16 && topNewFirstPage.value.totalPages > 1) {
         const expandedTopNew = await seedTopNewSeries(16, topNewFirstPage.value);
@@ -550,7 +561,7 @@ export function SeriesScreen({ navigation }: SeriesScreenProps) {
           applyHubState({
             ...nextState,
             topNewSeries: expandedTopNew.slice(0, 20),
-          });
+          }, isHeroCurrent);
         }
       }
     } catch (error) {

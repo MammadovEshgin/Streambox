@@ -14,11 +14,33 @@
  * `track.language` is empty/"und" and language-code matching alone can't tell
  * them apart; the human-readable NAME is the only reliable signal.
  *
+ * ...and expo-video does not hand us that NAME. On Android its
+ * `AudioTrack.fromFormat` builds the label purely from `format.language`:
+ *
+ *   val label = language?.let { Locale(it).displayLanguage } ?: "Unknown"
+ *
+ * `format.label` — which media3 DOES populate from the manifest's NAME — is
+ * dropped. So on a provider stream with no LANGUAGE attribute every rendition
+ * arrives as `{ language: null, label: "Unknown" }`: the menu showed two
+ * identical "Unknown" rows, AND the preference below had nothing to match on,
+ * so it left the provider's Turkish-dub DEFAULT playing.
+ *
+ * The NAME does survive in one place. media3's HLS parser builds the format id
+ * as `GROUP-ID + ":" + NAME`, and `deriveFormat` carries it onto the runtime
+ * track, so `track.id` reads "group_closedual:Original Audio". `readTrackName`
+ * below recovers the name from there, which is what makes both the menu and
+ * the policy work again.
+ *
  * Everything here is pure so the policy can be unit-tested without a player.
  */
 
 export type AudioTrackLike = {
-  id: string;
+  /**
+   * media3 HLS format id, "<GROUP-ID>:<NAME>". Absent on iOS (AVFoundation
+   * tracks carry a real displayName instead) and on non-HLS containers, where
+   * it degrades to a bare track index.
+   */
+  id?: string;
   /** ISO-ish code from the manifest. Often "" or "und" on provider streams. */
   language: string;
   /** Human label, e.g. "Turkish", "Original Audio", "English". */
@@ -59,14 +81,51 @@ const LABEL_LANGUAGES: Array<{ pattern: RegExp; code: string }> = [
   { pattern: /kore|korean/i, code: "ko" },
 ];
 
+/**
+ * Labels expo-video invents when the manifest told it nothing. They must never
+ * be shown, and must never be pattern-matched for a language either.
+ */
+const PLACEHOLDER_LABEL = /^(unknown|und|undefined|null|bilinmeyen)$/i;
+
+function cleanLabel(value: string | null | undefined): string {
+  const trimmed = (value ?? "").trim();
+  return PLACEHOLDER_LABEL.test(trimmed) ? "" : trimmed;
+}
+
+/**
+ * Recover the manifest's NAME from the media3 format id ("<GROUP-ID>:<NAME>",
+ * e.g. "group_closedual:Original Audio").
+ *
+ * Returns "" for ids that carry no name: iOS omits the field entirely, and
+ * progressive/MP4 tracks degrade to a bare index ("1", "1:0") that would
+ * otherwise be shown as if it were a language.
+ */
+function nameFromTrackId(id: string | null | undefined): string {
+  const separator = (id ?? "").indexOf(":");
+  if (separator === -1) return "";
+
+  const name = id!.slice(separator + 1).trim();
+  if (!name || !/[a-z]/i.test(name)) return "";
+  return PLACEHOLDER_LABEL.test(name) ? "" : name;
+}
+
+/**
+ * The best human name we have for a rendition: expo-video's label when it is
+ * real, else the NAME recovered from the format id. "" when neither says
+ * anything — the caller decides what to fall back to.
+ */
+export function getAudioTrackName(track: AudioTrackLike): string {
+  return cleanLabel(track.label) || nameFromTrackId(track.id);
+}
+
 /** True when this rendition is the undubbed/original soundtrack. */
 export function isOriginalAudioTrack(track: AudioTrackLike): boolean {
-  return ORIGINAL_LABEL.test(track.label ?? "");
+  return ORIGINAL_LABEL.test(getAudioTrackName(track));
 }
 
 /**
  * Best-effort language code for a track: the manifest's own code when it is
- * meaningful, otherwise inferred from the label. Returns "" when unknown.
+ * meaningful, otherwise inferred from the name. Returns "" when unknown.
  */
 export function resolveAudioTrackLanguage(track: AudioTrackLike): string {
   const declared = (track.language ?? "").trim().toLowerCase();
@@ -74,9 +133,9 @@ export function resolveAudioTrackLanguage(track: AudioTrackLike): string {
     return declared.slice(0, 2);
   }
 
-  const label = track.label ?? "";
+  const name = getAudioTrackName(track);
   for (const { pattern, code } of LABEL_LANGUAGES) {
-    if (pattern.test(label)) return code;
+    if (pattern.test(name)) return code;
   }
 
   return "";
@@ -89,10 +148,10 @@ export function resolveAudioTrackLanguage(track: AudioTrackLike): string {
  * no track that satisfies the preference. A null result means "leave the
  * player on whatever it picked", never "mute the audio".
  */
-export function pickPreferredAudioTrack(
-  tracks: AudioTrackLike[],
+export function pickPreferredAudioTrack<T extends AudioTrackLike>(
+  tracks: T[],
   preference: AudioPreference = DEFAULT_AUDIO_PREFERENCE
-): AudioTrackLike | null {
+): T | null {
   if (!Array.isArray(tracks) || tracks.length < 2) return null;
 
   if (preference.kind === "language") {
@@ -127,13 +186,33 @@ export function pickPreferredAudioTrack(
   return null;
 }
 
-/** Menu label for a track, falling back to its language or a stable ordinal. */
+/** Endonym-free display names for the codes LABEL_LANGUAGES can produce. */
+const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
+  ar: "Arabic",
+  de: "German",
+  en: "English",
+  es: "Spanish",
+  fr: "French",
+  it: "Italian",
+  ja: "Japanese",
+  ko: "Korean",
+  ru: "Russian",
+  tr: "Turkish",
+};
+
+/**
+ * Menu label for a track: the manifest NAME when we have one, else the
+ * language spelled out, else a stable ordinal.
+ *
+ * Never returns "Unknown" — two rows reading "Unknown" is exactly the menu
+ * this replaced.
+ */
 export function getAudioTrackLabel(track: AudioTrackLike, index: number): string {
-  const label = (track.label ?? "").trim();
-  if (label) return label;
+  const name = getAudioTrackName(track);
+  if (name) return name;
 
   const language = resolveAudioTrackLanguage(track);
-  if (language) return language.toUpperCase();
+  if (language) return LANGUAGE_DISPLAY_NAMES[language] ?? language.toUpperCase();
 
   return `Audio ${index + 1}`;
 }

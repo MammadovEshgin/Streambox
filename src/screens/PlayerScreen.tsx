@@ -59,8 +59,6 @@ import {
   type AudioPreference,
 } from "../utils/audioTracks";
 import { loadAudioPreference, saveAudioPreference } from "../services/audioPreferenceStorage";
-import { pickDefaultSubtitle } from "../utils/subtitleSelection";
-import { useAppSettings } from "../settings/AppSettingsContext";
 import {
   normalizeSubtitleUrl,
   parseSubtitleDocument,
@@ -424,9 +422,6 @@ function PlayerLoadingOverlay({
 export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const theme = useTheme();
   const { t } = useTranslation();
-  // Drives the default-subtitle pick: subtitles come on when the soundtrack
-  // isn't in the language the viewer reads the app in.
-  const { language } = useAppSettings();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const webViewRef = useRef<WebView>(null);
   const [playerResult, setPlayerResult] = useState<WebPlayerResult | null>(null);
@@ -457,7 +452,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   // Auto-selection runs once per loaded source; after that the viewer's manual
   // pick wins even if the track list is re-emitted mid-playback.
   const audioAutoAppliedRef = useRef(false);
-  const subtitleAutoAppliedRef = useRef(false);
+  // Subtitles are off until the viewer opens the CC menu and asks for one.
+  // Until they do, a provider's DEFAULT=YES subtitle rendition gets cleared
+  // every time ExoPlayer republishes the track list.
+  const subtitleChosenByViewerRef = useRef(false);
 
   // â”€â”€ Track recent playback entry only â”€â”€
   const { addToRecentlyWatched } = useRecentlyWatched();
@@ -696,7 +694,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setSelectedAudioTrack(null);
     setIsAudioMenuOpen(false);
     audioAutoAppliedRef.current = false;
-    subtitleAutoAppliedRef.current = false;
+    subtitleChosenByViewerRef.current = false;
     hdfilmNativeFallbackTriggeredRef.current = false;
     hdfilmRuntimeDiscoveryKeysRef.current.clear();
     dizipalRecoveryTriggeredRef.current = false;
@@ -1222,7 +1220,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     };
     // A new source means a new track list; let the preference re-apply once.
     audioAutoAppliedRef.current = false;
-    subtitleAutoAppliedRef.current = false;
+    subtitleChosenByViewerRef.current = false;
     setAvailableAudioTracks([]);
     setSelectedAudioTrack(null);
     void videoPlayer.replaceAsync(source);
@@ -1243,6 +1241,33 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   const audioPreferenceRef = useRef(audioPreference);
   audioPreferenceRef.current = audioPreference;
+
+  /**
+   * Keep subtitles off until the viewer asks for them.
+   *
+   * The player used to auto-enable a subtitle whenever the soundtrack wasn't in
+   * the viewer's language. That put text over every foreign-language film the
+   * viewer had deliberately chosen to watch in its original audio, and clearing
+   * it meant opening the CC menu on every single title.
+   *
+   * Simply not selecting one is not enough: provider masters flag a rendition
+   * DEFAULT=YES (the same trick that dubs the audio), and ExoPlayer honours it
+   * whenever it publishes a track list. So clear it on every republish until a
+   * manual pick sets `subtitleChosenByViewerRef`.
+   */
+  const enforceSubtitlesOff = useCallback(() => {
+    if (subtitleChosenByViewerRef.current) return;
+
+    try {
+      if (videoPlayer.subtitleTrack) {
+        debugLog("[Player] Clearing provider-default subtitle track");
+        videoPlayer.subtitleTrack = null;
+      }
+    } catch {
+      /* expo-video already torn down */
+    }
+    setSelectedSubtitleTrack(null);
+  }, [videoPlayer]);
 
   /**
    * Adopt a freshly published track list and, once per source, override the
@@ -1287,7 +1312,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         debugLog("[Player] Ready - starting playback");
         debugLog("[Player] Available subtitle tracks:", JSON.stringify(videoPlayer.availableSubtitleTracks));
         setAvailableSubtitleTracks(videoPlayer.availableSubtitleTracks);
-        setSelectedSubtitleTrack(videoPlayer.subtitleTrack ?? null);
+        enforceSubtitlesOff();
         applyAudioTracks(videoPlayer.availableAudioTracks ?? []);
         // Continue-watching may hold playback for the resume prompt, or seek
         // to the saved position and start itself.
@@ -1333,9 +1358,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     const subtitleSub = videoPlayer.addListener("availableSubtitleTracksChange", (ev: any) => {
       debugLog("[Player] Subtitle tracks available:", JSON.stringify(ev.availableSubtitleTracks));
       setAvailableSubtitleTracks(ev.availableSubtitleTracks);
+      // A republished list is where a DEFAULT=YES rendition sneaks back in.
+      enforceSubtitlesOff();
     });
 
     const subtitleTrackSub = videoPlayer.addListener("subtitleTrackChange", (ev: any) => {
+      if (ev.subtitleTrack && !subtitleChosenByViewerRef.current) {
+        enforceSubtitlesOff();
+        return;
+      }
       setSelectedSubtitleTrack(ev.subtitleTrack ?? null);
     });
 
@@ -1358,7 +1389,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       audioSub.remove();
       audioTrackSub.remove();
     };
-  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks]);
+  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks, enforceSubtitlesOff]);
 
   useEffect(() => {
     if (!selectedExternalSubtitle || selectedExternalSubtitle.url.includes(".m3u8")) {
@@ -1501,6 +1532,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [directSubtitleOptions.length, availableSubtitleTracks.length, scheduleHideClose]);
 
   const selectSubtitleTrack = useCallback((track: SubtitleTrack | null) => {
+    subtitleChosenByViewerRef.current = true;
     videoPlayer.subtitleTrack = track;
     setSelectedSubtitleTrack(track);
     setSelectedExternalSubtitle(null);
@@ -1511,6 +1543,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [videoPlayer, scheduleHideClose]);
 
   const selectExternalSubtitle = useCallback((subtitle: DirectSubtitleOption | null) => {
+    subtitleChosenByViewerRef.current = true;
     videoPlayer.subtitleTrack = null;
     setSelectedSubtitleTrack(null);
     setSelectedExternalSubtitle(subtitle);
@@ -1519,61 +1552,6 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setIsSubtitleMenuOpen(false);
     scheduleHideClose();
   }, [videoPlayer, scheduleHideClose]);
-
-  /**
-   * Turn subtitles on by default when the soundtrack isn't in the viewer's
-   * language.
-   *
-   * The player used to start every title with subtitles off. That was already
-   * unhelpful, and it became wrong once audio started defaulting to the
-   * ORIGINAL soundtrack rather than the provider's Turkish dub — a Turkish
-   * viewer would otherwise get English audio and nothing to read. Runs once per
-   * source; any manual pick from the CC menu wins from then on.
-   */
-  useEffect(() => {
-    if (subtitleAutoAppliedRef.current) return;
-    if (!isPlaybackReady) return;
-
-    const audioLanguage = selectedAudioTrack ? resolveAudioTrackLanguage(selectedAudioTrack) : "";
-    if (!audioLanguage) return;
-
-    if (directSubtitleOptions.length > 0) {
-      subtitleAutoAppliedRef.current = true;
-      const preferred = pickDefaultSubtitle(directSubtitleOptions, {
-        appLanguage: language,
-        audioLanguage,
-      });
-      if (preferred) {
-        debugLog("[Player] Auto-enabling subtitle:", preferred.label, preferred.lang);
-        selectExternalSubtitle(preferred);
-      }
-      return;
-    }
-
-    if (availableSubtitleTracks.length > 0) {
-      subtitleAutoAppliedRef.current = true;
-      const preferred = pickDefaultSubtitle(
-        availableSubtitleTracks.map((track) => ({
-          label: getSubtitleTrackLabel(track),
-          lang: track.language ?? "",
-          track,
-        })),
-        { appLanguage: language, audioLanguage }
-      );
-      if (preferred) {
-        debugLog("[Player] Auto-enabling in-manifest subtitle:", preferred.label);
-        selectSubtitleTrack(preferred.track);
-      }
-    }
-  }, [
-    isPlaybackReady,
-    selectedAudioTrack,
-    directSubtitleOptions,
-    availableSubtitleTracks,
-    language,
-    selectExternalSubtitle,
-    selectSubtitleTrack,
-  ]);
 
   const toggleAudioMenu = useCallback(() => {
     if (availableAudioTracks.length < 2) return;

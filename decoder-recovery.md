@@ -116,6 +116,19 @@ survives only as a fallback for old embeds. Treat `--write` as deprecated.
    `eval(function(p,a,c,k,e,d){...})` packer.js. `tryUnpackInlinePackerJs`
    runs first and expands the block in-place before the regex sees it.
 
+**⚠ Flow 2 is currently unreachable over plain HTTP** (checked 2026-08-10).
+Cloudflare now serves an interactive challenge ("Just a moment…", `403`,
+`cf-mitigated: challenge`) for everything on `www.hdfilmcehennemi.nl` except
+`/search/` and film pages — that includes `/rplayer/`, `/dizi/` series pages,
+and the site's own JS bundles. No header combination gets past it; it needs a
+real browser. So a title whose page carries
+`<iframe class="rapidrame" data-src=".../rplayer/…">` (e.g. Seven Samurai) will
+never decode, and HDFilm series are unreachable altogether. **This is not a
+decoder rotation — do not go looking for one.** Those titles fall through to
+Dizipal / Dizibal, which is working as designed. The `.mobi` embed host is not
+challenged, but it does not know `/rplayer/` ids, so there is no way to
+translate between them.
+
 If the user reports breakage on a *specific* title while the standard probes
 ("Edge of Tomorrow", "The Devil Wears Prada 2") still work, the iframe
 attribute may have changed. Read `extractHdFilmEmbedUrl` in
@@ -176,7 +189,7 @@ You can't do this for them.
   [`docs/release-tracks.md`](docs/release-tracks.md).
 - **OTA branch.** Always `preview`. That's the channel installed apps listen
   on (`updates.url` in `app.config.js`).
-- **Test count.** 329 tests as of 2026-08-02. If the count drops or any fail,
+- **Test count.** 335 tests as of 2026-08-10. If the count drops or any fail,
   do not push.
 - **No GitHub Actions.** `.github/workflows/` is intentionally empty.
   Cloudflare blocks GitHub's datacenter IPs from reaching hdfilmcehennemi,

@@ -19,10 +19,19 @@ import { getImdbTop250Movies, getImdbTop250Shows, type ImdbTop250Item } from "..
 import i18n from "../localization/i18n";
 import { normalizeAppLanguage } from "../localization/types";
 import { mapWithConcurrency } from "../utils/concurrency";
+import {
+  getRecentlyPickedIds,
+  parseRecentPicks,
+  pickRotatingIndex,
+  withRecentPick,
+  type RecentDailyPick,
+} from "../utils/dailyRotation";
 import { enqueueDailyRecommendationSync } from "./userDataSync";
 
 const CURRENT_MOVIE_KEY = "streambox/movie-of-day/current";
 const CURRENT_SERIES_KEY = "streambox/series-of-day/current";
+const RECENT_MOVIE_PICKS_KEY = "streambox/movie-of-day/recent";
+const RECENT_SERIES_PICKS_KEY = "streambox/series-of-day/recent";
 const PROFILE_MEDIA_LIMIT = 30;
 const CANDIDATE_PROFILE_LIMIT = 36;
 const MOVIE_CANDIDATE_DISCOVER_PAGES = 4;
@@ -32,7 +41,11 @@ const IMDB_TOP_FALLBACK_LIMIT = 100;
 const DAILY_PICK_PROFILE_CONCURRENCY = 4;
 // Bumped whenever the scoring/eligibility changes so today's cached pick is
 // recomputed under the new rules instead of lingering until midnight.
-const DAILY_PICK_ALGORITHM_VERSION = "quality-v3";
+const DAILY_PICK_ALGORITHM_VERSION = "daily-rotation-v4";
+// How many days of picks to remember and exclude. The candidate shortlist is
+// only TOP_SCORING_SLICE deep, so remembering much more than that would start
+// starving the pool; a week is enough that a title never feels "stuck".
+const RECENT_PICK_MEMORY_DAYS = 7;
 // Lean the daily pick harder toward genuinely acclaimed, widely-loved titles:
 // a higher rating floor and a meaningfully higher popularity floor keep the
 // obscure-but-on-genre long tail out of the hero slot.
@@ -47,6 +60,7 @@ type StoredDailyPick = {
   language: string;
   personalizationKey: string;
 };
+
 
 type DailyPickOptions = {
   userId?: string | null;
@@ -152,17 +166,6 @@ function mergeUniqueMedia(existing: MediaItem[], incoming: MediaItem[]): MediaIt
   return merged;
 }
 
-function hashString(input: string): number {
-  let hash = 2166136261;
-
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return hash >>> 0;
-}
-
 function createPersonalizationKey(
   mediaType: "movie" | "tv",
   userId: string | null | undefined,
@@ -173,16 +176,9 @@ function createPersonalizationKey(
   return `${DAILY_PICK_ALGORITHM_VERSION}:${mediaType}:${normalizedUserId}:${normalizedIds.join(",")}`;
 }
 
-function pickSeededIndex(length: number, seed: string): number {
-  if (length <= 1) {
-    return 0;
-  }
-
-  return hashString(seed) % length;
-}
-
 function pickFromScoredCandidates(
   scored: ScoredMediaCandidate[],
+  dateKey: string,
   seed: string
 ): MediaItem | null {
   if (scored.length === 0) {
@@ -190,7 +186,31 @@ function pickFromScoredCandidates(
   }
 
   const shortlist = scored.slice(0, Math.min(TOP_SCORING_SLICE, scored.length));
-  return shortlist[pickSeededIndex(shortlist.length, seed)]?.candidate ?? scored[0]?.candidate ?? null;
+  return (
+    shortlist[pickRotatingIndex(shortlist.length, dateKey, seed)]?.candidate
+    ?? scored[0]?.candidate
+    ?? null
+  );
+}
+
+async function readRecentPicks(storageKey: string): Promise<RecentDailyPick[]> {
+  try {
+    const raw = await AsyncStorage.getItem(storageKey);
+    return raw ? parseRecentPicks(JSON.parse(raw)) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function rememberRecentPick(storageKey: string, dateKey: string, id: number) {
+  const existing = await readRecentPicks(storageKey);
+  const next = withRecentPick(existing, dateKey, id, RECENT_PICK_MEMORY_DAYS);
+
+  try {
+    await AsyncStorage.setItem(storageKey, JSON.stringify(next));
+  } catch {
+    // Best-effort: losing the history only risks an earlier repeat.
+  }
 }
 
 function getDailyReleaseCutoffDate(now = new Date()) {
@@ -302,18 +322,6 @@ async function hydrateMovieGenres(movie: MediaItem | null): Promise<MediaItem | 
     };
   } catch {
     return movie;
-  }
-}
-
-async function persistMoviePick(
-  dateKey: string,
-  movie: MediaItem | null,
-  personalizationKey: string
-) {
-  const currentLanguage = normalizeAppLanguage(i18n.resolvedLanguage ?? i18n.language);
-  await persistCurrentPick(CURRENT_MOVIE_KEY, dateKey, movie, currentLanguage, personalizationKey);
-  if (movie) {
-    await enqueueDailyRecommendationSync(movie as unknown as Record<string, unknown>, dateKey);
   }
 }
 
@@ -463,6 +471,7 @@ function scoreMovieCandidate(
 
 async function pickPersonalizedMovie(
   sourceMovieIds: number[],
+  excludedIds: Set<number>,
   userId: string | null | undefined,
   dateKey: string
 ): Promise<MediaItem | null> {
@@ -481,11 +490,10 @@ async function pickPersonalizedMovie(
     candidates = mergeUniqueMedia(candidates, response.items);
   }
 
-  const sourceSet = new Set(sourceMovieIds);
   const filteredCandidates = candidates.filter(
     (candidate) =>
       typeof candidate.id === "number"
-      && !sourceSet.has(candidate.id)
+      && !excludedIds.has(candidate.id)
       && isDailyMediaItemEligible(candidate)
   );
 
@@ -502,7 +510,16 @@ async function pickPersonalizedMovie(
   ).filter((profile): profile is MovieTasteProfile => profile !== null && isMovieTasteProfileEligible(profile));
 
   if (candidateProfiles.length === 0) {
-    return filteredCandidates[0] ?? null;
+    // No profile came back for any candidate — usually TMDB rate limiting.
+    // Returning `filteredCandidates[0]` here (as this used to) pinned the hero
+    // to the same film on every single day, because that index never depended
+    // on the date. Rotate through the unscored list instead.
+    const fallbackIndex = pickRotatingIndex(
+      filteredCandidates.length,
+      dateKey,
+      `movie:${userId ?? "anonymous"}`
+    );
+    return filteredCandidates[fallbackIndex] ?? null;
   }
 
   const candidateProfileById = new Map(candidateProfiles.map((profile) => [profile.id, profile]));
@@ -524,7 +541,7 @@ async function pickPersonalizedMovie(
     })
     .sort((left, right) => right.score - left.score);
 
-  return pickFromScoredCandidates(scored, `movie:${userId ?? "anonymous"}:${dateKey}`);
+  return pickFromScoredCandidates(scored, dateKey, `movie:${userId ?? "anonymous"}`);
 }
 
 function parseYear(value: string): number | null {
@@ -616,6 +633,7 @@ async function buildSeriesCandidatePool(): Promise<MediaItem[]> {
 
 async function pickPersonalizedSeries(
   sourceSeriesIds: number[],
+  excludedIds: Set<number>,
   userId: string | null | undefined,
   dateKey: string
 ): Promise<MediaItem | null> {
@@ -624,11 +642,10 @@ async function pickPersonalizedSeries(
     return null;
   }
 
-  const sourceSet = new Set(sourceSeriesIds);
   const candidates = (await buildSeriesCandidatePool()).filter(
     (candidate) =>
       typeof candidate.id === "number"
-      && !sourceSet.has(candidate.id)
+      && !excludedIds.has(candidate.id)
       && isDailyMediaItemEligible(candidate)
   );
 
@@ -643,7 +660,7 @@ async function pickPersonalizedSeries(
     }))
     .sort((left, right) => right.score - left.score);
 
-  return pickFromScoredCandidates(scored, `series:${userId ?? "anonymous"}:${dateKey}`);
+  return pickFromScoredCandidates(scored, dateKey, `series:${userId ?? "anonymous"}`);
 }
 
 async function resolveImdbFallback(
@@ -658,9 +675,10 @@ async function resolveImdbFallback(
     return null;
   }
 
-  const startIndex = pickSeededIndex(
+  const startIndex = pickRotatingIndex(
     pool.length,
-    `${mediaType}:${userId ?? "anonymous"}:${dateKey}`
+    dateKey,
+    `${mediaType}:${userId ?? "anonymous"}`
   );
 
   for (let offset = 0; offset < pool.length; offset += 1) {
@@ -742,19 +760,30 @@ export async function getPersonalizedMovieOfTheDay({
     }
   }
 
-  const personalized = await pickPersonalizedMovie(sourceMovieIds, userId, dateKey);
+  // Everything the pick must avoid: what the user already likes/watched, plus
+  // the titles this hero showed on the previous days.
+  const recentPicks = await readRecentPicks(RECENT_MOVIE_PICKS_KEY);
+  const excludedIds = new Set([
+    ...sourceMovieIds,
+    ...getRecentlyPickedIds(recentPicks, dateKey),
+  ]);
+
+  const personalized = await pickPersonalizedMovie(sourceMovieIds, excludedIds, userId, dateKey);
   const fallback = personalized
     ?? (await resolveImdbFallback(
       await getImdbTop250Movies(),
       dateKey,
       userId,
       "movie",
-      new Set(sourceMovieIds)
+      excludedIds
     ));
 
   const hydrated = await hydrateMovieGenres(fallback);
   await persistCurrentPick(CURRENT_MOVIE_KEY, dateKey, hydrated, currentLanguage, personalizationKey);
   if (hydrated) {
+    if (typeof hydrated.id === "number") {
+      await rememberRecentPick(RECENT_MOVIE_PICKS_KEY, dateKey, hydrated.id);
+    }
     await enqueueDailyRecommendationSync(hydrated as unknown as Record<string, unknown>, dateKey);
   }
 
@@ -788,14 +817,20 @@ export async function getPersonalizedSeriesOfTheDay({
     }
   }
 
-  const personalized = await pickPersonalizedSeries(sourceSeriesIds, userId, dateKey);
+  const recentPicks = await readRecentPicks(RECENT_SERIES_PICKS_KEY);
+  const excludedIds = new Set([
+    ...sourceSeriesIds,
+    ...getRecentlyPickedIds(recentPicks, dateKey),
+  ]);
+
+  const personalized = await pickPersonalizedSeries(sourceSeriesIds, excludedIds, userId, dateKey);
   const fallback = personalized
     ?? (await resolveImdbFallback(
       await getImdbTop250Shows(),
       dateKey,
       userId,
       "tv",
-      new Set(sourceSeriesIds)
+      excludedIds
     ));
 
   await persistCurrentPick(
@@ -805,5 +840,8 @@ export async function getPersonalizedSeriesOfTheDay({
     currentLanguage,
     personalizationKey
   );
+  if (fallback && typeof fallback.id === "number") {
+    await rememberRecentPick(RECENT_SERIES_PICKS_KEY, dateKey, fallback.id);
+  }
   return fallback;
 }
