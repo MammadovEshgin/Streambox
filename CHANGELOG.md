@@ -12,7 +12,8 @@ this branch (`v1.2.0`) ships to **1.2.0**. See
 
 ### Fixed — non-Latin title search, audio menu, default subtitles, daily hero (2026-08-10)
 
-*Not yet published as an OTA.*
+Shipped to runtime **1.2.0** only — `v1.2.0` @ `3eb6b70` → EAS update group
+`de6dcbdb-b64d-4e4b-9d06-2d7b512f6852`. 1.1.0 / 1.0.2 not shipped.
 
 - **Films with a non-Latin original title reported "Not Available".** Harakiri
   (1962) is on HDFilm as `/harakiri-izle-hdf-4/`, but its TMDB original title is

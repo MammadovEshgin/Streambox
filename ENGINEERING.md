@@ -64,13 +64,41 @@ the `app.config.js` runtime, not the branch you happen to be on.
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
-### Current deployed state (last updated 2026-08-02, 1.2.0 provider + playback batch)
+### Current deployed state (last updated 2026-08-10, 1.2.0 search + player + daily-hero batch)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `10e5a49` | `f192271c-b031-4a42-9619-c40c871b4f6c` |
+| 1.2.0 | `v1.2.0` @ `3eb6b70` | `de6dcbdb-b64d-4e4b-9d06-2d7b512f6852` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+
+- **2026-08-10 (1.2.0 only):** Search, player and daily-hero batch.
+  (1) **Films with a non-Latin original title reported "Not Available"** —
+  `generateSearchQueries` emitted the TMDB original title first and the 2-query
+  empty-result cutoff counted from the top, so Harakiri (original title `切腹`)
+  never got `/search/?q=Harakiri` sent at all; every Japanese/Korean/Chinese/
+  Cyrillic/Arabic-titled film failed identically. Bare titles go first now and
+  the cutoff is a floor raised by `bareTitleCount`. (2) **±1-year provider
+  metadata accepted** — HDFilm dates *Dune: Part Two* 2023 against TMDB's 2024
+  and the hard year gate threw it out; exact-year listings still win on score.
+  (3) **Audio menu showed every track as "Unknown"** — expo-video's Android
+  `AudioTrack.fromFormat` builds its label from `format.language` alone and drops
+  `format.label`, so DUAL masters (NAME, no LANGUAGE) produced two identical
+  rows; names are recovered from the media3 format id `<GROUP-ID>:<NAME>`. This
+  also repaired the original-audio preference, which had nothing to match on and
+  was leaving the provider's `DEFAULT=YES` Turkish dub playing. (4) **Subtitles
+  default to off**, with provider `DEFAULT=YES` renditions cleared on every track
+  republish. (5) **Movie/series of the day rotates daily** — the hash-modulo pick
+  collided across consecutive days, the rate-limit fallback used a date-free
+  index, and a hub refresh racing the liked/watched load stamped yesterday's hero
+  as current (for an account with no liked/watched titles that never self-healed).
+  Deploy: 1.2.0 `3eb6b70` → group `de6dcbdb-b64d-4e4b-9d06-2d7b512f6852`.
+  1.1.0/1.0.2 NOT shipped. 335 tests green.
+
+  Also recorded in `decoder-recovery.md`: `www.hdfilmcehennemi.nl` now serves a
+  Cloudflare interactive challenge on `/rplayer/` embeds, `/dizi/` series pages
+  and every `/ajax*` endpoint. Those titles cannot resolve natively from HDFilm
+  and fall through to Dizipal/Dizibal — **not** a decoder rotation.
 
 - **2026-08-02 (1.2.0 only):** Provider + playback batch. (1) **HDFilm decoder
   rebuilt as an interpreter** — the provider swapped its arithmetic de-scramble
