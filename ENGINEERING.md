@@ -64,13 +64,58 @@ the `app.config.js` runtime, not the branch you happen to be on.
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
-### Current deployed state (last updated 2026-08-10, 1.2.0 search + player + daily-hero batch)
+### Current deployed state (last updated 2026-09-02, 1.2.0 provider recovery batch)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `3eb6b70` | `de6dcbdb-b64d-4e4b-9d06-2d7b512f6852` |
+| 1.2.0 | `v1.2.0` @ `a73c28d` | `4fc77eff-1b8f-43ff-a389-14cc79675de5` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+
+- **2026-09-02 (1.2.0 only):** Provider recovery batch — three independent
+  breakages that together read as "everything is slow" and "it's in the app but
+  says Not Available". `npm run check:hdfilm` reported HEALTHY throughout, which
+  is why none of them surfaced as a normal decoder recovery.
+  (1) **Dizipal playback was dead** — the provider renamed
+  `/ajax-player-config` to `/ajax/player-config`; the 404 was read as "no
+  stream" and dropped silently while search kept answering 200, so titles
+  appeared and then refused to play. This is why *Mezarlık / Graveyard*
+  disappeared: Dizipal is the only provider carrying it. `decodeDizipalCfg` now
+  reads the player config out of the page's base64 `data-cfg` attribute — it is
+  byte-identical to the endpoint's response — which drops a token mint plus a
+  POST from every play and is immune to the next rename; the network call
+  survives as a fallback that tries both paths.
+  (2) **A stale Dizipal base cost seconds per request and past 21 hops broke it
+  outright** — `dizipalN.com` 301s to `N+1` and the hops are *not* one per
+  rotation: the shipped `2079` was 22 hops / 3.3s behind the live `2123`, past
+  axios' redirect ceiling. `normaliseDizipalBaseUrl` now compares the numeric
+  suffix so any published base older than the shipped one is ignored, replacing
+  the hand-maintained stale-host list. Also dropped `maxRedirects: 5` from
+  `probeDizipalDirectSlug`, the one call that failed hard rather than slowly.
+  (3) **The self-healed origin died at every refresh** — `recordObservedBaseUrl`
+  pins the post-redirect origin, but `refreshProviderConfigs()` overwrote it
+  with the lagging Supabase value, so `resolveWebPlayerUrl`'s "refresh then
+  retry" walked the whole chain a second time. The pin now survives a refresh
+  that republishes the *same* base and is dropped the moment the operator
+  publishes a different one, so `/set_dizipal` still wins.
+  (4) **Every HDFilm series was quietly losing to Dizipal** — `/dizi/` answers
+  `403 cf-mitigated: challenge` on the *first* request over a fresh connection
+  and 200 on every one after (9/10 with connection reuse, 0/10 without; no
+  cookie — the clearance rides on the connection). That first 403 read as
+  "HDFilm doesn't have it". `hdFilmGet()` retries past it, and Breaking Bad,
+  Severance, Stranger Things and From are back on dual-audio HDFilm streams
+  (6 subtitle tracks vs Dizipal's 2). **This corrects the 2026-08-10 note
+  below** — HDFilm series are not unreachable.
+  (5) **`provider-monitor` stayed green through the whole outage** because it
+  only probed search; added a `dizipal_playback` check that decodes the episode
+  page's `data-cfg`, verified reachable from Worker egress before deploy.
+  Measured after: 14/14 live titles resolve to a playing HLS manifest in
+  0.5–3.1s (the same sweep beforehand had series failing at 7.7s).
+  Deploy: 1.2.0 `a73c28d` → group `4fc77eff-1b8f-43ff-a389-14cc79675de5`.
+  1.1.0/1.0.2 NOT shipped. 345 tests green. Worker deployed separately
+  (version `6f2dc0a1-ad54-4efd-ac1c-295d04557c38`).
+  Known upstream outage, not ours: Dizibal's rotating embed host
+  (`x.ag2m4.cfd`) 502s for every code while `dizibal.org/api/*` stays healthy.
 
 - **2026-08-10 (1.2.0 only):** Search, player and daily-hero batch.
   (1) **Films with a non-Latin original title reported "Not Available"** —
@@ -95,10 +140,11 @@ the `app.config.js` runtime, not the branch you happen to be on.
   Deploy: 1.2.0 `3eb6b70` → group `de6dcbdb-b64d-4e4b-9d06-2d7b512f6852`.
   1.1.0/1.0.2 NOT shipped. 335 tests green.
 
-  Also recorded in `decoder-recovery.md`: `www.hdfilmcehennemi.nl` now serves a
-  Cloudflare interactive challenge on `/rplayer/` embeds, `/dizi/` series pages
-  and every `/ajax*` endpoint. Those titles cannot resolve natively from HDFilm
-  and fall through to Dizipal/Dizibal — **not** a decoder rotation.
+  Also recorded in `decoder-recovery.md`: `www.hdfilmcehennemi.nl` serves a
+  Cloudflare challenge on `/rplayer/` embeds and `/dizi/` series pages — **not**
+  a decoder rotation. ⚠ **Superseded 2026-09-02:** on `/dizi/` the challenge is
+  a first-request-per-connection challenge, not a wall; retrying clears it and
+  HDFilm series resolve natively again. `/rplayer/` remains unreachable.
 
 - **2026-08-02 (1.2.0 only):** Provider + playback batch. (1) **HDFilm decoder
   rebuilt as an interpreter** — the provider swapped its arithmetic de-scramble
