@@ -6,10 +6,17 @@ Cloudflare Worker Cron monitor for streaming provider domains. It reads the curr
 
 - Dizipal home: `base_url/`
 - Dizipal search: `base_url/ajax-search?q=breaking%20bad`
+- Dizipal playback config: `base_url/bolum/breaking-bad-1-sezon-1-bolum`
 - Dizibal site-config API: `base_url/api/site-config/maintenance`
 - Dizibal movie-search response shape: `base_url/api/movies?search=shawshank&limit=3`
 
 Dizibal's browser homepage is intentionally not checked because it rejects Cloudflare Worker egress with HTTP 403 even while the JSON APIs used by StreamBox are healthy.
+
+### Why `dizipal_playback` exists
+
+Search being healthy says nothing about whether a title can actually PLAY. In Sept 2026 Dizipal renamed `/ajax-player-config` to `/ajax/player-config`: search kept answering 200, every title silently failed to produce a stream, and this monitor stayed green for the entire outage. The app now reads the player config straight out of the episode page's base64 `data-cfg` attribute, so the check decodes that one attribute and asserts it still carries `{v, t}` — one request covering the real playback path.
+
+The canary is a long-running catalog title at a stable slug. `data-cfg` sits ~44 KiB into a ~95 KiB page, which is why `readLimitedText` reads up to 128 KiB. Verified reachable from Worker egress (`wrangler dev --remote`, 2026-09-02) — all five checks return 200 and the attribute decodes.
 
 An endpoint is marked down after `FAILURE_THRESHOLD` consecutive failures, default `3`.
 
@@ -24,7 +31,7 @@ PROVIDER_MONITOR_KV = cc234c82b7094a8e93e444b6df6dbf32
 If you ever recreate the Worker in another Cloudflare account, run this from this folder and replace the namespace id in `wrangler.jsonc`:
 
 ```powershell
-cd C:\Users\e.a.mammadov\Desktop\app\workers\provider-monitor
+cd \"C:\Users\e.a.mammadov\Desktop\Personal projects\Streambox\workers\provider-monitor\"
 npx wrangler kv namespace create PROVIDER_MONITOR_KV
 ```
 
