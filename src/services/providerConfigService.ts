@@ -41,6 +41,13 @@ type RemoteResponse = {
 
 // ─── Constants ──────────────────────────────────────────────────────
 const STORAGE_KEY = "@streambox/provider-configs";
+const OBSERVED_KEY = "@streambox/provider-observed";
+/**
+ * How long a self-healed origin stays trusted. Dizipal rotates every few days;
+ * a week is long enough to cover a quiet stretch and short enough that a
+ * genuinely dead pin can't outlive the domain it points at.
+ */
+const OBSERVED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SUPABASE_URL = (process.env.EXPO_PUBLIC_SUPABASE_URL ?? "").replace(/\/+$/, "");
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "";
 const FUNCTION_URL = SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/provider-configs` : "";
@@ -62,40 +69,92 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     referer: "https://www.hdfilmcehennemi.nl/",
   },
   dizipal: {
-    // Dizipal rotates the digit suffix every few days. Keep this current to
-    // minimise the redirect chain on first launch (each stale step adds ~1s
-    // to every search; a 6s axios timeout chokes after ~6 hops).
-    baseUrl: "https://dizipal2079.com",
-    referer: "https://dizipal2079.com/",
+    // Dizipal rotates the digit suffix every few days, and each stale step is
+    // a 301 the client has to walk (~150ms per hop, and the hops are NOT
+    // one-per-rotation — the live chain from 2079 to 2123 was 22 hops / 3.3s).
+    // Past axios' 21-redirect ceiling the request fails outright, so a base
+    // that falls far enough behind takes Dizipal down completely rather than
+    // just making it slow. `normaliseDizipalBaseUrl` below keeps any base
+    // older than this one from ever being used.
+    baseUrl: "https://dizipal2123.com",
+    referer: "https://dizipal2123.com/",
   },
   dizibal: {
-    // dizibal.com — Turkish content platform with clean REST API; the m3u8
-    // CDN it serves (uk-traffic-076 / cdn77 family) is reachable from
-    // Azerbaijani ISPs that blocked cloudnestra / embed.su. Bot rotates
-    // this when dizibal cycles its base URL (rare so far but planned for).
-    baseUrl: "https://dizibal.com",
-    referer: "https://dizibal.com/",
+    // dizibal.org (was .com until 2026-09; .com still 301s here) — Turkish
+    // content platform with a clean REST API; the m3u8 CDN it serves
+    // (uk-traffic-076 / cdn77 family) is reachable from Azerbaijani ISPs that
+    // blocked cloudnestra / embed.su. Bot rotates this when dizibal cycles
+    // its base URL.
+    baseUrl: "https://dizibal.org",
+    referer: "https://dizibal.org/",
   },
 };
 
+/**
+ * Non-numeric stale hosts, mapped to their live replacement. Dizipal is NOT
+ * listed here — its rotation is a monotonically increasing digit suffix, so it
+ * is handled by `normaliseDizipalBaseUrl` instead of an enumeration nobody
+ * remembers to extend.
+ */
 const STALE_PROVIDER_BASE_URLS: Partial<Record<keyof ProviderConfigMap, Record<string, ProviderEntry>>> = {
-  dizipal: {
-    "https://dizipal2031.com": HARDCODED_FALLBACK.dizipal,
-    "https://dizipal2070.com": HARDCODED_FALLBACK.dizipal,
-    "https://dizipal2071.com": HARDCODED_FALLBACK.dizipal,
-    "https://dizipal2072.com": HARDCODED_FALLBACK.dizipal,
-    "https://dizipal2073.com": HARDCODED_FALLBACK.dizipal,
-    "https://dizipal2074.com": HARDCODED_FALLBACK.dizipal,
-    "https://dizipal2075.com": HARDCODED_FALLBACK.dizipal,
-    "https://dizipal2076.com": HARDCODED_FALLBACK.dizipal,
-    "https://dizipal2077.com": HARDCODED_FALLBACK.dizipal,
-    "https://dizipal2078.com": HARDCODED_FALLBACK.dizipal,
+  dizibal: {
+    "https://dizibal.com": HARDCODED_FALLBACK.dizibal,
+    "https://www.dizibal.com": HARDCODED_FALLBACK.dizibal,
   },
 };
+
+/** `https://dizipal2079.com` → 2079. Null for any host that isn't that shape. */
+export function parseDizipalSuffix(baseUrl: string): number | null {
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  const digits = host.match(/^(?:[a-z0-9-]+\.)?dizipal(\d+)\.[a-z.]+$/)?.[1];
+  if (!digits) return null;
+  const value = Number(digits);
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Dizipal only ever moves forward: `dizipalN.com` 301s to `dizipalN+1.com`,
+ * never backwards. So a base whose suffix is lower than the one we ship is
+ * always stale, and following it costs a redirect per intervening domain.
+ * Take whichever suffix is higher — remote wins as soon as the bot catches up,
+ * and a Supabase row that has fallen behind can no longer slow every request
+ * (or, past 21 hops, break Dizipal outright).
+ */
+export function normaliseDizipalBaseUrl(baseUrl: string): ProviderEntry | null {
+  const candidate = parseDizipalSuffix(baseUrl);
+  if (candidate === null) return null;
+  const shipped = parseDizipalSuffix(HARDCODED_FALLBACK.dizipal.baseUrl);
+  if (shipped === null || candidate >= shipped) return null;
+  return HARDCODED_FALLBACK.dizipal;
+}
 
 // ─── In-memory singleton ────────────────────────────────────────────
+/**
+ * The config as published (remote → cache → hardcoded), BEFORE any
+ * self-healed origin is layered on. Kept separate from `_configs` so a
+ * refresh can tell "the operator rotated the domain" apart from "we're
+ * looking at the same published value we were when we observed a redirect".
+ */
+let _baseline: ProviderConfigMap = { ...HARDCODED_FALLBACK };
 let _configs: ProviderConfigMap = { ...HARDCODED_FALLBACK };
 let _initialised = false;
+
+/**
+ * A post-redirect origin we actually reached, plus the published base URL that
+ * was in effect when we reached it. The pin is only reapplied while that
+ * published value is unchanged — the moment the operator pushes a new base to
+ * Supabase, the observation is discarded and remote wins. That makes the
+ * self-heal survive `refreshProviderConfigs()` without being able to strand a
+ * device on a domain the operator has moved off.
+ */
+type ObservedEntry = { origin: string; baseline: string; recordedAt: number };
+let _observed: Partial<Record<keyof ProviderConfigMap, ObservedEntry>> = {};
+let _observedLoaded = false;
 
 // ─── Public API ─────────────────────────────────────────────────────
 
@@ -104,26 +163,29 @@ let _initialised = false;
  * Tries remote first, falls back to local cache, then hardcoded.
  */
 export async function initialiseProviderConfigs(): Promise<void> {
+  await loadObservedFromStorage();
+
   // 1. Try remote
   const remote = await fetchRemoteConfigs();
   if (remote) {
-    _configs = remote;
+    adoptBaseline(remote);
     _initialised = true;
     await persistToStorage(remote);
-    debugLog("[ProviderConfig] Loaded from remote", summarise(remote));
+    debugLog("[ProviderConfig] Loaded from remote", summarise(_configs));
     return;
   }
 
   // 2. Try local cache
   const cached = await loadFromStorage();
   if (cached) {
-    _configs = cached;
+    adoptBaseline(cached);
     _initialised = true;
-    debugLog("[ProviderConfig] Loaded from local cache", summarise(cached));
+    debugLog("[ProviderConfig] Loaded from local cache", summarise(_configs));
     return;
   }
 
-  // 3. Hardcoded fallback (already set)
+  // 3. Hardcoded fallback
+  adoptBaseline({ ...HARDCODED_FALLBACK });
   _initialised = true;
   debugLog("[ProviderConfig] Using hardcoded fallback", summarise(_configs));
 }
@@ -148,11 +210,16 @@ export function isProviderConfigReady(): boolean {
  * Returns true if remote succeeded.
  */
 export async function refreshProviderConfigs(): Promise<boolean> {
+  await loadObservedFromStorage();
   const remote = await fetchRemoteConfigs();
   if (remote) {
-    _configs = remote;
+    // adoptBaseline re-applies any still-valid self-healed origin. Assigning
+    // `remote` straight to `_configs` used to undo the redirect pin, so the
+    // "refresh then retry" path in resolveWebPlayerUrl walked the whole
+    // redirect chain a second time — the opposite of what the retry is for.
+    adoptBaseline(remote);
     await persistToStorage(remote);
-    debugLog("[ProviderConfig] Refreshed from remote", summarise(remote));
+    debugLog("[ProviderConfig] Refreshed from remote", summarise(_configs));
     return true;
   }
   return false;
@@ -196,12 +263,96 @@ export function recordObservedBaseUrl(
     return;
   }
 
+  // Never pin backwards down the rotation: a request that happens to land on
+  // an older Dizipal domain (e.g. an absolute link inside a cached page) would
+  // otherwise re-introduce the whole redirect chain we just escaped.
+  const currentSuffix = parseDizipalSuffix(current);
+  const observedSuffix = parseDizipalSuffix(normalized);
+  if (currentSuffix !== null && observedSuffix !== null && observedSuffix < currentSuffix) {
+    return;
+  }
+
   _configs[provider] = {
     baseUrl: normalized,
     referer: `${normalized}/`,
   };
+  _observed[provider] = {
+    origin: normalized,
+    baseline: _baseline[provider].baseUrl.replace(/\/+$/, ""),
+    recordedAt: Date.now(),
+  };
   void persistToStorage(_configs);
+  void persistObservedToStorage();
   debugLog(`[ProviderConfig] Self-healed ${provider}: ${current} → ${normalized}`);
+}
+
+/**
+ * Install a freshly published config as the baseline and re-apply any
+ * still-valid self-healed origin on top of it.
+ */
+function adoptBaseline(next: ProviderConfigMap): void {
+  _baseline = { ...next };
+  _configs = { ...next };
+
+  for (const provider of Object.keys(_configs) as Array<keyof ProviderConfigMap>) {
+    const entry = _observed[provider];
+    if (!entry) continue;
+
+    const baselineUrl = _baseline[provider].baseUrl.replace(/\/+$/, "");
+    const stale = Date.now() - entry.recordedAt > OBSERVED_TTL_MS;
+    // The published base moved — the operator rotated, so drop our pin and
+    // follow them. Same-value baseline means the pin is still ahead of the
+    // bot and is exactly the redirect chain we want to skip.
+    if (stale || entry.baseline !== baselineUrl || !sameProviderFamily(provider, entry.origin)) {
+      delete _observed[provider];
+      void persistObservedToStorage();
+      continue;
+    }
+
+    _configs[provider] = { baseUrl: entry.origin, referer: `${entry.origin}/` };
+  }
+}
+
+async function loadObservedFromStorage(): Promise<void> {
+  if (_observedLoaded) return;
+  _observedLoaded = true;
+  try {
+    const raw = await AsyncStorage.getItem(OBSERVED_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
+    for (const [provider, value] of Object.entries(parsed)) {
+      const entry = value as Partial<ObservedEntry>;
+      if (
+        (provider === "hdfilm" || provider === "dizipal" || provider === "dizibal") &&
+        typeof entry?.origin === "string" &&
+        typeof entry?.baseline === "string" &&
+        typeof entry?.recordedAt === "number"
+      ) {
+        _observed[provider] = entry as ObservedEntry;
+      }
+    }
+  } catch { /* non-critical */ }
+}
+
+async function persistObservedToStorage(): Promise<void> {
+  try {
+    await AsyncStorage.setItem(OBSERVED_KEY, JSON.stringify(_observed));
+  } catch { /* non-critical */ }
+}
+
+/** Test seam — resets the module back to a cold-start state. */
+export function __resetProviderConfigsForTests(): void {
+  _baseline = { ...HARDCODED_FALLBACK };
+  _configs = { ...HARDCODED_FALLBACK };
+  _observed = {};
+  _observedLoaded = true;
+  _initialised = false;
+}
+
+/** Test seam — installs a published config exactly as a remote fetch would. */
+export function __adoptBaselineForTests(next: ProviderConfigMap): void {
+  adoptBaseline(next);
 }
 
 function sameProviderFamily(provider: keyof ProviderConfigMap, observedOrigin: string): boolean {
@@ -256,7 +407,10 @@ function mergeWithFallback(
   for (const key of Object.keys(result) as Array<keyof ProviderConfigMap>) {
     if (remote[key]?.baseUrl) {
       const baseUrl = remote[key].baseUrl.replace(/\/+$/, "");
-      const replacement = STALE_PROVIDER_BASE_URLS[key]?.[baseUrl];
+      const replacement =
+        STALE_PROVIDER_BASE_URLS[key]?.[baseUrl] ??
+        (key === "dizipal" ? normaliseDizipalBaseUrl(baseUrl) : null) ??
+        undefined;
 
       result[key] = {
         baseUrl: replacement?.baseUrl ?? baseUrl,

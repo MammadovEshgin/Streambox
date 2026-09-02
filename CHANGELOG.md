@@ -10,6 +10,60 @@ this branch (`v1.2.0`) ships to **1.2.0**. See
 
 ## [Unreleased]
 
+### Fixed — all three providers: Dizipal playback, Dizipal rotation cost, HDFilm series (2026-09-02)
+
+Three independent provider breakages that together produced "everything is slow"
+and "it's in the app but says Not Available". Verified end to end afterwards: 14
+of 14 probe titles resolve to a live HLS manifest, none slower than 3.1s (the
+same sweep before the fix had series failing outright at 7.7s).
+
+- **Dizipal playback was completely dead.** The provider renamed
+  `/ajax-player-config` to `/ajax/player-config`; the old path answers 404, which
+  the resolver read as "no stream" and dropped silently — search kept working, so
+  titles appeared in the app and then refused to play. This was the direct cause
+  of the *Mezarlık / Graveyard* report: Dizipal is the only provider carrying it
+  (HDFilm has no series page for it, Dizibal's embed host is down), so a broken
+  Dizipal meant a missing title. The app now reads the player config straight out
+  of the page's base64 `data-cfg` attribute — byte-identical to what the endpoint
+  returned — which removes a token mint plus a POST from the critical path of
+  every play *and* makes playback immune to the next rename. The network call
+  survives as a fallback and tries both paths.
+- **A stale Dizipal domain cost seconds on every request, and past 21 hops broke
+  it outright.** `dizipalN.com` 301s to `dizipalN+1.com` and the hops are not one
+  per rotation — the shipped base (`2079`) was 22 hops / 3.3s behind the live
+  `2123`, i.e. past axios' redirect ceiling. The base is now current, and
+  `normaliseDizipalBaseUrl` compares the numeric suffix so any published base
+  older than the shipped one is ignored automatically instead of having to be
+  enumerated by hand.
+- **The self-healed domain no longer survives only until the next refresh.**
+  `recordObservedBaseUrl` pins the post-redirect origin, but
+  `refreshProviderConfigs()` overwrote it with the (lagging) Supabase value — so
+  the "refresh, then retry" path in `resolveWebPlayerUrl` walked the entire
+  redirect chain a second time, the exact opposite of what that retry is for. The
+  pin now survives a refresh that republishes the same base, and is discarded the
+  moment the operator publishes a *different* one, so `/set_dizipal` still wins.
+- **The Dizipal direct-slug probe capped redirects at 5**, so on a stale base it
+  was the one call that failed hard (`ERR_FR_TOO_MANY_REDIRECTS`) rather than
+  merely getting slow. It now uses the same ceiling as every other Dizipal call.
+- **Every HDFilm series was quietly losing to Dizipal.** `/dizi/` URLs answer
+  `403 cf-mitigated: challenge` on the *first* request over a fresh connection
+  and 200 on every one after it (measured: 9/10 with connection reuse, 0/10
+  without; no cookie involved — the clearance rides on the connection).
+  `findSeriesEpisodeUrl` and `checkVideoAvailability` read that first 403 as
+  "HDFilm doesn't have it", so series fell through to Dizipal's Turkish-dub-only
+  stream. HDFilm page fetches now retry past the challenge, and Breaking Bad,
+  Severance, Stranger Things and From are back on HDFilm's dual-audio streams
+  (6 subtitle tracks vs Dizipal's 2).
+- **`provider-monitor` was green through the whole Dizipal outage** because it
+  only probed search. Added a `dizipal_playback` check that decodes the episode
+  page's `data-cfg`, and refreshed the worker's stale `dizibal.com` default and
+  `/set_*` examples.
+
+Known upstream outage, not fixed here: Dizibal's rotating Playerjs embed host
+(`x.ag2m4.cfd`) returns 502 for every code, movies and series alike, while
+`dizibal.org/api/*` stays healthy. Tier-3 fallback only; nothing to change on our
+side.
+
 ### Fixed — non-Latin title search, audio menu, default subtitles, daily hero (2026-08-10)
 
 Shipped to runtime **1.2.0** only — `v1.2.0` @ `3eb6b70` → EAS update group

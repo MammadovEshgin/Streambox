@@ -167,6 +167,48 @@ type DizipalSearchResponse = {
   }>;
 };
 
+/**
+ * How many extra attempts an HDFilm page fetch gets after a Cloudflare
+ * challenge. Measured against the live site (2026-09-02): a `/dizi/` URL
+ * answers 403 `cf-mitigated: challenge` on the FIRST request over a fresh
+ * connection and 200 on every request after it — 9/10 with connection reuse,
+ * 0/10 when each request opened a new connection. No cookie is involved; the
+ * clearance rides on the connection, so simply asking again is the whole fix.
+ *
+ * This mattered a lot: `findSeriesEpisodeUrl` and `checkVideoAvailability`
+ * treated that first 403 as "HDFilm doesn't have it", so every series fell
+ * through to Dizipal — which is Turkish-dub-only and several hundred ms
+ * slower. Two retries take the observed failure rate to ~0.
+ */
+const HDFILM_CHALLENGE_RETRIES = 2;
+
+function isCloudflareChallengeStatus(status: number | undefined): boolean {
+  return status === 403 || status === 503;
+}
+
+/**
+ * GET an HDFilm URL, retrying past the Cloudflare interstitial. Rejects on a
+ * non-challenge error exactly like a bare `axios.get`, so callers keep their
+ * existing try/catch shape.
+ */
+async function hdFilmGet<T = string>(
+  url: string,
+  config: Parameters<typeof axios.get>[1]
+): Promise<import("axios").AxiosResponse<T>> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= HDFILM_CHALLENGE_RETRIES; attempt++) {
+    try {
+      return await axios.get<T>(url, config);
+    } catch (error: any) {
+      lastError = error;
+      if (!isCloudflareChallengeStatus(error?.response?.status)) throw error;
+      if (attempt === HDFILM_CHALLENGE_RETRIES) break;
+      debugLog(`[WebPlayer] HDFilm challenge on ${url} — retry ${attempt + 1}`);
+    }
+  }
+  throw lastError;
+}
+
 function extractHref(html: string): string | null {
   const match = html.match(/href=["']([^"']+)["']/i);
   return match?.[1] ?? null;
@@ -512,7 +554,7 @@ function toAbsoluteUrl(baseUrl: string, href: string): string | null {
 
 async function queryHdFilm(query: string): Promise<SearchResult[]> {
   try {
-    const response = await axios.get<{ results?: string[] }>(
+    const response = await hdFilmGet<{ results?: string[] }>(
       `${getHdfilmBaseUrl()}/search/?q=${encodeURIComponent(query)}`,
       {
         timeout: 6000,
@@ -548,7 +590,7 @@ async function verifyCast(pageUrl: string, castNames: string[]): Promise<number>
   if (castNames.length === 0) return 0;
 
   try {
-    const response = await axios.get<string>(pageUrl, {
+    const response = await hdFilmGet<string>(pageUrl, {
       timeout: 6000,
       headers: {
         "User-Agent": UA,
@@ -779,7 +821,7 @@ type VideoCheck = {
 
 async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
   try {
-    const response = await axios.get<string>(pageUrl, {
+    const response = await hdFilmGet<string>(pageUrl, {
       timeout: 6000,
       headers: {
         "User-Agent": UA,
@@ -893,7 +935,7 @@ async function findSeriesEpisodeUrl(
   }
 
   try {
-    const response = await axios.get<string>(seriesPageUrl, {
+    const response = await hdFilmGet<string>(seriesPageUrl, {
       timeout: 6000,
       headers: {
         "User-Agent": UA,
@@ -1074,7 +1116,11 @@ async function probeDizipalDirectSlug(
     try {
       const response = await axios.get<string>(url, {
         timeout: 6000,
-        maxRedirects: 5,
+        // No explicit maxRedirects: Dizipal's rotation means a base that has
+        // fallen a few days behind is a 10-20 hop 301 chain, and a cap of 5
+        // turned that into a hard ERR_FR_TOO_MANY_REDIRECTS — this probe was
+        // the one Dizipal call that failed outright on a stale base while the
+        // others merely got slow. Axios' default 21 matches them.
         headers: { "User-Agent": UA, Referer: getDizipalReferer() },
         validateStatus: (status) => status === 200,
       });
@@ -1778,7 +1824,7 @@ async function resolveHdFilmNativeFallback(pageUrl: string, pageHtml: string): P
   if (!embedUrl) return null;
 
   try {
-    const response = await axios.get<string>(embedUrl, {
+    const response = await hdFilmGet<string>(embedUrl, {
       timeout: 8000,
       headers: {
         "User-Agent": UA,
@@ -1825,7 +1871,7 @@ export async function resolveHdFilmRuntimeStream(discoveredUrl: string, pageUrl:
   if (!isTrustedHdFilmEmbedUrl(absoluteUrl)) return null;
 
   try {
-    const response = await axios.get<string>(absoluteUrl, {
+    const response = await hdFilmGet<string>(absoluteUrl, {
       timeout: 8000,
       headers: {
         "User-Agent": UA,
@@ -2071,18 +2117,73 @@ function parseDizipalToken(data: unknown): string {
  *    fall back to an explicit header if the jar-based attempt is rejected,
  *    which covers runtimes without a cookie jar.
  */
+/**
+ * Dizipal's `data-cfg` attribute is base64(url) of the exact JSON the
+ * player-config endpoint hands back: `{"v":…,"t":…,"p":…}`. Decoding it on
+ * device skips a token mint plus a POST (two round-trips on the critical path
+ * of every play) and, more importantly, keeps playback working across the
+ * endpoint renames the provider does every few months — 2026-09's
+ * `/ajax-player-config` → `/ajax/player-config` move broke every Dizipal
+ * title until this landed.
+ *
+ * Returns null on anything that isn't the expected shape so the caller falls
+ * back to the network path rather than playing something wrong.
+ */
+function decodeDizipalCfg(cfg: string): DizipalPlayerConfigResponse | null {
+  const normalized = cfg.trim().replace(/-/g, "+").replace(/_/g, "/");
+  if (!normalized || !/^[A-Za-z0-9+/=]+$/.test(normalized)) return null;
+
+  let json: string;
+  try {
+    json = decodeBase64Binary(normalized);
+  } catch {
+    return null;
+  }
+  if (!json.trim().startsWith("{")) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+
+  const config = parsed as { v?: unknown; t?: unknown; p?: unknown };
+  if (typeof config?.v !== "string" || !/^https?:\/\//i.test(config.v)) return null;
+  if (typeof config?.t !== "string" || !config.t) return null;
+
+  return {
+    success: true,
+    config: {
+      v: config.v,
+      t: config.t,
+      p: typeof config.p === "string" ? config.p : "",
+    },
+  };
+}
+
+/**
+ * Paths the player-config endpoint has lived at, newest first. Dizipal renamed
+ * `/ajax-player-config` to `/ajax/player-config` in Sept 2026; the old path now
+ * answers 404, which the caller treated as "no stream" and silently dropped
+ * every Dizipal title. Both are tried so a rename in either direction is a
+ * one-request penalty rather than an outage.
+ */
+const DIZIPAL_PLAYER_CONFIG_PATHS = ["/ajax/player-config", "/ajax-player-config"];
+
 async function requestDizipalPlayerConfig(
   baseUrl: string,
   pageUrl: string,
   cfg: string
 ): Promise<DizipalPlayerConfigResponse | null> {
-  const postConfig = (cookieHeader?: string) =>
+  const postConfigTo = (path: string, cookieHeader?: string) =>
     axios.post<DizipalPlayerConfigResponse>(
-      `${baseUrl}/ajax-player-config`,
+      `${baseUrl}${path}`,
       `cfg=${encodeURIComponent(cfg)}`,
       {
         timeout: 6000,
         withCredentials: true,
+        validateStatus: (status) => status >= 200 && status < 500,
         headers: {
           "User-Agent": UA,
           Accept: "application/json, text/plain, */*",
@@ -2093,6 +2194,24 @@ async function requestDizipalPlayerConfig(
         },
       }
     );
+
+  // Remember which path answered so the retry doesn't re-probe the dead one.
+  let livePath = DIZIPAL_PLAYER_CONFIG_PATHS[0];
+  const postConfig = async (cookieHeader?: string) => {
+    let last = await postConfigTo(livePath, cookieHeader);
+    if (last.status === 404) {
+      for (const path of DIZIPAL_PLAYER_CONFIG_PATHS) {
+        if (path === livePath) continue;
+        const attempt = await postConfigTo(path, cookieHeader);
+        if (attempt.status !== 404) {
+          livePath = path;
+          last = attempt;
+          break;
+        }
+      }
+    }
+    return last;
+  };
 
   const mintToken = async (): Promise<string> => {
     const tokenResp = await axios.get(`${baseUrl}/ajax-token`, {
@@ -2137,7 +2256,10 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
     const pageOrigin = new URL(pageUrl).origin;
     const baseUrl = pageOrigin.includes("dizipal") ? pageOrigin : getDizipalBaseUrl();
 
-    const configResp = await requestDizipalPlayerConfig(baseUrl, pageUrl, cfg);
+    // The page already carries the player config; only ask the server when the
+    // attribute isn't the shape we know.
+    const configResp =
+      decodeDizipalCfg(cfg) ?? (await requestDizipalPlayerConfig(baseUrl, pageUrl, cfg));
 
     const config = configResp?.config;
     if (!configResp?.success || !config?.v) return null;
@@ -2925,6 +3047,8 @@ export async function resolveDirectWebPlayerFallback(
 
 export const __internal = {
   buildHdFilmResult,
+  checkVideoAvailability,
+  decodeDizipalCfg,
   decodeRapidrameByInterpretingDcBody,
   decodeRapidrameValueCandidates,
   extractDizibalEmbedStream,

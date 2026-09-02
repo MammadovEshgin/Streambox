@@ -5,6 +5,12 @@ shows ads but no video" / "black screen on POCO" — the upstream HDFilm decoder
 has almost certainly rotated. End-to-end recovery from this document takes
 ~3 minutes.
 
+**Run `npm run check:hdfilm` FIRST.** If it says HEALTHY the decoder is fine and
+the problem is one of the other three providers' failure modes — jump straight
+to ["When the breakage is NOT HDFilm"](#when-the-breakage-is-not-hdfilm).
+"Everything got slow" and "it's in the app but says Not Available" are almost
+always Dizipal, not the decoder.
+
 This file is intentionally written as a runbook for an LLM. Read it top to
 bottom on the first invocation; on subsequent runs jump to the "Happy path"
 section.
@@ -13,7 +19,7 @@ section.
 
 ## Repository
 
-- Path on the user's machine: `C:\Users\e.a.mammadov\Desktop\app`
+- Path on the user's machine: `C:\Users\e.a.mammadov\Desktop\Personal projects\Streambox`
 - GitHub: `MammadovEshgin/Streambox`
 - Branch: `main` (no PR needed for these fixes — push directly)
 - Shell: PowerShell on Windows (Bash tool also available; use whichever fits)
@@ -116,24 +122,94 @@ survives only as a fallback for old embeds. Treat `--write` as deprecated.
    `eval(function(p,a,c,k,e,d){...})` packer.js. `tryUnpackInlinePackerJs`
    runs first and expands the block in-place before the regex sees it.
 
-**⚠ Flow 2 is currently unreachable over plain HTTP** (checked 2026-08-10).
-Cloudflare now serves an interactive challenge ("Just a moment…", `403`,
-`cf-mitigated: challenge`) for everything on `www.hdfilmcehennemi.nl` except
-`/search/` and film pages — that includes `/rplayer/`, `/dizi/` series pages,
-and the site's own JS bundles. No header combination gets past it; it needs a
-real browser. So a title whose page carries
-`<iframe class="rapidrame" data-src=".../rplayer/…">` (e.g. Seven Samurai) will
-never decode, and HDFilm series are unreachable altogether. **This is not a
-decoder rotation — do not go looking for one.** Those titles fall through to
-Dizipal / Dizibal, which is working as designed. The `.mobi` embed host is not
-challenged, but it does not know `/rplayer/` ids, so there is no way to
-translate between them.
+**⚠ The Cloudflare challenge on `/dizi/` is a FIRST-REQUEST challenge, not a
+wall** (re-measured 2026-09-02, correcting the 2026-08-10 note that said HDFilm
+series were unreachable). `www.hdfilmcehennemi.nl/dizi/…` answers `403`
+`cf-mitigated: challenge` on the first request over a fresh connection and
+`200` on every request after it — 9/10 with connection reuse, 0/10 when each
+request opened a new connection. No cookie is set; the clearance rides on the
+connection, so **asking again is the entire fix**. `hdFilmGet()` in
+`WebPlayerService.ts` does that (2 retries) and it is why HDFilm series resolve
+natively again.
+
+Before that retry existed, `findSeriesEpisodeUrl` / `checkVideoAvailability`
+read the first 403 as "HDFilm doesn't have it", so every series fell through to
+Dizipal — Turkish-dub-only and slower. If you see series quietly preferring
+Dizipal, check that retry first before suspecting the decoder.
+
+The `.mobi` embed host is not challenged but does not know `/rplayer/` ids, so
+there is still no way to translate between the two flows.
 
 If the user reports breakage on a *specific* title while the standard probes
 ("Edge of Tomorrow", "The Devil Wears Prada 2") still work, the iframe
 attribute may have changed. Read `extractHdFilmEmbedUrl` in
 `src/services/WebPlayerService.ts` (~line 1125) and add the missing attribute.
 Recent example: lazy-loaded iframes use `data-src=` instead of `src=`.
+
+---
+
+## When the breakage is NOT HDFilm
+
+`npm run check:hdfilm` only covers HDFilm. Two other classes of outage look
+identical to the user ("slow", "says not available") and the health check will
+report HEALTHY through both. Diagnosis order, worst-first:
+
+### Dizipal moved (the usual cause of "everything got slow")
+
+`dizipalN.com` 301s to `dizipalN+1.com`, and the hops are **not** one per
+rotation — on 2026-09-02 the chain from the then-configured `2079` to the live
+`2123` was 22 hops / 3.3s **per request**, and the resolver makes several. Past
+axios' 21-redirect ceiling the request fails outright, so a base that falls far
+enough behind takes Dizipal down rather than merely slowing it.
+
+```powershell
+# Walk the chain and print where it actually lands.
+curl.exe -sSI https://dizipal2123.com/ | Select-String -Pattern 'location|HTTP/'
+```
+
+Fixes, in order:
+1. `/set_dizipal https://<live host>` to the Telegram bot — updates Supabase for
+   every device.
+2. Bump `HARDCODED_FALLBACK.dizipal` in `src/services/providerConfigService.ts`
+   and ship an OTA. `normaliseDizipalBaseUrl` compares the numeric suffix, so a
+   Supabase row that is BEHIND the shipped fallback is ignored automatically —
+   you no longer have to enumerate stale hosts.
+
+Devices also self-heal within a session: `recordObservedBaseUrl` pins the
+post-redirect origin, and the pin now survives `refreshProviderConfigs()` (it is
+discarded the moment Supabase publishes a *different* base, so the operator can
+always take control back).
+
+### Dizipal renamed an endpoint (the usual cause of "it finds it but won't play")
+
+Search keeps answering 200 while nothing plays. Sept 2026:
+`/ajax-player-config` → `/ajax/player-config`. The app no longer depends on
+either — `decodeDizipalCfg` reads the base64 `data-cfg` attribute off the page,
+which is byte-identical to what the endpoint returned — and the network call
+survives only as a fallback that tries both paths.
+
+```powershell
+# Healthy = base64 JSON with {"v":"https://…","t":"embed"}
+curl.exe -s https://dizipal2123.com/bolum/breaking-bad-1-sezon-1-bolum |
+  Select-String -Pattern 'data-cfg="([^"]+)"'
+```
+
+The `dizipal_playback` check in `workers/provider-monitor` watches exactly this
+attribute, so a repeat should now page you instead of failing silently.
+
+### Dizibal's embed host is down
+
+Tier 3 only. `dizibal.org/api/*` can be perfectly healthy while the rotating
+Playerjs host it hands back (`https://x.<something>.cfd/embed-<code>.html`) is
+502 — that was the state on 2026-09-02, for every code, movies and series
+alike. Nothing to fix on our side; it is their origin. Confirm with:
+
+```powershell
+curl.exe -s "https://dizibal.org/api/stream/embed?code=<code>&autoplay=1"
+curl.exe -sI "<the embedUrl it returned>"
+```
+
+If `/api/*` itself moved host, `/set_dizibal https://<new host>`.
 
 ---
 
@@ -189,15 +265,15 @@ You can't do this for them.
   [`docs/release-tracks.md`](docs/release-tracks.md).
 - **OTA branch.** Always `preview`. That's the channel installed apps listen
   on (`updates.url` in `app.config.js`).
-- **Test count.** 335 tests as of 2026-08-10. If the count drops or any fail,
+- **Test count.** 345 tests as of 2026-09-02. If the count drops or any fail,
   do not push.
 - **No GitHub Actions.** `.github/workflows/` is intentionally empty.
   Cloudflare blocks GitHub's datacenter IPs from reaching hdfilmcehennemi,
   so any resolver workflow there fails with exit 2 every hour and produces
   false-alarm emails. Do not add workflows back.
 - **Where to run from.** The user's Windows PC at
-  `C:\Users\e.a.mammadov\Desktop\app`. Their home IP is what reaches the
-  provider. Cloud VMs (Oracle, AWS, GitHub Actions) are all WAF-blocked.
+  `C:\Users\e.a.mammadov\Desktop\Personal projects\Streambox`. Their home IP is
+  what reaches the provider. Cloud VMs (Oracle, AWS, GitHub Actions) are all WAF-blocked.
 
 ---
 
