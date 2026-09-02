@@ -1026,3 +1026,98 @@ test("HDFilm Rapidrame inspection prefers native for disguised image media segme
   assert.equal(result.preferNative, true);
   assert.deepEqual(result.childPlaylistUrls, []);
 });
+
+test("Dizipal's data-cfg decodes on device to the same config the endpoint returns", () => {
+  // Live shape (2026-09-02) from /bolum/mezarlik-1-sezon-1-bolum. Decoding it
+  // locally skips a token mint plus a POST on the critical path of every play,
+  // and survives the endpoint renames the provider does every few months.
+  const cfg =
+    "eyJ2IjoiaHR0cHM6Ly9pbWFnZXN0b28uY29tL3ZpZGVvLzBiNmEyN2UyYmZjYjAxMGU3NjIxMDlmMGQyZTA0MmRjIiwidCI6ImVtYmVkIiwicCI6Imh0dHBzOi8vY2RuLmltYWdzLm1lL3VwbG9hZHMvYmFja2Ryb3BzL21lemFybGlrLndlYnAifQ";
+
+  assert.deepEqual(__internal.decodeDizipalCfg(cfg), {
+    success: true,
+    config: {
+      v: "https://imagestoo.com/video/0b6a27e2bfcb010e762109f0d2e042dc",
+      t: "embed",
+      p: "https://cdn.imags.me/uploads/backdrops/mezarlik.webp",
+    },
+  });
+});
+
+test("Dizipal cfg decoding fails closed so the caller falls back to the endpoint", () => {
+  const b64 = (value: string) => Buffer.from(value, "utf8").toString("base64");
+
+  assert.equal(__internal.decodeDizipalCfg(""), null, "empty");
+  assert.equal(__internal.decodeDizipalCfg("not base64 at all!"), null, "not base64");
+  assert.equal(__internal.decodeDizipalCfg(b64("plain text")), null, "not JSON");
+  assert.equal(__internal.decodeDizipalCfg(b64('{"t":"embed"}')), null, "no media url");
+  assert.equal(
+    __internal.decodeDizipalCfg(b64('{"v":"javascript:alert(1)","t":"embed"}')),
+    null,
+    "non-http media url must be refused"
+  );
+  assert.equal(
+    __internal.decodeDizipalCfg(b64('{"v":"https://x.example/a.m3u8"}')),
+    null,
+    "missing stream type"
+  );
+
+  // A poster is optional — its absence must not sink an otherwise valid config.
+  assert.deepEqual(__internal.decodeDizipalCfg(b64('{"v":"https://x.example/a.m3u8","t":"m3u8"}')), {
+    success: true,
+    config: { v: "https://x.example/a.m3u8", t: "m3u8", p: "" },
+  });
+});
+
+test("an HDFilm Cloudflare challenge is retried instead of read as 'not on HDFilm'", async () => {
+  // Live behaviour (2026-09-02): a /dizi/ URL answers 403 `cf-mitigated:
+  // challenge` on the first request over a fresh connection and 200 on every
+  // one after it. Treating that first 403 as a miss sent every series to
+  // Dizipal — Turkish-dub-only, and slower.
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      const error: any = new Error("Request failed with status code 403");
+      error.response = { status: 403 };
+      throw error;
+    }
+    return { data: '<button class="alternative-link">1080p</button>' };
+  }) as typeof axios.get;
+
+  try {
+    const check = await __internal.checkVideoAvailability("https://hdfilm.example/dizi/x/sezon-1/bolum-1/");
+    assert.equal(calls, 2, "the challenge must cost one retry, not the whole provider");
+    assert.equal(check.available, true);
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("a non-challenge HDFilm error is not retried", async () => {
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    const error: any = new Error("Request failed with status code 404");
+    error.response = { status: 404 };
+    throw error;
+  }) as typeof axios.get;
+
+  try {
+    const check = await __internal.checkVideoAvailability("https://hdfilm.example/gone/");
+    assert.equal(calls, 1, "a real 404 must fail on the first attempt");
+    assert.equal(check.available, false);
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});

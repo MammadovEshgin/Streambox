@@ -53,7 +53,10 @@ async function fetchWithTimeout(url, init, timeoutMs) {
   }
 }
 
-async function readLimitedText(response, maxBytes = 65536) {
+// 128 KiB. The Dizipal playback canary needs to read `data-cfg`, which sits
+// ~44 KiB into a ~95 KiB episode page; 64 KiB left no headroom for the page
+// to grow, and running out of body would have read as a shape change.
+async function readLimitedText(response, maxBytes = 131072) {
   const reader = response.body?.getReader();
   if (!reader) return "";
 
@@ -206,7 +209,7 @@ async function fetchProviderConfigs(env) {
   // supabase/migrations/20260619_… has been applied; the in-code default
   // covers the gap if a deployment landed first.
   if (!providers.dizibal?.baseUrl) {
-    providers.dizibal = { baseUrl: "https://dizibal.com", referer: "https://dizibal.com/" };
+    providers.dizibal = { baseUrl: "https://dizibal.org", referer: "https://dizibal.org/" };
   }
 
   return providers;
@@ -241,6 +244,40 @@ function buildProviderChecks(providers) {
           return { ok, reason: ok ? "ok" : "Dizipal search JSON has no results" };
         } catch {
           return { ok: false, reason: "Dizipal search did not return JSON" };
+        }
+      },
+    },
+    {
+      id: "dizipal_playback",
+      label: "Dizipal playback config",
+      // Search being healthy says nothing about whether a title can actually
+      // PLAY. In Sept 2026 Dizipal renamed /ajax-player-config to
+      // /ajax/player-config; search kept answering 200 while every title
+      // silently failed to produce a stream, and this monitor stayed green
+      // for the whole outage. The app now reads the player config straight
+      // out of the page's base64 `data-cfg` attribute, so probing that one
+      // attribute covers the real playback path in a single request.
+      //
+      // Canary is a long-running catalog title at a stable slug.
+      url: `${dizipalBaseUrl}/bolum/breaking-bad-1-sezon-1-bolum`,
+      referer: dizipalReferer,
+      validator: (response, body) => {
+        if (response.status !== 200) {
+          return { ok: false, reason: `HTTP ${response.status}` };
+        }
+        if (looksLikeChallengePage(body)) {
+          return { ok: false, reason: "Cloudflare/challenge page" };
+        }
+        const cfg = body.match(/id=["']videoContainer["'][^>]*data-cfg=["']([^"']+)["']/i)?.[1];
+        if (!cfg) {
+          return { ok: false, reason: "episode page has no data-cfg — push OTA" };
+        }
+        try {
+          const decoded = JSON.parse(atob(cfg.replace(/-/g, "+").replace(/_/g, "/")));
+          const ok = typeof decoded?.v === "string" && /^https?:\/\//i.test(decoded.v) && typeof decoded?.t === "string";
+          return { ok, reason: ok ? "ok" : "data-cfg no longer carries {v,t} — push OTA" };
+        } catch {
+          return { ok: false, reason: "data-cfg is no longer base64 JSON — push OTA" };
         }
       },
     },
@@ -505,13 +542,13 @@ const PROVIDER_DEFINITIONS = {
   dizipal: {
     setCommand: "/set_dizipal",
     hostMatch: (host) => host.toLowerCase().includes("dizipal"),
-    hostExample: "https://dizipal2070.com",
+    hostExample: "https://dizipal2123.com",
     checkIdPrefixes: ["dizipal_"],
   },
   dizibal: {
     setCommand: "/set_dizibal",
     hostMatch: (host) => host.toLowerCase().includes("dizibal"),
-    hostExample: "https://dizibal.com",
+    hostExample: "https://dizibal.org",
     checkIdPrefixes: ["dizibal_"],
   },
 };
@@ -753,8 +790,8 @@ async function handleTelegramWebhook(request, env) {
         "",
         "Use:",
         "/status",
-        "/set_dizipal https://dizipal2080.com",
-        "/set_dizibal https://dizibal.com",
+        "/set_dizipal https://dizipal2123.com",
+        "/set_dizibal https://dizibal.org",
       ].join("\n")
     );
     return jsonResponse({ ok: true });
