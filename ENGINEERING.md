@@ -68,7 +68,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `a73c28d` | `4fc77eff-1b8f-43ff-a389-14cc79675de5` |
+| 1.2.0 | `v1.2.0` @ `109037f` | `9e8cb04d-d9a7-4c76-863d-77d5d97adca4` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
 
