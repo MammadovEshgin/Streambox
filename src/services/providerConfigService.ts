@@ -76,8 +76,9 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     // that falls far enough behind takes Dizipal down completely rather than
     // just making it slow. `normaliseDizipalBaseUrl` below keeps any base
     // older than this one from ever being used.
-    baseUrl: "https://dizipal2123.com",
-    referer: "https://dizipal2123.com/",
+    // Live chain on 2026-09-08 was 2123 → 2124 → 2125 → 2126.
+    baseUrl: "https://dizipal2126.com",
+    referer: "https://dizipal2126.com/",
   },
   dizibal: {
     // dizibal.org (was .com until 2026-09; .com still 301s here) — Turkish

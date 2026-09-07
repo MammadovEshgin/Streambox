@@ -64,13 +64,57 @@ the `app.config.js` runtime, not the branch you happen to be on.
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
-### Current deployed state (last updated 2026-09-02, 1.2.0 provider recovery batch)
+### Current deployed state (last updated 2026-09-08, 1.2.0 HDFilm decoder + player/search/WebRTC batch)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
 | 1.2.0 | `v1.2.0` @ `a73c28d` | `4fc77eff-1b8f-43ff-a389-14cc79675de5` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+
+- **2026-09-08 (1.2.0 only):** HDFilm decoder rewrite + player/search/WebRTC
+  fixes. **HDFilm — tier 1 — was 100% dead**, and nothing had noticed: it
+  WAF-blocks datacenter IPs, so the Cloudflare Worker monitor cannot probe it at
+  all (re-verified with `wrangler dev --remote`: 403 challenge on every path,
+  both `.nl` and `.mobi`) and it has never had a check there. Every play was
+  quietly walking the full provider chain — that is what "the app got slow" and
+  "it's available but won't open" actually were.
+  (1) **HDFilm changed its obfuscation.** Parts array and decoder are no longer
+  `s_*` / `dc_*` but random short identifiers, and the algorithm gained a third
+  de-scramble family (two seed strings → LCG + XOR seed → Fisher-Yates
+  un-shuffle → rolling XOR) with dead `if` guards re-shuffled per request.
+  `rapidrameScript.ts` became a small general JS interpreter (tokenizer →
+  recursive-descent parser → AST walker) so all three families run through one
+  path; still no `eval`/`Function`, still fails closed, now with step/size
+  budgets and a regex guard. Extraction matches page structure, not name
+  prefixes. Measured after: 10/10 probe titles resolve in 0.6–1.0s, nearly all
+  on HDFilm's dual-audio stream instead of a Turkish-dub-only fallback.
+  (2) **A stream hiccup was shown as "not in our catalog".** Any expo-video
+  `status === "error"` on a direct stream became `not_found`; ExoPlayer raises
+  it for seeks past the buffered edge, single 5xx segments, expired tokens and
+  track switches, so seeking or tapping subtitles early produced the
+  "not available" card mid-film. Started streams now recover in place at their
+  last position (3 attempts) and playback failures can no longer read as missing
+  titles. The same path left `isPlaybackReady` false with only the first play
+  able to restore it, which is the "audio plays, screen stays black" report.
+  (3) **Search hid correctly-typed titles.** Turkish ı has no NFD decomposition
+  so it was stripped to a space ("Mezarlık" → `"mezarl k"`); and a flat
+  `rating >= 6` gate deleted everything TMDB reports as unrated, which when it
+  emptied the list flipped search to the actor-credits branch — a film search
+  answering with a filmography. Folding is now one shared helper across TMDB
+  search and the provider matcher; the quality gate applies only to results that
+  do not match the typed query.
+  (4) **Watch Together was one-way on some devices.** The peer connection was
+  published to `pcRef` before its handlers were attached and before an awaited
+  `setParameters`; an offer landing in that window was answered by a connection
+  with no `ontrack`/`onicecandidate`. Handlers and local tracks now attach
+  before publishing with no await in between, early offers are queued and
+  replayed, and a peer still starting up answers the readiness handshake.
+  (5) **Observability.** A `player_resolve` telemetry event now records the
+  resolved provider and duration — the only vantage point on a residential IP,
+  and the signal that was missing when tier 1 died.
+  Also: Dizipal base `2123` → `2126`, and Dizibal's embed host recovered from
+  the outage recorded on 2026-09-02, so all three tiers are healthy.
 
 - **2026-09-02 (1.2.0 only):** Provider recovery batch — three independent
   breakages that together read as "everything is slow" and "it's in the app but

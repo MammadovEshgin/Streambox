@@ -10,6 +10,83 @@ this branch (`v1.2.0`) ships to **1.2.0**. See
 
 ## [Unreleased]
 
+### Fixed — HDFilm decoder rewrite, player false "Not Available", search, Watch Together (2026-09-08)
+
+HDFilm — **tier 1** — was 100% dead and no dashboard had noticed, because
+nothing can monitor it (see below). Every play was silently walking the whole
+provider chain, which is what "the app got slow" and "it's available but won't
+open" actually were. Verified after the fix: 10 of 10 probe titles resolve, in
+0.6–1.0s, and nearly all now land on HDFilm's dual-audio stream rather than a
+Turkish-dub-only fallback.
+
+- **HDFilm changed its stream obfuscation and every title on it stopped
+  playing.** The parts array and its decoder are no longer named `s_*` / `dc_*`
+  but random short identifiers (`var avdp1 = h738([...])`), and the algorithm
+  gained a whole new family: two literal seed strings derive an LCG and an XOR
+  seed, a Fisher-Yates pass un-shuffles the characters, and only then does the
+  rolling-XOR cipher run — wrapped in dead `if (x.length > 100000)` guards whose
+  positions are re-shuffled on every request. `rapidrameScript.ts` is now a
+  small but general JS interpreter (tokenizer → recursive-descent parser → AST
+  walker) instead of a single-loop statement runner, so all three de-scramble
+  families decode through one code path and the next reshuffle costs nothing.
+  It still executes no `eval`/`Function`, still fails closed on anything outside
+  the modelled subset, and now also rejects backtracking-prone regexes and
+  bounds itself with step and size budgets. Extraction matches the page's
+  *structure* rather than the `s_`/`dc_` prefixes that broke.
+- **A stream hiccup was being reported as "this title isn't in our catalog
+  yet".** Any expo-video `status === "error"` on a direct stream became
+  `not_found`. ExoPlayer raises that for ordinary things — seeking past the
+  buffered edge, one 5xx segment, an expired CDN token, a track switch racing
+  the initial buffer — so seeking, or tapping the subtitle button just after
+  opening, showed the "not available" card for a film that was playing a second
+  earlier, and only backing out and re-entering fixed it. A stream that has
+  already produced frames is now re-opened in place at the position it died on
+  (3 attempts), and a playback failure can no longer masquerade as a missing
+  title.
+- **Black screen with audio still playing.** The same error path left
+  `isPlaybackReady` false, and only the *first* play could set it back — so
+  after a recovered error the opaque loading overlay stayed painted over a
+  playing video. Readiness is now restored on every play.
+- **Search dropped titles that were typed correctly.** Two causes. Turkish ı
+  (U+0131) has no Unicode decomposition, so the `[^a-z0-9]` strip deleted it and
+  "Mezarlık" normalised to `"mezarl k"` — unmatchable against "mezarlik".
+  Separately, a flat `rating >= 6` gate hid everything TMDB reports as unrated
+  (`vote_average` 0 for too few votes): new releases, niche and non-English
+  titles. When it hid *all* of them the result list went empty, which is one of
+  the conditions that flips the search to the actor-credits branch — so a film
+  search would answer with somebody's filmography, exactly the "conflict between
+  movie search and actor search" that was reported. Folding now lives in one
+  shared helper used by both TMDB search and the provider matcher, and the
+  quality gate applies only to results that do *not* match the typed query.
+- **Watch Together showed only the host's camera.** The peer connection was
+  published to `pcRef` before its handlers were attached and before an awaited
+  `setParameters` call. An offer arriving in that window was answered by a
+  connection with no `ontrack` and no `onicecandidate`, so the partner's video
+  never arrived and the answerer's ICE candidates were never sent. Because the
+  window is one native round-trip wide, it reproduced on some phones and not
+  others. Handlers and local tracks are now attached before the connection is
+  published, with nothing awaited in between; an offer that lands while the
+  camera is still being acquired is queued and replayed instead of dropped; and
+  a peer whose connection is still coming up now answers the readiness
+  handshake instead of staying silent until the other side's retry loop expired.
+- **The resolver now reports which provider served each play.** HDFilm
+  WAF-blocks datacenter IPs, so neither the Cloudflare Worker monitor nor a CI
+  runner can probe it — re-verified with `wrangler dev --remote`, which gets a
+  403 challenge on every path. The app's own devices are the only vantage point
+  on residential IPs, so a `player_resolve` telemetry event now carries the
+  resolved source and duration; a sustained shift away from HDFilm is the
+  tier-1 outage signal that was missing this time.
+- **The health check no longer misdiagnoses itself.** `check:hdfilm` kept a
+  private copy of the parts parser that still looked for `s_*`; when that
+  stopped matching it dropped every probe *before* the health check ran and
+  reported "provider domain moved, or network/geo block" while the site was
+  serving every page fine. Parts extraction no longer gates a probe, and the
+  failure message now points at the real candidates.
+- **Dizipal base bumped** `2123` → `2126` (live chain walked 2123→2124→2125→2126),
+  and **Dizibal's embed host has recovered** — `x.ag2m4.cfd` serves again after
+  the outage recorded on 2026-09-02, so all three tiers are healthy.
+
+
 ### Fixed — all three providers: Dizipal playback, Dizipal rotation cost, HDFilm series (2026-09-02)
 
 Three independent provider breakages that together produced "everything is slow"

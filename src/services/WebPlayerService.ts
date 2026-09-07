@@ -13,6 +13,7 @@
 import axios from "axios";
 import { getProviderConfig, isProviderConfigReady, recordObservedBaseUrl, refreshProviderConfigs } from "./providerConfigService";
 import { caesarShift, decodeBase64Binary, reverseString, runRapidrameDecoder } from "./rapidrameScript";
+import { foldNonDecomposingLetters } from "../utils/textFolding";
 
 // Pulls the post-redirect origin out of an axios response so the caller can
 // teach providerConfigService where the provider actually lives now. Axios
@@ -224,22 +225,15 @@ function extractText(html: string): string {
 }
 
 /**
- * Fold a string to ASCII for title comparison.
+ * Fold letters NFD cannot decompose, so the `[^a-z0-9\s]` strip downstream
+ * keeps them instead of deleting them (ı → i, ə → e, ø → o, …). Apply BEFORE
+ * that strip in every title normalization path, or Turkish-titled provider
+ * results stop matching their TMDB-localized titles.
  *
- * NFD + combining-diacritic stripping handles most Latin letters with marks
- * (ö → o, ü → u, â → a, ç → c, ş → s, ğ → g, …). But it does NOT handle the
- * Turkish dotless i (ı, U+0131) because that codepoint has no NFD
- * decomposition — it's a base letter, not "i with diacritic". Without an
- * explicit mapping, ı gets wiped out by the `[^a-z0-9\s]` strip downstream,
- * which silently breaks titles like "Yadigârları" (becomes "yadigarlar")
- * against slugs like "yadigarlari" (becomes "yadigarlari").
- *
- * Apply this BEFORE the `[^a-z0-9\s]` filter in every title normalization
- * path so Turkish-titled Dizipal results match their TMDB-localized titles.
+ * Shared with the app's own TMDB search, which had the identical bug and no
+ * fold at all — see src/utils/textFolding.ts.
  */
-function foldTurkishDotlessI(value: string): string {
-  return value.replace(/ı/g, "i").replace(/İ/g, "i");
-}
+const foldTurkishDotlessI = foldNonDecomposingLetters;
 
 /** Extract title from <h4 class="title">...</h4>, decode HTML entities */
 function extractH4Title(html: string): string {
@@ -1463,6 +1457,18 @@ function decodeRapidrameValueCandidates(
   return candidates;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Index of `var <name>` / `let <name>` / `const <name>`, matched on a whole
+ * identifier so `var s_a` is not found inside `var s_abc`.
+ */
+function findVariableDeclaration(html: string, name: string): number {
+  return html.search(new RegExp(`\\b(?:var|let|const)\\s+${escapeRegExp(name)}\\b`));
+}
+
 function extractJsonArrayLiteral(value: string): string | null {
   const start = value.indexOf("[");
   if (start === -1) return null;
@@ -1590,15 +1596,19 @@ function tryUnpackInlinePackerJs(html: string): string {
  * back to the static schemes.
  */
 function decodeRapidrameByInterpretingDcBody(embedHtml: string, sourceVariable: string, valueParts: string[]): string | null {
-  const assignmentIndex = embedHtml.indexOf(`var ${sourceVariable}`);
+  const assignmentIndex = findVariableDeclaration(embedHtml, sourceVariable);
   if (assignmentIndex === -1) return null;
 
+  // The decoder used to be named `dc_*`; since Sep 2026 it is a random short
+  // identifier, so match any callee here and let the `function <name>` lookup
+  // below decide whether it is a real local function. A built-in like `atob`
+  // simply finds no declaration and falls through to the static schemes.
   const decoderName = embedHtml
     .slice(assignmentIndex, assignmentIndex + 120)
-    .match(/=\s*(dc_[A-Za-z0-9_]+)\s*\(/)?.[1];
+    .match(/=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/)?.[1];
   if (!decoderName) return null;
 
-  const fnStart = embedHtml.indexOf(`function ${decoderName}`);
+  const fnStart = embedHtml.search(new RegExp(`\\bfunction\\s+${escapeRegExp(decoderName)}\\s*\\(`));
   if (fnStart === -1) return null;
 
   const braceStart = embedHtml.indexOf("{", fnStart);
@@ -1624,17 +1634,24 @@ function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
   // this is a no-op (no packed block). For the newer /rplayer/ flow it's what
   // makes the `s_* = dc_*(…)` assignment visible to the regex below.
   const embedHtml = tryUnpackInlinePackerJs(embedHtmlInput);
-  const sourceVariable = embedHtml.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*(s_[A-Za-z0-9_]+)/)?.[1];
+  // The parts variable was `s_*` until Sep 2026 and is a random short
+  // identifier since, so match any identifier. A quoted URL (`file: "http…"`)
+  // is not an identifier and correctly falls through to the m3u8 scrape.
+  const sourceVariable = embedHtml.match(
+    /sources\s*:\s*\[\s*\{\s*file\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)/
+  )?.[1];
   if (!sourceVariable) {
     return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
   }
 
-  const variableIndex = embedHtml.indexOf(`var ${sourceVariable}`);
+  const variableIndex = findVariableDeclaration(embedHtml, sourceVariable);
   if (variableIndex === -1) {
     return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
   }
 
-  const variableSnippet = embedHtml.slice(variableIndex, variableIndex + 2200);
+  // Wide enough for the largest parts array seen in the wild (39 chunks); the
+  // literal scanner below stops at the closing bracket regardless.
+  const variableSnippet = embedHtml.slice(variableIndex, variableIndex + 8000);
   const arrayLiteral = extractJsonArrayLiteral(variableSnippet);
   if (!arrayLiteral) return null;
 

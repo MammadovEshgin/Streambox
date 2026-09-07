@@ -61,8 +61,11 @@ modal, no restart prompt — by design).
 ## Background context (so you don't re-derive it every time)
 
 **What's actually breaking.** HDFilm (`hdfilmcehennemi.nl` /
-`hdfilmcehennemi.mobi`) hides each stream URL inside an obfuscated `s_*` array
-on the embed page, decoded by an inline `dc_XXXX(value_parts)` function. The
+`hdfilmcehennemi.mobi`) hides each stream URL inside an obfuscated parts array
+on the embed page, decoded by an inline function. Until Sep 2026 those were
+named `s_*` and `dc_XXXX(value_parts)`; **since 2026-09-08 both are random
+short identifiers** (`var avdp1 = h738([...])`), so nothing may key off those
+prefixes any more. The
 user-facing symptom of a decode failure is NOT usually "no video" — it is
 **"the wrong provider played"**: HDFilm silently loses, the resolver falls
 through to Dizipal/Dizibal, and the user gets a Turkish-dub-only stream (and a
@@ -73,24 +76,37 @@ of pre-passes, the Caesar shifts, and the de-scramble constants all change on
 *every single fetch*. A sample of 15 fetches of one title produced 13 distinct
 shapes. There is no "current scheme" to pin down.
 
-**The de-scramble family changes too.** It was arithmetic
-(`c - (CONST % (i + N))`) until Aug 2026, when it became a rolling-XOR cipher:
+**The de-scramble family changes too.** Three seen in production:
 
-```js
-var acc = <seed>;
-acc = (acc + <step>) % 256;
-var plain = b ^ acc;
-acc = (acc + b) % 256;   // feedback off the CIPHER byte
-```
+| when | family |
+| --- | --- |
+| until Aug 2026 | arithmetic: `c - (CONST % (i + N))` |
+| Aug 2026 | rolling XOR: `acc=(acc+step)%256; plain=b^acc; acc=(acc+b)%256` (feedback off the CIPHER byte) |
+| Sep 2026 | seeded shuffle: two literal seed strings derive an LCG + XOR seed, Fisher-Yates un-shuffles the chars, THEN rolling XOR |
+
+The Sep-2026 body is much richer than its predecessors — arrays and element
+assignment, several loops including descending ones, `if/else if/else`,
+multi-declarator `var`, ternaries, and a closure passed to `String.replace` —
+and it carries **dead `if (x.length > 100000)` guards whose position is
+shuffled on every request**. The two seed strings and every identifier are
+per-request random; the numeric constants (31, 251, 255, 13, 65521, 75, 74,
+65537) were stable across every sample.
 
 **So we interpret, we don't pattern-match.** `src/services/rapidrameScript.ts`
-parses the live function body and replays it: a recursive-descent expression
-evaluator plus a statement interpreter over a restricted subset (numbers,
-strings, arithmetic + bitwise operators, `charCodeAt`, `String.fromCharCode`).
-No `eval`/`Function` — Hermes has neither, and executing provider JS would be a
-code-execution sink. It handles both de-scramble families with no special
-casing, and **fails closed** (returns `null`, caller falls back) if the body
-uses anything outside that subset.
+is a small JS interpreter: tokenizer → recursive-descent parser → AST walker,
+covering numbers/strings/arrays, the arithmetic, bitwise, comparison and
+logical operators, `if`/`for`/`while`/`return`, function expressions and
+closures, and a handful of built-ins (`atob`, `String.fromCharCode`, the string
+and array methods the bodies use). No `eval`/`Function` — Hermes has neither,
+and executing provider JS would be a code-execution sink. It handles all three
+de-scramble families with no special casing, and **fails closed** (returns
+`null`, caller falls back) on anything outside that subset.
+
+Guardrails that matter when you widen it: a step budget and string/array size
+caps bound a hostile body; `compileRegex` rejects any pattern with a
+quantifier, group or alternation so a page cannot hand us a catastrophic
+backtracking regex; and there is no property write anywhere except into a local
+array, so a body cannot reach `constructor`, `__proto__` or any host object.
 
 ### Why brute force no longer works
 
@@ -104,13 +120,16 @@ survives only as a fallback for old embeds. Treat `--write` as deprecated.
 
 1. Capture a live embed body (the health check prints one, or fetch the iframe
    URL from a movie page with the mobile UA).
-2. Read the `dc_*()` function. Ask one question: **does it use an operation
-   outside {reverse, atob, caesar, and a loop of plain assignments}?**
-   - **No** → the interpreter should already handle it. The bug is a parse
-     mismatch in `rapidrameScript.ts` — check `collectStringOps`,
-     `parseLoopHeader`, and `runAssignment` against the new body shape.
-   - **Yes** → teach the interpreter that one primitive. Keep it narrow, and
-     keep `assertOnlyKnownCalls` honest so unknown calls still fail closed.
+2. Find the `var <file> = <fn>([...])` assignment named by
+   `sources: [{file: <file>` and read `function <fn>`. Ask one question:
+   **does it use a JS construct the interpreter does not model yet?**
+   - **No** → the bug is in the extraction, not the decoder. Check the two
+     identifier regexes in `WebPlayerService.extractRapidrameStreamUrl` and
+     `decodeRapidrameByInterpretingDcBody`, and the parts-array window size.
+   - **Yes** → widen the INTERPRETER (parser + evaluator), never add another
+     static scheme. Keep unknown calls bailing so the body still fails closed.
+3. Verify against the LIVE site, not just tests. Decode a handful of titles and
+   fetch each decoded URL — a real fix returns `#EXTM3U`.
 3. Add a case to `tests/rapidrameScript.test.ts`. Those tests build a payload by
    running the provider's ENCODE direction and assert the interpreter recovers
    the URL — so a new shape is a handful of lines.
@@ -217,10 +236,25 @@ If `/api/*` itself moved host, `/set_dizibal https://<new host>`.
 
 ### `npm run check:hdfilm` reports "Could not fetch ANY embed page" (exit 2)
 
-You're not on the user's PC. Cloudflare's WAF on hdfilmcehennemi blocks
-datacenter / cloud / VPN IPs. **Do not try to work around this** — it's the
-reason the cloud automation was abandoned. Tell the user the recovery must
-run from their machine and stop.
+Two very different causes — check which before concluding anything:
+
+1. **You're not on the user's PC.** Cloudflare's WAF on hdfilmcehennemi blocks
+   datacenter / cloud / VPN IPs. **Do not try to work around this** — it's the
+   reason the cloud automation was abandoned. Tell the user the recovery must
+   run from their machine and stop.
+2. **The site changed shape.** Confirm by hand before believing (1):
+   ```bash
+   UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36'
+   # MUST send X-Requested-With: fetch. The literal value matters — with
+   # "XMLHttpRequest" (what the monitor's baseHeaders send) this 404s.
+   curl -s -A "$UA" -H 'X-Requested-With: fetch'      'https://www.hdfilmcehennemi.nl/search/?q=inception' | head -c 200
+   ```
+   A JSON `{"query":…,"results":[…]}` means the site is fine and the failure is
+   downstream. In Sep 2026 this exit-2 message was actively misleading: the
+   script's own private copy of the parts parser had gone stale and dropped
+   every probe as "no embed" **before** the health check ran, so it reported a
+   provider domain move while the site was up and only the decoder had changed.
+   That gate is now removed — parts extraction no longer blocks a probe.
 
 ### How to capture a live decoder body
 
@@ -328,7 +362,56 @@ these providers.
 **10. Correct this document when reality contradicts it.** The stale claim in
 §Background context ("HDFilm series are unreachable altogether") actively
 misdirected the investigation. If you disprove something here, rewrite it in the
-same commit and say when it was re-measured.
+same commit and say when it was re-measured. (This section's own "`.github/`
+is intentionally empty" line was false when written — `ci.yml` already existed.
+Fixed 2026-09-08.)
+
+---
+
+Added from the 2026-09-08 session, where HDFilm — **tier 1** — had been 100%
+dead and nothing had noticed.
+
+**11. A diagnostic tool with its own copy of production parsing WILL lie to
+you.** `check-hdfilm-resolver.ts` kept a private `extractPartsArray` that still
+looked for `s_*`. When HDFilm renamed those identifiers, that copy matched
+nothing and dropped every probe as "no embed" *before* the health check ran —
+so the script reported "provider domain moved, or network/geo block" while the
+site was up and served every page fine. That message sent the investigation
+after DNS and Cloudflare for a while. The parts array now never gates a probe,
+and the health check itself calls the real `extractRapidrameStreamUrl`. If you
+must duplicate production logic in a tool, make the duplicate non-blocking.
+
+**12. Prefix-based extraction is a liability; match the shape, not the name.**
+Both `sources: [{file: s_…}]` and `= dc_…(` were prefix matches, and both broke
+the day HDFilm switched to random short identifiers. The structure
+(`sources:` → identifier → `var <identifier> = <fn>([...])` → `function <fn>`)
+is what the page guarantees; the naming is not.
+
+**13. "Cannot be monitored" is a finding to write down, not a gap to paper
+over.** The instinct after this outage is "add an HDFilm check to the monitor".
+Both available runners are datacenter IPs and both are 403'd, so such a check
+would fail forever and train everyone to ignore the alerts — the same trap the
+Dizibal-homepage comment already documents. Verify egress with
+`wrangler dev --remote` BEFORE adding a Worker check. Where no prober can
+reach, instrument the app instead: `player_resolve` telemetry carries the
+resolved `source`, and a sustained shift away from hdfilm/`direct` is the
+tier-1 outage signal.
+
+**14. The header VALUE can matter, not just its presence.** HDFilm's
+`/search/?q=` returns the JSON payload only for `X-Requested-With: fetch`. With
+`XMLHttpRequest` — which is what the monitor's `baseHeaders` sends, and what
+most scrapers default to — it returns a **404 HTML page**. A probe that used
+the wrong value would have "proved" the search endpoint was gone.
+
+**15. A playback error is not a missing title.** `PlayerScreen` mapped any
+expo-video `status === "error"` on a direct source to
+`{ source: "not_found" }`, i.e. the "isn't in our catalog yet" card. ExoPlayer
+raises that status for ordinary hiccups — seeking past the buffered edge, one
+5xx segment, an expired CDN token, a track switch racing the initial buffer —
+so seeking or tapping the subtitle button early showed the viewer a
+"this title doesn't exist" card for a film that was playing a second ago.
+Reserve `not_found` for resolve-time exhaustion; recover a started stream in
+place (see `recoverCurrentStream`).
 
 ---
 
@@ -341,12 +424,18 @@ same commit and say when it was re-measured.
   [`docs/release-tracks.md`](docs/release-tracks.md).
 - **OTA branch.** Always `preview`. That's the channel installed apps listen
   on (`updates.url` in `app.config.js`).
-- **Test count.** 345 tests as of 2026-09-02. If the count drops or any fail,
+- **Test count.** 361 tests as of 2026-09-08. If the count drops or any fail,
   do not push.
-- **No GitHub Actions.** `.github/workflows/` is intentionally empty.
-  Cloudflare blocks GitHub's datacenter IPs from reaching hdfilmcehennemi,
-  so any resolver workflow there fails with exit 2 every hour and produces
-  false-alarm emails. Do not add workflows back.
+- **No resolver workflow in CI.** `.github/workflows/ci.yml` (typecheck / lint /
+  test) is fine and stays. What must NOT be added is anything that reaches
+  hdfilmcehennemi from CI: Cloudflare blocks GitHub's datacenter IPs, so a
+  resolver workflow fails with exit 2 on every run and produces false-alarm
+  emails. The same applies to Cloudflare Workers — re-verified 2026-09-08 with
+  `wrangler dev --remote`: both `www.hdfilmcehennemi.nl` and
+  `hdfilmcehennemi.mobi` answer **403 "Just a moment…"** for every path from
+  Worker egress. HDFilm health can only be observed from a residential IP:
+  `npm run check:hdfilm` on the user's PC, plus the `player_resolve` telemetry
+  event the app emits on every play.
 - **Where to run from.** The user's Windows PC at
   `C:\Users\e.a.mammadov\Desktop\Personal projects\Streambox`. Their home IP is
   what reaches the provider. Cloud VMs (Oracle, AWS, GitHub Actions) are all WAF-blocked.
@@ -355,21 +444,30 @@ same commit and say when it was re-measured.
 
 ## Architecture pointers (for unusual breakage)
 
-- The decoder interpreter lives in **`src/services/rapidrameScript.ts`**:
+- The decoder interpreter lives in **`src/services/rapidrameScript.ts`**. Since
+  2026-09-08 it is a small but general JS interpreter, not a statement runner:
   - `runRapidrameDecoder(functionSource, valueParts)` — the entry point. Parses
-    and replays the live `dc_*()` body.
-  - `runHead` / `collectStringOps` — the pre-passes (reverse / atob / caesar),
-    ordered deepest-nesting-first then left-to-right so both
-    `atob(x.reverse())` and `x.reverse().replace(…)` evaluate correctly.
-  - `parseLoopHeader` / `runAssignment` / `ExpressionEvaluator` — the
-    de-scramble loop. This is what makes the arithmetic and rolling-XOR
-    families work from one code path.
-  - `assertOnlyKnownCalls` — the fail-closed guard. An unrecognised call in a
-    pre-pass aborts the decode instead of being silently skipped (skipping it
-    would produce a plausible-but-WRONG url).
+    the live decoder body and calls it with the parts array.
+  - `tokenize` / `Parser` — tokenizer (including regex-literal disambiguation)
+    and recursive-descent parser producing an AST. `Parser.parseFunctionDeclaration`
+    finds the decoder regardless of its name.
+  - `Interpreter` — the AST walker. Supports arrays and element assignment,
+    `if`/`for`/`while`/`return`/`break`/`continue`, multi-declarator `var`,
+    ternaries, closures, and the string/array built-ins the bodies use. All
+    three de-scramble families run through this one path with no special casing.
+  - `bail` / `UnsupportedScript` — the fail-closed guard. Any construct or call
+    outside the modelled subset aborts the decode rather than being skipped
+    (skipping would produce a plausible-but-WRONG url).
+  - `compileRegex` — rejects quantifiers, groups and alternation, so a page
+    cannot hand the resolver a catastrophic-backtracking pattern.
+  - `MAX_STEPS` / `MAX_STRING_LENGTH` / `MAX_ARRAY_LENGTH` — the budgets that
+    bound a hostile or malformed body.
 - Provider glue stays in **`src/services/WebPlayerService.ts`**:
-  - `decodeRapidrameByInterpretingDcBody` — locates the `dc_*()` function and
-    delegates to the interpreter.
+  - `decodeRapidrameByInterpretingDcBody` — locates the decoder function named
+    by the parts assignment and delegates to the interpreter. Matches ANY
+    identifier: the `dc_`/`s_` prefixes are gone as of Sep 2026.
+  - `findVariableDeclaration` — whole-identifier `var|let|const <name>` lookup,
+    so `var s_a` is not found inside `var s_abc`.
   - `RAPIDRAME_PRE_UNMIX_TRANSFORMS` — legacy static schemes, fallback ONLY.
   - `tryUnpackInlinePackerJs` — expands `eval(function(p,a,c,k,e,d){...})`
     packer.js blocks. Required for the `/rplayer/` flow.

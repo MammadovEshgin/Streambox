@@ -47,3 +47,68 @@ test("Dizipal HTML5 recovery refreshes the stream in-session and keeps a direct 
   assert.equal(playerScreenSource.includes('referer:${fallback.referer ?? "none"}'), true);
   assert.equal(playerScreenSource.includes("isImagestooStream(playerResult.streamUrl)"), true);
 });
+
+// ---------------------------------------------------------------------------
+// "Not available yet" must mean "no provider has this title", never "the
+// stream hiccuped". Conflating the two is what made the player answer a seek,
+// an early tap on the subtitle button, or one bad segment with a card telling
+// the viewer the title isn't in the catalog — for a title that was playing a
+// second earlier and that a retry reliably fixed.
+// ---------------------------------------------------------------------------
+
+test("a mid-playback stream error recovers in place instead of showing not_found", () => {
+  const source = fs.readFileSync(playerScreenPath, "utf8");
+
+  // The error branch must try in-place recovery first, and only for a stream
+  // that had actually started.
+  assert.equal(source.includes("if (hasStarted && recoverCurrentStream(ev.error?.message)) return;"), true);
+  assert.equal(source.includes("const recoverCurrentStream = useCallback("), true);
+  assert.equal(source.includes("MAX_STREAM_RECOVERY_ATTEMPTS"), true);
+  assert.equal(source.includes("streamRecoveryAttemptsRef"), true);
+
+  // Recovery must preserve the position, or "recovery" restarts the film.
+  assert.equal(/resumeAt\s*=\s*videoPlayer\.currentTime/.test(source), true);
+  assert.equal(source.includes("videoPlayer.currentTime = resumeAt"), true);
+
+  // The native-error path must no longer be able to produce not_found.
+  const errorBranch = source.slice(
+    source.indexOf('if (ev.status === "error")'),
+    source.indexOf('const playingSub = videoPlayer.addListener("playingChange"')
+  );
+  assert.ok(errorBranch.length > 0, "error branch should be locatable");
+  assert.equal(
+    errorBranch.includes('source: "not_found"'),
+    false,
+    "a playback error must not be reported as a missing title"
+  );
+});
+
+test("a recovered stream clears the loading overlay instead of leaving a black screen", () => {
+  // The overlay is an opaque black fill, so `isPlaybackReady` stuck false over
+  // a playing stream is exactly the "I can hear it but the screen is black"
+  // report. The error branch sets it false; only playingChange can set it back,
+  // and it used to do so only on the FIRST play.
+  const source = fs.readFileSync(playerScreenPath, "utf8");
+  const playingBranch = source.slice(
+    source.indexOf('const playingSub = videoPlayer.addListener("playingChange"'),
+    source.indexOf('const subtitleSub = videoPlayer.addListener(')
+  );
+  assert.ok(playingBranch.length > 0, "playingChange branch should be locatable");
+  assert.equal(playingBranch.includes("if (!ev.isPlaying) return;"), true);
+  assert.equal(playingBranch.includes("setIsPlaybackReady(true);"), true);
+  assert.equal(
+    playingBranch.includes("&& !hasStarted"),
+    false,
+    "readiness must be restored on every play, not only the first"
+  );
+});
+
+test("the quality switch reports failure instead of dropping the rejection", () => {
+  const source = fs.readFileSync(playerScreenPath, "utf8");
+  const selectQuality = source.slice(
+    source.indexOf("const selectQuality = useCallback("),
+    source.indexOf("const toggleDirectSubtitleMenu = useCallback(")
+  );
+  assert.ok(selectQuality.length > 0, "selectQuality should be locatable");
+  assert.equal(selectQuality.includes(".catch("), true);
+});

@@ -7,6 +7,7 @@ import { shouldFetchExternalRatings, type ExternalRatingsSurface } from "../serv
 import { trackNetworkFailure } from "../services/telemetryService";
 import { dedupeInFlight, mapWithConcurrency } from "../utils/concurrency";
 import { LruMap } from "../utils/LruMap";
+import { foldForTitleCompare } from "../utils/textFolding";
 import { PersistedLruMap } from "../services/persistedLruMap";
 import {
   getImdbPopularMovies,
@@ -2527,13 +2528,10 @@ export async function getSeriesTrailerUrl(seriesId: string): Promise<string | nu
 /* ------------------------------------------------------------------ */
 
 function normalizeSearchTerm(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+  // foldNonDecomposingLetters must run first: without it the strip below turns
+  // Turkish \u0131 into a space, so "Mezarl\u0131k" became "mezarl k" and no amount of
+  // correct spelling would match it.
+  return foldForTitleCompare(value.trim());
 }
 
 function isConfidentActorSearchMatch(query: string, person: TmdbPersonSearchRecord | undefined): person is TmdbPersonSearchRecord {
@@ -2583,6 +2581,13 @@ function getActorSearchConfidence(query: string, person: TmdbPersonSearchRecord 
 
   return 0;
 }
+
+/**
+ * Quality floor for search results that do NOT match the typed query — the
+ * incidental hits TMDB returns alongside the real one. Titles the viewer
+ * actually named bypass it entirely; see the filter in `searchMulti`.
+ */
+const SEARCH_WEAK_MATCH_MIN_RATING = 6;
 
 function getSearchTitleScore(query: string, item: MediaItem) {
   const normalizedQuery = normalizeSearchTerm(query);
@@ -2669,13 +2674,8 @@ async function searchActorCredits(query: string, page: number): Promise<ActorCre
 const movieByTitleYearCache = new LruMap<string, number | null>(4000);
 
 function normalizeTitleForMatch(value: string): string {
-  return value
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "") // strip combining diacritics (Çöl -> Col)
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+  // `&` → " and " before folding so "Fire & Blood" matches "Fire and Blood".
+  return foldForTitleCompare(value.replace(/&/g, " and "));
 }
 
 function scoreMovieMatch(targetTitle: string, targetYear: number | null, candidate: TmdbMediaRecord): number {
@@ -2772,7 +2772,22 @@ export async function searchMulti(
   const filtered = data.results
     .filter((r) => r.media_type === "movie" || r.media_type === "tv")
     .map((entry) => normalizeMedia(entry, entry.media_type ?? "movie"))
-    .filter((item) => item.title !== "Untitled" && item.rating >= 6);
+    .filter((item) => {
+      if (item.title === "Untitled") return false;
+      // A title the viewer actually named is never hidden by the quality gate.
+      //
+      // This used to be a flat `item.rating >= 6`. TMDB reports 0 for anything
+      // without enough votes, so that gate silently deleted new releases and
+      // niche or non-English titles — including ones the providers can play.
+      // And when it deleted ALL of them, `filtered` went empty, which is one of
+      // the conditions that flips this function to the actor-credits branch:
+      // searching for a film answered with somebody's filmography instead.
+      //
+      // The gate still applies to incidental matches, which is what keeps the
+      // long tail of unrelated low-quality results out of the list.
+      if (getSearchTitleScore(query, item) > 0) return true;
+      return item.rating >= SEARCH_WEAK_MATCH_MIN_RATING;
+    });
 
   const rankedTitleResults = rankTitleSearchResults(query, filtered);
   const bestTitleScore = getBestTitleSearchScore(query, rankedTitleResults);

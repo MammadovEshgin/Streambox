@@ -221,6 +221,21 @@ function buildProviderChecks(providers) {
   const dizibalBaseUrl = normalizeBaseUrl(providers.dizibal.baseUrl);
   const dizibalReferer = providers.dizibal.referer || `${dizibalBaseUrl}/`;
 
+  // ─── Why there is no HDFilm check here ───────────────────────────────
+  // HDFilm is the app's TIER 1 provider, and in Sep 2026 its decoder changed
+  // shape and every title on it went dead — while this monitor stayed fully
+  // green, because it has never probed HDFilm at all.
+  //
+  // It cannot. HDFilm sits behind Cloudflare and challenges Cloudflare Worker
+  // egress: from a Worker, both www.hdfilmcehennemi.nl and
+  // hdfilmcehennemi.mobi answer 403 "Just a moment..." for every path
+  // (verified via `wrangler dev --remote`, 2026-09-08). A check added here
+  // would fail permanently and train everyone to ignore the alerts — the same
+  // trap documented below for Dizibal's homepage.
+  //
+  // Tier-1 health therefore runs from a normal network instead:
+  // `npm run check:hdfilm`, scheduled in .github/workflows/provider-health.yml.
+  // Keep it that way unless HDFilm stops challenging Worker egress.
   return [
     {
       id: "dizipal_home",

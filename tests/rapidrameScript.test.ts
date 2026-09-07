@@ -150,16 +150,154 @@ test("decoder fails closed on an unsupported body instead of returning garbage",
   assert.equal(runRapidrameDecoder(source, ["abc"]), null);
 });
 
-test("decoder rejects a body with no de-scramble loop", () => {
+test("a body with no de-scramble loop is replayed faithfully, not rejected", () => {
+  // The interpreter used to require a de-scramble loop. That was an artifact of
+  // its single-loop design, and it would reject a future scheme that ships the
+  // URL in the clear. The real guard against garbage is downstream: the caller
+  // only accepts a result matching ^https?:// (normalizeExtractedMediaUrl), so
+  // a non-URL like "abc" never reaches the player.
   const source = `function dc_TestNoLoop(value_parts) {
   let result = value_parts.join('');
   return result;
 }`;
 
-  assert.equal(runRapidrameDecoder(source, ["abc"]), null);
+  assert.equal(runRapidrameDecoder(source, ["abc"]), "abc");
 });
 
 test("caesarShift/reverseString round-trip the way the provider expects", () => {
   assert.equal(caesarShift(caesarShift("Hello, World", 15), -15), "Hello, World");
   assert.equal(reverseString(reverseString("abc123")), "abc123");
+});
+
+// ---------------------------------------------------------------------------
+// Sep-2026 "seeded shuffle" family.
+//
+// HDFilm replaced the `s_* = dc_*([...])` shape with a randomly-named
+// `var <file> = <fn>([...])`, and the decoder gained: two literal seed strings
+// that derive every constant, an op-string loop applying atob/reverse/caesar
+// in reverse order, a Fisher-Yates un-shuffle driven by an LCG, and dead `if`
+// guards shuffled through the body on every request. The whole of tier 1 was
+// dead for as long as this went unhandled, so the fixture below is the REAL
+// body and parts array served for "Edge of Tomorrow" on 2026-09-08.
+// ---------------------------------------------------------------------------
+
+const LIVE_SEP_2026_PARTS: string[] = [
+  "=nNf0ayLW", "Beczw/0tS", "+3Ap+kEOs", "+tZV9fS7w", "0nzO5u/8y", "i+J3gb7wI",
+  "AVwO/1pGj", "xDTdb3E8c", "DXhwUAV5Y", "vl5xAIgYy", "bb4/c33mV", "xcBm/4go7",
+  "rW/7/gV6g", "OH7s+mBdg", "b5Hzm6eyh", "4bw/g"
+];
+
+const LIVE_SEP_2026_SOURCE = `function h738(h327f) {
+  var b76fl = h327f.join('');
+  var ysm = "dZE2uDjEA1DfkUwaYjPCtQre6H";
+  var x43j = "bvG";
+  if (h327f.length > 100000) { b76fl = atob(b76fl); }
+  var fe4h = 0, q8u = 0, swa, jl241;
+  for (swa = 0; swa < ysm.length; swa++) {
+    jl241 = ysm.charCodeAt(swa);
+    fe4h = (fe4h * 31 + jl241) % 251;
+    q8u = (q8u ^ (jl241 + swa)) & 255;
+  }
+  var uxbkp = (fe4h + q8u) % 256, mhaur = (fe4h % 13) + 3, lkt = ((fe4h * 256 + q8u) % 65521) + 1;
+  if (x43j.length > 4096) { b76fl = b76fl.split('').reverse().join(''); }
+  if (h327f.length > 999999) { b76fl = atob(b76fl.split('').reverse().join('')); }
+  var lo7, lqsef;
+  for (swa = x43j.length - 1; swa >= 0; swa--) {
+    lo7 = x43j.charAt(swa);
+    if (lo7 === 'b') { b76fl = atob(b76fl); }
+    else if (lo7 === 'v') { b76fl = b76fl.split('').reverse().join(''); }
+    else {
+      lqsef = (26 - ((lo7.charCodeAt(0) - 64) % 26)) % 26;
+      b76fl = b76fl.replace(/[a-zA-Z]/g, function (staqw) {
+        var d0r = staqw.charCodeAt(0), kzvr = (d0r <= 90) ? 65 : 97;
+        return String.fromCharCode((d0r - kzvr + lqsef) % 26 + kzvr);
+      });
+    }
+  }
+  if (ysm.length > 4096) { b76fl = b76fl.replace(/[a-zA-Z]/g, '0'); }
+  var ei8dh = b76fl.length, jdm4 = [], hqr, hu0, thbz;
+  for (swa = ei8dh - 1; swa >= 1; swa--) { lkt = (lkt * 75 + 74) % 65537; jdm4[swa] = lkt % (swa + 1); }
+  hqr = b76fl.split('');
+  for (swa = 1; swa < ei8dh; swa++) { hu0 = jdm4[swa]; thbz = hqr[swa]; hqr[swa] = hqr[hu0]; hqr[hu0] = thbz; }
+  b76fl = hqr.join('');
+  var qgkzf = uxbkp, y6l = '';
+  for (swa = 0; swa < b76fl.length; swa++) {
+    jl241 = b76fl.charCodeAt(swa);
+    qgkzf = (qgkzf + mhaur) % 256;
+    y6l += String.fromCharCode(jl241 ^ qgkzf);
+    qgkzf = (qgkzf + jl241) % 256;
+  }
+  return y6l;
+}`;
+
+test("seeded-shuffle decoder: the live Sep-2026 body decodes to its real stream", () => {
+  assert.equal(
+    runRapidrameDecoder(LIVE_SEP_2026_SOURCE, LIVE_SEP_2026_PARTS),
+    "https://srv12.cdnimages2025.shop/hls/edgeoftomorrow2014bluray1080pdualmp4-aFlcLkKnwQx.mp4/txt/master.txt"
+  );
+});
+
+test("seeded-shuffle decoder tolerates the dead guards moving around the body", () => {
+  // The three `if (x.length > N)` guards are never true for real inputs, and
+  // the provider emits them in a different order on every request. Moving them
+  // must not change the result.
+  const lines = LIVE_SEP_2026_SOURCE.split("\n");
+  const guards = lines.filter((line) => /if \(\w+\.length > \d+\)/.test(line));
+  assert.equal(guards.length, 4, "fixture should carry the dead guards");
+
+  const withoutGuards = lines.filter((line) => !/if \(\w+\.length > \d+\)/.test(line));
+  // Re-insert them all right after the second seed declaration — the earliest
+  // point where every name the guards read is in scope, which is the same
+  // constraint the provider's generator works under.
+  const insertAt = withoutGuards.findIndex((line) => line.includes('x43j = "')) + 1;
+  const shuffled = [
+    ...withoutGuards.slice(0, insertAt),
+    ...guards.slice().reverse(),
+    ...withoutGuards.slice(insertAt)
+  ].join("\n");
+
+  assert.equal(
+    runRapidrameDecoder(shuffled, LIVE_SEP_2026_PARTS),
+    "https://srv12.cdnimages2025.shop/hls/edgeoftomorrow2014bluray1080pdualmp4-aFlcLkKnwQx.mp4/txt/master.txt"
+  );
+});
+
+test("interpreter rejects a catastrophic-backtracking regex instead of running it", () => {
+  // The pattern is supplied by the provider's page, so a nested quantifier is
+  // a hang primitive. Only classes and literals are allowed through to RegExp.
+  const source = `function dc_Redos(value_parts) {
+  var result = value_parts.join('');
+  result = result.replace(/(a+)+b/g, 'x');
+  return result;
+}`;
+
+  assert.equal(runRapidrameDecoder(source, ["aaaaaaaaaaaaaaaaaaaaaaaaaaaa"]), null);
+});
+
+test("interpreter refuses to read or write anything outside its own locals", () => {
+  for (const body of [
+    `result = globalThis.process.env.SECRET;`,
+    `result = result.constructor('return 1')();`,
+    `result.__proto__.polluted = 1;`
+  ]) {
+    const source = `function dc_Escape(value_parts) {
+  var result = value_parts.join('');
+  ${body}
+  return result;
+}`;
+    assert.equal(runRapidrameDecoder(source, ["abc"]), null, `should reject: ${body}`);
+  }
+});
+
+test("interpreter bounds a runaway loop rather than hanging the resolver", () => {
+  const source = `function dc_Spin(value_parts) {
+  var result = value_parts.join('');
+  var i = 0;
+  while (i >= 0) { i = i + 1; }
+  return result;
+}`;
+
+  const started = Date.now();
+  assert.equal(runRapidrameDecoder(source, ["abc"]), null);
+  assert.ok(Date.now() - started < 10_000, "step budget should stop it quickly");
 });

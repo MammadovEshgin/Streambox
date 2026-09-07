@@ -46,6 +46,7 @@ import {
   type WebPlayerResult
 } from "../services/WebPlayerService";
 import { setPlayerActive } from "../services/playerActivityFlag";
+import { trackPerformance } from "../services/telemetryService";
 import {
   hideSystemNavigationBar,
   showSystemNavigationBar,
@@ -84,6 +85,12 @@ function debugLog(...args: unknown[]) {
     console.log(...args);
   }
 }
+
+// How many times a single stream may be re-opened in place before the player
+// gives up and shows the retryable error. Three covers the transient cases
+// (segment 5xx, token refresh, seek past the buffered edge) without spinning on
+// a stream that is genuinely dead.
+const MAX_STREAM_RECOVERY_ATTEMPTS = 3;
 
 function isImagestooStream(url?: string | null): boolean {
   if (!url) return false;
@@ -465,6 +472,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const playerResultRef = useRef<WebPlayerResult | null>(null);
   const directFallbackPromiseRef = useRef<Promise<WebPlayerResult> | null>(null);
   const dizipalRecoveryTriggeredRef = useRef(false);
+  // In-place recoveries spent on the current source; reset whenever it changes.
+  const streamRecoveryAttemptsRef = useRef(0);
 
   const buildWebPlayerRequest = useCallback((): WebPlayerRequest => ({
     mediaType: route.params.mediaType,
@@ -728,10 +737,29 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     }
 
     setIsResolving(true);
+    const resolveStartedAt = Date.now();
     resolveWebPlayerUrl(buildWebPlayerRequest())
       .then((result) => {
         if (cancelled) return;
         debugLog("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
+
+        // The ONLY vantage point that can see provider health.
+        //
+        // No automated monitor can reach HDFilm: it WAF-blocks datacenter IPs,
+        // so both Cloudflare Worker egress and GitHub runners get a 403
+        // challenge (see workers/provider-monitor and decoder-recovery.md).
+        // When its decoder changed shape in Sep 2026, tier 1 was dead for every
+        // user and every dashboard stayed green — the breakage surfaced only
+        // because a viewer noticed a series had "disappeared".
+        //
+        // These devices run on residential IPs and are the one place the truth
+        // is observable. A sustained shift in `source` away from hdfilm/direct,
+        // or a jump in `not_found`, is the tier-1 outage signal.
+        trackPerformance("player_resolve", Date.now() - resolveStartedAt, {
+          source: result.source,
+          mediaType: route.params.mediaType,
+          isEpisode: route.params.episodeNumber != null,
+        });
 
         if (result.qualityWarning && result.source !== "not_found") {
           setIsResolving(false);
@@ -1223,9 +1251,72 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     subtitleChosenByViewerRef.current = false;
     setAvailableAudioTracks([]);
     setSelectedAudioTrack(null);
+    // A fresh source gets a fresh recovery budget.
+    streamRecoveryAttemptsRef.current = 0;
     void videoPlayer.replaceAsync(source);
     // Don't call play() here â€” wait for readyToPlay status so play() doesn't silently fail
   }, [videoPlayer, directStreamUrl, streamReferer, directStreamType]);
+
+  /**
+   * Re-open the CURRENT stream at the position it died on.
+   *
+   * ExoPlayer reports `status === "error"` for plenty of recoverable things —
+   * a seek past the buffered edge, a 5xx on one segment, an expired CDN token,
+   * a track switch racing the initial buffer. Those used to tear the screen
+   * down and, for `direct` sources, land on the "Not available yet" card, so
+   * the viewer saw "this title isn't in our catalog" for a title that was
+   * playing a second earlier — and had to back out and re-enter to watch on.
+   *
+   * Re-issuing the same source is enough to clear all of those: the provider
+   * URL is still valid and the position is preserved, so recovery is invisible
+   * apart from a short re-buffer. The attempt budget stops a genuinely dead
+   * stream from looping forever; exhausting it surfaces the retryable playback
+   * error, never `not_found`.
+   */
+  const recoverCurrentStream = useCallback(
+    (reason?: string): boolean => {
+      if (!videoPlayer || !directStreamUrl) return false;
+      if (streamRecoveryAttemptsRef.current >= MAX_STREAM_RECOVERY_ATTEMPTS) return false;
+
+      streamRecoveryAttemptsRef.current += 1;
+      const attempt = streamRecoveryAttemptsRef.current;
+      let resumeAt = 0;
+      try {
+        resumeAt = videoPlayer.currentTime ?? 0;
+      } catch {
+        /* expo-video already torn down */
+      }
+
+      debugLog(
+        `[Player] Recovering stream in place (attempt ${attempt}/${MAX_STREAM_RECOVERY_ATTEMPTS}) at ${resumeAt}s — ${reason ?? "unknown error"}`
+      );
+
+      void videoPlayer
+        .replaceAsync({
+          uri: directStreamUrl,
+          headers: {
+            ...(streamReferer ? { Referer: streamReferer } : {}),
+            "User-Agent": PLAYER_WEBVIEW_USER_AGENT
+          },
+          contentType: directStreamType === "m3u8" ? ("hls" as ContentType) : undefined
+        })
+        .then(() => {
+          try {
+            if (resumeAt > 0) videoPlayer.currentTime = resumeAt;
+            videoPlayer.play();
+          } catch {
+            /* expo-video already torn down */
+          }
+        })
+        .catch((error: unknown) => {
+          debugLog("[Player] In-place recovery failed:", (error as Error)?.message ?? String(error));
+          setLoadError("Failed to load this stream. Please try again later.");
+        });
+
+      return true;
+    },
+    [videoPlayer, directStreamUrl, streamReferer, directStreamType]
+  );
 
   // Restore the viewer's remembered soundtrack choice before the first stream
   // reports its tracks, so the very first auto-pick already honours it.
@@ -1323,6 +1414,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       }
       if (ev.status === "error") {
         debugLog("[Player] Video error:", ev.error?.message);
+
+        // A stream that has already produced frames IS the right stream. An
+        // error after that point is a hiccup (seek past the buffer, one bad
+        // segment, an expired token, a track switch racing the load), so
+        // recover in place and leave `playerResult` — and the whole screen —
+        // alone. Only a stream that never started is evidence the SOURCE is
+        // wrong, and only then is it worth walking the fallback ladder.
+        if (hasStarted && recoverCurrentStream(ev.error?.message)) return;
+
         setIsPlaybackReady(false);
         setPlayerResult((prev) => {
           // HDFilm-derived direct streams carry the original page URL so we can
@@ -1338,10 +1438,9 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             setLoadError(null);
             return { ...prev, source: "dizipal_html5" };
           }
-          if (prev?.source === "direct") {
-            setLoadError(null);
-            return { url: "", source: "not_found" };
-          }
+          // NOT `not_found`. We resolved this title on a provider — the stream
+          // just won't play. Claiming "isn't in our catalog yet" sends the
+          // viewer away from a title that a retry usually fixes.
           setLoadError("Failed to load this stream. Please try again later.");
           return prev;
         });
@@ -1349,10 +1448,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     });
 
     const playingSub = videoPlayer.addListener("playingChange", (ev: any) => {
-      if (ev.isPlaying && !hasStarted) {
-        hasStarted = true;
-        setIsPlaybackReady(true);
-      }
+      if (!ev.isPlaying) return;
+      hasStarted = true;
+      // Unconditionally, not just on the first play: a recovered error left
+      // `isPlaybackReady` false, and nothing else flips it back — which is the
+      // "I can hear it but the screen stays black" case, the black screen being
+      // the loading overlay still painted over a playing video.
+      setIsPlaybackReady(true);
+      setLoadError(null);
     });
 
     const subtitleSub = videoPlayer.addListener("availableSubtitleTracksChange", (ev: any) => {
@@ -1389,7 +1492,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       audioSub.remove();
       audioTrackSub.remove();
     };
-  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks, enforceSubtitlesOff]);
+  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks, enforceSubtitlesOff, recoverCurrentStream]);
 
   useEffect(() => {
     if (!selectedExternalSubtitle || selectedExternalSubtitle.url.includes(".m3u8")) {
@@ -1513,6 +1616,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     }).then(() => {
       videoPlayer.currentTime = currentTime;
       videoPlayer.play();
+    }).catch((error: unknown) => {
+      // Without this the rejection was unhandled and the viewer sat on a frozen
+      // frame with no error and no way back to the quality that was working.
+      debugLog("[Player] Quality switch failed:", (error as Error)?.message ?? String(error));
+      setLoadError("Couldn't switch quality. Please try again.");
     });
   }, [videoPlayer, currentStreamUrl, streamReferer, directStreamType]);
 

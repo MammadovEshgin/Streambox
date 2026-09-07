@@ -12,6 +12,19 @@ Cloudflare Worker Cron monitor for streaming provider domains. It reads the curr
 
 Dizibal's browser homepage is intentionally not checked because it rejects Cloudflare Worker egress with HTTP 403 even while the JSON APIs used by StreamBox are healthy.
 
+### Why HDFilm is NOT checked here — and what covers it instead
+
+HDFilm is the app's **tier 1** provider, and this monitor cannot see it. It sits behind Cloudflare and challenges Cloudflare Worker egress: from a Worker, both `www.hdfilmcehennemi.nl` and `hdfilmcehennemi.mobi` return **403 "Just a moment…"** on every path (verified with `wrangler dev --remote`, 2026-09-08). GitHub Actions runners are datacenter IPs too and are blocked the same way. Any HDFilm check added here would fail permanently and train everyone to ignore the alerts — the same trap as Dizibal's homepage above.
+
+This is not theoretical. In Sept 2026 HDFilm changed its stream obfuscation, every title on it stopped playing, and **this monitor stayed entirely green** because it has never probed HDFilm at all. The outage surfaced only when a user noticed a series had "disappeared".
+
+Two things cover it instead, both from residential IPs:
+
+- `npm run check:hdfilm` on the user's PC — resolves live titles through the shipped decoder and asserts each produces a real `#EXTM3U` manifest.
+- The app's own `player_resolve` telemetry event, which records the provider that served each play. A sustained shift away from `hdfilm`/`direct`, or a jump in `not_found`, is the tier-1 outage signal.
+
+Do not add an HDFilm check here unless it stops challenging Worker egress — and verify that with `wrangler dev --remote` first.
+
 ### Why `dizipal_playback` exists
 
 Search being healthy says nothing about whether a title can actually PLAY. In Sept 2026 Dizipal renamed `/ajax-player-config` to `/ajax/player-config`: search kept answering 200, every title silently failed to produce a stream, and this monitor stayed green for the entire outage. The app now reads the player config straight out of the episode page's base64 `data-cfg` attribute, so the check decodes that one attribute and asserts it still carries `{v, t}` — one request covering the real playback path.
