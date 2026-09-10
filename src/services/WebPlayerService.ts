@@ -169,45 +169,68 @@ type DizipalSearchResponse = {
 };
 
 /**
- * How many extra attempts an HDFilm page fetch gets after a Cloudflare
- * challenge. Measured against the live site (2026-09-02): a `/dizi/` URL
- * answers 403 `cf-mitigated: challenge` on the FIRST request over a fresh
- * connection and 200 on every request after it — 9/10 with connection reuse,
- * 0/10 when each request opened a new connection. No cookie is involved; the
- * clearance rides on the connection, so simply asking again is the whole fix.
+ * How many extra attempts a provider page fetch gets after a Cloudflare
+ * challenge. Measured against HDFilm (2026-09-02): a `/dizi/` URL answers 403
+ * `cf-mitigated: challenge` on the FIRST request over a fresh connection and
+ * 200 on every request after it — 9/10 with connection reuse, 0/10 when each
+ * request opened a new connection. No cookie is involved; the clearance rides
+ * on the connection, so simply asking again is the whole fix.
  *
  * This mattered a lot: `findSeriesEpisodeUrl` and `checkVideoAvailability`
  * treated that first 403 as "HDFilm doesn't have it", so every series fell
  * through to Dizipal — which is Turkish-dub-only and several hundred ms
  * slower. Two retries take the observed failure rate to ~0.
+ *
+ * Dizipal joined the club on 2026-09-09: it started answering 403 challenge
+ * pages to a fraction of requests, which took tier 2 down for 36 hours in the
+ * monitor while the site itself was fine. Dizipal's calls used a bare
+ * `axios.get`, so a challenged request dropped the whole tier for that play
+ * instead of asking again. Both providers now share this helper.
  */
-const HDFILM_CHALLENGE_RETRIES = 2;
+const PROVIDER_CHALLENGE_RETRIES = 2;
 
 function isCloudflareChallengeStatus(status: number | undefined): boolean {
   return status === 403 || status === 503;
 }
 
 /**
- * GET an HDFilm URL, retrying past the Cloudflare interstitial. Rejects on a
+ * GET a provider URL, retrying past the Cloudflare interstitial. Rejects on a
  * non-challenge error exactly like a bare `axios.get`, so callers keep their
  * existing try/catch shape.
  */
-async function hdFilmGet<T = string>(
+async function providerGet<T = string>(
+  provider: string,
   url: string,
   config: Parameters<typeof axios.get>[1]
 ): Promise<import("axios").AxiosResponse<T>> {
   let lastError: unknown;
-  for (let attempt = 0; attempt <= HDFILM_CHALLENGE_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= PROVIDER_CHALLENGE_RETRIES; attempt++) {
     try {
       return await axios.get<T>(url, config);
     } catch (error: any) {
       lastError = error;
       if (!isCloudflareChallengeStatus(error?.response?.status)) throw error;
-      if (attempt === HDFILM_CHALLENGE_RETRIES) break;
-      debugLog(`[WebPlayer] HDFilm challenge on ${url} — retry ${attempt + 1}`);
+      if (attempt === PROVIDER_CHALLENGE_RETRIES) break;
+      debugLog(`[WebPlayer] ${provider} challenge on ${url} — retry ${attempt + 1}`);
     }
   }
   throw lastError;
+}
+
+/** HDFilm-flavoured `providerGet`. Kept as a named helper for call-site clarity. */
+function hdFilmGet<T = string>(
+  url: string,
+  config: Parameters<typeof axios.get>[1]
+): Promise<import("axios").AxiosResponse<T>> {
+  return providerGet<T>("HDFilm", url, config);
+}
+
+/** Dizipal-flavoured `providerGet`. */
+function dizipalGet<T = string>(
+  url: string,
+  config: Parameters<typeof axios.get>[1]
+): Promise<import("axios").AxiosResponse<T>> {
+  return providerGet<T>("Dizipal", url, config);
 }
 
 function extractHref(html: string): string | null {
@@ -981,7 +1004,7 @@ async function resolvePlayableSeriesEpisodeUrl(
 
 async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<SearchResult[]> {
   try {
-    const response = await axios.get<DizipalSearchResponse>(`${getDizipalBaseUrl()}/ajax-search`, {
+    const response = await dizipalGet<DizipalSearchResponse>(`${getDizipalBaseUrl()}/ajax-search`, {
       timeout: 6000,
       params: { q: query },
       headers: {
@@ -1276,7 +1299,7 @@ function isDizipalUrlTitleCompatible(
 
 async function fetchDizipalPageHtml(pageUrl: string): Promise<string | null> {
   try {
-    const response = await axios.get<string>(pageUrl, {
+    const response = await dizipalGet<string>(pageUrl, {
       timeout: 7000,
       headers: {
         "User-Agent": UA,
@@ -3064,6 +3087,8 @@ export async function resolveDirectWebPlayerFallback(
 
 export const __internal = {
   buildHdFilmResult,
+  providerGet,
+  isCloudflareChallengeStatus,
   checkVideoAvailability,
   decodeDizipalCfg,
   decodeRapidrameByInterpretingDcBody,

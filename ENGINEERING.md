@@ -64,13 +64,39 @@ the `app.config.js` runtime, not the branch you happen to be on.
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
-### Current deployed state (last updated 2026-09-08, 1.2.0 HDFilm decoder + player/search/WebRTC batch)
+### Current deployed state (last updated 2026-09-10, 1.2.0 Dizipal rotation + Cloudflare-challenge resilience)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
 | 1.2.0 | `v1.2.0` @ `109037f` | `9e8cb04d-d9a7-4c76-863d-77d5d97adca4` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+
+- **2026-09-10 (1.2.0 only):** Dizipal rotation + Cloudflare-challenge
+  resilience, prompted by the bot paging "Dizipal is down" three runs running.
+  Dizipal was not down. Verified from Worker egress the same day: Dizipal
+  36/36 clean, Dizibal 200, HDFilm 403 (unchanged — still unmonitorable from
+  any datacenter IP). What was actually wrong:
+  - **Dizipal had rotated 2126 → 2130** while Supabase stayed pinned at 2127,
+    i.e. three dead 301 hops on every request. Shipped fallback bumped to 2130;
+    `normaliseDizipalBaseUrl` treats it as a floor, so it applies even against
+    a stale Supabase row. A test now fails if that floor falls behind.
+  - **Dizipal began challenging a fraction of requests**, and the app dropped
+    the tier on the first 403. HDFilm had retried past this since 2026-09-02;
+    Dizipal's fetches used a bare `axios.get`. Both now share `providerGet`.
+  - **The monitor modelled a client it wasn't.** It took the first 403 as
+    final, so an intermittent challenge read as a 36-hour outage. It now
+    retries twice, inspecting the body so a real permission failure still
+    fails fast.
+  - **A failing check could hide a rotation.** A challenge is served *at* the
+    requested host, so nothing redirects and the rotation detector saw nothing
+    — which is exactly how 2127 → 2130 stayed invisible behind three days of
+    403s. Rotation is now appended to the failure reason, not replaced by it.
+
+  Lesson worth keeping: **a provider alert that names a symptom the site does
+  not have is a monitor bug until proven otherwise.** Re-probe from the same
+  egress the monitor uses (`wrangler dev --remote`) before touching provider
+  code — that one step separated "Dizipal is down" from the two real defects.
 
 - **2026-09-08 (1.2.0 only):** HDFilm decoder rewrite + player/search/WebRTC
   fixes. **HDFilm — tier 1 — was 100% dead**, and nothing had noticed: it

@@ -123,17 +123,54 @@ function compareOrigins(requestedUrl, finalUrl) {
   }
 }
 
+/**
+ * How many extra times a challenged request is retried before the endpoint is
+ * called down.
+ *
+ * On 2026-09-09 Dizipal began serving Cloudflare challenge pages to a fraction
+ * of requests. This monitor took the first 403 as gospel, so three consecutive
+ * 12-hourly runs each caught one and paged "Dizipal is down" for 36 hours —
+ * while the site was serving 36/36 clean responses to the very same Worker
+ * egress when re-probed by hand. The app has retried past this since
+ * 2026-09-02 (`PROVIDER_CHALLENGE_RETRIES` in WebPlayerService); the monitor
+ * has to model the same client or it reports outages users never see.
+ *
+ * The second cost was worse than the noise: a challenge is served AT the
+ * requested host, so the request never redirects, so `compareOrigins` sees no
+ * rotation. Dizipal had in fact rotated 2127 → 2130 underneath, and the 403
+ * hid the one fact that actually needed acting on.
+ */
+const CHALLENGE_RETRIES = 2;
+const CHALLENGE_RETRY_DELAY_MS = 750;
+
+function isChallengeResponse(response, body) {
+  return (response.status === 403 || response.status === 503) && looksLikeChallengePage(body);
+}
+
 async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
   const startedAt = Date.now();
   const timeoutMs = getTimeoutMs(env);
 
   try {
-    const response = await fetchWithTimeout(url, {
-      method: "GET",
-      redirect: "follow",
-      headers: baseHeaders(referer),
-    }, timeoutMs);
-    const body = await readLimitedText(response);
+    let response;
+    let body;
+    let challengedAttempts = 0;
+
+    for (let attempt = 0; attempt <= CHALLENGE_RETRIES; attempt++) {
+      response = await fetchWithTimeout(url, {
+        method: "GET",
+        redirect: "follow",
+        headers: baseHeaders(referer),
+      }, timeoutMs);
+      body = await readLimitedText(response);
+
+      if (!isChallengeResponse(response, body)) break;
+
+      challengedAttempts += 1;
+      if (attempt === CHALLENGE_RETRIES) break;
+      await new Promise((resolve) => setTimeout(resolve, CHALLENGE_RETRY_DELAY_MS));
+    }
+
     const validatorResult = validator
       ? validator(response, body)
       : { ok: response.ok, reason: response.ok ? "ok" : `HTTP ${response.status}` };
@@ -142,11 +179,19 @@ async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
     // Endpoint is only "ok" if it works AND the origin hasn't rotated.
     // A 200 from a redirected host means the user's configured URL is stale.
     const ok = transport && !rotation.rotated;
+    // A rotation is the actionable half of a mixed result, so never let a
+    // transport failure swallow it — that is exactly how the 2127 → 2130
+    // rotation stayed invisible behind three days of 403 pages.
+    const rotationNote = rotation.rotated
+      ? `URL rotated: ${rotation.requestedOrigin} → ${rotation.finalOrigin}`
+      : "";
+    const failureReason = validatorResult.reason || `HTTP ${response.status}`;
+    const challengeNote = challengedAttempts > 0
+      ? ` (survived ${challengedAttempts} Cloudflare challenge${challengedAttempts === 1 ? "" : "s"})`
+      : "";
     const reason = !transport
-      ? (validatorResult.reason || `HTTP ${response.status}`)
-      : rotation.rotated
-        ? `URL rotated: ${rotation.requestedOrigin} → ${rotation.finalOrigin}`
-        : "ok";
+      ? (rotationNote ? `${failureReason} — ${rotationNote}` : failureReason)
+      : rotationNote || `ok${challengeNote}`;
 
     return {
       id,
@@ -158,6 +203,7 @@ async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
       reason,
       rotated: rotation.rotated,
       latestBaseUrl: rotation.rotated ? rotation.finalOrigin : null,
+      challengedAttempts,
       durationMs: Date.now() - startedAt,
       checkedAt: new Date().toISOString(),
     };
@@ -172,6 +218,7 @@ async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
       reason: error instanceof Error ? error.message : String(error),
       rotated: false,
       latestBaseUrl: null,
+      challengedAttempts: 0,
       durationMs: Date.now() - startedAt,
       checkedAt: new Date().toISOString(),
     };
@@ -233,9 +280,14 @@ function buildProviderChecks(providers) {
   // would fail permanently and train everyone to ignore the alerts — the same
   // trap documented below for Dizibal's homepage.
   //
-  // Tier-1 health therefore runs from a normal network instead:
-  // `npm run check:hdfilm`, scheduled in .github/workflows/provider-health.yml.
-  // Keep it that way unless HDFilm stops challenging Worker egress.
+  // Tier-1 health therefore runs from a normal network instead: `npm run
+  // check:hdfilm`, run by hand from a residential connection. There is NO CI
+  // workflow for it and there must not be — GitHub Actions runners are
+  // datacenter IPs and are challenged exactly like Worker egress; that
+  // workflow existed once and was deleted after it did nothing but send false
+  // alarms. The in-app `player_resolve` telemetry is the passive tier-1
+  // outage signal. Re-verified from Worker egress 2026-09-10: HDFilm 403,
+  // Dizipal 200, Dizibal 200.
   return [
     {
       id: "dizipal_home",

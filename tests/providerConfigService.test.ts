@@ -105,3 +105,18 @@ test("dizibal.com is mapped forward to the live .org host", () => {
   recordObservedBaseUrl("dizibal", "https://dizibal.org/api/series");
   assert.equal(getProviderConfig("dizibal").baseUrl, "https://dizibal.org");
 });
+
+test("the shipped Dizipal fallback is not behind the last observed live domain", () => {
+  // Dizipal rotates forward only, and every stale step is a 301 the client has
+  // to walk. On 2026-09-10 Supabase was pinned at 2127 while the live host was
+  // 2130 — three dead hops on every single request. `normaliseDizipalBaseUrl`
+  // makes this constant the floor, so shipping it stale is what actually costs
+  // users latency; past axios' 21-redirect ceiling it breaks Dizipal outright.
+  // Any suffix below the shipped floor normalises TO the shipped entry, so
+  // this reads the constant without widening the module's public surface.
+  const floor = normaliseDizipalBaseUrl("https://dizipal1.com");
+  assert.notEqual(floor, null);
+  const shipped = parseDizipalSuffix(floor!.baseUrl);
+  assert.notEqual(shipped, null);
+  assert.equal(shipped! >= 2130, true, `shipped Dizipal fallback is ${shipped}, last verified live was 2130`);
+});

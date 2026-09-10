@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import axios from "axios";
 
@@ -1120,4 +1122,89 @@ test("a non-challenge HDFilm error is not retried", async () => {
     axios.get = originalGet;
     (globalThis as any).__DEV__ = originalDev;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Cloudflare challenge retry — Dizipal edition.
+//
+// On 2026-09-09 Dizipal started answering 403 challenge pages to a fraction of
+// requests. HDFilm's fetches had been retrying past this since 2026-09-02, but
+// Dizipal's search and page fetches used a bare `axios.get`, so a challenged
+// request silently dropped tier 2 for that play and the resolver fell through
+// to Dizibal (or to "not available"). Both providers now share `providerGet`.
+// ---------------------------------------------------------------------------
+
+function challenge(status: number) {
+  const error: any = new Error(`Request failed with status code ${status}`);
+  error.response = { status, data: "<html><title>Just a moment...</title></html>" };
+  return error;
+}
+
+test("provider fetches retry past a Cloudflare challenge and return the eventual 200", async () => {
+  const originalGet = axios.get;
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    if (calls <= 2) throw challenge(403);
+    return { status: 200, data: "OK", request: {} };
+  }) as typeof axios.get;
+
+  try {
+    const response = await __internal.providerGet("Dizipal", "https://dizipal2130.com/", {});
+    assert.equal(response.data, "OK");
+    assert.equal(calls, 3, "two challenges should cost two retries, not a dropped tier");
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("provider fetches give up after the retry budget instead of hanging", async () => {
+  const originalGet = axios.get;
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    throw challenge(503);
+  }) as typeof axios.get;
+
+  try {
+    await assert.rejects(() => __internal.providerGet("Dizipal", "https://dizipal2130.com/", {}));
+    assert.equal(calls, 3, "one initial attempt plus two retries");
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("a non-challenge failure is not retried — it rejects exactly like axios.get", async () => {
+  const originalGet = axios.get;
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    const error: any = new Error("Not Found");
+    error.response = { status: 404 };
+    throw error;
+  }) as typeof axios.get;
+
+  try {
+    await assert.rejects(() => __internal.providerGet("HDFilm", "https://example.com/", {}));
+    assert.equal(calls, 1, "a 404 means the title is absent; retrying it only wastes the budget");
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("only Cloudflare interstitial statuses count as a challenge", () => {
+  assert.equal(__internal.isCloudflareChallengeStatus(403), true);
+  assert.equal(__internal.isCloudflareChallengeStatus(503), true);
+  assert.equal(__internal.isCloudflareChallengeStatus(404), false);
+  assert.equal(__internal.isCloudflareChallengeStatus(500), false);
+  assert.equal(__internal.isCloudflareChallengeStatus(undefined), false);
+});
+
+test("both Dizipal entry points go through the retrying fetch, not a bare axios.get", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "src", "services", "WebPlayerService.ts"),
+    "utf8"
+  );
+  assert.match(source, /const response = await dizipalGet<DizipalSearchResponse>\(/);
+  assert.match(source, /async function fetchDizipalPageHtml[\s\S]{0,200}await dizipalGet<string>\(/);
 });

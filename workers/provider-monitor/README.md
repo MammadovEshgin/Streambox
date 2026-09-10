@@ -23,7 +23,7 @@ Two things cover it instead, both from residential IPs:
 - `npm run check:hdfilm` on the user's PC — resolves live titles through the shipped decoder and asserts each produces a real `#EXTM3U` manifest.
 - The app's own `player_resolve` telemetry event, which records the provider that served each play. A sustained shift away from `hdfilm`/`direct`, or a jump in `not_found`, is the tier-1 outage signal.
 
-Do not add an HDFilm check here unless it stops challenging Worker egress — and verify that with `wrangler dev --remote` first.
+Do not add an HDFilm check here unless it stops challenging Worker egress — and verify that with `wrangler dev --remote` first. Re-verified 2026-09-10: still 403. There is no CI workflow for `check:hdfilm` and there must not be; one existed briefly and was deleted after it produced nothing but false alarms.
 
 ### Why `dizipal_playback` exists
 
@@ -32,6 +32,25 @@ Search being healthy says nothing about whether a title can actually PLAY. In Se
 The canary is a long-running catalog title at a stable slug. `data-cfg` sits ~44 KiB into a ~95 KiB page, which is why `readLimitedText` reads up to 128 KiB. Verified reachable from Worker egress (`wrangler dev --remote`, 2026-09-02) — all five checks return 200 and the attribute decodes.
 
 An endpoint is marked down after `FAILURE_THRESHOLD` consecutive failures, default `3`.
+
+### Why a challenged request is retried
+
+A challenged request is retried up to `CHALLENGE_RETRIES` (2) times before the endpoint is called down.
+
+On 2026-09-09 Dizipal started serving Cloudflare challenge pages to a *fraction* of requests. This monitor runs every 12 hours and took the first 403 as final, so three consecutive runs each happened to catch one and it paged **"Dizipal is down" for 36 hours** — while the same Worker egress answered 36/36 clean when re-probed by hand minutes later. The app has retried past this interstitial since 2026-09-02 (`PROVIDER_CHALLENGE_RETRIES` in `WebPlayerService.ts`); a monitor that does not model the client it is monitoring reports outages users never see.
+
+Only a genuine interstitial is retried — `isChallengeResponse` inspects the **body**, not just the status — so a real 403 still fails fast instead of tripling the run's latency.
+
+The second cost was worse than the noise. A challenge is served **at** the requested host, so nothing redirects, so `compareOrigins` sees no rotation. Dizipal had in fact rotated **2127 → 2130** underneath, and the 403 hid the one fact that needed acting on. Rotation is now appended to a failure reason rather than replaced by it.
+
+**If you get a provider alert, re-probe from Worker egress before touching provider code:**
+
+```bash
+# from a scratch dir with a one-file Worker that fetches the alerting URL
+npx wrangler dev --remote
+```
+
+An alert naming a symptom the live site does not have is a monitor bug until proven otherwise.
 
 ## One-Time Setup
 

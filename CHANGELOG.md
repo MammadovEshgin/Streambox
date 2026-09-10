@@ -10,6 +10,46 @@ this branch (`v1.2.0`) ships to **1.2.0**. See
 
 ## [Unreleased]
 
+### Fixed — Dizipal rotation, Cloudflare-challenge resilience, monitor false alarms (2026-09-10)
+
+The Telegram bot paged "Dizipal is down" three runs in a row. Dizipal was not
+down. Two separate defects produced that alert, and one of them was hiding a
+real problem underneath.
+
+- **Dizipal had rotated 2126 → 2130 and the monitor never said so.** Supabase
+  was pinned at 2127, i.e. three dead 301 hops on every single Dizipal request.
+  The pinned fallback now ships 2130. Because `normaliseDizipalBaseUrl` treats
+  the shipped constant as a floor, this takes effect even where the Supabase row
+  is still stale. A regression test now fails if the shipped floor falls behind
+  the last domain verified live.
+- **Dizipal started serving Cloudflare challenge pages to a fraction of
+  requests, and the app dropped the whole tier when it got one.** HDFilm's
+  fetches have retried past this interstitial since 2026-09-02, but Dizipal's
+  search and page fetches used a bare `axios.get`, so a challenged request read
+  as "Dizipal doesn't have it" and the resolver fell through to Dizibal — which
+  is slower — or to nothing at all. Both providers now share one `providerGet`
+  helper with the same two-retry budget. Non-challenge failures (a 404 meaning
+  the title really is absent) are still not retried.
+- **The monitor took the first 403 as final, so an intermittent challenge read
+  as a 36-hour outage.** It now retries a challenged request twice before
+  calling an endpoint down, matching the client it is supposed to model. Only a
+  genuine interstitial is retried — the body is inspected, not just the status
+  — so a real permission failure still fails fast.
+- **A failing check could hide a rotation.** A challenge is served *at* the
+  requested host, so nothing redirects and the rotation detector saw nothing.
+  That is precisely how 2127 → 2130 stayed invisible behind three days of 403
+  pages. Rotation is now appended to the failure reason instead of being
+  replaced by it, so the alert carries the fact that needs acting on.
+- Corrected a stale comment pointing at `.github/workflows/provider-health.yml`,
+  a workflow that was deleted and must not come back — GitHub Actions runners
+  are datacenter IPs and get challenged exactly like Worker egress.
+
+Verified from Cloudflare Worker egress on 2026-09-10: Dizipal 36/36 clean,
+Dizibal 200, HDFilm 403 (unchanged, and still unmonitorable from any datacenter
+IP). End-to-end, 10 of 10 probe titles resolve, Castle Rock episodes among them
+at 1.4–2.8s on HDFilm's dual-audio stream.
+
+
 ### Fixed — HDFilm decoder rewrite, player false "Not Available", search, Watch Together (2026-09-08)
 
 HDFilm — **tier 1** — was 100% dead and no dashboard had noticed, because
