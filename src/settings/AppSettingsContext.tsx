@@ -15,6 +15,7 @@ import {
   cacheProfileImageFromRemoteUri,
 } from "../services/profileImageService";
 import { enqueueProfileAssetSync, enqueueProfileSettingsSync } from "../services/userDataSync";
+import { setActiveContentLanguage } from "../localization/contentLanguage";
 import type { AppLanguage } from "../localization/types";
 import { createTheme, DEFAULT_THEME_ID, type AppTheme, type ThemeId } from "../theme/Theme";
 import {
@@ -87,10 +88,14 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
         ? normalizeSettings(JSON.parse(raw) as Partial<PersistedSettings>, DEFAULT_THEME_ID)
         : createDefaultSettings(DEFAULT_THEME_ID);
       settingsRef.current = next;
+      // Before setSettings, so the first render already resolves content in
+      // the persisted language rather than the i18next default.
+      setActiveContentLanguage(next.language);
       setSettings(next);
     } catch {
       const fallback = createDefaultSettings(DEFAULT_THEME_ID);
       settingsRef.current = fallback;
+      setActiveContentLanguage(fallback.language);
       setSettings(fallback);
     }
   }, []);
@@ -154,6 +159,12 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
       };
 
       settingsRef.current = next;
+      // Publish the content language in the SAME synchronous step as the state
+      // update. i18next.changeLanguage is async, so anything that read the
+      // language from i18next saw the previous one for the first render or two
+      // after a switch — long enough to fetch and cache a screenful of content
+      // under the language the user had just left.
+      setActiveContentLanguage(next.language);
       setSettings(next);
       await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(next));
       notifyStorageChanged();

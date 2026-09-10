@@ -55,27 +55,36 @@ test("search does not hide a title the viewer named just because it is unrated",
   // titles outright. Worse, deleting them ALL left `filtered` empty, which is
   // one of the conditions that flips searchMulti to the actor-credits branch —
   // so searching for a film answered with somebody's filmography instead.
-  const source = readSource("src", "api", "tmdb.ts");
+  // The ranking rules now live in utils/searchRanking, where they are exercised
+  // directly by searchRanking.test.ts; this guards the wiring.
+  const ranking = readSource("src", "utils", "searchRanking.ts");
+  const client = readSource("src", "api", "tmdb.ts");
 
   assert.equal(
-    source.includes("item.title !== \"Untitled\" && item.rating >= 6"),
+    client.includes("item.title !== \"Untitled\" && item.rating >= 6"),
     false,
     "the blanket rating gate must not come back"
   );
-  assert.equal(source.includes("getSearchTitleScore(query, item) > 0"), true);
-  assert.equal(source.includes("SEARCH_WEAK_MATCH_MIN_RATING"), true);
+  assert.equal(
+    client.includes("filterSearchCandidates(query, candidates)"),
+    true,
+    "searchMulti must gate through the conditional filter, not a flat one"
+  );
+  assert.equal(ranking.includes("getSearchTitleScore(query, item) > 0"), true);
+  assert.equal(ranking.includes("SEARCH_WEAK_MATCH_MIN_RATING"), true);
 
   // The weak-match floor still exists, so unrelated low-quality hits stay out.
-  const floor = source.match(/const SEARCH_WEAK_MATCH_MIN_RATING = (\d+)/)?.[1];
+  const floor = ranking.match(/const SEARCH_WEAK_MATCH_MIN_RATING = (\d+)/)?.[1];
   assert.equal(floor, "6");
 });
 
 test("every TMDB title normaliser folds before stripping non-ASCII", () => {
   // A normaliser that strips first re-introduces the Mezarlık bug silently.
   const source = readSource("src", "api", "tmdb.ts");
+  const ranking = readSource("src", "utils", "searchRanking.ts");
   assert.equal(source.includes("foldForTitleCompare"), true);
   assert.equal(
-    /function normalizeSearchTerm[\s\S]{0,400}?foldForTitleCompare/.test(source),
+    /function normalizeSearchTerm[\s\S]{0,400}?foldForTitleCompare/.test(ranking),
     true,
     "normalizeSearchTerm must fold"
   );

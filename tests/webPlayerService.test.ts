@@ -701,6 +701,57 @@ test("search sweep tries EVERY bare title before the empty-result cutoff (Haraki
   );
 });
 
+test("an apostrophe title is searched WITHOUT the apostrophe before the cutoff (Rosemary's Baby fix)", () => {
+  // HDFilm's search does not tokenize an apostrophe: /search/?q=Rosemary's Baby
+  // returns ZERO rows, /search/?q=Rosemarys Baby returns the film. The cleaned
+  // spelling used to sit behind the year-qualified variants, so the two-query
+  // empty cutoff fired before it was ever sent and the film reported "Not
+  // Available" even though HDFilm carries it.
+  const plan = __internal.generateSearchQueries("Rosemary's Baby", "1968");
+  assert.equal(plan.queries[0], "Rosemary's Baby");
+  assert.equal(
+    plan.queries[1],
+    "Rosemarys Baby",
+    "the apostrophe-free spelling is a DIFFERENT name, not a cheap variant — it goes out before any year query"
+  );
+  assert.equal(plan.bareTitleCount, 2);
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(0, 0, plan.bareTitleCount), false);
+});
+
+test("a localized title still hands the provider its original-language spelling", () => {
+  // With the UI in Turkish the display title is the Turkish one. All four
+  // spellings are distinct names and must precede the year-qualified queries.
+  const plan = __internal.generateSearchQueries("Rosemary'nin Bebeği", "1968", "Rosemary's Baby");
+  assert.deepEqual(plan.queries.slice(0, 4), [
+    "Rosemary's Baby",
+    "Rosemary'nin Bebeği",
+    "Rosemarys Baby",
+    "Rosemarynin Bebeği",
+  ]);
+  assert.equal(plan.bareTitleCount, 4);
+  // The cutoff cannot fire until every one of them has been tried.
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(2, 0, plan.bareTitleCount), false);
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(3, 0, plan.bareTitleCount), true);
+});
+
+test("cleaning punctuation never deletes non-ASCII letters", () => {
+  // \w is ASCII-only in JS, so the cleaner used to turn "Bebeği" into "Bebei" —
+  // a spelling no Turkish catalogue has.
+  const plan = __internal.generateSearchQueries("Rosemary'nin Bebeği", null);
+  assert.ok(plan.queries.includes("Rosemarynin Bebeği"));
+  assert.ok(!plan.queries.includes("Rosemarynin Bebei"));
+
+  // A non-Latin title is left exactly as it is (and de-duplicated).
+  const cjk = __internal.generateSearchQueries("切腹", null);
+  assert.deepEqual(cjk.queries, ["切腹"]);
+});
+
+test("a title with no punctuation does not gain a redundant duplicate query", () => {
+  const plan = __internal.generateSearchQueries("Interstellar", "2014");
+  assert.equal(plan.bareTitleCount, 1);
+  assert.deepEqual(plan.queries.slice(0, 2), ["Interstellar", "Interstellar 2014"]);
+});
+
 test("search sweep keeps its 2-query floor when there is only one bare title", () => {
   const plan = __internal.generateSearchQueries("Interstellar", "2014", "Interstellar");
   assert.equal(plan.bareTitleCount, 1, "a duplicate original title must not inflate the count");

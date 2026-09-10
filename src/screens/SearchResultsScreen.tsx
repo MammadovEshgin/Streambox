@@ -341,9 +341,9 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
   const navigateToDetail = useCallback(
     (item: MediaItem) => {
       if (item.mediaType === "movie") {
-        navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        navigation.push("MovieDetail", { movieId: String(item.id) });
       } else {
-        navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
+        navigation.push("SeriesDetail", { seriesId: String(item.id) });
       }
     },
     [navigation]

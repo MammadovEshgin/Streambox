@@ -21,8 +21,9 @@ import { TasteTimeline } from "../components/stats/TasteTimeline";
 import { TopActors } from "../components/stats/TopActors";
 import { ViewerPersona } from "../components/stats/ViewerPersona";
 import { useWatchHistory, type WatchHistoryEntry } from "../hooks/useWatchHistory";
-import { normalizeAppLanguage, type AppLanguage } from "../localization/types";
+import type { AppLanguage } from "../localization/types";
 import type { StatsStackParamList } from "../navigation/types";
+import { useAppSettings } from "../settings/AppSettingsContext";
 import { getSharedHydratedMediaCache, hydrateMediaIds } from "../services/mediaHydration";
 
 type Props = NativeStackScreenProps<StatsStackParamList, "StatsFeed">;
@@ -77,7 +78,7 @@ function buildGenreMap(genres: { id: number; name: string }[]) {
 }
 
 export function StatsScreen({ navigation }: Props) {
-  const { t, i18n: translationI18n } = useTranslation();
+  const { t } = useTranslation();
   const theme = useTheme();
   const { history, activityHistory, isLoading } = useWatchHistory();
   const [filter, setFilter] = useState<"movie" | "tv">("movie");
@@ -85,10 +86,10 @@ export function StatsScreen({ navigation }: Props) {
   const [movieGenreNames, setMovieGenreNames] = useState<Map<number, string>>(new Map());
   const [tvGenreNames, setTvGenreNames] = useState<Map<number, string>>(new Map());
   const hydratedCache = useMemo(() => getSharedHydratedMediaCache(), []);
-  const resolvedContentLanguage = useMemo(
-    () => normalizeAppLanguage(translationI18n.resolvedLanguage ?? translationI18n.language),
-    [translationI18n.language, translationI18n.resolvedLanguage]
-  );
+  // Read from settings, NOT from i18next: changeLanguage resolves a tick later,
+  // so an i18next-derived key looks up the cache under the language the user
+  // just left and finds nothing (see localization/contentLanguage).
+  const { language: resolvedContentLanguage } = useAppSettings();
 
   useEffect(() => {
     let cancelled = false;
@@ -195,22 +196,22 @@ export function StatsScreen({ navigation }: Props) {
     : { singular: t("common.series").toLowerCase(), plural: t("common.series").toLowerCase() };
 
   const handleActorPress = (actorId: number, actorName: string) => {
-    navigation.navigate("WatchedGrid", { filter, title: actorName, actorId });
+    navigation.push("WatchedGrid", { filter, title: actorName, actorId });
   };
 
   const handleGenrePress = (genre: string) => {
     const ids = filtered
       .filter((entry) => entry.genres.includes(genre))
       .map((entry) => entry.id);
-    navigation.navigate("WatchedGrid", { filter, title: genre, ids });
+    navigation.push("WatchedGrid", { filter, title: genre, ids });
   };
 
   const handleBucketPress = (min: number, max: number) => {
-    navigation.navigate("WatchedGrid", { filter, title: t("stats.ratedRange", { min, max }), ratingMin: min, ratingMax: max });
+    navigation.push("WatchedGrid", { filter, title: t("stats.ratedRange", { min, max }), ratingMin: min, ratingMax: max });
   };
 
   const handleDecadePress = (min: number, max: number, label: string) => {
-    navigation.navigate("WatchedGrid", { filter, title: label, decadeMin: min, decadeMax: max });
+    navigation.push("WatchedGrid", { filter, title: label, decadeMin: min, decadeMax: max });
   };
 
   const handleMonthPress = (monthTimestamp: number, label: string) => {
@@ -219,14 +220,14 @@ export function StatsScreen({ navigation }: Props) {
     const ids = filteredActivity
       .filter((entry) => entry.watchedAt >= monthTimestamp && entry.watchedAt < nextMonth)
       .map((entry) => entry.id);
-    navigation.navigate("WatchedGrid", { filter, title: label, monthTimestamp, ids });
+    navigation.push("WatchedGrid", { filter, title: label, monthTimestamp, ids });
   };
 
   const handleRuntimePress = (entry: { id: number | string; mediaType: string }) => {
     if (entry.mediaType === "movie") {
-      navigation.navigate("MovieDetail", { movieId: String(entry.id) });
+      navigation.push("MovieDetail", { movieId: String(entry.id) });
     } else {
-      navigation.navigate("SeriesDetail", { seriesId: String(entry.id) });
+      navigation.push("SeriesDetail", { seriesId: String(entry.id) });
     }
   };
 

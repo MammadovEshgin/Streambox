@@ -20,7 +20,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
-import { GENRE_ID_MAP, type MediaItem, type MediaType } from "../api/tmdb";
+import type { MediaItem, MediaType } from "../api/tmdb";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MediaCard } from "../components/home/MediaCard";
@@ -34,7 +34,6 @@ import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
 import { useWatchHistory } from "../hooks/useWatchHistory";
 import { useWatchlist } from "../hooks/useWatchlist";
 import type { ProfileSeeAllSection, ProfileStackParamList } from "../navigation/types";
-import { normalizeAppLanguage } from "../localization/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
 import {
   getHydratedMediaItemsFromCache,
@@ -42,20 +41,29 @@ import {
   hydrateMediaIds,
   type HydratedMediaCache,
 } from "../services/mediaHydration";
+import {
+  buildHydratedShelfRecords,
+  toNewestFirstIds,
+  type ProfileShelfRecord,
+} from "../utils/profileShelf";
 import { searchLocationSuggestions } from "../services/locationSearch";
 import { storeBannerImageFromUri, storeProfileImageFromUri } from "../services/profileImageService";
 import { formatLocalizedDate } from "../localization/format";
 import i18n from "../localization/i18n";
 
+/**
+ * How many titles per profile rail get a localized TMDB lookup.
+ *
+ * A rail is a horizontal strip; nobody scrolls three hundred cards through it.
+ * Hydrating the whole list was what made the profile counts appear to climb in
+ * batches — the section header was counting hydrated cards, so it ticked upward
+ * as lookups landed instead of stating the number the app already knew.
+ */
+const PROFILE_SHELF_HYDRATION_LIMIT = 30;
+
 type ProfileScreenProps = NativeStackScreenProps<ProfileStackParamList, "ProfileFeed">;
 
 type HydratedCache = HydratedMediaCache;
-type ProfileShelfRecord = {
-  item: MediaItem;
-  order: number;
-  watchedAt?: number;
-  genres: string[];
-};
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -522,25 +530,9 @@ function formatBirthdayInput(raw: string): string {
   return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
 }
 
-function deriveGenresFromMediaItem(item: MediaItem): string[] {
-  return (item.genreIds ?? [])
-    .map((genreId) => GENRE_ID_MAP[genreId])
-    .filter((genreName): genreName is string => typeof genreName === "string" && genreName.length > 0);
-}
-
-function buildHydratedShelfRecords(items: MediaItem[]): ProfileShelfRecord[] {
-  return items.map((item, index) => ({
-    item,
-    order: index,
-    genres: deriveGenresFromMediaItem(item),
-  }));
-}
-
-// â”€â”€ Component â”€â”€
-
 export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const currentTheme = useTheme();
-  const { t, i18n: translationI18n } = useTranslation();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const {
     profileImageUri,
@@ -555,6 +547,10 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     setProfileImageUri,
     setBannerImageUri,
     updateProfile,
+    // Content language comes from settings, NOT from i18next: changeLanguage
+    // resolves a tick later, so an i18next-derived key looks the cache up under
+    // the language the user just left (see localization/contentLanguage).
+    language: resolvedContentLanguage,
   } = useAppSettings();
 
   const { watchlist: movieWatchlist, isLoading: wlLoading } = useWatchlist();
@@ -658,17 +654,35 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
   const cacheRef = useRef<HydratedCache>(getSharedHydratedMediaCache());
   const lastHydrationKeyRef = useRef<string>("");
-  const resolvedContentLanguage = useMemo(
-    () => normalizeAppLanguage(translationI18n.resolvedLanguage ?? translationI18n.language),
-    [translationI18n.language, translationI18n.resolvedLanguage]
-  );
-
   const hooksLoading = wlLoading || swlLoading || lmLoading || lsLoading || whLoading;
+
+  // The rails are append-ordered on disk (a new bookmark lands at the end), so
+  // they have to be reversed to read newest-first. Only the head of each list
+  // is hydrated: a rail shows a handful of cards, while hydrating a 300-title
+  // watchlist meant 300 TMDB lookups on every profile open, arriving in visible
+  // batches. The See All screen hydrates its own (paged) slice.
+  const shelfWatchlistMovieIds = useMemo(
+    () => toNewestFirstIds(movieWatchlist).slice(0, PROFILE_SHELF_HYDRATION_LIMIT),
+    [movieWatchlist]
+  );
+  const shelfWatchlistSeriesIds = useMemo(
+    () => toNewestFirstIds(seriesWatchlist).slice(0, PROFILE_SHELF_HYDRATION_LIMIT),
+    [seriesWatchlist]
+  );
+  const shelfLikedMovieIds = useMemo(
+    () => toNewestFirstIds(likedMovies).slice(0, PROFILE_SHELF_HYDRATION_LIMIT),
+    [likedMovies]
+  );
+  const shelfLikedSeriesIds = useMemo(
+    () => toNewestFirstIds(likedSeries).slice(0, PROFILE_SHELF_HYDRATION_LIMIT),
+    [likedSeries]
+  );
 
   const watchedMovieHydrationIds = useMemo(
     () =>
       watchHistory
         .filter((entry) => entry.mediaType === "movie")
+        .slice(0, PROFILE_SHELF_HYDRATION_LIMIT)
         .map((entry) =>
           typeof entry.id === "string" && entry.id.includes("-")
             ? entry.id
@@ -686,7 +700,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
             .map((entry) => entry.sourceTmdbId ?? entry.id)
             .filter((value): value is number | string => value !== null && value !== undefined)
         )
-      ),
+      ).slice(0, PROFILE_SHELF_HYDRATION_LIMIT),
     [fullWatchHistory]
   );
 
@@ -720,10 +734,10 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
     const hydrationKey = JSON.stringify({
       language: resolvedContentLanguage,
-      movieWatchlist,
-      seriesWatchlist,
-      likedMovies,
-      likedSeries,
+      shelfWatchlistMovieIds,
+      shelfWatchlistSeriesIds,
+      shelfLikedMovieIds,
+      shelfLikedSeriesIds,
       watchedMovieHydrationIds,
       watchedSeriesHydrationIds,
     });
@@ -734,10 +748,10 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
     let cancelled = false;
     const hasListsToHydrate =
-      movieWatchlist.length > 0
-      || seriesWatchlist.length > 0
-      || likedMovies.length > 0
-      || likedSeries.length > 0
+      shelfWatchlistMovieIds.length > 0
+      || shelfWatchlistSeriesIds.length > 0
+      || shelfLikedMovieIds.length > 0
+      || shelfLikedSeriesIds.length > 0
       || watchedMovieHydrationIds.length > 0
       || watchedSeriesHydrationIds.length > 0;
 
@@ -758,10 +772,10 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
       };
 
       await Promise.all([
-        hydrateSection(hydrateMediaIds(movieWatchlist, [], cache)),
-        hydrateSection(hydrateMediaIds([], seriesWatchlist, cache)),
-        hydrateSection(hydrateMediaIds(likedMovies, [], cache)),
-        hydrateSection(hydrateMediaIds([], likedSeries, cache)),
+        hydrateSection(hydrateMediaIds(shelfWatchlistMovieIds, [], cache)),
+        hydrateSection(hydrateMediaIds([], shelfWatchlistSeriesIds, cache)),
+        hydrateSection(hydrateMediaIds(shelfLikedMovieIds, [], cache)),
+        hydrateSection(hydrateMediaIds([], shelfLikedSeriesIds, cache)),
         hydrateSection(hydrateMediaIds(watchedMovieHydrationIds, [], cache)),
         hydrateSection(hydrateMediaIds([], watchedSeriesHydrationIds, cache)),
       ]);
@@ -775,10 +789,10 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     return () => { cancelled = true; };
   }, [
     hooksLoading,
-    likedMovies,
-    likedSeries,
-    movieWatchlist,
-    seriesWatchlist,
+    shelfLikedMovieIds,
+    shelfLikedSeriesIds,
+    shelfWatchlistMovieIds,
+    shelfWatchlistSeriesIds,
     resolvedContentLanguage,
     watchedMovieHydrationIds,
     watchedSeriesHydrationIds,
@@ -789,20 +803,20 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   // `resolvedContentLanguage` force a re-read as the async hydrate warms cold
   // entries or the language changes.
   const watchlistMovieItems = useMemo(
-    () => getHydratedMediaItemsFromCache(movieWatchlist, [], cacheRef.current),
-    [movieWatchlist, hydrationTick, resolvedContentLanguage]
+    () => getHydratedMediaItemsFromCache(shelfWatchlistMovieIds, [], cacheRef.current),
+    [shelfWatchlistMovieIds, hydrationTick, resolvedContentLanguage]
   );
   const watchlistSeriesItems = useMemo(
-    () => getHydratedMediaItemsFromCache([], seriesWatchlist, cacheRef.current),
-    [seriesWatchlist, hydrationTick, resolvedContentLanguage]
+    () => getHydratedMediaItemsFromCache([], shelfWatchlistSeriesIds, cacheRef.current),
+    [shelfWatchlistSeriesIds, hydrationTick, resolvedContentLanguage]
   );
   const likedMovieItems = useMemo(
-    () => getHydratedMediaItemsFromCache(likedMovies, [], cacheRef.current),
-    [likedMovies, hydrationTick, resolvedContentLanguage]
+    () => getHydratedMediaItemsFromCache(shelfLikedMovieIds, [], cacheRef.current),
+    [shelfLikedMovieIds, hydrationTick, resolvedContentLanguage]
   );
   const likedSeriesItems = useMemo(
-    () => getHydratedMediaItemsFromCache([], likedSeries, cacheRef.current),
-    [likedSeries, hydrationTick, resolvedContentLanguage]
+    () => getHydratedMediaItemsFromCache([], shelfLikedSeriesIds, cacheRef.current),
+    [shelfLikedSeriesIds, hydrationTick, resolvedContentLanguage]
   );
   const watchedMovieItems = useMemo(
     () => getHydratedMediaItemsFromCache(watchedMovieHydrationIds, [], cacheRef.current),
@@ -946,9 +960,9 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
         if (!Number.isFinite(Number(item.id))) {
           return;
         }
-        navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        navigation.push("MovieDetail", { movieId: String(item.id) });
       } else {
-        navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
+        navigation.push("SeriesDetail", { seriesId: String(item.id) });
       }
     },
     [navigation]
@@ -956,7 +970,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
 
   const handleSeeAll = useCallback(
     (section: ProfileSeeAllSection, filter: "movie" | "tv") => {
-      navigation.navigate("ProfileSeeAll", { section, filter });
+      navigation.push("ProfileSeeAll", { section, filter });
     },
     [navigation]
   );
@@ -1063,11 +1077,19 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
   const [showBadgesModal, setShowBadgesModal] = useState(false);
 
   // Counts known from local storage the instant sign-in writes it — before the
-  // poster cards finish hydrating. When a section has items but none are
-  // displayed yet, show a loader instead of a misleading "empty" state.
+  // poster cards finish hydrating. These are what the section headers state:
+  // the rails only hydrate their head (PROFILE_SHELF_HYDRATION_LIMIT), and
+  // counting rendered cards made the header tick upward in batches as lookups
+  // landed rather than showing the total the app already knew. They also decide
+  // whether an empty rail means "loading" or a genuinely empty section.
   const watchedExpected = useMemo(
-    () => watchHistory.filter((entry) => entry.mediaType === (watchedFilter === "tv" ? "tv" : "movie")).length,
-    [watchHistory, watchedFilter]
+    () =>
+      watchedFilter === "tv"
+        // Series are counted once, not once per logged season — the same
+        // de-duplication the rail itself renders.
+        ? watchedSeriesHistory.length
+        : watchHistory.filter((entry) => entry.mediaType === "movie").length,
+    [watchHistory, watchedFilter, watchedSeriesHistory]
   );
   const watchlistExpected = watchlistFilter === "movie" ? movieWatchlist.length : seriesWatchlist.length;
   const likedExpected = likedFilter === "movie" ? likedMovies.length : likedSeries.length;
@@ -1167,7 +1189,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           <SectionHeader>
             <SectionTitle>{t("profile.watched")}</SectionTitle>
             <SectionDot />
-            <SectionMeta>{t("profile.sectionCount", { count: watchedSectionRecords.length, label: watchedFilter === "movie" ? t("common.movies").toLowerCase() : t("common.series").toLowerCase() })}</SectionMeta>
+            <SectionMeta>{t("profile.sectionCount", { count: watchedExpected, label: watchedFilter === "movie" ? t("common.movies").toLowerCase() : t("common.series").toLowerCase() })}</SectionMeta>
             <SeeAllButton onPress={() => handleSeeAll("watched", watchedFilter)}>
               <SeeAllText>{t("common.seeAll")}</SeeAllText>
             </SeeAllButton>
@@ -1214,7 +1236,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           <SectionHeader>
             <SectionTitle>{t("profile.watchlist")}</SectionTitle>
             <SectionDot />
-            <SectionMeta>{t("profile.sectionCount", { count: watchlistSectionRecords.length, label: watchlistFilter === "movie" ? t("common.movies").toLowerCase() : t("common.series").toLowerCase() })}</SectionMeta>
+            <SectionMeta>{t("profile.sectionCount", { count: watchlistExpected, label: watchlistFilter === "movie" ? t("common.movies").toLowerCase() : t("common.series").toLowerCase() })}</SectionMeta>
             <SeeAllButton onPress={() => handleSeeAll("watchlist", watchlistFilter)}>
               <SeeAllText>{t("common.seeAll")}</SeeAllText>
             </SeeAllButton>
@@ -1261,7 +1283,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
           <SectionHeader>
             <SectionTitle>{t("profile.liked")}</SectionTitle>
             <SectionDot />
-            <SectionMeta>{t("profile.sectionCount", { count: likedSectionRecords.length, label: likedFilter === "movie" ? t("common.movies").toLowerCase() : t("common.series").toLowerCase() })}</SectionMeta>
+            <SectionMeta>{t("profile.sectionCount", { count: likedExpected, label: likedFilter === "movie" ? t("common.movies").toLowerCase() : t("common.series").toLowerCase() })}</SectionMeta>
             <SeeAllButton onPress={() => handleSeeAll("liked", likedFilter)}>
               <SeeAllText>{t("common.seeAll")}</SeeAllText>
             </SeeAllButton>

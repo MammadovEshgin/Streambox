@@ -17,14 +17,32 @@ import {
   type UserMediaSyncDetails,
 } from "../services/userDataSync";
 import { WATCH_HISTORY_STORAGE_KEY } from "../services/userDataStorage";
+import { pruneWatchedFromWatchlist } from "../services/mediaListStore";
 import { mapWithConcurrency } from "../utils/concurrency";
 import {
   applyWatchHistoryOps,
   buildSeriesSeasonInternalId,
+  collectWatchlistPruneRequests,
   type WatchHistoryListOp,
+  type WatchHistoryMutation,
 } from "../utils/watchHistoryOps";
 
-const METADATA_VERSION = 5;
+// 6 — cast depth raised from the top 5 billed names to WATCH_ENTRY_CAST_LIMIT,
+// and duplicate credits collapsed. Bumping this re-enriches existing entries on
+// next load, which is what backfills the Stats actor counts for titles logged
+// before the change.
+const METADATA_VERSION = 6;
+
+/**
+ * How many billed cast members a watch-history entry remembers.
+ *
+ * This was 5, which is far too shallow for an ensemble: Cate Blanchett is
+ * credited 13th on The Fellowship of the Ring, so no amount of watching the
+ * trilogy ever attributed it to her in the Stats "most watched actors" section,
+ * and tapping her row showed a list with the films missing. Capped by
+ * DETAILS_CAST_LIMIT in the TMDB client, which fetches 20.
+ */
+const WATCH_ENTRY_CAST_LIMIT = 15;
 const LEGACY_METADATA_MIGRATION_CONCURRENCY = 4;
 
 export type WatchPrecision = "day" | "month" | "none";
@@ -63,12 +81,24 @@ type StoredEntry = Partial<WatchHistoryEntry> & {
 };
 
 function topCast(cast: { id: number; name: string; profilePath: string | null; gender: CastGender }[]) {
-  const top5 = cast.slice(0, 5);
+  // De-duplicate before slicing: TMDB lists an actor once per credited role, so
+  // anyone playing two parts used to occupy two of the few slots available AND
+  // score twice in the Stats actor counts, which is how a tally could exceed
+  // the number of titles it was supposed to summarise.
+  const seen = new Set<number>();
+  const billed: typeof cast = [];
+  for (const member of cast) {
+    if (seen.has(member.id)) continue;
+    seen.add(member.id);
+    billed.push(member);
+    if (billed.length >= WATCH_ENTRY_CAST_LIMIT) break;
+  }
+
   return {
-    castIds: top5.map((member) => member.id),
-    castNames: top5.map((member) => member.name),
-    castProfilePaths: top5.map((member) => member.profilePath),
-    castGenders: top5.map((member) => member.gender),
+    castIds: billed.map((member) => member.id),
+    castNames: billed.map((member) => member.name),
+    castProfilePaths: billed.map((member) => member.profilePath),
+    castGenders: billed.map((member) => member.gender),
   };
 }
 
@@ -245,10 +275,6 @@ async function readEntriesFromStorage(): Promise<WatchHistoryEntry[]> {
   }
 }
 
-type WatchHistoryMutation =
-  | { kind: "upsert"; entry: WatchHistoryEntry; auditDetails?: UserMediaSyncDetails | null }
-  | { kind: "remove"; id: number | string; mediaType: MediaType; auditDetails?: UserMediaSyncDetails | null };
-
 export type SeriesSeasonWatchedSave = {
   season: SeriesSeason;
   watchedAt: number;
@@ -405,11 +431,24 @@ export function useWatchHistory() {
             : { operation: "delete", mediaType: mutation.mediaType, tmdbId: mutation.id, audit: mutation.auditDetails ?? {} }
         );
         await enqueueWatchHistoryBatch(queueItems);
+
+        // Watched titles leave the watchlist. Every path that marks something
+        // watched — the log sheet, the season modal, the player's auto-mark —
+        // funnels through here, so this is the one place that has to know.
+        const pruneRequests = collectWatchlistPruneRequests(mutations);
+        if (pruneRequests.length > 0) {
+          const pruned = await pruneWatchedFromWatchlist(pruneRequests);
+          if (pruned.length > 0) {
+            // Wakes every mounted useSyncedMediaIdList so the profile shelves
+            // and the detail screen's bookmark drop the title immediately.
+            notifyStorageChanged();
+          }
+        }
       });
       mutationChainRef.current = run.catch(() => undefined);
       await run;
     },
-    [persistEntries]
+    [notifyStorageChanged, persistEntries]
   );
 
   const upsertWatchHistoryEntry = useCallback(

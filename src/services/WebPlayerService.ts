@@ -484,36 +484,49 @@ function generateSearchQueries(
     }
   }
 
-  // 0. Every BARE name first: the original-language spelling, then the display
-  //    title. Both have to go out before any year-qualified variant, because
-  //    the empty-result cutoff below only budgets a couple of queries.
+  // 0. Every BARE name first: the original-language spelling, the display
+  //    title, then each of those with punctuation stripped. These are all
+  //    DIFFERENT names for the film rather than cheap variants of one, so every
+  //    one of them has to go out before any year-qualified query — the
+  //    empty-result cutoff below only budgets a couple of rounds.
   //
-  //    Concrete bug this prevents: Harakiri (1962), whose TMDB original title
-  //    is "切腹". Emitting "切腹" and "切腹 1962" first spent the entire budget
-  //    on a script the Turkish catalogue doesn't carry — both returned zero
-  //    rows, the sweep stopped, and the film reported "Not Available" even
-  //    though /search/?q=Harakiri returns it. Every film with a non-Latin
-  //    original title (Japanese, Korean, Chinese, Cyrillic, Arabic, …) failed
-  //    the same way.
+  //    Concrete bug this prevents (non-Latin): Harakiri (1962), whose TMDB
+  //    original title is "切腹". Emitting "切腹" and "切腹 1962" first spent the
+  //    entire budget on a script the Turkish catalogue doesn't carry — both
+  //    returned zero rows, the sweep stopped, and the film reported "Not
+  //    Available" even though /search/?q=Harakiri returns it.
+  //
+  //    Concrete bug this prevents (apostrophes): HDFilm's search does not
+  //    tokenize an apostrophe. /search/?q=Rosemary's Baby returns ZERO rows
+  //    while /search/?q=Rosemarys Baby returns the film. With the cleaned
+  //    spelling sitting BEHIND the year-qualified variants, the two-query
+  //    cutoff fired before it was ever sent, and "Rosemary's Baby" reported
+  //    "Not Available" even though HDFilm carries it. Every possessive title —
+  //    Ocean's Eleven, Schindler's List, Pandora's Box — failed the same way.
+  const cleanSpelling = (value: string) =>
+    value
+      .replace(/['''\u2019]/g, "")         // strip apostrophes (Don't → Dont)
+      .replace(/[:,\u201C\u201D"!?.,]/g, " ") // replace separators with space
+      .replace(/[&]/g, "and")
+      // \w is ASCII-only in JS, so this used to delete every non-ASCII
+      // LETTER too: "Rosemary'nin Bebeği" cleaned to "Rosemarynin Bebei",
+      // a spelling no Turkish catalogue has ever heard of. Keep letters and
+      // digits in any script; strip only the punctuation.
+      .replace(/[^\p{L}\p{N}\s-]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
   if (originalTitle) add(originalTitle);
   add(title);
+  const cleanTitle = cleanSpelling(title);
+  if (originalTitle) add(cleanSpelling(originalTitle));
+  add(cleanTitle);
   const bareTitleCount = queries.length;
 
   // 1. Year-qualified variants for disambiguation.
   if (originalTitle && year) add(`${originalTitle} ${year}`);
   if (year) add(`${title} ${year}`);
-
-  // 3. Clean punctuation that search engines may choke on
-  const cleanTitle = title
-    .replace(/['''\u2019]/g, "")         // strip apostrophes (Don't → Dont)
-    .replace(/[:,\u201C\u201D"!?.,]/g, " ") // replace separators with space
-    .replace(/[&]/g, "and")
-    .replace(/[^\w\s-]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
   if (year) add(`${cleanTitle} ${year}`);
-  add(cleanTitle);
 
   // 4. Prefix before colon/dash (for subtitled movies like "Alien: Romulus")
   if (title.includes(":")) add(title.split(":")[0].trim());
@@ -551,6 +564,13 @@ function generateSearchQueries(
 // each been searched once. Cheap variants of one name are what we want to skip;
 // a different name entirely is not a variant.
 const EMPTY_SEARCH_QUERY_LIMIT = 2;
+
+/**
+ * Maximum query rounds a provider gets per lookup, unless the title has more
+ * distinct bare spellings than that (then every spelling still goes out).
+ * Each round is one HTTP request against a provider that is already slow.
+ */
+const SEARCH_QUERY_BUDGET = 5;
 
 function shouldStopSearchingAfterEmptyQueries(
   queryIndex: number,
@@ -782,7 +802,10 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
     }));
     if (bestSoFar >= 120) break;
     if (shouldStopSearchingAfterEmptyQueries(qi, allResults.size, bareTitleCount)) break;
-    if (qi >= 4) break;
+    // Hard budget. It is a FLOOR of five rounds, raised when the title has more
+    // than five distinct spellings, so the bare-name sweep can never be cut off
+    // half-way through (see generateSearchQueries).
+    if (qi + 1 >= Math.max(SEARCH_QUERY_BUDGET, bareTitleCount)) break;
   }
 
   if (allResults.size === 0) return null;
@@ -1195,7 +1218,10 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
     }));
     if (bestSoFar >= 120) break;
     if (shouldStopSearchingAfterEmptyQueries(qi, allResults.size, bareTitleCount)) break;
-    if (qi >= 4) break;
+    // Hard budget. It is a FLOOR of five rounds, raised when the title has more
+    // than five distinct spellings, so the bare-name sweep can never be cut off
+    // half-way through (see generateSearchQueries).
+    if (qi + 1 >= Math.max(SEARCH_QUERY_BUDGET, bareTitleCount)) break;
   }
 
   if (allResults.size === 0) {

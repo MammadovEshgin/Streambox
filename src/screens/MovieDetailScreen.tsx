@@ -817,10 +817,10 @@ if (!details) {
                 cast={details.cast}
                 crew={details.crew}
                 onPressCastItem={(member) => {
-                  navigation.navigate("ActorDetail", { actorId: String(member.id) });
+                  navigation.push("ActorDetail", { actorId: String(member.id) });
                 }}
                 onPressCrewItem={(member) => {
-                  navigation.navigate("ActorDetail", { actorId: String(member.id) });
+                  navigation.push("ActorDetail", { actorId: String(member.id) });
                 }}
               />
             </CastWrap>

@@ -293,16 +293,27 @@ export async function importLetterboxdArchive(
   const watchedIdSet = new Set<number>(watchedIds);
   const historyKeys = new Set(existingHistory.map((entry) => `${entry.mediaType}:${entry.id}`));
 
-  // A watched film shouldn't also sit in the watchlist.
+  // A watched film shouldn't also sit in the watchlist — neither one arriving
+  // in this import, nor one already stored from before it. The second half used
+  // to be missed: importing a Letterboxd diary left every film the viewer had
+  // previously bookmarked AND has now been shown to have watched sitting in the
+  // watchlist forever.
   const addedWatchlist = watchlistIds.filter(
     (id) => !watchlistSet.has(id) && !watchedIdSet.has(id)
   );
+  const removedWatchlist = existingWatchlist.filter(
+    (id) => typeof id === "number" && watchedIdSet.has(id)
+  );
+  const removedWatchlistSet = new Set(removedWatchlist);
   const addedLiked = likedIds.filter((id) => !likedSet.has(id));
   const addedWatchEntries = newWatchEntries.filter(
     (entry) => !historyKeys.has(`movie:${entry.id}`)
   );
 
-  const mergedWatchlist = [...existingWatchlist, ...addedWatchlist];
+  const mergedWatchlist = [
+    ...existingWatchlist.filter((id) => !removedWatchlistSet.has(id)),
+    ...addedWatchlist,
+  ];
   const mergedLiked = [...existingLiked, ...addedLiked];
   const mergedHistory = [...existingHistory, ...addedWatchEntries].sort(
     (left, right) => right.watchedAt - left.watchedAt
@@ -332,6 +343,12 @@ export async function importLetterboxdArchive(
       await enqueueMediaLibraryBatch([
         ...addedWatchlist.map((id) => ({
           operation: "upsert" as const,
+          listKind: "watchlist" as const,
+          mediaType: "movie" as const,
+          tmdbId: id,
+        })),
+        ...removedWatchlist.map((id) => ({
+          operation: "delete" as const,
           listKind: "watchlist" as const,
           mediaType: "movie" as const,
           tmdbId: id,

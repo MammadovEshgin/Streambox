@@ -7,12 +7,7 @@ import { Dimensions, FlatList, ListRenderItemInfo, Modal, Pressable, TouchableWi
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import styled, { useTheme } from "styled-components/native";
 
-import {
-  GENRE_ID_MAP,
-  MediaItem,
-  MediaType,
-  getTmdbImageUrl
-} from "../api/tmdb";
+import { MediaItem, MediaType, getTmdbImageUrl } from "../api/tmdb";
 import { formatRating } from "../api/mediaFormatting";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MovieLoader } from "../components/common/MovieLoader";
@@ -21,29 +16,24 @@ import { useLikedSeries } from "../hooks/useLikedSeries";
 import { useSeriesWatchlist } from "../hooks/useSeriesWatchlist";
 import { useWatchHistory, type WatchHistoryEntry } from "../hooks/useWatchHistory";
 import { useWatchlist } from "../hooks/useWatchlist";
-import { normalizeAppLanguage } from "../localization/types";
 import type { ProfileStackParamList } from "../navigation/types";
+import { useAppSettings } from "../settings/AppSettingsContext";
 import { hydrateMediaIds } from "../services/mediaHydration";
+import {
+  applyShelfFilters,
+  buildHydratedShelfRecords,
+  deriveGenresFromMediaItem,
+  getAvailableGenres,
+  isShelfFilterActive,
+  toNewestFirstIds,
+  DEFAULT_SHELF_FILTERS,
+  PROFILE_SHELF_SORT_OPTIONS,
+  type ProfileShelfFilters,
+  type ProfileShelfRecord,
+  type ProfileShelfSort,
+} from "../utils/profileShelf";
 
 type Props = NativeStackScreenProps<ProfileStackParamList, "ProfileSeeAll">;
-type ProfileShelfSort = "recent" | "rating" | "year" | "title";
-type ProfileShelfFilters = {
-  sortBy: ProfileShelfSort;
-  genre: string | null;
-};
-type ProfileShelfRecord = {
-  item: MediaItem;
-  order: number;
-  watchedAt?: number;
-  genres: string[];
-};
-
-const DEFAULT_SHELF_FILTERS: ProfileShelfFilters = {
-  sortBy: "recent",
-  genre: null,
-};
-
-const PROFILE_SHELF_SORT_OPTIONS: readonly ProfileShelfSort[] = ["recent", "rating", "year", "title"];
 
 const NUM_COLUMNS = 3;
 const HORIZONTAL_PADDING = 16;
@@ -207,6 +197,11 @@ const EmptyText = styled.Text`
   margin-top: 10px;
 `;
 
+const LoadingFooter = styled.View`
+  padding: 12px 0 20px;
+  align-items: center;
+`;
+
 const LoadingWrap = styled.View`
   flex: 1;
   align-items: center;
@@ -327,6 +322,11 @@ const FilterFooterLabel = styled.Text<{ $primary?: boolean }>`
 // per-language cache, so repeat visits resolve instantly.
 const SEE_ALL_HYDRATION_CHUNK = 24;
 
+// How many more titles each scroll to the bottom of the grid resolves. The
+// default (newest-first) view no longer hydrates the whole list on open — a
+// 300-title watchlist was 300 TMDB lookups before the first screenful settled.
+const SEE_ALL_PAGE_SIZE = 48;
+
 /** Build display items for a watched/title shelf straight from watch-history
  *  entries — they already store poster/title/year/rating, so no network is
  *  needed (the costly TMDB fetch happened once when the title was watched or
@@ -353,20 +353,6 @@ function buildWatchedItemsFromHistory(entries: WatchHistoryEntry[]): MediaItem[]
   return items;
 }
 
-function deriveGenresFromMediaItem(item: MediaItem): string[] {
-  return (item.genreIds ?? [])
-    .map((genreId) => GENRE_ID_MAP[genreId])
-    .filter((genreName): genreName is string => typeof genreName === "string" && genreName.length > 0);
-}
-
-function buildHydratedShelfRecords(items: MediaItem[]): ProfileShelfRecord[] {
-  return items.map((item, index) => ({
-    item,
-    order: index,
-    genres: deriveGenresFromMediaItem(item),
-  }));
-}
-
 function getWatchHistoryMediaId(entry: WatchHistoryEntry) {
   const sourceId = entry.sourceTmdbId ?? entry.id;
   const numericId = Number(sourceId);
@@ -378,59 +364,20 @@ function getWatchHistoryMediaId(entry: WatchHistoryEntry) {
   return sourceId;
 }
 
-function getAvailableGenres(records: ProfileShelfRecord[]) {
-  return Array.from(new Set(records.flatMap((record) => record.genres))).sort((left, right) =>
-    left.localeCompare(right)
-  );
-}
-
-function applyShelfFilters(records: ProfileShelfRecord[], filters: ProfileShelfFilters): MediaItem[] {
-  let next = filters.genre
-    ? records.filter((record) => record.genres.includes(filters.genre ?? ""))
-    : records.slice();
-
-  switch (filters.sortBy) {
-    case "rating":
-      next.sort((left, right) => (right.item.rating ?? 0) - (left.item.rating ?? 0));
-      break;
-    case "year":
-      next.sort((left, right) => Number(right.item.year || 0) - Number(left.item.year || 0));
-      break;
-    case "title":
-      next.sort((left, right) => left.item.title.localeCompare(right.item.title));
-      break;
-    case "recent":
-    default:
-      next.sort((left, right) => {
-        if (typeof left.watchedAt === "number" || typeof right.watchedAt === "number") {
-          return (right.watchedAt ?? 0) - (left.watchedAt ?? 0);
-        }
-        return left.order - right.order;
-      });
-      break;
-  }
-
-  return next.map((record) => record.item);
-}
-
-function isShelfFilterActive(filters: ProfileShelfFilters) {
-  return filters.sortBy !== DEFAULT_SHELF_FILTERS.sortBy || filters.genre !== DEFAULT_SHELF_FILTERS.genre;
-}
-
 // ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
 export function ProfileSeeAllScreen({ route, navigation }: Props) {
   const { section, filter: initialFilter } = route.params;
-  const { t, i18n: translationI18n } = useTranslation();
+  const { t } = useTranslation();
   const currentTheme = useTheme();
   const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
-  const resolvedContentLanguage = useMemo(
-    () => normalizeAppLanguage(translationI18n.resolvedLanguage ?? translationI18n.language),
-    [translationI18n.language, translationI18n.resolvedLanguage]
-  );
+  // Read from settings, NOT from i18next: changeLanguage resolves a tick later,
+  // so an i18next-derived key looks up the cache under the language the user
+  // just left and finds nothing (see localization/contentLanguage).
+  const { language: resolvedContentLanguage } = useAppSettings();
 
   const [filter, setFilter] = useState<"movie" | "tv">(initialFilter);
   const [items, setItems] = useState<MediaItem[]>([]);
@@ -468,6 +415,41 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
     return filter === "movie" ? likedMovies : likedSeries;
   }, [section, filter, movieWatchlist, seriesWatchlist, likedMovies, likedSeries]);
 
+  // The stored lists are append-ordered, so newest-first means reading them
+  // backwards. Everything downstream (paging, the "recently added" sort) works
+  // off this order.
+  const orderedIds = useMemo(
+    () => (section === "watched" ? [] : toNewestFirstIds(ids)),
+    [ids, section]
+  );
+
+  // Sorting by rating/year/title, or filtering by genre, is only correct over
+  // the WHOLE list — a page of it would rank the titles that happen to be
+  // loaded. The default view has no such need: it renders the id order, so it
+  // pages in as the grid is scrolled instead of resolving hundreds of titles up
+  // front.
+  const needsFullList = filters.sortBy !== "recent" || filters.genre !== null;
+  const [visibleCount, setVisibleCount] = useState(SEE_ALL_PAGE_SIZE);
+  const targetCount = needsFullList
+    ? orderedIds.length
+    : Math.min(visibleCount, orderedIds.length);
+
+  useEffect(() => {
+    setVisibleCount(SEE_ALL_PAGE_SIZE);
+  }, [section, filter]);
+
+  const handleEndReached = useCallback(() => {
+    setVisibleCount((current) =>
+      current >= orderedIds.length ? current : current + SEE_ALL_PAGE_SIZE
+    );
+  }, [orderedIds.length]);
+
+  // Identity of the list being shown. When it changes the grid starts over;
+  // when only `targetCount` grows we extend in place, so scrolling never blanks
+  // the cards already on screen.
+  const listIdentity = `${section}:${filter}:${resolvedContentLanguage}:${orderedIds.length}`;
+  const listIdentityRef = useRef(listIdentity);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -480,24 +462,29 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
       return () => { cancelled = true; };
     }
 
-    if (ids.length === 0) {
+    if (orderedIds.length === 0) {
       setItems([]);
       setIsLoading(false);
       return;
     }
 
-    // Watchlist/liked are stored as bare ids, so they must be hydrated. Stream
-    // the results in chunks so the grid fills progressively rather than blocking
-    // on hundreds of lookups; the persistent cache makes repeat visits instant.
+    const isFreshList = listIdentityRef.current !== listIdentity;
+    listIdentityRef.current = listIdentity;
+    if (isFreshList) {
+      setItems([]);
+      setIsLoading(true);
+    }
+
+    // hydrateMediaIds is backed by an in-memory + persistent per-language cache,
+    // so re-walking the already-loaded prefix on each page costs nothing.
+    const target = orderedIds.slice(0, targetCount);
     const isMovie = filter === "movie";
-    setIsLoading(true);
-    setItems([]);
 
     void (async () => {
       const collected: MediaItem[] = [];
-      for (let start = 0; start < ids.length; start += SEE_ALL_HYDRATION_CHUNK) {
+      for (let start = 0; start < target.length; start += SEE_ALL_HYDRATION_CHUNK) {
         if (cancelled) return;
-        const chunk = ids.slice(start, start + SEE_ALL_HYDRATION_CHUNK);
+        const chunk = target.slice(start, start + SEE_ALL_HYDRATION_CHUNK);
         const hydrated = await hydrateMediaIds(isMovie ? chunk : [], isMovie ? [] : chunk);
         if (cancelled) return;
         collected.push(...hydrated);
@@ -508,7 +495,7 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
     })();
 
     return () => { cancelled = true; };
-  }, [ids, filter, resolvedContentLanguage, section, watchHistory]);
+  }, [orderedIds, targetCount, listIdentity, filter, resolvedContentLanguage, section, watchHistory]);
 
   const shelfRecords = useMemo<ProfileShelfRecord[]>(() => {
     if (section === "watched") {
@@ -590,9 +577,9 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
   const handlePressItem = useCallback(
     (item: MediaItem) => {
       if (item.mediaType === "movie") {
-        navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        navigation.push("MovieDetail", { movieId: String(item.id) });
       } else {
-        navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
+        navigation.push("SeriesDetail", { seriesId: String(item.id) });
       }
     },
     [navigation]
@@ -687,6 +674,15 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
             renderItem={renderItem}
             columnWrapperStyle={{ gap: GAP }}
             showsVerticalScrollIndicator={false}
+            onEndReached={handleEndReached}
+            onEndReachedThreshold={0.6}
+            ListFooterComponent={
+              targetCount < orderedIds.length ? (
+                <LoadingFooter>
+                  <MovieLoader size={28} />
+                </LoadingFooter>
+              ) : null
+            }
           />
         </GridWrap>
       )}

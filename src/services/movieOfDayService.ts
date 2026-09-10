@@ -16,7 +16,7 @@ import {
   resolveTmdbTvIdFromImdbId,
 } from "../api/tmdb";
 import { getImdbTop250Movies, getImdbTop250Shows, type ImdbTop250Item } from "../api/imdb";
-import i18n from "../localization/i18n";
+import { getActiveContentLanguage } from "../localization/contentLanguage";
 import { normalizeAppLanguage } from "../localization/types";
 import { mapWithConcurrency } from "../utils/concurrency";
 import {
@@ -331,7 +331,7 @@ async function readStoredLocalizedPick(
   dateKey: string,
   personalizationKey: string
 ): Promise<MediaItem | null> {
-  const currentLanguage = normalizeAppLanguage(i18n.resolvedLanguage ?? i18n.language);
+  const currentLanguage = getActiveContentLanguage();
   const storedRaw = await AsyncStorage.getItem(storageKey);
   const stored = normalizeCurrent(storedRaw);
 
@@ -739,7 +739,7 @@ export async function getPersonalizedMovieOfTheDay({
   watchedIds = [],
 }: DailyPickOptions): Promise<MediaItem | null> {
   const dateKey = getLocalDateKey();
-  const currentLanguage = normalizeAppLanguage(i18n.resolvedLanguage ?? i18n.language);
+  const currentLanguage = getActiveContentLanguage();
   const sourceMovieIds = Array.from(new Set([...normalizeIds(likedIds), ...normalizeIds(watchedIds)]));
   const personalizationKey = createPersonalizationKey("movie", userId, sourceMovieIds);
 
@@ -796,7 +796,7 @@ export async function getPersonalizedSeriesOfTheDay({
   watchedIds = [],
 }: DailyPickOptions): Promise<MediaItem | null> {
   const dateKey = getLocalDateKey();
-  const currentLanguage = normalizeAppLanguage(i18n.resolvedLanguage ?? i18n.language);
+  const currentLanguage = getActiveContentLanguage();
   const sourceSeriesIds = Array.from(new Set([...normalizeIds(likedIds), ...normalizeIds(watchedIds)]));
   const personalizationKey = createPersonalizationKey("tv", userId, sourceSeriesIds);
 

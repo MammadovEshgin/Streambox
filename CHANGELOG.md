@@ -10,6 +10,105 @@ this branch (`v1.2.0`) ships to **1.2.0**. See
 
 ## [Unreleased]
 
+### Fixed — search, provider coverage, library correctness, navigation, keyboard (2026-09-11)
+
+Eight reported defects. Several turned out to share a root cause, and two of
+them were the same class of mistake in different places: a heuristic that was
+allowed to override direct evidence.
+
+**Search answered a film with a stranger's filmography.** Typing `harry` found
+the films; typing `harry potter` found none of them. TMDB's person index
+contains a real acting credit literally named "Harry Potter" — popularity 0.28,
+no photo, one television credit — and an exact name match scored a perfect 1000,
+which unconditionally overrode the title results. (One word could never reach
+that score, which is why half the query worked.) A person may now outrank a
+matching title only if they are *prominent*: a profile photo and a non-trivial
+popularity, i.e. someone a viewer could plausibly have meant. Searching Tom
+Hanks or Cate Blanchett by name still returns their filmography; searching a
+film by its name returns the film. The name matcher also now picks the best
+match among all acting results rather than testing only the most popular one, so
+an exact match sitting under a more popular partial one is no longer discarded.
+
+**Search deleted results whose only match was a translated title.** The
+weak-match quality floor (`rating >= 6`) applied to everything that did not score
+against the typed query. With the UI in English, a Turkish query is matched by
+TMDB against a translation the app never sees, so the film scored zero and the
+floor deleted it — as it did new releases and niche titles, which TMDB reports as
+unrated. The floor now applies only when the list already contains a title the
+viewer plainly named; when nothing scores, what TMDB returned *is* the answer.
+Two new scoring tiers back this up: whole-word matches at the *end* of a title
+(the usual shape of a localized subtitle — "Harry Potter ve Sırlar Odası"), and
+full token coverage in any order.
+
+**"Rosemary's Baby" reported Not Available while HDFilm was carrying it.**
+HDFilm's search does not tokenize an apostrophe: `/search/?q=Rosemary's Baby`
+returns zero rows, `/search/?q=Rosemarys Baby` returns the film. The
+punctuation-free spelling existed in the query plan but sat *behind* the
+year-qualified variants, so the two-query empty-result cutoff fired before it was
+ever sent. Every possessive title failed identically — verified live against the
+site: Ocean's Eleven and Schindler's List were also unreachable. Distinct
+spellings of a name are now all emitted before any year-qualified variant, and
+the sweep budget can no longer cut off mid-way through them.
+
+**A film's original title was withheld from the resolver under a Turkish UI.**
+`originalTitle` was only populated for non-English films, so with the app in
+Turkish an English-language film handed the provider search nothing but its
+Turkish title. It is now populated whenever it differs from the display title.
+Punctuation cleaning also stopped deleting non-ASCII letters (JS `\w` is
+ASCII-only, so "Bebeği" was being cleaned to "Bebei").
+
+**Marking something watched left it in the watchlist.** The watchlist answers
+"what do I still want to see?", so every path that logs a title as watched — the
+log sheet, the season modal, the player's auto-mark — now removes it. A
+Letterboxd import prunes titles it has just proven were watched, instead of only
+declining to add new ones.
+
+**Back from a grid landed on Discover.** React Navigation's `navigate(name)` does
+not push when a route of that name is already in the stack — it pops back to the
+existing instance and destroys everything above it. Actor → See All → a film →
+Back therefore collapsed onto the MovieDetail the journey started from, and one
+more Back reached the tab root. Every screen that can be reached *from* a detail
+screen now uses `push` for routes that can legitimately repeat.
+
+**Stats' most-watched actors missed the films they were counting.** A watch
+history entry stored the top **five** billed names, and the TMDB details fetch
+supplied only twelve. Cate Blanchett is credited 13th on The Fellowship of the
+Ring, so the trilogy could never count towards her and never appeared in the list
+her row opens. Entries now keep 15 of 20 fetched, cast lists de-duplicate (TMDB
+lists an actor once per role, and counting both made a tally exceed the number of
+titles it summarised), and `METADATA_VERSION` is bumped so existing entries are
+re-enriched.
+
+**The profile watchlist count climbed in batches.** The section header counted
+*hydrated poster cards*, so it ticked upward as TMDB lookups landed instead of
+stating the number the app already had on disk. It now states the stored count
+immediately. The rails hydrate only their head (30) rather than all several
+hundred, and See All pages in as the grid is scrolled.
+
+**"Recently added" showed the oldest bookmarks first.** Stored id lists are
+append-ordered, and the sort walked them forwards. They are now reversed into
+display order. Sorting by year no longer returns `NaN` from a comparator for
+undated titles ("----"), which had left the whole list arbitrarily ordered rather
+than just that entry.
+
+**Switching language left content in the language you had just left.**
+`i18next.changeLanguage` is asynchronous; the settings store is not. For a render
+or two after a switch, `i18n.resolvedLanguage` still reported the old value, and
+everything keyed on it — the TMDB `language` parameter, the poster hydration
+cache key — acted on it. That is both the Turkish posters under an English UI and
+the stretch of duplicated loading after every switch. A new
+`localization/contentLanguage` module is set synchronously by the settings store
+before it re-renders, and every content path reads from it.
+
+**The room code field hid behind the keyboard.** "Have a code" sits near the
+bottom of a tall scroll page with no keyboard handling at all. The form is now
+scrolled into view on focus, with `KeyboardAvoidingView` on iOS.
+
+Ranking, shelf ordering and the watchlist rule moved into pure modules
+(`utils/searchRanking`, `utils/profileShelf`, `utils/watchHistoryOps`) and are
+covered by 45 new tests, including fixtures taken verbatim from the live TMDB
+responses that produced each bug.
+
 ### Fixed — Dizipal rotation, Cloudflare-challenge resilience, monitor false alarms (2026-09-10)
 
 The Telegram bot paged "Dizipal is down" three runs in a row. Dizipal was not

@@ -11,6 +11,7 @@ import {
   removeMediaIdFromList,
   toggleMediaIdInList,
 } from "../utils/mediaIdList";
+import { withMediaListMutationLock } from "../services/mediaListStore";
 
 type SyncedListKind = "watchlist" | "liked";
 
@@ -20,28 +21,10 @@ type UseSyncedMediaIdListOptions = {
   mediaType: MediaType;
 };
 
-// Serializes EVERY mutation of a given storage key across all mounted hook
-// instances (detail screens, profile shelves, grids each mount their own).
-// Mutations re-read storage inside the lock and apply the change to THAT
-// list — never to the instance's in-memory copy. The old implementation wrote
-// `[...items, id]` from component state, so any instance holding a stale copy
-// (mounted before a Letterboxd import, a bootstrap merge, or another screen's
-// toggle) silently erased everything added since it mounted. That blind
-// overwrite is how users lost hundreds of watchlist/liked entries.
-const listMutationChains = new Map<string, Promise<void>>();
-
-function withListMutationLock<T>(storageKey: string, task: () => Promise<T>): Promise<T> {
-  const previous = listMutationChains.get(storageKey) ?? Promise.resolve();
-  const run = previous.then(task, task);
-  listMutationChains.set(
-    storageKey,
-    run.then(
-      () => undefined,
-      () => undefined
-    )
-  );
-  return run;
-}
+// The per-key mutation lock lives in services/mediaListStore so the
+// watch-history save path serializes against these hooks on the same key:
+// marking a title watched removes it from the watchlist, and that write must
+// not interleave with a toggle happening on another screen.
 
 export function useSyncedMediaIdList({ storageKey, listKind, mediaType }: UseSyncedMediaIdListOptions) {
   const [items, setItems] = useState<(number | string)[]>([]);
@@ -66,7 +49,7 @@ export function useSyncedMediaIdList({ storageKey, listKind, mediaType }: UseSyn
   const toggle = useCallback(
     async (id: number | string, details?: UserMediaSyncDetails | null) => {
       const normalizedId = normalizeMediaListId(id);
-      const existed = await withListMutationLock(storageKey, async () => {
+      const existed = await withMediaListMutationLock(storageKey, async () => {
         const current = parseStoredMediaIds(await AsyncStorage.getItem(storageKey));
         const mutation = toggleMediaIdInList(current, normalizedId);
         await AsyncStorage.setItem(storageKey, JSON.stringify(mutation.next));
@@ -90,7 +73,7 @@ export function useSyncedMediaIdList({ storageKey, listKind, mediaType }: UseSyn
   const remove = useCallback(
     async (id: number | string, details?: UserMediaSyncDetails | null) => {
       const normalizedId = normalizeMediaListId(id);
-      const removed = await withListMutationLock(storageKey, async () => {
+      const removed = await withMediaListMutationLock(storageKey, async () => {
         const current = parseStoredMediaIds(await AsyncStorage.getItem(storageKey));
         const mutation = removeMediaIdFromList(current, normalizedId);
         if (!mutation.changed) {

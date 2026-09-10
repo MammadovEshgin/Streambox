@@ -24,6 +24,7 @@ import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
 import { Navigation } from "./src/navigation/Navigation";
 import i18n from "./src/localization/i18n";
+import { setActiveContentLanguage } from "./src/localization/contentLanguage";
 
 // Deep link: streambox://room/<code> opens the Watch Together join sheet
 // prefilled with the shared room code.
@@ -351,7 +352,7 @@ function AppShell() {
   }, []);
 
   useEffect(() => {
-    void i18n.changeLanguage(language);
+    setActiveContentLanguage(language);
   }, [language]);
 
   useEffect(() => {

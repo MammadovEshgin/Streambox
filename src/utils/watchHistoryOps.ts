@@ -1,5 +1,7 @@
 import type { MediaType } from "../api/tmdb";
 import type { WatchHistoryEntry } from "../hooks/useWatchHistory";
+import type { WatchlistPruneRequest } from "../services/mediaListStore";
+import type { UserMediaSyncDetails } from "../services/userDataSync";
 
 // Pure helpers for applying a batch of watch-history mutations to the local
 // entry list. Extracted from useWatchHistory so the invariant that caused the
@@ -45,4 +47,55 @@ export function applyWatchHistoryOps(
   }
 
   return next;
+}
+
+export type WatchHistoryMutation =
+  | { kind: "upsert"; entry: WatchHistoryEntry; auditDetails?: UserMediaSyncDetails | null }
+  | { kind: "remove"; id: number | string; mediaType: MediaType; auditDetails?: UserMediaSyncDetails | null };
+
+/** The stored TMDB id for an entry, or null when it has none (imported rows). */
+function resolveEntryTmdbId(entry: Pick<WatchHistoryEntry, "id" | "sourceTmdbId">): number | null {
+  if (typeof entry.sourceTmdbId === "number" && Number.isFinite(entry.sourceTmdbId) && entry.sourceTmdbId > 0) {
+    return entry.sourceTmdbId;
+  }
+
+  return typeof entry.id === "number" && Number.isFinite(entry.id) ? entry.id : null;
+}
+
+/**
+ * Watchlist removals implied by a batch of watch-history upserts.
+ *
+ * The watchlist answers "what do I still want to see?", so a title that has
+ * just been logged as watched no longer belongs in it — whether it was logged
+ * by hand, through the season modal, or by the player finishing it.
+ *
+ * A season entry stores a synthetic string id ("series-season:<id>:<n>"), so
+ * the series' own TMDB id has to come from `sourceTmdbId`; a title entry
+ * carries it directly. Removals are ignored: un-marking something watched does
+ * not put it back on the watchlist.
+ */
+export function collectWatchlistPruneRequests(
+  mutations: WatchHistoryMutation[]
+): WatchlistPruneRequest[] {
+  const seen = new Set<string>();
+  const requests: WatchlistPruneRequest[] = [];
+
+  for (const mutation of mutations) {
+    if (mutation.kind !== "upsert") continue;
+
+    const tmdbId = resolveEntryTmdbId(mutation.entry);
+    if (tmdbId === null) continue;
+
+    const key = `${mutation.entry.mediaType}:${tmdbId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    requests.push({
+      mediaType: mutation.entry.mediaType,
+      tmdbId,
+      details: mutation.auditDetails ?? null,
+    });
+  }
+
+  return requests;
 }

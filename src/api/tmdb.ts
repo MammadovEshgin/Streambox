@@ -1,13 +1,21 @@
 import axios, { AxiosHeaders } from "axios";
 import { getAlternateTmdbAuthMode, resolveTmdbAuth, TmdbAuthMode } from "./tmdbAuth";
 import { getCachedOmdbRatings } from "./ratingsProxy";
-import i18n from "../localization/i18n";
+import { getActiveContentLanguage } from "../localization/contentLanguage";
 import { getLanguageLocale, normalizeAppLanguage, type AppLanguage } from "../localization/types";
 import { shouldFetchExternalRatings, type ExternalRatingsSurface } from "../services/externalRatingsPolicy";
 import { trackNetworkFailure } from "../services/telemetryService";
 import { dedupeInFlight, mapWithConcurrency } from "../utils/concurrency";
 import { LruMap } from "../utils/LruMap";
 import { foldForTitleCompare } from "../utils/textFolding";
+import {
+  filterSearchCandidates,
+  getActorSearchConfidence,
+  isProminentActorSearchMatch,
+  pickActorSearchMatch,
+  rankTitleSearchResults,
+  shouldAnswerWithActorCredits,
+} from "../utils/searchRanking";
 import { PersistedLruMap } from "../services/persistedLruMap";
 import {
   getImdbPopularMovies,
@@ -335,6 +343,7 @@ type TmdbPersonSearchRecord = {
   name: string;
   known_for_department?: string | null;
   popularity?: number;
+  profile_path?: string | null;
 };
 
 type TmdbPersonSearchResponse = {
@@ -424,6 +433,18 @@ const IMDB_TOP250_RESOLVE_CONCURRENCY = 6;
 const IMDB_POPULAR_SPOTLIGHT_RESOLVE_LIMIT = 14;
 const MIN_IMDB_POPULAR_SPOTLIGHT_ITEMS = 6;
 
+/**
+ * How much of the billed cast a details fetch keeps.
+ *
+ * This was 12, which is above the fold on the detail screen but below the
+ * billing position of plenty of leads: Cate Blanchett is credited 13th on The
+ * Fellowship of the Ring. Everything downstream of these credits inherits the
+ * cut — the watch-history entry, and therefore the Stats "most watched actors"
+ * counts and the list you get by tapping one. Her Lord of the Rings films were
+ * simply invisible to those stats no matter how many times they were watched.
+ */
+const DETAILS_CAST_LIMIT = 20;
+
 function getLocalizedTmdbCacheKey(scope: string, id: string | number) {
   return `${getTmdbRequestLanguage()}:${scope}:${id}`;
 }
@@ -434,7 +455,7 @@ const tmdbClient = axios.create({
 });
 
 function getTmdbRequestLanguage() {
-  return getLanguageLocale(normalizeAppLanguage(i18n.resolvedLanguage ?? i18n.language));
+  return getLanguageLocale(getActiveContentLanguage());
 }
 
 function shouldAttachTmdbLanguage(url?: string | null) {
@@ -1541,7 +1562,7 @@ async function fetchMovieDetails(id: string, cacheKey: string): Promise<MovieDet
 
   const cast = (data.credits?.cast ?? [])
     .sort((left, right) => (left.order ?? 999) - (right.order ?? 999))
-    .slice(0, 12)
+    .slice(0, DETAILS_CAST_LIMIT)
     .map(normalizeCastMember);
 
   const imdbId = data.imdb_id ?? null;
@@ -1557,7 +1578,14 @@ async function fetchMovieDetails(id: string, cacheKey: string): Promise<MovieDet
   const result: MovieDetails = {
     id: data.id,
     title: data.title,
-    originalTitle: (data.original_language !== "en" && data.original_title !== data.title)
+    // Any spelling that differs from the localized title, whatever language it
+    // is in. `originalTitle` is never rendered — it exists so the provider
+    // resolver has a second name to search with. The old guard also required
+    // `original_language !== "en"`, which meant that with the UI in Turkish an
+    // English-language film handed the resolver only its Turkish title:
+    // "Rosemary'nin Bebegi" matches nothing on HDFilm, while the English name
+    // it withheld matches immediately.
+    originalTitle: data.original_title && data.original_title !== data.title
       ? data.original_title : undefined,
     overview: data.overview ?? "",
     tagline: (typeof data.tagline === "string" && data.tagline.trim().length > 0) ? data.tagline.trim() : null,
@@ -1602,7 +1630,7 @@ async function fetchSeriesDetails(id: string, cacheKey: string): Promise<SeriesD
   const cast = (data.credits?.cast ?? [])
     .slice()
     .sort((left, right) => left.order - right.order)
-    .slice(0, 12)
+    .slice(0, DETAILS_CAST_LIMIT)
     .map(normalizeCastMember);
 
   const directorsFromCrew = pickDirectorMembers(data.credits?.crew ?? []);
@@ -1632,7 +1660,10 @@ async function fetchSeriesDetails(id: string, cacheKey: string): Promise<SeriesD
   const result: SeriesDetails = {
     id: data.id,
     title: data.name,
-    originalTitle: (data.original_language !== "en" && data.original_name !== data.name)
+    // See the movie branch: any differing spelling, so the resolver always has
+    // the original-language name even when the UI language supplies a
+    // translated one.
+    originalTitle: data.original_name && data.original_name !== data.name
       ? data.original_name : undefined,
     overview: data.overview ?? "",
     genres: data.genres.map((entry) => entry.name),
@@ -2527,128 +2558,24 @@ export async function getSeriesTrailerUrl(seriesId: string): Promise<string | nu
 /*  Multi-Search (movies + TV)                                        */
 /* ------------------------------------------------------------------ */
 
-function normalizeSearchTerm(value: string): string {
-  // foldNonDecomposingLetters must run first: without it the strip below turns
-  // Turkish \u0131 into a space, so "Mezarl\u0131k" became "mezarl k" and no amount of
-  // correct spelling would match it.
-  return foldForTitleCompare(value.trim());
-}
-
-function isConfidentActorSearchMatch(query: string, person: TmdbPersonSearchRecord | undefined): person is TmdbPersonSearchRecord {
-  if (!person || person.known_for_department !== "Acting") {
-    return false;
-  }
-
-  const normalizedQuery = normalizeSearchTerm(query);
-  const normalizedName = normalizeSearchTerm(person.name);
-  if (normalizedQuery.length < 3 || normalizedName.length === 0) {
-    return false;
-  }
-
-  return (
-    normalizedName === normalizedQuery ||
-    normalizedName.startsWith(normalizedQuery) ||
-    normalizedQuery.startsWith(normalizedName)
-  );
-}
-
 type ActorCreditSearchResponse = PaginatedMediaResponse & {
   actorName: string;
   confidence: number;
+  /** See `isProminentActorSearchMatch` in utils/searchRanking. */
+  prominent: boolean;
 };
-
-function getActorSearchConfidence(query: string, person: TmdbPersonSearchRecord | undefined) {
-  if (!isConfidentActorSearchMatch(query, person)) {
-    return 0;
-  }
-
-  const normalizedQuery = normalizeSearchTerm(query);
-  const normalizedName = normalizeSearchTerm(person.name);
-  const queryTokenCount = normalizedQuery.split(" ").filter(Boolean).length;
-  const nameTokenCount = normalizedName.split(" ").filter(Boolean).length;
-
-  if (normalizedName === normalizedQuery) {
-    return nameTokenCount >= 2 ? 1000 : 880;
-  }
-
-  if (normalizedQuery.startsWith(normalizedName) && nameTokenCount >= 2) {
-    return 940;
-  }
-
-  if (normalizedName.startsWith(normalizedQuery) && normalizedQuery.length >= 4) {
-    return queryTokenCount >= 2 ? 900 : 760;
-  }
-
-  return 0;
-}
-
-/**
- * Quality floor for search results that do NOT match the typed query — the
- * incidental hits TMDB returns alongside the real one. Titles the viewer
- * actually named bypass it entirely; see the filter in `searchMulti`.
- */
-const SEARCH_WEAK_MATCH_MIN_RATING = 6;
-
-function getSearchTitleScore(query: string, item: MediaItem) {
-  const normalizedQuery = normalizeSearchTerm(query);
-  if (!normalizedQuery) return 0;
-
-  const normalizedTitle = normalizeSearchTerm(item.title);
-  const normalizedOriginalTitle = normalizeSearchTerm(item.originalTitle ?? "");
-  const titleCandidates = [normalizedTitle, normalizedOriginalTitle].filter(Boolean);
-
-  if (titleCandidates.some((title) => title === normalizedQuery)) {
-    return 1000;
-  }
-
-  if (titleCandidates.some((title) => title.startsWith(`${normalizedQuery} `))) {
-    return 820;
-  }
-
-  if (titleCandidates.some((title) => title.includes(` ${normalizedQuery} `))) {
-    return 620;
-  }
-
-  if (titleCandidates.some((title) => title.startsWith(normalizedQuery))) {
-    return 520;
-  }
-
-  return 0;
-}
-
-function hasConfidentTitleSearchMatch(query: string, items: MediaItem[]) {
-  return items.some((item) => getSearchTitleScore(query, item) >= 820);
-}
-
-function getBestTitleSearchScore(query: string, items: MediaItem[]) {
-  return items.reduce((best, item) => Math.max(best, getSearchTitleScore(query, item)), 0);
-}
-
-function rankTitleSearchResults(query: string, items: MediaItem[]) {
-  return items
-    .map((item, index) => ({ item, index, titleScore: getSearchTitleScore(query, item) }))
-    .sort((left, right) => {
-      if (left.titleScore !== right.titleScore) {
-        return right.titleScore - left.titleScore;
-      }
-      return left.index - right.index;
-    })
-    .map(({ item }) => item);
-}
 
 async function searchActorCredits(query: string, page: number): Promise<ActorCreditSearchResponse | null> {
   const { data: peopleData } = await tmdbClient.get<TmdbPersonSearchResponse>("/search/person", {
     params: { query: query.trim(), page: 1, include_adult: false }
   });
 
-  const actor = peopleData.results
-    .filter((person) => person.known_for_department === "Acting")
-    .sort((left, right) => (right.popularity ?? 0) - (left.popularity ?? 0))[0];
-
-  const confidence = getActorSearchConfidence(query, actor);
-  if (confidence <= 0) {
+  const match = pickActorSearchMatch(query, peopleData.results ?? []);
+  if (!match) {
     return null;
   }
+
+  const { person: actor, confidence } = match;
 
   const { data: creditsData } = await tmdbClient.get<TmdbPersonCombinedCreditsResponse>(
     `/person/${actor.id}/combined_credits`
@@ -2661,6 +2588,7 @@ async function searchActorCredits(query: string, page: number): Promise<ActorCre
   return {
     actorName: actor.name,
     confidence,
+    prominent: isProminentActorSearchMatch(actor),
     items: allCredits.slice((safePage - 1) * pageSize, safePage * pageSize),
     page: safePage,
     totalPages
@@ -2769,40 +2697,28 @@ export async function searchMulti(
   const actorCreditsRequest = searchActorCredits(query, page).catch(() => null);
   const [{ data }, actorCredits] = await Promise.all([multiSearchRequest, actorCreditsRequest]);
 
-  const filtered = data.results
+  const candidates = data.results
     .filter((r) => r.media_type === "movie" || r.media_type === "tv")
     .map((entry) => normalizeMedia(entry, entry.media_type ?? "movie"))
-    .filter((item) => {
-      if (item.title === "Untitled") return false;
-      // A title the viewer actually named is never hidden by the quality gate.
-      //
-      // This used to be a flat `item.rating >= 6`. TMDB reports 0 for anything
-      // without enough votes, so that gate silently deleted new releases and
-      // niche or non-English titles — including ones the providers can play.
-      // And when it deleted ALL of them, `filtered` went empty, which is one of
-      // the conditions that flips this function to the actor-credits branch:
-      // searching for a film answered with somebody's filmography instead.
-      //
-      // The gate still applies to incidental matches, which is what keeps the
-      // long tail of unrelated low-quality results out of the list.
-      if (getSearchTitleScore(query, item) > 0) return true;
-      return item.rating >= SEARCH_WEAK_MATCH_MIN_RATING;
-    });
+    .filter((item) => item.title !== "Untitled");
 
+  const filtered = filterSearchCandidates(query, candidates);
   const rankedTitleResults = rankTitleSearchResults(query, filtered);
-  const bestTitleScore = getBestTitleSearchScore(query, rankedTitleResults);
 
   const shouldUseActorCredits =
-    actorCredits &&
-    actorCredits.items.length > 0 &&
-    (
-      filtered.length === 0 ||
-      actorCredits.confidence >= 1000 ||
-      (page === 1 && actorCredits.confidence >= 880 && bestTitleScore < 1000) ||
-      (page === 1 && !hasConfidentTitleSearchMatch(query, rankedTitleResults))
-    );
+    actorCredits !== null
+    && shouldAnswerWithActorCredits({
+      query,
+      page,
+      actor: {
+        confidence: actorCredits.confidence,
+        prominent: actorCredits.prominent,
+        creditCount: actorCredits.items.length,
+      },
+      rankedTitles: rankedTitleResults,
+    });
 
-  if (shouldUseActorCredits) {
+  if (shouldUseActorCredits && actorCredits) {
     return actorCredits;
   }
 

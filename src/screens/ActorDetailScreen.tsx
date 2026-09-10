@@ -445,7 +445,7 @@ export function ActorDetailScreen({ route, navigation }: ActorDetailProps) {
                 {details.knownForMovies.length > 0 ? (
                   <SeeAllButton
                     onPress={() => {
-                      navigation.navigate("DiscoverGrid", {
+                      navigation.push("DiscoverGrid", {
                         title: `${details.name} - ${t("actor.knownFor")}`,
                         items: details.knownForMovies
                       });

@@ -265,7 +265,7 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
     async (item: MediaItem) => {
       if (item.mediaType === "movie") {
         if (item.posterPath || item.backdropPath) {
-          navigation.navigate("MovieDetail", { movieId: String(item.id) });
+          navigation.push("MovieDetail", { movieId: String(item.id) });
           return;
         }
 
@@ -273,38 +273,38 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
           try {
             const resolvedTmdbId = await resolveTmdbMovieIdFromImdbId(item.imdbId);
             if (resolvedTmdbId) {
-              navigation.navigate("MovieDetail", { movieId: resolvedTmdbId });
+              navigation.push("MovieDetail", { movieId: resolvedTmdbId });
               return;
             }
           } catch {
-            navigation.navigate("MovieDetail", { movieId: String(item.id) });
+            navigation.push("MovieDetail", { movieId: String(item.id) });
             return;
           }
         }
 
-        navigation.navigate("MovieDetail", { movieId: String(item.id) });
+        navigation.push("MovieDetail", { movieId: String(item.id) });
         return;
       }
 
       if (item.imdbId) {
         if (item.posterPath || item.backdropPath) {
-          navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
+          navigation.push("SeriesDetail", { seriesId: String(item.id) });
           return;
         }
 
         try {
           const resolvedTmdbId = await resolveTmdbTvIdFromImdbId(item.imdbId);
           if (resolvedTmdbId) {
-            navigation.navigate("SeriesDetail", { seriesId: resolvedTmdbId });
+            navigation.push("SeriesDetail", { seriesId: resolvedTmdbId });
             return;
           }
         } catch {
-          navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
+          navigation.push("SeriesDetail", { seriesId: String(item.id) });
           return;
         }
       }
 
-      navigation.navigate("SeriesDetail", { seriesId: String(item.id) });
+      navigation.push("SeriesDetail", { seriesId: String(item.id) });
     },
     [navigation]
   );
