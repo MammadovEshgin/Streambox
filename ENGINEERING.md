@@ -64,13 +64,78 @@ the `app.config.js` runtime, not the branch you happen to be on.
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
-### Current deployed state (last updated 2026-09-10, 1.2.0 Dizipal rotation + Cloudflare-challenge resilience)
+### Current deployed state (last updated 2026-09-11, 1.2.0 search / provider coverage / library correctness)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `d395d6f` | `2573da5a-3fdd-4726-b2aa-97af361f6042` |
+| 1.2.0 | `v1.2.0` @ `c28a301` | `4b9f5051-51cd-42d6-b34b-c476dc8a941c` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+
+- **2026-09-11 (1.2.0 only):** Eight reported defects across search, provider
+  coverage, the profile library, navigation and language switching. Two of them
+  were the same mistake in different places: **a heuristic allowed to override
+  direct evidence.**
+  - **Searching a film by its full name returned none of it.** `harry` found the
+    Harry Potter films; `harry potter` found none. TMDB's person index holds a
+    real acting credit literally named "Harry Potter" — popularity 0.28, no
+    photo, one TV credit — and `getActorSearchConfidence` scored that exact name
+    match 1000, which unconditionally flipped `searchMulti` to the
+    actor-credits branch. One word can never reach that score, which is exactly
+    why half the query worked and the whole query did not. Overriding a matching
+    title now also requires *prominence* (a profile photo + popularity ≥ 1),
+    which is what separates a person a viewer could have meant from index noise.
+    Verified live against `/search/person` and `/search/multi` in both locales.
+  - **The weak-match rating floor deleted cross-language results.** With the UI
+    in English, TMDB matches a Turkish query against a translation the client
+    never sees, so the film scored 0 and the `rating >= 6` floor removed it —
+    same for anything TMDB reports as unrated. The floor now applies only when
+    the list already holds a title the viewer plainly named.
+  - **"Rosemary's Baby" reported Not Available while HDFilm carried it.** HDFilm
+    does not tokenize an apostrophe: `/search/?q=Rosemary's Baby` → 0 rows,
+    `/search/?q=Rosemarys Baby` → the film. The cleaned spelling existed but sat
+    *behind* the year-qualified variants, so the two-query empty cutoff fired
+    before it was ever sent. Confirmed live that Ocean's Eleven and Schindler's
+    List failed identically. Distinct spellings now all precede year-qualified
+    queries. Re-probed after the fix: all six test titles resolve, each on the
+    apostrophe-free query.
+  - **A Turkish UI withheld the original title from the resolver.**
+    `originalTitle` was gated on `original_language !== "en"`, so an English film
+    under a Turkish UI handed the provider search only its Turkish name. It is
+    never rendered — it exists for the resolver — so the gate is gone.
+  - **Watched titles stayed in the watchlist.** Now pruned from every path via
+    `applyWatchHistoryMutations` (the single funnel for log sheet, season modal
+    and player auto-mark) plus the Letterboxd import.
+  - **Stats' most-watched actors could not see the films it counted.** Entries
+    stored the top FIVE billed names out of a twelve-name fetch. Cate Blanchett
+    is credited **13th** on Fellowship of the Ring, so the trilogy was invisible
+    to her counts and to the list her row opens. Now 15 of 20, de-duplicated per
+    title (TMDB lists an actor once per role, which is how a tally could exceed
+    the titles it summarised), `METADATA_VERSION` 5 → 6 to re-enrich.
+  - **The profile count climbed in batches** because the header counted hydrated
+    poster cards rather than the ids already on disk. Rails now hydrate 30, not
+    all several hundred; See All pages in on scroll.
+  - **"Recently added" showed the oldest first** — stored id lists are
+    append-ordered and the sort walked them forwards.
+  - **Back from a grid landed on Discover.** `navigate(name)` pops back to an
+    existing route rather than pushing, so actor → See All → film collapsed the
+    stack onto the detail screen the journey began at.
+  - **Language switches resolved content in the language just left.**
+    `i18next.changeLanguage` is async, the settings store is not; for a render or
+    two `i18n.resolvedLanguage` still reported the old value, and the TMDB
+    `language` param and the hydration cache key both read from it. That is both
+    the Turkish posters under an English UI and the duplicated loading after
+    every switch. New `localization/contentLanguage`, set synchronously by the
+    settings store before it re-renders.
+  - **The Watch Together room-code field hid behind the keyboard** — no keyboard
+    handling on that screen at all. Scrolled into view on focus.
+
+  Lesson worth keeping: **a scoring heuristic must never be able to outrank the
+  literal thing the user typed unless it can show independent evidence it is
+  what they meant.** Both search bugs were a confidence number treated as truth —
+  an exact string match on a junk record, and a rating floor applied to results
+  whose real match was in a language the client had not asked for. Prominence
+  and "only prune when something matched" are both the same repair.
 
 - **2026-09-10 (1.2.0 only):** Dizipal rotation + Cloudflare-challenge
   resilience, prompted by the bot paging "Dizipal is down" three runs running.
