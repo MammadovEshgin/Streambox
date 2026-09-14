@@ -64,13 +64,35 @@ the `app.config.js` runtime, not the branch you happen to be on.
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
-### Current deployed state (last updated 2026-09-11, 1.2.0 search / provider coverage / library correctness)
+### Current deployed state (last updated 2026-09-14, 1.2.0 Dizipal 2131)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `c28a301` | `4b9f5051-51cd-42d6-b34b-c476dc8a941c` |
+| 1.2.0 | `v1.2.0` @ `07d9f6c` | `377d7005-7033-4da1-851a-f90370ac2fe8` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+
+- **2026-09-14 (1.2.0 only):** Provider health sweep from a residential
+  connection, run through the shipped resolver with each tier isolated. HDFilm
+  8/8 probe titles native (1.1–5.2s); Dizipal 3/3 series and 3/3 films; Dizibal
+  6/6 of the titles it carries. The one defect: **Dizipal rotated 2130 → 2131**
+  (the 301 alone ~1s). Shipped floor bumped to 2131; the operator updated the
+  Supabase row the same day. Deploy: `07d9f6c` → group
+  `377d7005-7033-4da1-851a-f90370ac2fe8`.
+  - **Dizipal lists films under Turkish titles** (`/film/baslangic` for
+    Inception). An English-title probe with no TMDB access misses every film
+    and looks like a broken movie path — it isn't; the app's Turkish alt-title
+    retry supplies the name. Probe Dizipal films with the Turkish title.
+  - **Worker egress now gets 403 from dizipal2131**, while a residential
+    connection gets 200, so `provider-monitor` has reported Dizipal down since
+    2026-09-11. If that persists with the Supabase row on 2131, Dizipal needs
+    the same treatment as HDFilm (no Worker check).
+  - **1.1.0 and 1.0.2 are degraded and were deliberately NOT shipped** (user
+    decision, 2026-09-14). Their provider code is identical on both branches:
+    HDFilm yields no native stream (pre-Sep decoder), Dizipal's player config
+    404s at `/ajax-player-config` and `/ajax-token` now returns JSON, and the
+    Dizipal *page* result they still return stops the chain before Dizibal,
+    which does work there. Fixing them means porting the v1.2.0 provider layer.
 
 - **2026-09-11 (1.2.0 only):** Eight reported defects across search, provider
   coverage, the profile library, navigation and language switching. Two of them
