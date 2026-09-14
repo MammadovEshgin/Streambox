@@ -2,6 +2,7 @@
   "name": "streambox",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "eas-build-pre-install": "npm install --package-lock-only --no-audit --no-fund",

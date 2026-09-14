@@ -13,7 +13,7 @@
   <img alt="React Native" src="https://img.shields.io/badge/React%20Native-0.81-61DAFB?logo=react" />
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript" />
   <img alt="Supabase" src="https://img.shields.io/badge/Supabase-backend-3FCF8E?logo=supabase" />
-  <img alt="License" src="https://img.shields.io/badge/license-Proprietary-red" />
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue" /></a>
 </p>
 
 ---
@@ -75,4 +75,4 @@ See [`ENGINEERING.md`](ENGINEERING.md) for runtime tracks and the deploy workflo
 
 ## License
 
-Proprietary. © Eshgin Mammadov. All rights reserved.
+[MIT](LICENSE) © Eshgin Mammadov
