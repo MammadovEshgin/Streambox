@@ -7,9 +7,13 @@ it before `eas update`.
 
 | Track | `runtimeVersion` | Branch | Native modules | Must NOT contain |
 |---|---|---|---|---|
-| **Legacy fleet** | `1.0.2` | `release/1.0.2-legacy` | no `expo-navigation-bar` | nav-bar code (crashes these APKs) |
-| **Nav-bar APK** | `1.1.0` | `release/1.1.0-navbar` | `expo-navigation-bar` | — |
-| **Watch Together APK** (newest) | `1.2.0` | `v1.2.0` | + `react-native-webrtc`, camera | — |
+| **Legacy fleet** | `1.0.2` | tag `archive/release-1.0.2-legacy` | no `expo-navigation-bar` | nav-bar code (crashes these APKs) |
+| **Nav-bar APK** | `1.1.0` | tag `archive/release-1.1.0-navbar` | `expo-navigation-bar` | — |
+| **Watch Together APK** (newest) | `1.2.0` | `v1.2.0` (= `main`) | + `react-native-webrtc`, camera | — |
+
+The two older release branches were deleted on 2026-09-14 and are preserved as
+the tags above. To publish to one of those fleets, recreate the branch from its
+tag first: `git switch -c release/1.1.0-navbar archive/release-1.1.0-navbar`.
 
 ## Fleet policy (since 2026-07-25)
 

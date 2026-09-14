@@ -45,14 +45,15 @@ the `app.config.js` runtime, not the branch you happen to be on.
 | Runtime | Branch | Fleet | Hard rule |
 |---------|--------|-------|-----------|
 | **1.2.0** | `v1.2.0` (renamed 2026-07-23 from `release/1.2.0-watch-together`; folds in `feat/azerbaijani-classics`) | Watch Together APK build | Adds native `react-native-webrtc` + `expo-camera`. **Isolated — never ported back to 1.1.0/1.0.2.** `runtimeVersion` in `app.config.js` is a fixed `"1.2.0"`, so publishing from this branch auto-isolates. See **§2A**. **Player autonomy** (auto-mark-watched, next-episode, episode picker) was folded in 2026-07-28 (JS-only, ships as a 1.2.0 OTA); see **§2B**. The abandoned 1.3.0 social platform was removed the same day (teardown migration `20260728090000`). |
-| **1.1.0** | `release/1.1.0-navbar` (primary working branch) | Nav-bar APK build | Normal track. `runtimeVersion` in `app.config.js` is `1.1.0`. |
-| **1.0.2** | `release/1.0.2-legacy` | Legacy fleet, **no nav-bar** | **MUST NEVER contain nav-bar code** (see below). |
+| **1.1.0** | tag `archive/release-1.1.0-navbar` (branch deleted 2026-09-14) | Nav-bar APK build | Frozen. For an emergency OTA, recreate the branch from the tag; `runtimeVersion` there is `1.1.0`. |
+| **1.0.2** | tag `archive/release-1.0.2-legacy` (branch deleted 2026-09-14) | Legacy fleet, **no nav-bar** | Frozen. **MUST NEVER contain nav-bar code** (see below). |
 
 ### Other branches
-- `main` — protected. Currently **behind** the release branches (its tip is a revert). Never merge work into it, never force-push it.
+- `main` — default branch. Since 2026-09-14 it carries `v1.2.0` (merged, then kept identical): commit on `v1.2.0` and fast-forward `main` to it. Never force-push it without the owner's explicit say-so.
 - `feature/android-tv` — **real, in-progress** Android TV work (its own commit line, not in the release branches). Do NOT treat as stale; do NOT delete.
-- Ephemeral `feat/*` work branches — cut from a release branch, ship by porting into **both** release branches, then delete once `git diff <release> <branch>` is empty. Don't let them accumulate.
-- `archive/navbar-apk-base` (tag) — the retired `release/navbar-apk` base of the 1.1.0 line, preserved for history; fully contained in `release/1.1.0-navbar`.
+- Ephemeral `feat/*` work branches — cut from `v1.2.0`, merged back, then deleted once `git diff v1.2.0 <branch>` is empty. Don't let them accumulate.
+- `archive/release-1.1.0-navbar` / `archive/release-1.0.2-legacy` (tags) — the exact code lines of the two older fleets, kept when their branches were deleted on 2026-09-14. Everything else on them (splash, loaders, Watch Together resolver, Azerbaijani classics) is already in `v1.2.0`.
+- `archive/navbar-apk-base` (tag) — the retired `release/navbar-apk` base of the 1.1.0 line, preserved for history; fully contained in `archive/release-1.1.0-navbar`.
 
 ### Non-negotiable OTA rules
 1. **1.0.2 must NEVER include `expo-navigation-bar` / `NavigationBar` / `systemNavigationBar` / `expo-navigation` code.** These crash legacy APKs. When porting a file from the 1.1.0 branch to the 1.0.2 branch, diff it and confirm **zero** nav-bar references before committing. This has bitten us before — a wholesale `git checkout release/1.1.0-navbar -- PlayerScreen.tsx` dragged nav-bar imports onto 1.0.2. Verify with:
@@ -61,7 +62,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
    ```
    It must print nothing.
 2. **Any change that adds or upgrades a native module cannot go OTA.** It requires a new native build **and** a `runtimeVersion` bump (e.g. `1.2.0`). Do **not** reuse `1.1.0` for a build that adds a native module — existing `1.1.0` installs would crash on the next OTA when they call the missing module. Prefer pure-JS solutions to stay OTA-deliverable (this is why the loader was rebuilt with SVG+Reanimated instead of Lottie).
-3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
+3. To ship to an older fleet, recreate its branch from the archive tag (e.g. `git switch -c release/1.1.0-navbar archive/release-1.1.0-navbar`), commit the JS change there (respecting rule 1 on 1.0.2), and publish an EAS update per runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
 ### Current deployed state (last updated 2026-09-14, 1.2.0 Dizipal 2131)
@@ -69,8 +70,8 @@ the `app.config.js` runtime, not the branch you happen to be on.
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
 | 1.2.0 | `v1.2.0` @ `07d9f6c` | `377d7005-7033-4da1-851a-f90370ac2fe8` |
-| 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
-| 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+| 1.1.0 | `archive/release-1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
+| 1.0.2 | `archive/release-1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
 
 - **2026-09-14 (1.2.0 only):** Provider health sweep from a residential
   connection, run through the shipped resolver with each tier isolated. HDFilm
@@ -587,17 +588,17 @@ All wired into `PlayerScreen`; typecheck + eslint clean.
 - **Do NOT deploy OTA until the user has tested in Expo and said go.** Build/commit
   is fine to prepare; publishing is gated on the user.
 - Typical sequence once approved:
-  1. On `release/1.1.0-navbar`: typecheck + `npm test`, commit, push, `eas update` (runtime 1.1.0, channel `preview`).
-  2. Switch to `release/1.0.2-legacy`, confirm `runtimeVersion` is `1.0.2`, port the changed files, **run the nav-bar grep guard**, typecheck + test, commit, push, `eas update` (runtime 1.0.2).
-  3. Return to `release/1.1.0-navbar` and restore any stashed untracked dirs.
-- Record both EAS update group IDs in your final report.
+  1. On `v1.2.0`: typecheck + `npm test`, commit, push `v1.2.0`, fast-forward `main` to it and push, `eas update` (runtime 1.2.0, channel `preview`).
+  2. Only if an older fleet is in scope: recreate its branch from the archive tag (§2 rule 3), confirm `runtimeVersion`, port the change (**nav-bar grep guard** on 1.0.2), typecheck + test, commit, push, `eas update`.
+- Record every EAS update group ID in your final report.
 
 ---
 
 ## 4. Hard guardrails (do NOT violate)
 
-- **Never merge `release/1.1.0-navbar` (or any work branch) into `main`.** Keep work on branches.
-- **Never force-push to `main`.**
+- **Work lands on `v1.2.0`; `main` only ever fast-forwards to it.** Never merge anything else into `main`.
+- **Never force-push `main` or `v1.2.0`** without the owner's explicit approval.
+- **Commits and PRs are authored by Eshgin Mammadov only.** No `Co-Authored-By:`, `Claude-Session:` or other AI attribution lines.
 - **Never run `supabase db push`** (or any command that mutates the production DB). Write SQL as a new timestamped migration file in `supabase/migrations/` and hand it to the user to apply. You may read/inspect, but never push schema.
 - **Never echo, log, or commit secrets/credentials** (Supabase keys, tokens, `.env`). Do not print `process.env` secrets.
 - **Temporary/one-off scripts live in `scripts/`** and should be deleted when done. Never leave probe scripts at repo root.
