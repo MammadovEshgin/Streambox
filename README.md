@@ -1,13 +1,18 @@
-# StreamBox
+<p align="center">
+  <img src=".github/assets/logo.png" alt="StreamBox" width="120" />
+</p>
 
-A high-performance mobile streaming app for discovering, watching, and tracking movies and series. Built with React Native + Expo SDK 54, with a multi-provider stream resolver that finds playable sources across HDFilmCehennemi, Dizipal, and Dizibal.
+<h1 align="center">StreamBox</h1>
 
-<p>
+<p align="center">
+  A mobile app for discovering, watching and tracking movies and series.
+</p>
+
+<p align="center">
   <img alt="Expo SDK" src="https://img.shields.io/badge/Expo-54-000020?logo=expo" />
   <img alt="React Native" src="https://img.shields.io/badge/React%20Native-0.81-61DAFB?logo=react" />
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript" />
-  <img alt="Platforms" src="https://img.shields.io/badge/platform-Android%20%7C%20iOS%20%7C%20Android%20TV-grey" />
-  <img alt="Tests" src="https://img.shields.io/badge/tests-282%20passing-brightgreen" />
+  <img alt="Supabase" src="https://img.shields.io/badge/Supabase-backend-3FCF8E?logo=supabase" />
   <img alt="License" src="https://img.shields.io/badge/license-Proprietary-red" />
 </p>
 
@@ -15,158 +20,58 @@ A high-performance mobile streaming app for discovering, watching, and tracking 
 
 ## Highlights
 
-- **Cinematic native UI** — glassmorphism, hero parallax, smooth Reanimated transitions, dark-mode-first.
-- **Discovery that learns** — taste profiles, daily picks that roll over at local midnight, "Top New This Week", smart-similar carousels, franchise timelines.
-- **Real IMDb ratings on every poster** — resolved per item via `imdbapi.dev` with OMDB + TMDB fallbacks, cached aggressively.
-- **Multi-provider stream resolver** — HDFilmCehennemi native decoder, Dizipal (direct + embed), and Dizibal, all resolved natively. No WebView fallback unless every native source fails. See [Stream Resolver](#stream-resolver-architecture).
-- **Native expo-video player** — landscape lock, HLS quality picker, subtitle tracks parsed from master playlists, headers (Referer) forwarded for hot-link-protected CDNs.
-- **Player autonomy** — auto-mark-watched at 95% (after real engaged time, so seeks don't count), a next-episode pill with auto-advance countdown, and an in-player episode picker.
-- **Watch Together** — private two-person rooms with synced playback, WebRTC face-cam/audio, and shared polaroid "memories"; media is peer-to-peer, Supabase only carries tiny sync/signaling messages.
-- **Cross-device sync** — Supabase-backed watchlist, favorites, watched-state, watch history, and profile, on a durable offline-first op queue.
-- **Prompted OTA updates** — EAS Update, gated by `runtimeVersion` so a bundle only reaches installs on the matching native runtime; downloads in the background, then shows an explicit restart modal while the player is idle.
-- **Live ops** — Supabase-backed announcements + remote provider config (rotate `hdfilmcehennemi.nl` / `dizipal2079.com` without a release).
+- **Discovery** — personalised picks, trending lists, similar titles and franchise timelines.
+- **Native playback** — multi-provider stream resolution into a native HLS player with quality, audio and subtitle selection.
+- **Library** — watchlist, likes, watch history and viewing stats, synced across devices.
+- **Watch Together** — private rooms with synced playback and peer-to-peer video chat.
+- **Over-the-air updates** — JavaScript updates ship through EAS Update without a store release.
+- **English and Turkish** interface.
 
 ## Tech Stack
 
 | Layer | Choice |
-|---|---|
-| Framework | React Native 0.81 + Expo SDK 54 |
-| Language | TypeScript 5 |
-| Navigation | React Navigation (native stack) |
-| Styling | styled-components + custom theme |
-| Animation | Reanimated 4 |
-| Player | expo-video (native HLS) |
-| State | React Context API + AsyncStorage |
-| Backend | Supabase (auth, storage, postgres, realtime) |
-| Realtime / P2P | Supabase Realtime + react-native-webrtc (Watch Together) |
-| Data | TMDB API (via Cloudflare Worker proxy) |
-| Build & OTA | EAS Build + EAS Update |
+| --- | --- |
+| App | React Native 0.81, Expo SDK 54, TypeScript |
+| UI | styled-components, Reanimated 4, React Navigation |
+| Player | expo-video |
+| Backend | Supabase (auth, Postgres, storage, realtime) |
+| Data | TMDB via a Cloudflare Worker proxy |
+| Build & delivery | EAS Build, EAS Update |
 
 ## Quick Start
 
-### Prerequisites
-
-- Node.js 18+
-- npm or yarn
-- Expo Go (for development) **or** an EAS-built dev client
-- TMDB API access (proxy URL or local API key)
-- Supabase project (URL + anon key)
-
-### Setup
+Requires Node.js 22 and a Supabase project plus TMDB proxy credentials.
 
 ```bash
 git clone https://github.com/MammadovEshgin/Streambox.git
 cd Streambox
 npm install
-cp .env.example .env       # fill in TMDB + Supabase values
+cp .env.example .env   # fill in the TMDB and Supabase values
 npm start
 ```
 
-Then press `a` (Android), `i` (iOS), or scan the QR with Expo Go.
+## Scripts
 
-> See [`.env.example`](.env.example) for every supported variable. The TMDB proxy variant is preferred — the direct `EXPO_PUBLIC_TMDB_API_KEY` / `_ACCESS_TOKEN` keys are local-dev fallbacks only and must not ship to production / EAS.
-
-## Available Scripts
-
-| Command | What it does |
-|---|---|
-| `npm start` | Start Expo dev server on LAN (port 8081) |
-| `npm run start:localhost` | Same, but bind to localhost (USB-tethered devices) |
-| `npm run android` / `npm run ios` | Launch directly on the connected device |
-| `npm test` | Run the node:test suite (282 tests across 16 files) |
-| `npm run typecheck` | `tsc --noEmit` — strict TypeScript pass |
-| `npm run check:hdfilm` | Probe HDFilmCehennemi for decoder rotation (used by [`decoder-recovery.md`](decoder-recovery.md)) |
+| Command | Description |
+| --- | --- |
+| `npm start` | Start the Expo dev server |
+| `npm run android` / `npm run ios` | Run on a connected device |
+| `npm test` | Run the test suite |
+| `npm run typecheck` | Type-check with `tsc` |
+| `npm run lint` | Lint with ESLint |
 
 ## Project Structure
 
 ```
-src/
-├── api/              TMDB client, IMDb ratings, OMDB fallback, franchise lookups
-├── components/       Reusable UI (cards, carousels, modals, player overlays)
-├── constants/        Static config, copy
-├── context/          Auth, theme, language, watchlist providers
-├── hooks/            Shared hooks (useTodayKey, useSyncedMediaIdList, …)
-├── localization/     i18n strings (EN, TR)
-├── navigation/       React Navigation stack + types
-├── screens/          Home, Movies, Series, Detail, Player, Profile, Search, …
-├── services/         Domain services (resolver, OTA, Supabase, runtimeCache, …)
-├── settings/         User-tunable settings
-├── theme/            Design tokens
-├── types/            Shared TS types
-└── utils/            Pure utilities
-
-tests/                node:test suites (resolver, subtitles, auth, image URLs, …)
-docs/                 Architecture & ops references (production-readiness, live-ops, …)
-scripts/              check-hdfilm-resolver, asset optimizers, health checks
+src/        App source: screens, components, hooks, services, localization
+tests/      Unit tests (node:test)
+supabase/   Database migrations
+workers/    Cloudflare Workers (TMDB proxy, provider monitor, TURN credentials)
+docs/       Architecture and operations notes
+scripts/    Maintenance and health-check scripts
 ```
 
-## Stream Resolver Architecture
-
-The resolver lives in [`src/services/WebPlayerService.ts`](src/services/WebPlayerService.ts) and tries providers in priority order — a real native stream from any provider always wins over a WebView fallback from another. Order:
-
-1. **HDFilmCehennemi (native)** — search → decode the `Rapidrame` HLS by interpreting the provider's `dc_*()` obfuscation live from the response body (the scheme is randomized per request, so no static scheme is assumed), then parse the master playlist for resolutions + subtitle tracks.
-2. **Dizipal (native)** — search → `data-cfg` → mint a single-use CSRF token → `/ajax-player-config` → `.m3u8`. Only a real extracted stream counts: the page and embed shells are never returned, because they render the provider's own player with no route back to native.
-3. **Turkish-title retry** — fetch the TMDB `/translations` localized title (e.g. *Dune* → *Dune: Çöl Gezegeni*) and re-search both providers. Handles cross-language matching plus a Turkish-dotless-i fold so `Yadigârları` matches the ASCII slug `yadigarlari`.
-4. **Dizibal (native)** — third-source REST scraper at `dizibal.com`: search → slug → embed → `/dl?op=get_stream` (with an `Origin` header) → m3u8 served with the embed-host referer. Films live under `/api/movies`, anime series under `/api/anime`. Runs over CDN77 infrastructure that isn't on the Azerbaijani ISP block lists that took out cloudnestra/embed.su. A Telegram bot rotates the base URL via `/set_dizibal` when it moves.
-5. **HDFilm WebView (last resort)** — only when *every* native source failed. Unlike the Dizipal shells this one earns its place: it injects a discovery script and hands off to `expo-video` the moment it finds the real stream URL.
-
-Hardening guarantees that have a dedicated regression test:
-
-- **Year gate** — if both the target and a candidate have a known year and they disagree, the candidate is rejected outright. Prevents Dune (1984) from substituting for Dune (2021).
-- **Substring/year-coincidence guard** — a substring title match (e.g. *Fury* in *Cuban Fury*) never gets the wrong-year boost; the score stays below the provider cutoff so the resolver falls through.
-- **Native players only** — playback always lands in a surface the app controls (`expo-video`, or the app-owned hls.js surface used to clear Cloudflare cookie gates). No provider's own player, so no pre-roll ads and no per-skin DOM timing bugs.
-- **No JS-execution scrapers** — every stream URL is recovered via JSON/HTTP, not headless browsers. Stable on every Android skin (incl. HyperOS, MIUI) and zero runtime ad overlays.
-
-### Audio and subtitle defaults
-
-Turkish providers ship dual-audio HLS masters that flag the **Turkish dub** as `DEFAULT=YES`, so an untouched ExoPlayer dubs every film. The player re-picks:
-
-- **Audio** — prefers the original soundtrack (`NAME="Original Audio"`, or the first non-Turkish rendition when the provider only labels languages). The viewer's choice is remembered across titles.
-- **Subtitles** — turn on automatically when the soundtrack isn't in the app's language, picking a track in that language. `Forced` tracks (a few sign-only cues) are never auto-selected but stay in the menu.
-
-See [`decoder-recovery.md`](decoder-recovery.md) for the manual rotation playbook when HDFilm changes their obfuscation scheme.
-
-## Testing
-
-```bash
-npm test          # 282 tests across 16 suites
-npm run typecheck # strict tsc pass
-```
-
-Coverage focuses on the parts where a regression silently breaks playback, sync, or a session:
-
-- `webPlayerService.test.ts` — resolver scoring (Dune year gate, Fury substring guard, Turkish ı folding), Rapidrame decoder interpretation, HLS playlist inspection.
-- `subtitles.test.ts` — VTT + SRT parsing, URL normalization.
-- `playerArchitecture.test.ts` — locks the contract that `PlayerScreen` never imports `webview` and always renders native controls off.
-- `playerProgress.test.ts` — auto-mark-watched engagement floor + next-episode reveal thresholds and the countdown reducer.
-- `watchRoomService.test.ts` / `watchRoomNegotiation.test.ts` — Watch Together signaling, WebRTC negotiation, and durable chat delivery.
-- `syncQueue.test.ts` / `watchHistoryOps.test.ts` — the durable offline op queue and watch-history merge (guards against the data-loss classes fixed in prior releases).
-- `tmdbAuth.test.ts` — dual-mode (api-key + bearer) auth with auto-retry.
-
-## OTA Updates
-
-Each native runtime is its own APK and its own EAS Update lane — delivery is gated by `runtimeVersion`, so a bundle published for one runtime can never reach installs on another (an OTA that calls native modules a fleet doesn't ship simply never arrives there):
-
-| Runtime | Fleet |
-|---|---|
-| `1.2.0` | Current build — Watch Together (WebRTC / camera) + player autonomy |
-| `1.1.0` | Nav-bar APK |
-| `1.0.2` | Legacy fleet |
-
-`LiveOpsHost` checks and downloads updates, then shows a visible **Restart now / Later** modal when no player is active. `Updates.reloadAsync()` runs only after the user chooses **Restart now**; updates are never silently applied from the JavaScript startup path.
-
-## Documentation
-
-| Doc | What's in it |
-|---|---|
-| [`docs/production-readiness.md`](docs/production-readiness.md) | Pre-launch checklist (security, performance, observability) |
-| [`docs/backend-hybrid-architecture.md`](docs/backend-hybrid-architecture.md) | TMDB proxy + Supabase split, key rotation |
-| [`docs/supabase-user-data-architecture.md`](docs/supabase-user-data-architecture.md) | Auth flow, RLS policies, sync model |
-| [`docs/live-ops.md`](docs/live-ops.md) | Announcements + remote provider config |
-| [`docs/watch-together.md`](docs/watch-together.md) | Watch Together — synced playback, WebRTC signaling, memories |
-| [`ENGINEERING.md`](ENGINEERING.md) | Runtime/fleet map, per-runtime feature notes, deploy workflow |
-| [`decoder-recovery.md`](decoder-recovery.md) | Manual recovery playbook when HDFilm rotates its decoder |
-| [`AGENTS.md`](AGENTS.md) | Project agent system (orchester / designer / backend_dev / qa_engineer) |
+See [`ENGINEERING.md`](ENGINEERING.md) for runtime tracks and the deploy workflow.
 
 ## License
 
