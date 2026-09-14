@@ -64,13 +64,263 @@ the `app.config.js` runtime, not the branch you happen to be on.
 3. To ship to both fleets you commit the JS change on **both** branches (port `release/1.0.2-legacy` from `release/1.1.0-navbar`, respecting rule 1) and publish an EAS update for each runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
-### Current deployed state (last updated 2026-07-23, 1.2.0 UX + stability batch)
+### Current deployed state (last updated 2026-09-14, 1.2.0 Dizipal 2131)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `7c6e29c` | `9ad008d5-55d7-496e-b6c8-7c8b03d40c4f` |
+| 1.2.0 | `v1.2.0` @ `07d9f6c` | `377d7005-7033-4da1-851a-f90370ac2fe8` |
 | 1.1.0 | `release/1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `release/1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+
+- **2026-09-14 (1.2.0 only):** Provider health sweep from a residential
+  connection, run through the shipped resolver with each tier isolated. HDFilm
+  8/8 probe titles native (1.1–5.2s); Dizipal 3/3 series and 3/3 films; Dizibal
+  6/6 of the titles it carries. The one defect: **Dizipal rotated 2130 → 2131**
+  (the 301 alone ~1s). Shipped floor bumped to 2131; the operator updated the
+  Supabase row the same day. Deploy: `07d9f6c` → group
+  `377d7005-7033-4da1-851a-f90370ac2fe8`.
+  - **Dizipal lists films under Turkish titles** (`/film/baslangic` for
+    Inception). An English-title probe with no TMDB access misses every film
+    and looks like a broken movie path — it isn't; the app's Turkish alt-title
+    retry supplies the name. Probe Dizipal films with the Turkish title.
+  - **Worker egress now gets 403 from dizipal2131**, while a residential
+    connection gets 200, so `provider-monitor` has reported Dizipal down since
+    2026-09-11. If that persists with the Supabase row on 2131, Dizipal needs
+    the same treatment as HDFilm (no Worker check).
+  - **1.1.0 and 1.0.2 are degraded and were deliberately NOT shipped** (user
+    decision, 2026-09-14). Their provider code is identical on both branches:
+    HDFilm yields no native stream (pre-Sep decoder), Dizipal's player config
+    404s at `/ajax-player-config` and `/ajax-token` now returns JSON, and the
+    Dizipal *page* result they still return stops the chain before Dizibal,
+    which does work there. Fixing them means porting the v1.2.0 provider layer.
+
+- **2026-09-11 (1.2.0 only):** Eight reported defects across search, provider
+  coverage, the profile library, navigation and language switching. Two of them
+  were the same mistake in different places: **a heuristic allowed to override
+  direct evidence.**
+  - **Searching a film by its full name returned none of it.** `harry` found the
+    Harry Potter films; `harry potter` found none. TMDB's person index holds a
+    real acting credit literally named "Harry Potter" — popularity 0.28, no
+    photo, one TV credit — and `getActorSearchConfidence` scored that exact name
+    match 1000, which unconditionally flipped `searchMulti` to the
+    actor-credits branch. One word can never reach that score, which is exactly
+    why half the query worked and the whole query did not. Overriding a matching
+    title now also requires *prominence* (a profile photo + popularity ≥ 1),
+    which is what separates a person a viewer could have meant from index noise.
+    Verified live against `/search/person` and `/search/multi` in both locales.
+  - **The weak-match rating floor deleted cross-language results.** With the UI
+    in English, TMDB matches a Turkish query against a translation the client
+    never sees, so the film scored 0 and the `rating >= 6` floor removed it —
+    same for anything TMDB reports as unrated. The floor now applies only when
+    the list already holds a title the viewer plainly named.
+  - **"Rosemary's Baby" reported Not Available while HDFilm carried it.** HDFilm
+    does not tokenize an apostrophe: `/search/?q=Rosemary's Baby` → 0 rows,
+    `/search/?q=Rosemarys Baby` → the film. The cleaned spelling existed but sat
+    *behind* the year-qualified variants, so the two-query empty cutoff fired
+    before it was ever sent. Confirmed live that Ocean's Eleven and Schindler's
+    List failed identically. Distinct spellings now all precede year-qualified
+    queries. Re-probed after the fix: all six test titles resolve, each on the
+    apostrophe-free query.
+  - **A Turkish UI withheld the original title from the resolver.**
+    `originalTitle` was gated on `original_language !== "en"`, so an English film
+    under a Turkish UI handed the provider search only its Turkish name. It is
+    never rendered — it exists for the resolver — so the gate is gone.
+  - **Watched titles stayed in the watchlist.** Now pruned from every path via
+    `applyWatchHistoryMutations` (the single funnel for log sheet, season modal
+    and player auto-mark) plus the Letterboxd import.
+  - **Stats' most-watched actors could not see the films it counted.** Entries
+    stored the top FIVE billed names out of a twelve-name fetch. Cate Blanchett
+    is credited **13th** on Fellowship of the Ring, so the trilogy was invisible
+    to her counts and to the list her row opens. Now 15 of 20, de-duplicated per
+    title (TMDB lists an actor once per role, which is how a tally could exceed
+    the titles it summarised), `METADATA_VERSION` 5 → 6 to re-enrich.
+  - **The profile count climbed in batches** because the header counted hydrated
+    poster cards rather than the ids already on disk. Rails now hydrate 30, not
+    all several hundred; See All pages in on scroll.
+  - **"Recently added" showed the oldest first** — stored id lists are
+    append-ordered and the sort walked them forwards.
+  - **Back from a grid landed on Discover.** `navigate(name)` pops back to an
+    existing route rather than pushing, so actor → See All → film collapsed the
+    stack onto the detail screen the journey began at.
+  - **Language switches resolved content in the language just left.**
+    `i18next.changeLanguage` is async, the settings store is not; for a render or
+    two `i18n.resolvedLanguage` still reported the old value, and the TMDB
+    `language` param and the hydration cache key both read from it. That is both
+    the Turkish posters under an English UI and the duplicated loading after
+    every switch. New `localization/contentLanguage`, set synchronously by the
+    settings store before it re-renders.
+  - **The Watch Together room-code field hid behind the keyboard** — no keyboard
+    handling on that screen at all. Scrolled into view on focus.
+
+  Lesson worth keeping: **a scoring heuristic must never be able to outrank the
+  literal thing the user typed unless it can show independent evidence it is
+  what they meant.** Both search bugs were a confidence number treated as truth —
+  an exact string match on a junk record, and a rating floor applied to results
+  whose real match was in a language the client had not asked for. Prominence
+  and "only prune when something matched" are both the same repair.
+
+- **2026-09-10 (1.2.0 only):** Dizipal rotation + Cloudflare-challenge
+  resilience, prompted by the bot paging "Dizipal is down" three runs running.
+  Dizipal was not down. Verified from Worker egress the same day: Dizipal
+  36/36 clean, Dizibal 200, HDFilm 403 (unchanged — still unmonitorable from
+  any datacenter IP). What was actually wrong:
+  - **Dizipal had rotated 2126 → 2130** while Supabase stayed pinned at 2127,
+    i.e. three dead 301 hops on every request. Shipped fallback bumped to 2130;
+    `normaliseDizipalBaseUrl` treats it as a floor, so it applies even against
+    a stale Supabase row. A test now fails if that floor falls behind.
+  - **Dizipal began challenging a fraction of requests**, and the app dropped
+    the tier on the first 403. HDFilm had retried past this since 2026-09-02;
+    Dizipal's fetches used a bare `axios.get`. Both now share `providerGet`.
+  - **The monitor modelled a client it wasn't.** It took the first 403 as
+    final, so an intermittent challenge read as a 36-hour outage. It now
+    retries twice, inspecting the body so a real permission failure still
+    fails fast.
+  - **A failing check could hide a rotation.** A challenge is served *at* the
+    requested host, so nothing redirects and the rotation detector saw nothing
+    — which is exactly how 2127 → 2130 stayed invisible behind three days of
+    403s. Rotation is now appended to the failure reason, not replaced by it.
+
+  Lesson worth keeping: **a provider alert that names a symptom the site does
+  not have is a monitor bug until proven otherwise.** Re-probe from the same
+  egress the monitor uses (`wrangler dev --remote`) before touching provider
+  code — that one step separated "Dizipal is down" from the two real defects.
+
+- **2026-09-08 (1.2.0 only):** HDFilm decoder rewrite + player/search/WebRTC
+  fixes. **HDFilm — tier 1 — was 100% dead**, and nothing had noticed: it
+  WAF-blocks datacenter IPs, so the Cloudflare Worker monitor cannot probe it at
+  all (re-verified with `wrangler dev --remote`: 403 challenge on every path,
+  both `.nl` and `.mobi`) and it has never had a check there. Every play was
+  quietly walking the full provider chain — that is what "the app got slow" and
+  "it's available but won't open" actually were.
+  (1) **HDFilm changed its obfuscation.** Parts array and decoder are no longer
+  `s_*` / `dc_*` but random short identifiers, and the algorithm gained a third
+  de-scramble family (two seed strings → LCG + XOR seed → Fisher-Yates
+  un-shuffle → rolling XOR) with dead `if` guards re-shuffled per request.
+  `rapidrameScript.ts` became a small general JS interpreter (tokenizer →
+  recursive-descent parser → AST walker) so all three families run through one
+  path; still no `eval`/`Function`, still fails closed, now with step/size
+  budgets and a regex guard. Extraction matches page structure, not name
+  prefixes. Measured after: 10/10 probe titles resolve in 0.6–1.0s, nearly all
+  on HDFilm's dual-audio stream instead of a Turkish-dub-only fallback.
+  (2) **A stream hiccup was shown as "not in our catalog".** Any expo-video
+  `status === "error"` on a direct stream became `not_found`; ExoPlayer raises
+  it for seeks past the buffered edge, single 5xx segments, expired tokens and
+  track switches, so seeking or tapping subtitles early produced the
+  "not available" card mid-film. Started streams now recover in place at their
+  last position (3 attempts) and playback failures can no longer read as missing
+  titles. The same path left `isPlaybackReady` false with only the first play
+  able to restore it, which is the "audio plays, screen stays black" report.
+  (3) **Search hid correctly-typed titles.** Turkish ı has no NFD decomposition
+  so it was stripped to a space ("Mezarlık" → `"mezarl k"`); and a flat
+  `rating >= 6` gate deleted everything TMDB reports as unrated, which when it
+  emptied the list flipped search to the actor-credits branch — a film search
+  answering with a filmography. Folding is now one shared helper across TMDB
+  search and the provider matcher; the quality gate applies only to results that
+  do not match the typed query.
+  (4) **Watch Together was one-way on some devices.** The peer connection was
+  published to `pcRef` before its handlers were attached and before an awaited
+  `setParameters`; an offer landing in that window was answered by a connection
+  with no `ontrack`/`onicecandidate`. Handlers and local tracks now attach
+  before publishing with no await in between, early offers are queued and
+  replayed, and a peer still starting up answers the readiness handshake.
+  (5) **Observability.** A `player_resolve` telemetry event now records the
+  resolved provider and duration — the only vantage point on a residential IP,
+  and the signal that was missing when tier 1 died.
+  Also: Dizipal base `2123` → `2126`, and Dizibal's embed host recovered from
+  the outage recorded on 2026-09-02, so all three tiers are healthy.
+
+- **2026-09-02 (1.2.0 only):** Provider recovery batch — three independent
+  breakages that together read as "everything is slow" and "it's in the app but
+  says Not Available". `npm run check:hdfilm` reported HEALTHY throughout, which
+  is why none of them surfaced as a normal decoder recovery.
+  (1) **Dizipal playback was dead** — the provider renamed
+  `/ajax-player-config` to `/ajax/player-config`; the 404 was read as "no
+  stream" and dropped silently while search kept answering 200, so titles
+  appeared and then refused to play. This is why *Mezarlık / Graveyard*
+  disappeared: Dizipal is the only provider carrying it. `decodeDizipalCfg` now
+  reads the player config out of the page's base64 `data-cfg` attribute — it is
+  byte-identical to the endpoint's response — which drops a token mint plus a
+  POST from every play and is immune to the next rename; the network call
+  survives as a fallback that tries both paths.
+  (2) **A stale Dizipal base cost seconds per request and past 21 hops broke it
+  outright** — `dizipalN.com` 301s to `N+1` and the hops are *not* one per
+  rotation: the shipped `2079` was 22 hops / 3.3s behind the live `2123`, past
+  axios' redirect ceiling. `normaliseDizipalBaseUrl` now compares the numeric
+  suffix so any published base older than the shipped one is ignored, replacing
+  the hand-maintained stale-host list. Also dropped `maxRedirects: 5` from
+  `probeDizipalDirectSlug`, the one call that failed hard rather than slowly.
+  (3) **The self-healed origin died at every refresh** — `recordObservedBaseUrl`
+  pins the post-redirect origin, but `refreshProviderConfigs()` overwrote it
+  with the lagging Supabase value, so `resolveWebPlayerUrl`'s "refresh then
+  retry" walked the whole chain a second time. The pin now survives a refresh
+  that republishes the *same* base and is dropped the moment the operator
+  publishes a different one, so `/set_dizipal` still wins.
+  (4) **Every HDFilm series was quietly losing to Dizipal** — `/dizi/` answers
+  `403 cf-mitigated: challenge` on the *first* request over a fresh connection
+  and 200 on every one after (9/10 with connection reuse, 0/10 without; no
+  cookie — the clearance rides on the connection). That first 403 read as
+  "HDFilm doesn't have it". `hdFilmGet()` retries past it, and Breaking Bad,
+  Severance, Stranger Things and From are back on dual-audio HDFilm streams
+  (6 subtitle tracks vs Dizipal's 2). **This corrects the 2026-08-10 note
+  below** — HDFilm series are not unreachable.
+  (5) **`provider-monitor` stayed green through the whole outage** because it
+  only probed search; added a `dizipal_playback` check that decodes the episode
+  page's `data-cfg`, verified reachable from Worker egress before deploy.
+  Measured after: 14/14 live titles resolve to a playing HLS manifest in
+  0.5–3.1s (the same sweep beforehand had series failing at 7.7s).
+  Deploy: 1.2.0 `a73c28d` → group `4fc77eff-1b8f-43ff-a389-14cc79675de5`.
+  1.1.0/1.0.2 NOT shipped. 345 tests green. Worker deployed separately
+  (version `6f2dc0a1-ad54-4efd-ac1c-295d04557c38`).
+  Known upstream outage, not ours: Dizibal's rotating embed host
+  (`x.ag2m4.cfd`) 502s for every code while `dizibal.org/api/*` stays healthy.
+
+- **2026-08-10 (1.2.0 only):** Search, player and daily-hero batch.
+  (1) **Films with a non-Latin original title reported "Not Available"** —
+  `generateSearchQueries` emitted the TMDB original title first and the 2-query
+  empty-result cutoff counted from the top, so Harakiri (original title `切腹`)
+  never got `/search/?q=Harakiri` sent at all; every Japanese/Korean/Chinese/
+  Cyrillic/Arabic-titled film failed identically. Bare titles go first now and
+  the cutoff is a floor raised by `bareTitleCount`. (2) **±1-year provider
+  metadata accepted** — HDFilm dates *Dune: Part Two* 2023 against TMDB's 2024
+  and the hard year gate threw it out; exact-year listings still win on score.
+  (3) **Audio menu showed every track as "Unknown"** — expo-video's Android
+  `AudioTrack.fromFormat` builds its label from `format.language` alone and drops
+  `format.label`, so DUAL masters (NAME, no LANGUAGE) produced two identical
+  rows; names are recovered from the media3 format id `<GROUP-ID>:<NAME>`. This
+  also repaired the original-audio preference, which had nothing to match on and
+  was leaving the provider's `DEFAULT=YES` Turkish dub playing. (4) **Subtitles
+  default to off**, with provider `DEFAULT=YES` renditions cleared on every track
+  republish. (5) **Movie/series of the day rotates daily** — the hash-modulo pick
+  collided across consecutive days, the rate-limit fallback used a date-free
+  index, and a hub refresh racing the liked/watched load stamped yesterday's hero
+  as current (for an account with no liked/watched titles that never self-healed).
+  Deploy: 1.2.0 `3eb6b70` → group `de6dcbdb-b64d-4e4b-9d06-2d7b512f6852`.
+  1.1.0/1.0.2 NOT shipped. 335 tests green.
+
+  Also recorded in `decoder-recovery.md`: `www.hdfilmcehennemi.nl` serves a
+  Cloudflare challenge on `/rplayer/` embeds and `/dizi/` series pages — **not**
+  a decoder rotation. ⚠ **Superseded 2026-09-02:** on `/dizi/` the challenge is
+  a first-request-per-connection challenge, not a wall; retrying clears it and
+  HDFilm series resolve natively again. `/rplayer/` remains unreachable.
+
+- **2026-08-02 (1.2.0 only):** Provider + playback batch. (1) **HDFilm decoder
+  rebuilt as an interpreter** — the provider swapped its arithmetic de-scramble
+  for a rolling-XOR cipher and randomizes the whole `dc_*()` scheme per request,
+  so the old matcher failed on *every* HDFilm title; films silently played from
+  Dizipal/Dizibal (Turkish-dub-only audio) after burning the full ~15–20s
+  resolver budget. New `src/services/rapidrameScript.ts` parses and replays the
+  live body. (2) **Dizipal handshake repaired** — `/ajax-token` returns JSON now,
+  the token is single-use, and the config POST needs the whole cookie jar.
+  (3) **Native players only** — Dizipal page/embed shells are no longer returned
+  as playable results. (4) **Audio track picker**, defaulting to the original
+  soundtrack instead of the provider's `DEFAULT=YES` Turkish dub, with the choice
+  remembered. (5) **Subtitles auto-enable** when the audio isn't in the app's
+  language. (6) **Season watch history now syncs** — season ids were being sent
+  to a `uuid` column, so prod had 2327 watch-history rows and zero season rows,
+  and the failing op clogged the durable queue; ticking episodes now also
+  reconciles watch history, fixing "watched on SeriesDetail, missing from
+  Profile". Measured after: 13/13 live titles resolve natively in 0.9–3.2s.
+  Deploy: 1.2.0 `10e5a49` → group `f192271c-b031-4a42-9619-c40c871b4f6c`. 1.1.0/1.0.2 NOT shipped.
 
 - **2026-07-23 (1.2.0 only, follow-up):** Reverted the custom YouTube expand/
   fullscreen player from earlier today — it was worse than the stock player, so

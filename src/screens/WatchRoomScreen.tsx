@@ -1,7 +1,17 @@
 import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import {
+  ActivityIndicator,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Circle, Polygon, Rect } from "react-native-svg";
@@ -36,6 +46,11 @@ import {
 type Props = NativeStackScreenProps<HomeStackParamList, "WatchRoomSetup">;
 
 type Mode = "create" | "join";
+
+// How much of the page above the form stays visible when it is scrolled into
+// view over the keyboard — enough to keep the "what should we call you?" label
+// and the ticket tabs in frame rather than pinning the fields to the very top.
+const FORM_REVEAL_HEADROOM = 120;
 
 const SCRIPT = "Caveat_700Bold";
 const TYPEWRITER = "SpecialElite_400Regular";
@@ -201,6 +216,28 @@ export function WatchRoomScreen({ route, navigation }: Props) {
     }
   };
 
+  // Keep the focused field above the keyboard.
+  //
+  // The room code sits near the bottom of a tall scroll page, so on Android the
+  // soft keyboard covered it completely — you could not see what you were
+  // typing. Android already resizes the window (adjustResize), which is why
+  // KeyboardAvoidingView only takes a behavior on iOS; what was missing is the
+  // scroll that brings the field into the shrunken viewport. Remembering the
+  // form's offset and scrolling to it on focus does that on both platforms.
+  const scrollRef = useRef<ScrollView>(null);
+  const formOffsetRef = useRef(0);
+
+  const revealForm = () => {
+    // Android raises the keyboard after the focus event, so give the window a
+    // frame to resize before scrolling into the new viewport.
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({
+        y: Math.max(formOffsetRef.current - FORM_REVEAL_HEADROOM, 0),
+        animated: true,
+      });
+    }, Platform.OS === "android" ? 180 : 60);
+  };
+
   // Hero = the wide backdrop still (landscape); it also drives the ambient spill.
   const heroSrc = media?.backdropPath ?? media?.posterPath ?? null;
   const heroImg = heroSrc ? getTmdbImageUrl(heroSrc, "w780") : null;
@@ -226,167 +263,184 @@ export function WatchRoomScreen({ route, navigation }: Props) {
         </AmbientWrap>
       ) : null}
 
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{ paddingTop: insets.top + 6, paddingBottom: insets.bottom + 28, paddingHorizontal: 22 }}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        {/* Top bar */}
-        <TopBar>
-          <RoundBtn onPress={() => navigation.goBack()} hitSlop={12}>
-            <Feather name="chevron-left" size={22} color={theme.colors.textPrimary} />
-          </RoundBtn>
-          <MetaTag>PRIVATE SCREENING</MetaTag>
-          <View style={{ width: 38 }} />
-        </TopBar>
+        <ScrollView
+          ref={scrollRef}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentContainerStyle={{ paddingTop: insets.top + 6, paddingBottom: insets.bottom + 28, paddingHorizontal: 22 }}
+        >
+          {/* Top bar */}
+          <TopBar>
+            <RoundBtn onPress={() => navigation.goBack()} hitSlop={12}>
+              <Feather name="chevron-left" size={22} color={theme.colors.textPrimary} />
+            </RoundBtn>
+            <MetaTag>PRIVATE SCREENING</MetaTag>
+            <View style={{ width: 38 }} />
+          </TopBar>
 
-        {/* Marquee header */}
-        <Animated.View entering={FadeInDown.duration(600).springify().damping(15)}>
-          <BulbRow>
-            <Animated.View style={bulbStyle}>
-              <MarqueeBulbs color={theme.colors.gold} />
-            </Animated.View>
-          </BulbRow>
-          <Kicker>now showing</Kicker>
-          <MarqueeTitle
-            numberOfLines={2}
-            adjustsFontSizeToFit
-            minimumFontScale={0.7}
-            style={{ fontSize: headlineFont, lineHeight: headlineFont + 4, letterSpacing: headlineSpacing }}
-          >
-            {headline}
-          </MarqueeTitle>
-          <TitleRule $color={theme.colors.gold} />
-        </Animated.View>
-
-        {/* The screen — the hero */}
-        <Animated.View entering={FadeInUp.duration(520).delay(160)}>
-          <PosterFrame style={{ aspectRatio: 3 / 2 }}>
-            {heroImg ? (
-              <Image source={{ uri: heroImg }} style={{ flex: 1 }} contentFit="cover" />
-            ) : (
-              <EmptyScreen>
-                <MaterialCommunityIcons name="movie-open-outline" size={30} color={withAlpha(theme.colors.textPrimary, 0.5)} />
-                <Sprockets color={theme.colors.textTertiary} />
-                <EmptyHint>Enter a code below{"\n"}to take your seat.</EmptyHint>
-              </EmptyScreen>
-            )}
-            <ScreenScrim colors={["rgba(6,8,7,0.62)", "transparent", "rgba(6,8,7,0.82)"]} locations={[0, 0.42, 1]} />
-
-            {/* projector light-sweep */}
-            <SweepClip pointerEvents="none">
-              <Sweep style={sweepStyle}>
-                <LinearGradient
-                  colors={["transparent", "rgba(255,255,255,0.14)", "transparent"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={{ flex: 1 }}
-                />
-              </Sweep>
-            </SweepClip>
-
-            {media?.tagline ? (
-              <Tagline numberOfLines={2}>“{media.tagline}”</Tagline>
-            ) : null}
-
-            {media && (media.year || media.genre) ? (
-              <PosterInfo>
-                {media.year ? <InfoText>{media.year}</InfoText> : null}
-                {media.year && media.genre ? <InfoDot /> : null}
-                {media.genre ? <InfoText numberOfLines={1}>{media.genre}</InfoText> : null}
-              </PosterInfo>
-            ) : null}
-          </PosterFrame>
-        </Animated.View>
-
-        {/* Ticket tabs */}
-        <Animated.View entering={FadeInUp.duration(500).delay(260)}>
-          <Tabs>
-            {media ? (
-              <TicketTab active={mode === "create"} onPress={() => setMode("create")} theme={theme}>
-                Host a room
-              </TicketTab>
-            ) : null}
-            <TicketTab active={mode === "join"} onPress={() => setMode("join")} theme={theme}>
-              Have a code
-            </TicketTab>
-          </Tabs>
-        </Animated.View>
-
-        {/* Form */}
-        <Animated.View entering={FadeInUp.duration(500).delay(340)}>
-          <FieldLabel>what should we call you?</FieldLabel>
-          <FieldWrap>
-            <Feather name="user" size={16} color={theme.colors.textTertiary} />
-            <Field
-              value={nickname}
-              onChangeText={setNickname}
-              placeholder="e.g. Night Owl"
-              placeholderTextColor={theme.colors.textTertiary}
-              maxLength={20}
-              autoCapitalize="words"
-            />
-          </FieldWrap>
-
-          {mode === "join" ? (
-            <>
-              <FieldLabel>room code</FieldLabel>
-              <CodeWrap $border={withAlpha(theme.colors.gold, 0.35)}>
-                <MaterialCommunityIcons name="ticket-outline" size={18} color={theme.colors.gold} />
-                <CodeField
-                  value={code}
-                  onChangeText={(text) => setCode(normalizeRoomCode(text))}
-                  placeholder="6-CHAR CODE"
-                  placeholderTextColor={theme.colors.textTertiary}
-                  autoCapitalize="characters"
-                  maxLength={6}
-                />
-              </CodeWrap>
-            </>
-          ) : null}
-
-          {error ? (
-            <ErrorRow>
-              <Feather name="alert-circle" size={13} color="#E9897B" />
-              <ErrorText>{error}</ErrorText>
-            </ErrorRow>
-          ) : null}
-
-          <PrimaryWrap>
-            <TicketCTA
-              onPress={handleSubmit}
-              disabled={!canSubmit || busy}
-              $enabled={canSubmit && !busy}
-              style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.98 : 1 }] }]}
+          {/* Marquee header */}
+          <Animated.View entering={FadeInDown.duration(600).springify().damping(15)}>
+            <BulbRow>
+              <Animated.View style={bulbStyle}>
+                <MarqueeBulbs color={theme.colors.gold} />
+              </Animated.View>
+            </BulbRow>
+            <Kicker>now showing</Kicker>
+            <MarqueeTitle
+              numberOfLines={2}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+              style={{ fontSize: headlineFont, lineHeight: headlineFont + 4, letterSpacing: headlineSpacing }}
             >
-              <TicketStub>
-                {busy ? (
-                  <ActivityIndicator color={theme.colors.textOnPrimary} />
-                ) : (
-                  <MaterialCommunityIcons name="ticket-confirmation-outline" size={22} color={theme.colors.textOnPrimary} />
-                )}
-              </TicketStub>
-              <TicketPerf />
-              <TicketMain>
-                <TicketText>{mode === "create" ? "OPEN THE ROOM" : "TAKE MY SEAT"}</TicketText>
-              </TicketMain>
-              <TicketNotch style={{ top: -9 }} />
-              <TicketNotch style={{ bottom: -9 }} />
-            </TicketCTA>
-          </PrimaryWrap>
+              {headline}
+            </MarqueeTitle>
+            <TitleRule $color={theme.colors.gold} />
+          </Animated.View>
 
-          <FooterRow>
-            <Animated.View style={twinkleStyle}>
-              <StarMark size={10} color={theme.colors.gold} />
-            </Animated.View>
-            <FooterNote>Private room. Just the two of you.</FooterNote>
-            <Animated.View style={twinkleStyle}>
-              <StarMark size={10} color={theme.colors.gold} />
-            </Animated.View>
-          </FooterRow>
+          {/* The screen — the hero */}
+          <Animated.View entering={FadeInUp.duration(520).delay(160)}>
+            <PosterFrame style={{ aspectRatio: 3 / 2 }}>
+              {heroImg ? (
+                <Image source={{ uri: heroImg }} style={{ flex: 1 }} contentFit="cover" />
+              ) : (
+                <EmptyScreen>
+                  <MaterialCommunityIcons name="movie-open-outline" size={30} color={withAlpha(theme.colors.textPrimary, 0.5)} />
+                  <Sprockets color={theme.colors.textTertiary} />
+                  <EmptyHint>Enter a code below{"\n"}to take your seat.</EmptyHint>
+                </EmptyScreen>
+              )}
+              <ScreenScrim colors={["rgba(6,8,7,0.62)", "transparent", "rgba(6,8,7,0.82)"]} locations={[0, 0.42, 1]} />
 
-        </Animated.View>
-      </ScrollView>
+              {/* projector light-sweep */}
+              <SweepClip pointerEvents="none">
+                <Sweep style={sweepStyle}>
+                  <LinearGradient
+                    colors={["transparent", "rgba(255,255,255,0.14)", "transparent"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={{ flex: 1 }}
+                  />
+                </Sweep>
+              </SweepClip>
+
+              {media?.tagline ? (
+                <Tagline numberOfLines={2}>“{media.tagline}”</Tagline>
+              ) : null}
+
+              {media && (media.year || media.genre) ? (
+                <PosterInfo>
+                  {media.year ? <InfoText>{media.year}</InfoText> : null}
+                  {media.year && media.genre ? <InfoDot /> : null}
+                  {media.genre ? <InfoText numberOfLines={1}>{media.genre}</InfoText> : null}
+                </PosterInfo>
+              ) : null}
+            </PosterFrame>
+          </Animated.View>
+
+          {/* Ticket tabs */}
+          <Animated.View entering={FadeInUp.duration(500).delay(260)}>
+            <Tabs>
+              {media ? (
+                <TicketTab active={mode === "create"} onPress={() => setMode("create")} theme={theme}>
+                  Host a room
+                </TicketTab>
+              ) : null}
+              <TicketTab active={mode === "join"} onPress={() => setMode("join")} theme={theme}>
+                Have a code
+              </TicketTab>
+            </Tabs>
+          </Animated.View>
+
+          {/* Form */}
+          <Animated.View
+            entering={FadeInUp.duration(500).delay(340)}
+            onLayout={(event) => {
+              formOffsetRef.current = event.nativeEvent.layout.y;
+            }}
+          >
+            <FieldLabel>what should we call you?</FieldLabel>
+            <FieldWrap>
+              <Feather name="user" size={16} color={theme.colors.textTertiary} />
+              <Field
+                value={nickname}
+                onChangeText={setNickname}
+                placeholder="e.g. Night Owl"
+                placeholderTextColor={theme.colors.textTertiary}
+                maxLength={20}
+                autoCapitalize="words"
+                onFocus={revealForm}
+                returnKeyType={mode === "join" ? "next" : "done"}
+              />
+            </FieldWrap>
+
+            {mode === "join" ? (
+              <>
+                <FieldLabel>room code</FieldLabel>
+                <CodeWrap $border={withAlpha(theme.colors.gold, 0.35)}>
+                  <MaterialCommunityIcons name="ticket-outline" size={18} color={theme.colors.gold} />
+                  <CodeField
+                    value={code}
+                    onChangeText={(text) => setCode(normalizeRoomCode(text))}
+                    placeholder="6-CHAR CODE"
+                    placeholderTextColor={theme.colors.textTertiary}
+                    autoCapitalize="characters"
+                    maxLength={6}
+                    onFocus={revealForm}
+                    returnKeyType="done"
+                    onSubmitEditing={() => Keyboard.dismiss()}
+                  />
+                </CodeWrap>
+              </>
+            ) : null}
+
+            {error ? (
+              <ErrorRow>
+                <Feather name="alert-circle" size={13} color="#E9897B" />
+                <ErrorText>{error}</ErrorText>
+              </ErrorRow>
+            ) : null}
+
+            <PrimaryWrap>
+              <TicketCTA
+                onPress={handleSubmit}
+                disabled={!canSubmit || busy}
+                $enabled={canSubmit && !busy}
+                style={({ pressed }) => [{ transform: [{ scale: pressed ? 0.98 : 1 }] }]}
+              >
+                <TicketStub>
+                  {busy ? (
+                    <ActivityIndicator color={theme.colors.textOnPrimary} />
+                  ) : (
+                    <MaterialCommunityIcons name="ticket-confirmation-outline" size={22} color={theme.colors.textOnPrimary} />
+                  )}
+                </TicketStub>
+                <TicketPerf />
+                <TicketMain>
+                  <TicketText>{mode === "create" ? "OPEN THE ROOM" : "TAKE MY SEAT"}</TicketText>
+                </TicketMain>
+                <TicketNotch style={{ top: -9 }} />
+                <TicketNotch style={{ bottom: -9 }} />
+              </TicketCTA>
+            </PrimaryWrap>
+
+            <FooterRow>
+              <Animated.View style={twinkleStyle}>
+                <StarMark size={10} color={theme.colors.gold} />
+              </Animated.View>
+              <FooterNote>Private room. Just the two of you.</FooterNote>
+              <Animated.View style={twinkleStyle}>
+                <StarMark size={10} color={theme.colors.gold} />
+              </Animated.View>
+            </FooterRow>
+
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </Root>
   );
 }

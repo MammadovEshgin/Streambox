@@ -2,7 +2,7 @@ import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { Feather, MaterialIcons } from "@expo/vector-icons";
 import axios from "axios";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Animated,
@@ -15,7 +15,7 @@ import {
   View,
   useWindowDimensions
 } from "react-native";
-import { useVideoPlayer, VideoView, type ContentType, type SubtitleTrack } from "expo-video";
+import { useVideoPlayer, VideoView, type AudioTrack, type ContentType, type SubtitleTrack } from "expo-video";
 import YoutubeIframe from "react-native-youtube-iframe";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
@@ -46,11 +46,20 @@ import {
   type WebPlayerResult
 } from "../services/WebPlayerService";
 import { setPlayerActive } from "../services/playerActivityFlag";
+import { trackPerformance } from "../services/telemetryService";
 import {
   hideSystemNavigationBar,
   showSystemNavigationBar,
 } from "../utils/systemNavigationBar";
 import { getProviderConfig } from "../services/providerConfigService";
+import {
+  DEFAULT_AUDIO_PREFERENCE,
+  getAudioTrackLabel,
+  pickPreferredAudioTrack,
+  resolveAudioTrackLanguage,
+  type AudioPreference,
+} from "../utils/audioTracks";
+import { loadAudioPreference, saveAudioPreference } from "../services/audioPreferenceStorage";
 import {
   normalizeSubtitleUrl,
   parseSubtitleDocument,
@@ -76,6 +85,12 @@ function debugLog(...args: unknown[]) {
     console.log(...args);
   }
 }
+
+// How many times a single stream may be re-opened in place before the player
+// gives up and shows the retryable error. Three covers the transient cases
+// (segment 5xx, token refresh, seek past the buffered edge) without spinning on
+// a stream that is genuinely dead.
+const MAX_STREAM_RECOVERY_ATTEMPTS = 3;
 
 function isImagestooStream(url?: string | null): boolean {
   if (!url) return false;
@@ -433,6 +448,22 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const [currentStreamUrl, setCurrentStreamUrl] = useState<string | null>(null);
   const [isQualityMenuOpen, setIsQualityMenuOpen] = useState(false);
 
+  // ── Audio renditions (dual-audio provider streams) ──
+  // Turkish providers ship DUAL masters where the dub is flagged DEFAULT=YES,
+  // so an untouched ExoPlayer dubs every film. We re-pick per the stored
+  // preference (original audio unless the viewer says otherwise).
+  const [availableAudioTracks, setAvailableAudioTracks] = useState<AudioTrack[]>([]);
+  const [selectedAudioTrack, setSelectedAudioTrack] = useState<AudioTrack | null>(null);
+  const [isAudioMenuOpen, setIsAudioMenuOpen] = useState(false);
+  const [audioPreference, setAudioPreference] = useState<AudioPreference>(DEFAULT_AUDIO_PREFERENCE);
+  // Auto-selection runs once per loaded source; after that the viewer's manual
+  // pick wins even if the track list is re-emitted mid-playback.
+  const audioAutoAppliedRef = useRef(false);
+  // Subtitles are off until the viewer opens the CC menu and asks for one.
+  // Until they do, a provider's DEFAULT=YES subtitle rendition gets cleared
+  // every time ExoPlayer republishes the track list.
+  const subtitleChosenByViewerRef = useRef(false);
+
   // â”€â”€ Track recent playback entry only â”€â”€
   const { addToRecentlyWatched } = useRecentlyWatched();
   const hasTrackedRef = useRef(false);
@@ -441,6 +472,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const playerResultRef = useRef<WebPlayerResult | null>(null);
   const directFallbackPromiseRef = useRef<Promise<WebPlayerResult> | null>(null);
   const dizipalRecoveryTriggeredRef = useRef(false);
+  // In-place recoveries spent on the current source; reset whenever it changes.
+  const streamRecoveryAttemptsRef = useRef(0);
 
   const buildWebPlayerRequest = useCallback((): WebPlayerRequest => ({
     mediaType: route.params.mediaType,
@@ -571,13 +604,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [controlsOpacity, clearHideTimer, scheduleHideControls]);
 
   const toggleControls = useCallback(() => {
-    if (isSubtitleMenuOpen || isQualityMenuOpen) return;
+    if (isSubtitleMenuOpen || isQualityMenuOpen || isAudioMenuOpen) return;
     if (controlsVisibleRef.current) {
       hideControlsNow();
     } else {
       showControls();
     }
-  }, [isSubtitleMenuOpen, isQualityMenuOpen, showControls, hideControlsNow]);
+  }, [isSubtitleMenuOpen, isQualityMenuOpen, isAudioMenuOpen, showControls, hideControlsNow]);
 
   // Legacy alias so the WebView path keeps working without renaming everything
   const showCloseBtn = controlsVisible;
@@ -647,12 +680,12 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
   // Pause auto-hide while a menu is open; resume when closed
   useEffect(() => {
-    if (isSubtitleMenuOpen || isQualityMenuOpen) {
+    if (isSubtitleMenuOpen || isQualityMenuOpen || isAudioMenuOpen) {
       clearHideTimer();
     } else if (controlsVisibleRef.current) {
       scheduleHideControls();
     }
-  }, [isSubtitleMenuOpen, isQualityMenuOpen, clearHideTimer, scheduleHideControls]);
+  }, [isSubtitleMenuOpen, isQualityMenuOpen, isAudioMenuOpen, clearHideTimer, scheduleHideControls]);
 
   // Step 1: Resolve the movie page URL (or use trailer)
   useEffect(() => {
@@ -666,6 +699,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setSelectedExternalSubtitle(null);
     setExternalSubtitleCues([]);
     setActiveSubtitleText(null);
+    setAvailableAudioTracks([]);
+    setSelectedAudioTrack(null);
+    setIsAudioMenuOpen(false);
+    audioAutoAppliedRef.current = false;
+    subtitleChosenByViewerRef.current = false;
     hdfilmNativeFallbackTriggeredRef.current = false;
     hdfilmRuntimeDiscoveryKeysRef.current.clear();
     dizipalRecoveryTriggeredRef.current = false;
@@ -699,10 +737,29 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     }
 
     setIsResolving(true);
+    const resolveStartedAt = Date.now();
     resolveWebPlayerUrl(buildWebPlayerRequest())
       .then((result) => {
         if (cancelled) return;
         debugLog("[Player] URL:", result.url, "source:", result.source, "streamUrl:", result.streamUrl ?? "none", "streamType:", result.streamType ?? "none");
+
+        // The ONLY vantage point that can see provider health.
+        //
+        // No automated monitor can reach HDFilm: it WAF-blocks datacenter IPs,
+        // so both Cloudflare Worker egress and GitHub runners get a 403
+        // challenge (see workers/provider-monitor and decoder-recovery.md).
+        // When its decoder changed shape in Sep 2026, tier 1 was dead for every
+        // user and every dashboard stayed green — the breakage surfaced only
+        // because a viewer noticed a series had "disappeared".
+        //
+        // These devices run on residential IPs and are the one place the truth
+        // is observable. A sustained shift in `source` away from hdfilm/direct,
+        // or a jump in `not_found`, is the tier-1 outage signal.
+        trackPerformance("player_resolve", Date.now() - resolveStartedAt, {
+          source: result.source,
+          mediaType: route.params.mediaType,
+          isEpisode: route.params.episodeNumber != null,
+        });
 
         if (result.qualityWarning && result.source !== "not_found") {
           setIsResolving(false);
@@ -1156,21 +1213,26 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const streamReferer = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.referer ?? "" : "";
   const directStreamType = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.streamType ?? "" : "";
   const directEmbedUrl = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") ? playerResult.embedUrl ?? "" : "";
-  const directSubtitleOptions =
-    (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct")
-      ? (playerResult.subtitles ?? [])
-          .filter(s => !s.url.includes(".m3u8")) // Skip HLS subtitle playlists for external side-loading
-          .map((subtitle) => ({
-            ...subtitle,
-            url: normalizeSubtitleUrl(
-              subtitle.url,
-              directEmbedUrl,
-              playerResult.url,
-              streamReferer,
-              directStreamUrl
-            )
-          }))
-      : [];
+  // Memoized so the default-subtitle effect below can depend on it without
+  // re-running (and re-selecting) on every render.
+  const directSubtitleOptions = useMemo(
+    () =>
+      (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct")
+        ? (playerResult.subtitles ?? [])
+            .filter(s => !s.url.includes(".m3u8")) // Skip HLS subtitle playlists for external side-loading
+            .map((subtitle) => ({
+              ...subtitle,
+              url: normalizeSubtitleUrl(
+                subtitle.url,
+                directEmbedUrl,
+                playerResult.url,
+                streamReferer,
+                directStreamUrl
+              )
+            }))
+        : [],
+    [playerResult, directEmbedUrl, streamReferer, directStreamUrl]
+  );
   useEffect(() => {
     if (!videoPlayer || !directStreamUrl) return;
 
@@ -1184,9 +1246,151 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       },
       contentType
     };
+    // A new source means a new track list; let the preference re-apply once.
+    audioAutoAppliedRef.current = false;
+    subtitleChosenByViewerRef.current = false;
+    setAvailableAudioTracks([]);
+    setSelectedAudioTrack(null);
+    // A fresh source gets a fresh recovery budget.
+    streamRecoveryAttemptsRef.current = 0;
     void videoPlayer.replaceAsync(source);
     // Don't call play() here â€” wait for readyToPlay status so play() doesn't silently fail
   }, [videoPlayer, directStreamUrl, streamReferer, directStreamType]);
+
+  /**
+   * Re-open the CURRENT stream at the position it died on.
+   *
+   * ExoPlayer reports `status === "error"` for plenty of recoverable things —
+   * a seek past the buffered edge, a 5xx on one segment, an expired CDN token,
+   * a track switch racing the initial buffer. Those used to tear the screen
+   * down and, for `direct` sources, land on the "Not available yet" card, so
+   * the viewer saw "this title isn't in our catalog" for a title that was
+   * playing a second earlier — and had to back out and re-enter to watch on.
+   *
+   * Re-issuing the same source is enough to clear all of those: the provider
+   * URL is still valid and the position is preserved, so recovery is invisible
+   * apart from a short re-buffer. The attempt budget stops a genuinely dead
+   * stream from looping forever; exhausting it surfaces the retryable playback
+   * error, never `not_found`.
+   */
+  const recoverCurrentStream = useCallback(
+    (reason?: string): boolean => {
+      if (!videoPlayer || !directStreamUrl) return false;
+      if (streamRecoveryAttemptsRef.current >= MAX_STREAM_RECOVERY_ATTEMPTS) return false;
+
+      streamRecoveryAttemptsRef.current += 1;
+      const attempt = streamRecoveryAttemptsRef.current;
+      let resumeAt = 0;
+      try {
+        resumeAt = videoPlayer.currentTime ?? 0;
+      } catch {
+        /* expo-video already torn down */
+      }
+
+      debugLog(
+        `[Player] Recovering stream in place (attempt ${attempt}/${MAX_STREAM_RECOVERY_ATTEMPTS}) at ${resumeAt}s — ${reason ?? "unknown error"}`
+      );
+
+      void videoPlayer
+        .replaceAsync({
+          uri: directStreamUrl,
+          headers: {
+            ...(streamReferer ? { Referer: streamReferer } : {}),
+            "User-Agent": PLAYER_WEBVIEW_USER_AGENT
+          },
+          contentType: directStreamType === "m3u8" ? ("hls" as ContentType) : undefined
+        })
+        .then(() => {
+          try {
+            if (resumeAt > 0) videoPlayer.currentTime = resumeAt;
+            videoPlayer.play();
+          } catch {
+            /* expo-video already torn down */
+          }
+        })
+        .catch((error: unknown) => {
+          debugLog("[Player] In-place recovery failed:", (error as Error)?.message ?? String(error));
+          setLoadError("Failed to load this stream. Please try again later.");
+        });
+
+      return true;
+    },
+    [videoPlayer, directStreamUrl, streamReferer, directStreamType]
+  );
+
+  // Restore the viewer's remembered soundtrack choice before the first stream
+  // reports its tracks, so the very first auto-pick already honours it.
+  useEffect(() => {
+    let cancelled = false;
+    void loadAudioPreference().then((preference) => {
+      if (!cancelled) setAudioPreference(preference);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const audioPreferenceRef = useRef(audioPreference);
+  audioPreferenceRef.current = audioPreference;
+
+  /**
+   * Keep subtitles off until the viewer asks for them.
+   *
+   * The player used to auto-enable a subtitle whenever the soundtrack wasn't in
+   * the viewer's language. That put text over every foreign-language film the
+   * viewer had deliberately chosen to watch in its original audio, and clearing
+   * it meant opening the CC menu on every single title.
+   *
+   * Simply not selecting one is not enough: provider masters flag a rendition
+   * DEFAULT=YES (the same trick that dubs the audio), and ExoPlayer honours it
+   * whenever it publishes a track list. So clear it on every republish until a
+   * manual pick sets `subtitleChosenByViewerRef`.
+   */
+  const enforceSubtitlesOff = useCallback(() => {
+    if (subtitleChosenByViewerRef.current) return;
+
+    try {
+      if (videoPlayer.subtitleTrack) {
+        debugLog("[Player] Clearing provider-default subtitle track");
+        videoPlayer.subtitleTrack = null;
+      }
+    } catch {
+      /* expo-video already torn down */
+    }
+    setSelectedSubtitleTrack(null);
+  }, [videoPlayer]);
+
+  /**
+   * Adopt a freshly published track list and, once per source, override the
+   * provider's DEFAULT rendition with the preferred one. Skipping the override
+   * when the pick already matches avoids a needless mid-playback audio switch.
+   */
+  const applyAudioTracks = useCallback(
+    (tracks: AudioTrack[]) => {
+      setAvailableAudioTracks(tracks);
+      try {
+        setSelectedAudioTrack(videoPlayer.audioTrack ?? null);
+      } catch {
+        /* expo-video already torn down */
+      }
+
+      if (audioAutoAppliedRef.current || tracks.length < 2) return;
+
+      const preferred = pickPreferredAudioTrack(tracks, audioPreferenceRef.current);
+      audioAutoAppliedRef.current = true;
+      if (!preferred) return;
+
+      try {
+        if (videoPlayer.audioTrack?.id === preferred.id) return;
+        debugLog("[Player] Selecting preferred audio track:", preferred.label, preferred.language);
+        videoPlayer.audioTrack = preferred;
+        setSelectedAudioTrack(preferred);
+      } catch {
+        /* expo-video already torn down */
+      }
+    },
+    [videoPlayer]
+  );
 
   useEffect(() => {
     if (!videoPlayer) return;
@@ -1199,7 +1403,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         debugLog("[Player] Ready - starting playback");
         debugLog("[Player] Available subtitle tracks:", JSON.stringify(videoPlayer.availableSubtitleTracks));
         setAvailableSubtitleTracks(videoPlayer.availableSubtitleTracks);
-        setSelectedSubtitleTrack(videoPlayer.subtitleTrack ?? null);
+        enforceSubtitlesOff();
+        applyAudioTracks(videoPlayer.availableAudioTracks ?? []);
         // Continue-watching may hold playback for the resume prompt, or seek
         // to the saved position and start itself.
         if (!handleContinueWatchingReady()) {
@@ -1209,6 +1414,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       }
       if (ev.status === "error") {
         debugLog("[Player] Video error:", ev.error?.message);
+
+        // A stream that has already produced frames IS the right stream. An
+        // error after that point is a hiccup (seek past the buffer, one bad
+        // segment, an expired token, a track switch racing the load), so
+        // recover in place and leave `playerResult` — and the whole screen —
+        // alone. Only a stream that never started is evidence the SOURCE is
+        // wrong, and only then is it worth walking the fallback ladder.
+        if (hasStarted && recoverCurrentStream(ev.error?.message)) return;
+
         setIsPlaybackReady(false);
         setPlayerResult((prev) => {
           // HDFilm-derived direct streams carry the original page URL so we can
@@ -1224,10 +1438,9 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             setLoadError(null);
             return { ...prev, source: "dizipal_html5" };
           }
-          if (prev?.source === "direct") {
-            setLoadError(null);
-            return { url: "", source: "not_found" };
-          }
+          // NOT `not_found`. We resolved this title on a provider — the stream
+          // just won't play. Claiming "isn't in our catalog yet" sends the
+          // viewer away from a title that a retry usually fixes.
           setLoadError("Failed to load this stream. Please try again later.");
           return prev;
         });
@@ -1235,19 +1448,40 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     });
 
     const playingSub = videoPlayer.addListener("playingChange", (ev: any) => {
-      if (ev.isPlaying && !hasStarted) {
-        hasStarted = true;
-        setIsPlaybackReady(true);
-      }
+      if (!ev.isPlaying) return;
+      hasStarted = true;
+      // Unconditionally, not just on the first play: a recovered error left
+      // `isPlaybackReady` false, and nothing else flips it back — which is the
+      // "I can hear it but the screen stays black" case, the black screen being
+      // the loading overlay still painted over a playing video.
+      setIsPlaybackReady(true);
+      setLoadError(null);
     });
 
     const subtitleSub = videoPlayer.addListener("availableSubtitleTracksChange", (ev: any) => {
       debugLog("[Player] Subtitle tracks available:", JSON.stringify(ev.availableSubtitleTracks));
       setAvailableSubtitleTracks(ev.availableSubtitleTracks);
+      // A republished list is where a DEFAULT=YES rendition sneaks back in.
+      enforceSubtitlesOff();
     });
 
     const subtitleTrackSub = videoPlayer.addListener("subtitleTrackChange", (ev: any) => {
+      if (ev.subtitleTrack && !subtitleChosenByViewerRef.current) {
+        enforceSubtitlesOff();
+        return;
+      }
       setSelectedSubtitleTrack(ev.subtitleTrack ?? null);
+    });
+
+    // HLS audio renditions often arrive after readyToPlay (ExoPlayer publishes
+    // them once the master playlist's alternate groups are parsed), so the
+    // auto-pick has to run from this event too — not just from statusChange.
+    const audioSub = videoPlayer.addListener("availableAudioTracksChange", (ev: any) => {
+      applyAudioTracks(ev.availableAudioTracks ?? []);
+    });
+
+    const audioTrackSub = videoPlayer.addListener("audioTrackChange", (ev: any) => {
+      setSelectedAudioTrack(ev.audioTrack ?? null);
     });
 
     return () => {
@@ -1255,8 +1489,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       playingSub.remove();
       subtitleSub.remove();
       subtitleTrackSub.remove();
+      audioSub.remove();
+      audioTrackSub.remove();
     };
-  }, [videoPlayer, handleContinueWatchingReady]);
+  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks, enforceSubtitlesOff, recoverCurrentStream]);
 
   useEffect(() => {
     if (!selectedExternalSubtitle || selectedExternalSubtitle.url.includes(".m3u8")) {
@@ -1350,6 +1586,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     if (playerResult?.source !== "dizipal_direct" && playerResult?.source !== "direct") {
       setIsSubtitleMenuOpen(false);
       setIsQualityMenuOpen(false);
+      setIsAudioMenuOpen(false);
     }
   }, [playerResult?.source]);
 
@@ -1379,6 +1616,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     }).then(() => {
       videoPlayer.currentTime = currentTime;
       videoPlayer.play();
+    }).catch((error: unknown) => {
+      // Without this the rejection was unhandled and the viewer sat on a frozen
+      // frame with no error and no way back to the quality that was working.
+      debugLog("[Player] Quality switch failed:", (error as Error)?.message ?? String(error));
+      setLoadError("Couldn't switch quality. Please try again.");
     });
   }, [videoPlayer, currentStreamUrl, streamReferer, directStreamType]);
 
@@ -1398,6 +1640,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [directSubtitleOptions.length, availableSubtitleTracks.length, scheduleHideClose]);
 
   const selectSubtitleTrack = useCallback((track: SubtitleTrack | null) => {
+    subtitleChosenByViewerRef.current = true;
     videoPlayer.subtitleTrack = track;
     setSelectedSubtitleTrack(track);
     setSelectedExternalSubtitle(null);
@@ -1408,6 +1651,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [videoPlayer, scheduleHideClose]);
 
   const selectExternalSubtitle = useCallback((subtitle: DirectSubtitleOption | null) => {
+    subtitleChosenByViewerRef.current = true;
     videoPlayer.subtitleTrack = null;
     setSelectedSubtitleTrack(null);
     setSelectedExternalSubtitle(subtitle);
@@ -1416,6 +1660,62 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setIsSubtitleMenuOpen(false);
     scheduleHideClose();
   }, [videoPlayer, scheduleHideClose]);
+
+  const toggleAudioMenu = useCallback(() => {
+    if (availableAudioTracks.length < 2) return;
+    setIsAudioMenuOpen((current) => {
+      if (!current) {
+        if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      } else {
+        scheduleHideClose();
+      }
+      return !current;
+    });
+    setIsSubtitleMenuOpen(false);
+    setIsQualityMenuOpen(false);
+  }, [availableAudioTracks.length, scheduleHideClose]);
+
+  const selectAudioTrack = useCallback(
+    (track: AudioTrack) => {
+      // Remember the CHOICE, not the track object: ids are per-stream, so the
+      // next title needs a language (or "original") to re-derive the pick from.
+      const language = resolveAudioTrackLanguage(track);
+      const nextPreference: AudioPreference = language
+        ? { kind: "language", language }
+        : DEFAULT_AUDIO_PREFERENCE;
+
+      setAudioPreference(nextPreference);
+      void saveAudioPreference(nextPreference);
+
+      try {
+        const currentTime = videoPlayer.currentTime;
+        videoPlayer.audioTrack = track;
+        // ExoPlayer can restart the rendition at the segment boundary; pinning
+        // the position keeps the switch seamless instead of jumping back.
+        videoPlayer.currentTime = currentTime;
+      } catch {
+        /* expo-video already torn down */
+      }
+
+      setSelectedAudioTrack(track);
+      audioAutoAppliedRef.current = true;
+      setIsAudioMenuOpen(false);
+      scheduleHideClose();
+    },
+    [videoPlayer, scheduleHideClose]
+  );
+
+  // The top-right control strip is laid out on a fixed 46px pitch starting at
+  // right:16. Deriving each optional button's slot (instead of hardcoding its
+  // offset) keeps the strip gap-free whichever combination is present.
+  const CONTROL_SLOT_PITCH = 46;
+  const FIRST_OPTIONAL_SLOT_RIGHT = 154; // after close / fit / CC
+  const hasMultipleAudioTracks = availableAudioTracks.length > 1;
+  const hasQualityOptions = (playerResult?.qualityOptions?.length ?? 0) > 1;
+  const slotRight = (index: number) => FIRST_OPTIONAL_SLOT_RIGHT + index * CONTROL_SLOT_PITCH;
+  const audioButtonRight = slotRight(0);
+  const qualityButtonRight = slotRight(hasMultipleAudioTracks ? 1 : 0);
+  const episodeButtonRight = slotRight((hasMultipleAudioTracks ? 1 : 0) + (hasQualityOptions ? 1 : 0));
 
   const isLoading = isResolving || (!isPlaybackReady && playerResult?.source !== "not_found");
   const isNotAvailable = playerResult?.source === "not_found";
@@ -1489,8 +1789,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             </TouchableOpacity>
           </Animated.View>
         )}
-        {!isLoading && isSubtitleMenuOpen && (
-          <Pressable style={styles.subtitleMenuBackdrop} onPress={() => setIsSubtitleMenuOpen(false)} />
+        {!isLoading && (isSubtitleMenuOpen || isAudioMenuOpen) && (
+          <Pressable
+            style={styles.subtitleMenuBackdrop}
+            onPress={() => {
+              setIsSubtitleMenuOpen(false);
+              setIsAudioMenuOpen(false);
+            }}
+          />
         )}
         {!isLoading && showCloseBtn && (
           <>
@@ -1524,8 +1830,22 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               </TouchableOpacity>
             </Animated.View>
 
-            {playerResult?.qualityOptions && playerResult.qualityOptions.length > 1 && (
-              <Animated.View style={[styles.ccButton, { right: 154, opacity: closeBtnOpacity }]}>
+            {hasMultipleAudioTracks && (
+              <Animated.View style={[styles.ccButton, { right: audioButtonRight, opacity: closeBtnOpacity }]}>
+                <TouchableOpacity
+                  onPress={toggleAudioMenu}
+                  activeOpacity={0.8}
+                  style={styles.closeButtonInner}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("player.a11y.audio")}
+                >
+                  <MaterialIcons name="multitrack-audio" size={20} color="#FFFFFF" />
+                </TouchableOpacity>
+              </Animated.View>
+            )}
+
+            {hasQualityOptions && (
+              <Animated.View style={[styles.ccButton, { right: qualityButtonRight, opacity: closeBtnOpacity }]}>
                 <TouchableOpacity
                   onPress={toggleQualityMenu}
                   activeOpacity={0.8}
@@ -1539,14 +1859,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             )}
 
             {isSeriesNativePath && nextEpisode.seasons.length > 0 && (
-              <Animated.View
-                style={[
-                  styles.ccButton,
-                  // Sit right after the quality gear when it exists, else take
-                  // its slot so there's no gap in the control strip.
-                  { right: (playerResult?.qualityOptions?.length ?? 0) > 1 ? 200 : 154, opacity: closeBtnOpacity },
-                ]}
-              >
+              <Animated.View style={[styles.ccButton, { right: episodeButtonRight, opacity: closeBtnOpacity }]}>
                 <TouchableOpacity
                   onPress={() => setEpisodePickerOpen(true)}
                   activeOpacity={0.8}
@@ -1559,7 +1872,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               </Animated.View>
             )}
 
-            {(isSubtitleMenuOpen || isQualityMenuOpen) && (
+            {(isSubtitleMenuOpen || isQualityMenuOpen || isAudioMenuOpen) && (
               <View style={styles.subtitleMenu}>
                 {isSubtitleMenuOpen && (
                   <>
@@ -1627,6 +1940,35 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
                   </>
                 )}
 
+                {isAudioMenuOpen && (
+                  <>
+                    <Text style={styles.subtitleMenuHeader}>{t("player.audio")}</Text>
+                    {availableAudioTracks.map((track, index) => {
+                      const isActive = selectedAudioTrack?.id === track.id;
+                      const language = resolveAudioTrackLanguage(track);
+
+                      return (
+                        <TouchableOpacity
+                          key={track.id}
+                          activeOpacity={0.8}
+                          style={[styles.subtitleMenuItem, isActive && styles.subtitleMenuItemActive]}
+                          onPress={() => selectAudioTrack(track)}
+                        >
+                          <Text style={styles.subtitleMenuItemLabel}>{getAudioTrackLabel(track, index)}</Text>
+                          <View style={styles.subtitleMenuItemTrailing}>
+                            {language ? (
+                              <Text style={styles.subtitleMenuItemMeta}>{language.toUpperCase()}</Text>
+                            ) : null}
+                            {isActive && (
+                              <Feather name="check" size={15} color="#FFFFFF" style={styles.subtitleMenuCheck} />
+                            )}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </>
+                )}
+
                 {isQualityMenuOpen && playerResult?.qualityOptions && (
                   <>
                     <Text style={styles.subtitleMenuHeader}>Quality</Text>
@@ -1672,6 +2014,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
             nextEpisode={nextEpisode.nextEpisode}
             onPlayNext={nextEpisode.playNext}
             onCancel={nextEpisode.cancelCountdown}
+            onDismiss={nextEpisode.dismissNextEpisode}
           />
         )}
         {isSeriesNativePath && (

@@ -117,10 +117,11 @@ async function urlServesHlsManifest(url: string, referer: string): Promise<boole
 
 // ─── Embed parsing (mirrors WebPlayerService, kept local on purpose) ─────────
 
-type EmbedParts = { parts: string[]; embedUrl: string; embedHtml: string };
+type EmbedProbe = { parts: string[] | null; embedUrl: string; embedHtml: string };
 
 function extractPartsArray(embedHtml: string): string[] | null {
-  const varName = embedHtml.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*(s_[A-Za-z0-9_]+)/)?.[1];
+  // `s_*` until Sep 2026, a random short identifier since.
+  const varName = embedHtml.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)/)?.[1];
   if (!varName) return null;
   const idx = embedHtml.indexOf(`var ${varName}`);
   if (idx === -1) return null;
@@ -136,7 +137,7 @@ function extractPartsArray(embedHtml: string): string[] | null {
   return null;
 }
 
-async function fetchEmbedParts(title: string): Promise<EmbedParts | null> {
+async function fetchEmbedProbe(title: string): Promise<EmbedProbe | null> {
   const pageUrl = await searchFirstPageUrl(title);
   if (!pageUrl) return null;
   const pageHtml = await getText(pageUrl, HDFILM_REFERER);
@@ -145,9 +146,12 @@ async function fetchEmbedParts(title: string): Promise<EmbedParts | null> {
   if (!embedUrl) return null;
   const embedHtml = await getText(embedUrl, pageUrl);
   if (!embedHtml) return null;
-  const parts = extractPartsArray(embedHtml);
-  if (!parts) return null;
-  return { parts, embedUrl, embedHtml };
+  // The parts array is only needed by the brute-force auto-derive path, so it
+  // must NOT gate the probe. This local parser is a copy of the production one
+  // and WILL drift from it — in Sep 2026 it did, and because it ran first every
+  // probe was dropped as "no embed" and the script reported a provider domain
+  // move while the site was up and only the decoder shape had changed.
+  return { parts: extractPartsArray(embedHtml), embedUrl, embedHtml };
 }
 
 // ─── Brute-force scheme recovery (primitives + self-validating oracle) ───────
@@ -268,9 +272,9 @@ function insertTransform(steps: string[]): boolean {
 async function main() {
   console.log("HDFilm resolver health check\n----------------------------");
 
-  const probes: EmbedParts[] = [];
+  const probes: EmbedProbe[] = [];
   for (const title of PROBE_TITLES) {
-    const e = await fetchEmbedParts(title);
+    const e = await fetchEmbedProbe(title);
     if (e) {
       probes.push(e);
       console.log(`  • fetched embed for "${title}"`);
@@ -280,8 +284,12 @@ async function main() {
   }
 
   if (probes.length === 0) {
-    console.error("\n✗ Could not fetch ANY embed page. Provider domain moved, or network/geo block.");
-    console.error("  Check HDFILM_BASE in this script and the hdfilm baseUrl in Supabase provider_configs.");
+    console.error("\n✗ Could not fetch ANY embed page — search, movie page, or iframe lookup failed.");
+    console.error("  That means the SITE or its page shape changed, NOT the decoder. Check:");
+    console.error(`    • is ${HDFILM_BASE} reachable, and does /search/?q=… still answer with`);
+    console.error("      {results:[…]}? It needs the `X-Requested-With: fetch` header — without it, 404.");
+    console.error("    • does a movie page still carry an iframe/data-src to hdfilmcehennemi.mobi?");
+    console.error("  Then check HDFILM_BASE here and the hdfilm baseUrl in Supabase provider_configs.");
     process.exit(2);
   }
 
@@ -306,6 +314,7 @@ async function main() {
   console.log("\n✗ Decoder is BROKEN (provider rotated the scheme). Attempting auto-derivation…");
 
   for (const { parts, embedUrl } of probes) {
+    if (!parts) continue;
     const derived = await deriveScheme(parts, embedUrl);
     if (!derived) continue;
 
@@ -328,8 +337,11 @@ async function main() {
   }
 
   console.error("\n✗ Auto-derivation failed: the new scheme isn't a composition of known primitives.");
-  console.error("  Manual step: open the embed page, find the inline `dc_*()` function, and translate");
-  console.error("  it into a new RAPIDRAME_PRE_UNMIX_TRANSFORMS entry (see WebPlayerService.ts).");
+  console.error("  This brute-forcer only knows reverse/base64/rot13 + the arithmetic unmix, so it");
+  console.error("  cannot recover a structurally new family (e.g. the Sep-2026 seeded shuffle).");
+  console.error("  Manual step: open the embed page, find the `var <file> = <fn>([...])` assignment and");
+  console.error("  the matching `function <fn>` body, then widen the INTERPRETER in");
+  console.error("  src/services/rapidrameScript.ts until it replays that body. Do NOT add a static scheme.");
   process.exit(4);
 }
 

@@ -39,10 +39,20 @@ declare module "expo-video" {
     label?: string;
     language?: string | null;
   };
+  // Mirrors expo-video's own AudioTrack. Provider HLS masters usually omit the
+  // LANGUAGE attribute, so `language` is frequently "" or "und" and only
+  // `label` ("Turkish" / "Original Audio") identifies the rendition.
+  export type AudioTrack = {
+    id: string;
+    label: string;
+    language: string;
+  };
   export type VideoPlayer = {
     currentTime: number;
     duration: number;
     timeUpdateEventInterval: number;
+    audioTrack: AudioTrack | null;
+    readonly availableAudioTracks: AudioTrack[];
     play(): void;
     pause(): void;
     addListener(event: string, listener: (ev: any) => void): { remove(): void };

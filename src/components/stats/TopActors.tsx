@@ -84,12 +84,21 @@ export function TopActors({ history, itemLabelSingular, itemLabelPlural, onActor
     const actorMap = new Map<number, ActorStat>();
 
     for (const entry of history) {
+      // One title counts ONCE per actor. Entries written before the cast lists
+      // were de-duplicated can still credit the same person twice (TMDB lists
+      // an actor once per role), and counting both made the tally larger than
+      // the list of titles you get by tapping the row.
+      const countedInEntry = new Set<number>();
+
       for (let index = 0; index < entry.castIds.length; index++) {
         const gender = entry.castGenders[index] ?? null;
         if (filter === "male" && gender !== "male") continue;
         if (filter === "female" && gender !== "female") continue;
 
         const id = entry.castIds[index];
+        if (countedInEntry.has(id)) continue;
+        countedInEntry.add(id);
+
         const existing = actorMap.get(id);
         if (existing) {
           existing.count++;

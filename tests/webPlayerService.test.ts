@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import axios from "axios";
 
@@ -675,6 +677,128 @@ test("HDFilm year gate rejects same-title-different-year pages (Dune 2021 vs Dun
   assert.ok(score2021En >= 100, `Dune 2021 should score very high against the English target (got ${score2021En})`);
 });
 
+test("search sweep tries EVERY bare title before the empty-result cutoff (Harakiri fix)", () => {
+  // Harakiri (1962) is on hdfilmcehennemi as "Harakiri", but its TMDB original
+  // title is "切腹". The old ordering emitted "切腹" then "切腹 1962" — two
+  // queries the Turkish catalogue cannot match — and the 2-query empty cutoff
+  // stopped the sweep before "Harakiri" was ever sent. The film reported "Not
+  // Available" while /search/?q=Harakiri returns it, and every film with a
+  // non-Latin original title failed the same way.
+  const plan = __internal.generateSearchQueries("Harakiri", "1962", "切腹");
+  assert.equal(plan.queries[0], "切腹");
+  assert.equal(plan.queries[1], "Harakiri", "the display title must be the SECOND query, before any year variant");
+  assert.equal(plan.bareTitleCount, 2);
+
+  // …and the cutoff must not fire until both bare titles have gone out.
+  assert.equal(
+    __internal.shouldStopSearchingAfterEmptyQueries(0, 0, plan.bareTitleCount),
+    false
+  );
+  assert.equal(
+    __internal.shouldStopSearchingAfterEmptyQueries(1, 0, plan.bareTitleCount),
+    true,
+    "after both bare titles came back empty the sweep should stop"
+  );
+});
+
+test("an apostrophe title is searched WITHOUT the apostrophe before the cutoff (Rosemary's Baby fix)", () => {
+  // HDFilm's search does not tokenize an apostrophe: /search/?q=Rosemary's Baby
+  // returns ZERO rows, /search/?q=Rosemarys Baby returns the film. The cleaned
+  // spelling used to sit behind the year-qualified variants, so the two-query
+  // empty cutoff fired before it was ever sent and the film reported "Not
+  // Available" even though HDFilm carries it.
+  const plan = __internal.generateSearchQueries("Rosemary's Baby", "1968");
+  assert.equal(plan.queries[0], "Rosemary's Baby");
+  assert.equal(
+    plan.queries[1],
+    "Rosemarys Baby",
+    "the apostrophe-free spelling is a DIFFERENT name, not a cheap variant — it goes out before any year query"
+  );
+  assert.equal(plan.bareTitleCount, 2);
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(0, 0, plan.bareTitleCount), false);
+});
+
+test("a localized title still hands the provider its original-language spelling", () => {
+  // With the UI in Turkish the display title is the Turkish one. All four
+  // spellings are distinct names and must precede the year-qualified queries.
+  const plan = __internal.generateSearchQueries("Rosemary'nin Bebeği", "1968", "Rosemary's Baby");
+  assert.deepEqual(plan.queries.slice(0, 4), [
+    "Rosemary's Baby",
+    "Rosemary'nin Bebeği",
+    "Rosemarys Baby",
+    "Rosemarynin Bebeği",
+  ]);
+  assert.equal(plan.bareTitleCount, 4);
+  // The cutoff cannot fire until every one of them has been tried.
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(2, 0, plan.bareTitleCount), false);
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(3, 0, plan.bareTitleCount), true);
+});
+
+test("cleaning punctuation never deletes non-ASCII letters", () => {
+  // \w is ASCII-only in JS, so the cleaner used to turn "Bebeği" into "Bebei" —
+  // a spelling no Turkish catalogue has.
+  const plan = __internal.generateSearchQueries("Rosemary'nin Bebeği", null);
+  assert.ok(plan.queries.includes("Rosemarynin Bebeği"));
+  assert.ok(!plan.queries.includes("Rosemarynin Bebei"));
+
+  // A non-Latin title is left exactly as it is (and de-duplicated).
+  const cjk = __internal.generateSearchQueries("切腹", null);
+  assert.deepEqual(cjk.queries, ["切腹"]);
+});
+
+test("a title with no punctuation does not gain a redundant duplicate query", () => {
+  const plan = __internal.generateSearchQueries("Interstellar", "2014");
+  assert.equal(plan.bareTitleCount, 1);
+  assert.deepEqual(plan.queries.slice(0, 2), ["Interstellar", "Interstellar 2014"]);
+});
+
+test("search sweep keeps its 2-query floor when there is only one bare title", () => {
+  const plan = __internal.generateSearchQueries("Interstellar", "2014", "Interstellar");
+  assert.equal(plan.bareTitleCount, 1, "a duplicate original title must not inflate the count");
+  assert.equal(plan.queries[0], "Interstellar");
+  assert.equal(plan.queries[1], "Interstellar 2014");
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(0, 0, plan.bareTitleCount), false);
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(1, 0, plan.bareTitleCount), true);
+  // A provider that returned rows always gets the full sweep.
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(1, 3, plan.bareTitleCount), false);
+});
+
+test("a one-year metadata gap is the same film, a decade apart is not", () => {
+  // Turkish providers date a film by its local release: HDFilm lists
+  // "Dune: Part Two" as 2023 while TMDB says 2024. The hard year gate used to
+  // reject it outright.
+  assert.equal(__internal.isYearIncompatible("2023", "2024"), false);
+  assert.equal(__internal.isYearIncompatible("2024", "2023"), false);
+  assert.equal(__internal.isYearIncompatible("2024", "2024"), false);
+  assert.equal(__internal.isYearIncompatible("1984", "2021"), true);
+  // Unknown on either side is never a rejection.
+  assert.equal(__internal.isYearIncompatible("", "2024"), false);
+  assert.equal(__internal.isYearIncompatible("2024", null), false);
+});
+
+test("off-by-one provider years survive scoring; exact years still win", () => {
+  const near = {
+    href: "https://hdfilm.example/dune-part-two-16/",
+    title: "Dune Çöl Gezegeni Bölüm İki - Dune: Part Two",
+    resultYear: "2023",
+    text: "dune çöl gezegeni bölüm iki - dune: part two"
+  };
+  const nearScore = __internal.scoreHdFilmResult(near, "Dune: Part Two", "2024");
+  assert.ok(nearScore >= 50, `off-by-one year must clear the 50-pt cutoff (got ${nearScore})`);
+
+  const exact = { ...near, resultYear: "2024" };
+  const exactScore = __internal.scoreHdFilmResult(exact, "Dune: Part Two", "2024");
+  assert.ok(exactScore > nearScore, `exact year must still outrank off-by-one (${exactScore} vs ${nearScore})`);
+
+  // Dizipal's cutoff is 80 — the near-miss penalty has to stay under that too.
+  const dizipalNear = __internal.scoreDizipalResult(
+    { href: "https://dizipal.example/film/dune-colgezegeni-bolum-iki", title: "Dune: Part Two", resultYear: "2023", text: "dune: part two 2023" },
+    "Dune: Part Two",
+    "2024"
+  );
+  assert.ok(dizipalNear >= 80, `Dizipal off-by-one must clear its 80-pt cutoff (got ${dizipalNear})`);
+});
+
 test("HDFilm scoring still works when targetYear is unknown", () => {
   // Sanity guard: when we have no year info (rare but possible for TMDB
   // entries with missing release_date), the year gate must NOT silently
@@ -954,4 +1078,184 @@ test("HDFilm Rapidrame inspection prefers native for disguised image media segme
 
   assert.equal(result.preferNative, true);
   assert.deepEqual(result.childPlaylistUrls, []);
+});
+
+test("Dizipal's data-cfg decodes on device to the same config the endpoint returns", () => {
+  // Live shape (2026-09-02) from /bolum/mezarlik-1-sezon-1-bolum. Decoding it
+  // locally skips a token mint plus a POST on the critical path of every play,
+  // and survives the endpoint renames the provider does every few months.
+  const cfg =
+    "eyJ2IjoiaHR0cHM6Ly9pbWFnZXN0b28uY29tL3ZpZGVvLzBiNmEyN2UyYmZjYjAxMGU3NjIxMDlmMGQyZTA0MmRjIiwidCI6ImVtYmVkIiwicCI6Imh0dHBzOi8vY2RuLmltYWdzLm1lL3VwbG9hZHMvYmFja2Ryb3BzL21lemFybGlrLndlYnAifQ";
+
+  assert.deepEqual(__internal.decodeDizipalCfg(cfg), {
+    success: true,
+    config: {
+      v: "https://imagestoo.com/video/0b6a27e2bfcb010e762109f0d2e042dc",
+      t: "embed",
+      p: "https://cdn.imags.me/uploads/backdrops/mezarlik.webp",
+    },
+  });
+});
+
+test("Dizipal cfg decoding fails closed so the caller falls back to the endpoint", () => {
+  const b64 = (value: string) => Buffer.from(value, "utf8").toString("base64");
+
+  assert.equal(__internal.decodeDizipalCfg(""), null, "empty");
+  assert.equal(__internal.decodeDizipalCfg("not base64 at all!"), null, "not base64");
+  assert.equal(__internal.decodeDizipalCfg(b64("plain text")), null, "not JSON");
+  assert.equal(__internal.decodeDizipalCfg(b64('{"t":"embed"}')), null, "no media url");
+  assert.equal(
+    __internal.decodeDizipalCfg(b64('{"v":"javascript:alert(1)","t":"embed"}')),
+    null,
+    "non-http media url must be refused"
+  );
+  assert.equal(
+    __internal.decodeDizipalCfg(b64('{"v":"https://x.example/a.m3u8"}')),
+    null,
+    "missing stream type"
+  );
+
+  // A poster is optional — its absence must not sink an otherwise valid config.
+  assert.deepEqual(__internal.decodeDizipalCfg(b64('{"v":"https://x.example/a.m3u8","t":"m3u8"}')), {
+    success: true,
+    config: { v: "https://x.example/a.m3u8", t: "m3u8", p: "" },
+  });
+});
+
+test("an HDFilm Cloudflare challenge is retried instead of read as 'not on HDFilm'", async () => {
+  // Live behaviour (2026-09-02): a /dizi/ URL answers 403 `cf-mitigated:
+  // challenge` on the first request over a fresh connection and 200 on every
+  // one after it. Treating that first 403 as a miss sent every series to
+  // Dizipal — Turkish-dub-only, and slower.
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      const error: any = new Error("Request failed with status code 403");
+      error.response = { status: 403 };
+      throw error;
+    }
+    return { data: '<button class="alternative-link">1080p</button>' };
+  }) as typeof axios.get;
+
+  try {
+    const check = await __internal.checkVideoAvailability("https://hdfilm.example/dizi/x/sezon-1/bolum-1/");
+    assert.equal(calls, 2, "the challenge must cost one retry, not the whole provider");
+    assert.equal(check.available, true);
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("a non-challenge HDFilm error is not retried", async () => {
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    const error: any = new Error("Request failed with status code 404");
+    error.response = { status: 404 };
+    throw error;
+  }) as typeof axios.get;
+
+  try {
+    const check = await __internal.checkVideoAvailability("https://hdfilm.example/gone/");
+    assert.equal(calls, 1, "a real 404 must fail on the first attempt");
+    assert.equal(check.available, false);
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Cloudflare challenge retry — Dizipal edition.
+//
+// On 2026-09-09 Dizipal started answering 403 challenge pages to a fraction of
+// requests. HDFilm's fetches had been retrying past this since 2026-09-02, but
+// Dizipal's search and page fetches used a bare `axios.get`, so a challenged
+// request silently dropped tier 2 for that play and the resolver fell through
+// to Dizibal (or to "not available"). Both providers now share `providerGet`.
+// ---------------------------------------------------------------------------
+
+function challenge(status: number) {
+  const error: any = new Error(`Request failed with status code ${status}`);
+  error.response = { status, data: "<html><title>Just a moment...</title></html>" };
+  return error;
+}
+
+test("provider fetches retry past a Cloudflare challenge and return the eventual 200", async () => {
+  const originalGet = axios.get;
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    if (calls <= 2) throw challenge(403);
+    return { status: 200, data: "OK", request: {} };
+  }) as typeof axios.get;
+
+  try {
+    const response = await __internal.providerGet("Dizipal", "https://dizipal2130.com/", {});
+    assert.equal(response.data, "OK");
+    assert.equal(calls, 3, "two challenges should cost two retries, not a dropped tier");
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("provider fetches give up after the retry budget instead of hanging", async () => {
+  const originalGet = axios.get;
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    throw challenge(503);
+  }) as typeof axios.get;
+
+  try {
+    await assert.rejects(() => __internal.providerGet("Dizipal", "https://dizipal2130.com/", {}));
+    assert.equal(calls, 3, "one initial attempt plus two retries");
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("a non-challenge failure is not retried — it rejects exactly like axios.get", async () => {
+  const originalGet = axios.get;
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    const error: any = new Error("Not Found");
+    error.response = { status: 404 };
+    throw error;
+  }) as typeof axios.get;
+
+  try {
+    await assert.rejects(() => __internal.providerGet("HDFilm", "https://example.com/", {}));
+    assert.equal(calls, 1, "a 404 means the title is absent; retrying it only wastes the budget");
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("only Cloudflare interstitial statuses count as a challenge", () => {
+  assert.equal(__internal.isCloudflareChallengeStatus(403), true);
+  assert.equal(__internal.isCloudflareChallengeStatus(503), true);
+  assert.equal(__internal.isCloudflareChallengeStatus(404), false);
+  assert.equal(__internal.isCloudflareChallengeStatus(500), false);
+  assert.equal(__internal.isCloudflareChallengeStatus(undefined), false);
+});
+
+test("both Dizipal entry points go through the retrying fetch, not a bare axios.get", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "src", "services", "WebPlayerService.ts"),
+    "utf8"
+  );
+  assert.match(source, /const response = await dizipalGet<DizipalSearchResponse>\(/);
+  assert.match(source, /async function fetchDizipalPageHtml[\s\S]{0,200}await dizipalGet<string>\(/);
 });

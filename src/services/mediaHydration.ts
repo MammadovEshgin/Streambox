@@ -1,8 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { getMovieSummary, getSeriesSummary, type MediaItem } from "../api/tmdb";
-import i18n from "../localization/i18n";
-import { normalizeAppLanguage, type AppLanguage } from "../localization/types";
+import { getActiveContentLanguage } from "../localization/contentLanguage";
+import type { AppLanguage } from "../localization/types";
 import { mapWithConcurrency } from "../utils/concurrency";
 
 export type HydratedMediaCache = Map<string, MediaItem>;
@@ -33,7 +33,7 @@ const hydrationFlushTimers = new Map<AppLanguage, ReturnType<typeof setTimeout>>
 const hydrationRequests = new Map<string, Promise<MediaItem | null>>();
 
 function getActiveLanguage() {
-  return normalizeAppLanguage(i18n.resolvedLanguage ?? i18n.language);
+  return getActiveContentLanguage();
 }
 
 function getPersistentHydrationKey(language: AppLanguage) {

@@ -108,7 +108,7 @@ export function AzClassicsGridScreen({ navigation }: AzClassicsGridProps) {
     ({ item }: ListRenderItemInfo<AzClassicMovie>) => {
       const posterUri = getTmdbImageUrl(item.posterPath, "w342");
       return (
-        <CardPressable onPress={() => navigation.navigate("AzClassicDetail", { id: item.id })}>
+        <CardPressable onPress={() => navigation.push("AzClassicDetail", { id: item.id })}>
           <PosterFrame>
             {posterUri ? (
               <PosterImage source={{ uri: posterUri }} resizeMode="cover" />

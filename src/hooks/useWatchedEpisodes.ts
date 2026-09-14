@@ -8,6 +8,7 @@ import {
   type EpisodeProgressQueueItem,
 } from "../services/userDataSync";
 import { WATCHED_EPISODES_STORAGE_KEY } from "../services/userDataStorage";
+import { buildEpisodeKey, type WatchedEpisodeMap } from "../utils/watchedEpisodes";
 
 export type SeasonEpisodeStateChange = {
   seasonNumber: number;
@@ -16,8 +17,8 @@ export type SeasonEpisodeStateChange = {
 };
 
 export function useWatchedEpisodes() {
-  const [watchedEpisodes, setWatchedEpisodes] = useState<Record<string, boolean>>({});
-  const watchedEpisodesRef = useRef<Record<string, boolean>>({});
+  const [watchedEpisodes, setWatchedEpisodes] = useState<WatchedEpisodeMap>({});
+  const watchedEpisodesRef = useRef<WatchedEpisodeMap>({});
   const { notifyStorageChanged, storageRevision } = useAppSettings();
 
   useEffect(() => {
@@ -61,9 +62,11 @@ export function useWatchedEpisodes() {
     };
   }, [storageRevision]);
 
-  const getEpisodeKey = useCallback((seriesId: string | number, seasonNumber: number, episodeNumber: number) => {
-    return `${seriesId}_${seasonNumber}_${episodeNumber}`;
-  }, []);
+  const getEpisodeKey = useCallback(
+    (seriesId: string | number, seasonNumber: number, episodeNumber: number) =>
+      buildEpisodeKey(seriesId, seasonNumber, episodeNumber),
+    []
+  );
 
   const isEpisodeWatched = useCallback(
     (seriesId: string | number, seasonNumber: number, episodeNumber: number) => {
@@ -83,8 +86,16 @@ export function useWatchedEpisodes() {
     [notifyStorageChanged]
   );
 
+  // Returns the RESULTING map. Callers that must react to the new state (e.g.
+  // reconciling a season's watch-history entry) cannot read `watchedEpisodes`
+  // straight after awaiting this — their closure still holds the pre-toggle
+  // render's value — so the post-write snapshot is handed back explicitly.
   const toggleEpisodeWatched = useCallback(
-    async (seriesId: string | number, seasonNumber: number, episodeNumber: number) => {
+    async (
+      seriesId: string | number,
+      seasonNumber: number,
+      episodeNumber: number
+    ): Promise<WatchedEpisodeMap> => {
       const key = getEpisodeKey(seriesId, seasonNumber, episodeNumber);
       const wasWatched = !!watchedEpisodesRef.current[key];
       const nextWatched = !wasWatched;
@@ -97,10 +108,12 @@ export function useWatchedEpisodes() {
       }
 
       await persistWatchedEpisodes(nextState);
-      
+
       await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, nextWatched, {
         source: "episode_toggle",
       });
+
+      return nextState;
     },
     [getEpisodeKey, persistWatchedEpisodes]
   );

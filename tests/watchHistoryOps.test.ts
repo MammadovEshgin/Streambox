@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyWatchHistoryOps, type WatchHistoryListOp } from "../src/utils/watchHistoryOps";
+import {
+  applyWatchHistoryOps,
+  buildSeriesSeasonInternalId,
+  collectWatchlistPruneRequests,
+  type WatchHistoryListOp,
+  type WatchHistoryMutation,
+} from "../src/utils/watchHistoryOps";
 import type { WatchHistoryEntry } from "../src/hooks/useWatchHistory";
 
 // Minimal entry factory — only identity + kind fields matter for op application.
@@ -121,4 +127,74 @@ test("an empty batch is a no-op", () => {
   const movie = entry({ id: 27205 });
   const next = applyWatchHistoryOps([movie], []);
   assert.deepEqual(next, [movie]);
+});
+
+// ---------------------------------------------------------------------------
+// A watched title leaves the watchlist.
+//
+// The watchlist answers "what do I still want to see?". Keeping a film there
+// after it had been watched meant every one had to be removed by hand, and the
+// profile count kept climbing past titles the viewer had already seen.
+// ---------------------------------------------------------------------------
+
+test("logging a movie as watched asks for it to leave the watchlist", () => {
+  const mutations: WatchHistoryMutation[] = [
+    { kind: "upsert", entry: entry({ id: 550, sourceTmdbId: 550 }), auditDetails: { title: "Fight Club" } },
+  ];
+
+  assert.deepEqual(collectWatchlistPruneRequests(mutations), [
+    { mediaType: "movie", tmdbId: 550, details: { title: "Fight Club" } },
+  ]);
+});
+
+test("a season entry resolves to the SERIES id, not its synthetic key", () => {
+  // Season rows store "series-season:<seriesId>:<n>" as their id; the watchlist
+  // is keyed by the series' own TMDB id.
+  const seasonId = buildSeriesSeasonInternalId(1396, 2);
+  const mutations: WatchHistoryMutation[] = [
+    {
+      kind: "upsert",
+      entry: entry({ id: seasonId, sourceTmdbId: 1396, mediaType: "tv", historyKind: "season", seasonNumber: 2 }),
+    },
+  ];
+
+  assert.deepEqual(collectWatchlistPruneRequests(mutations), [
+    { mediaType: "tv", tmdbId: 1396, details: null },
+  ]);
+});
+
+test("un-marking something watched does not put it back on the watchlist", () => {
+  const mutations: WatchHistoryMutation[] = [
+    { kind: "remove", id: 550, mediaType: "movie" },
+  ];
+  assert.deepEqual(collectWatchlistPruneRequests(mutations), []);
+});
+
+test("a season batch asks for one removal per series, not per season", () => {
+  // The season modal saves every season plus the series title in one batch.
+  const mutations: WatchHistoryMutation[] = [
+    { kind: "upsert", entry: entry({ id: buildSeriesSeasonInternalId(1396, 1), sourceTmdbId: 1396, mediaType: "tv", historyKind: "season" }) },
+    { kind: "upsert", entry: entry({ id: buildSeriesSeasonInternalId(1396, 2), sourceTmdbId: 1396, mediaType: "tv", historyKind: "season" }) },
+    { kind: "upsert", entry: entry({ id: 1396, sourceTmdbId: 1396, mediaType: "tv", historyKind: "title" }) },
+  ];
+
+  assert.deepEqual(collectWatchlistPruneRequests(mutations), [
+    { mediaType: "tv", tmdbId: 1396, details: null },
+  ]);
+});
+
+test("a movie and a series with the same id are tracked separately", () => {
+  const mutations: WatchHistoryMutation[] = [
+    { kind: "upsert", entry: entry({ id: 42, sourceTmdbId: 42, mediaType: "movie" }) },
+    { kind: "upsert", entry: entry({ id: 42, sourceTmdbId: 42, mediaType: "tv" }) },
+  ];
+
+  assert.deepEqual(collectWatchlistPruneRequests(mutations).map((r) => r.mediaType), ["movie", "tv"]);
+});
+
+test("an entry with no TMDB id is skipped rather than removing a bogus row", () => {
+  const mutations: WatchHistoryMutation[] = [
+    { kind: "upsert", entry: entry({ id: "letterboxd-abc", sourceTmdbId: null }) },
+  ];
+  assert.deepEqual(collectWatchlistPruneRequests(mutations), []);
 });

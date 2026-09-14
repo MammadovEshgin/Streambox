@@ -11,8 +11,9 @@ import { formatRating } from "../api/mediaFormatting";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { useWatchHistory, type WatchHistoryEntry } from "../hooks/useWatchHistory";
-import { normalizeAppLanguage, type AppLanguage } from "../localization/types";
+import type { AppLanguage } from "../localization/types";
 import type { StatsStackParamList } from "../navigation/types";
+import { useAppSettings } from "../settings/AppSettingsContext";
 import { getSharedHydratedMediaCache, hydrateMediaIds } from "../services/mediaHydration";
 
 type Props = NativeStackScreenProps<StatsStackParamList, "WatchedGrid">;
@@ -180,7 +181,7 @@ function getHydrationKey(language: AppLanguage, mediaType: WatchHistoryEntry["me
 }
 
 export function WatchedGridScreen({ route, navigation }: Props) {
-  const { t, i18n: translationI18n } = useTranslation();
+  const { t } = useTranslation();
   const {
     filter: initialFilter,
     title: screenTitle,
@@ -204,10 +205,10 @@ export function WatchedGridScreen({ route, navigation }: Props) {
   const [hydratedItems, setHydratedItems] = useState<Map<string, MediaItem>>(new Map());
   const { history, rawHistory, activityHistory, isLoading, reload } = useWatchHistory();
   const hydratedCache = useMemo(() => getSharedHydratedMediaCache(), []);
-  const resolvedContentLanguage = useMemo(
-    () => normalizeAppLanguage(translationI18n.resolvedLanguage ?? translationI18n.language),
-    [translationI18n.language, translationI18n.resolvedLanguage]
-  );
+  // Read from settings, NOT from i18next: changeLanguage resolves a tick later,
+  // so an i18next-derived key looks up the cache under the language the user
+  // just left and finds nothing (see localization/contentLanguage).
+  const { language: resolvedContentLanguage } = useAppSettings();
 
   useEffect(() => {
     if (isFocused) void reload();
@@ -303,9 +304,9 @@ export function WatchedGridScreen({ route, navigation }: Props) {
         if (!Number.isFinite(Number(movieId))) {
           return;
         }
-        navigation.navigate("MovieDetail", { movieId: String(movieId) });
+        navigation.push("MovieDetail", { movieId: String(movieId) });
       } else {
-        navigation.navigate("SeriesDetail", { seriesId: String(item.sourceTmdbId ?? item.id) });
+        navigation.push("SeriesDetail", { seriesId: String(item.sourceTmdbId ?? item.id) });
       }
     },
     [navigation]

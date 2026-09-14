@@ -12,6 +12,8 @@
 
 import axios from "axios";
 import { getProviderConfig, isProviderConfigReady, recordObservedBaseUrl, refreshProviderConfigs } from "./providerConfigService";
+import { caesarShift, decodeBase64Binary, reverseString, runRapidrameDecoder } from "./rapidrameScript";
+import { foldNonDecomposingLetters } from "../utils/textFolding";
 
 // Pulls the post-redirect origin out of an axios response so the caller can
 // teach providerConfigService where the provider actually lives now. Axios
@@ -166,6 +168,71 @@ type DizipalSearchResponse = {
   }>;
 };
 
+/**
+ * How many extra attempts a provider page fetch gets after a Cloudflare
+ * challenge. Measured against HDFilm (2026-09-02): a `/dizi/` URL answers 403
+ * `cf-mitigated: challenge` on the FIRST request over a fresh connection and
+ * 200 on every request after it — 9/10 with connection reuse, 0/10 when each
+ * request opened a new connection. No cookie is involved; the clearance rides
+ * on the connection, so simply asking again is the whole fix.
+ *
+ * This mattered a lot: `findSeriesEpisodeUrl` and `checkVideoAvailability`
+ * treated that first 403 as "HDFilm doesn't have it", so every series fell
+ * through to Dizipal — which is Turkish-dub-only and several hundred ms
+ * slower. Two retries take the observed failure rate to ~0.
+ *
+ * Dizipal joined the club on 2026-09-09: it started answering 403 challenge
+ * pages to a fraction of requests, which took tier 2 down for 36 hours in the
+ * monitor while the site itself was fine. Dizipal's calls used a bare
+ * `axios.get`, so a challenged request dropped the whole tier for that play
+ * instead of asking again. Both providers now share this helper.
+ */
+const PROVIDER_CHALLENGE_RETRIES = 2;
+
+function isCloudflareChallengeStatus(status: number | undefined): boolean {
+  return status === 403 || status === 503;
+}
+
+/**
+ * GET a provider URL, retrying past the Cloudflare interstitial. Rejects on a
+ * non-challenge error exactly like a bare `axios.get`, so callers keep their
+ * existing try/catch shape.
+ */
+async function providerGet<T = string>(
+  provider: string,
+  url: string,
+  config: Parameters<typeof axios.get>[1]
+): Promise<import("axios").AxiosResponse<T>> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= PROVIDER_CHALLENGE_RETRIES; attempt++) {
+    try {
+      return await axios.get<T>(url, config);
+    } catch (error: any) {
+      lastError = error;
+      if (!isCloudflareChallengeStatus(error?.response?.status)) throw error;
+      if (attempt === PROVIDER_CHALLENGE_RETRIES) break;
+      debugLog(`[WebPlayer] ${provider} challenge on ${url} — retry ${attempt + 1}`);
+    }
+  }
+  throw lastError;
+}
+
+/** HDFilm-flavoured `providerGet`. Kept as a named helper for call-site clarity. */
+function hdFilmGet<T = string>(
+  url: string,
+  config: Parameters<typeof axios.get>[1]
+): Promise<import("axios").AxiosResponse<T>> {
+  return providerGet<T>("HDFilm", url, config);
+}
+
+/** Dizipal-flavoured `providerGet`. */
+function dizipalGet<T = string>(
+  url: string,
+  config: Parameters<typeof axios.get>[1]
+): Promise<import("axios").AxiosResponse<T>> {
+  return providerGet<T>("Dizipal", url, config);
+}
+
 function extractHref(html: string): string | null {
   const match = html.match(/href=["']([^"']+)["']/i);
   return match?.[1] ?? null;
@@ -181,22 +248,15 @@ function extractText(html: string): string {
 }
 
 /**
- * Fold a string to ASCII for title comparison.
+ * Fold letters NFD cannot decompose, so the `[^a-z0-9\s]` strip downstream
+ * keeps them instead of deleting them (ı → i, ə → e, ø → o, …). Apply BEFORE
+ * that strip in every title normalization path, or Turkish-titled provider
+ * results stop matching their TMDB-localized titles.
  *
- * NFD + combining-diacritic stripping handles most Latin letters with marks
- * (ö → o, ü → u, â → a, ç → c, ş → s, ğ → g, …). But it does NOT handle the
- * Turkish dotless i (ı, U+0131) because that codepoint has no NFD
- * decomposition — it's a base letter, not "i with diacritic". Without an
- * explicit mapping, ı gets wiped out by the `[^a-z0-9\s]` strip downstream,
- * which silently breaks titles like "Yadigârları" (becomes "yadigarlar")
- * against slugs like "yadigarlari" (becomes "yadigarlari").
- *
- * Apply this BEFORE the `[^a-z0-9\s]` filter in every title normalization
- * path so Turkish-titled Dizipal results match their TMDB-localized titles.
+ * Shared with the app's own TMDB search, which had the identical bug and no
+ * fold at all — see src/utils/textFolding.ts.
  */
-function foldTurkishDotlessI(value: string): string {
-  return value.replace(/ı/g, "i").replace(/İ/g, "i");
-}
+const foldTurkishDotlessI = foldNonDecomposingLetters;
 
 /** Extract title from <h4 class="title">...</h4>, decode HTML entities */
 function extractH4Title(html: string): string {
@@ -397,7 +457,21 @@ function normalizeName(name: string): string {
     .trim();
 }
 
-function generateSearchQueries(title: string, year?: string | null, originalTitle?: string): string[] {
+type SearchQueryPlan = {
+  queries: string[];
+  /**
+   * How many leading entries of `queries` are bare names (the original-language
+   * spelling and the display title). The empty-result cutoff must never fire
+   * before all of them have been sent — see EMPTY_SEARCH_QUERY_LIMIT.
+   */
+  bareTitleCount: number;
+};
+
+function generateSearchQueries(
+  title: string,
+  year?: string | null,
+  originalTitle?: string
+): SearchQueryPlan {
   const queries: string[] = [];
   const seen = new Set<string>();
 
@@ -410,29 +484,49 @@ function generateSearchQueries(title: string, year?: string | null, originalTitl
     }
   }
 
-  // 0. Original-language title — highest priority for non-English sources
-  if (originalTitle) {
-    add(originalTitle);
-    if (year) add(`${originalTitle} ${year}`);
-  }
+  // 0. Every BARE name first: the original-language spelling, the display
+  //    title, then each of those with punctuation stripped. These are all
+  //    DIFFERENT names for the film rather than cheap variants of one, so every
+  //    one of them has to go out before any year-qualified query — the
+  //    empty-result cutoff below only budgets a couple of rounds.
+  //
+  //    Concrete bug this prevents (non-Latin): Harakiri (1962), whose TMDB
+  //    original title is "切腹". Emitting "切腹" and "切腹 1962" first spent the
+  //    entire budget on a script the Turkish catalogue doesn't carry — both
+  //    returned zero rows, the sweep stopped, and the film reported "Not
+  //    Available" even though /search/?q=Harakiri returns it.
+  //
+  //    Concrete bug this prevents (apostrophes): HDFilm's search does not
+  //    tokenize an apostrophe. /search/?q=Rosemary's Baby returns ZERO rows
+  //    while /search/?q=Rosemarys Baby returns the film. With the cleaned
+  //    spelling sitting BEHIND the year-qualified variants, the two-query
+  //    cutoff fired before it was ever sent, and "Rosemary's Baby" reported
+  //    "Not Available" even though HDFilm carries it. Every possessive title —
+  //    Ocean's Eleven, Schindler's List, Pandora's Box — failed the same way.
+  const cleanSpelling = (value: string) =>
+    value
+      .replace(/['''\u2019]/g, "")         // strip apostrophes (Don't → Dont)
+      .replace(/[:,\u201C\u201D"!?.,]/g, " ") // replace separators with space
+      .replace(/[&]/g, "and")
+      // \w is ASCII-only in JS, so this used to delete every non-ASCII
+      // LETTER too: "Rosemary'nin Bebeği" cleaned to "Rosemarynin Bebei",
+      // a spelling no Turkish catalogue has ever heard of. Keep letters and
+      // digits in any script; strip only the punctuation.
+      .replace(/[^\p{L}\p{N}\s-]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim();
 
-  // 1. English title — highest-fidelity match
+  if (originalTitle) add(originalTitle);
   add(title);
-
-  // 2. Title + year for disambiguation
-  if (year) add(`${title} ${year}`);
-
-  // 3. Clean punctuation that search engines may choke on
-  const cleanTitle = title
-    .replace(/['''\u2019]/g, "")         // strip apostrophes (Don't → Dont)
-    .replace(/[:,\u201C\u201D"!?.,]/g, " ") // replace separators with space
-    .replace(/[&]/g, "and")
-    .replace(/[^\w\s-]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (year) add(`${cleanTitle} ${year}`);
+  const cleanTitle = cleanSpelling(title);
+  if (originalTitle) add(cleanSpelling(originalTitle));
   add(cleanTitle);
+  const bareTitleCount = queries.length;
+
+  // 1. Year-qualified variants for disambiguation.
+  if (originalTitle && year) add(`${originalTitle} ${year}`);
+  if (year) add(`${title} ${year}`);
+  if (year) add(`${cleanTitle} ${year}`);
 
   // 4. Prefix before colon/dash (for subtitled movies like "Alien: Romulus")
   if (title.includes(":")) add(title.split(":")[0].trim());
@@ -450,7 +544,41 @@ function generateSearchQueries(title: string, year?: string | null, originalTitl
     .trim();
   if (withoutArticles !== cleanTitle) add(withoutArticles);
 
-  return queries;
+  return { queries, bareTitleCount };
+}
+
+// How many query variants a provider gets before "nothing at all came back" is
+// treated as "this provider does not have the title".
+//
+// generateSearchQueries emits up to ~8 spellings of the same name. When the
+// first few return literally zero rows, the remaining variants (articles
+// stripped, first three words, …) are progressively WEAKER versions of a query
+// the catalogue already failed to match, so they cost ~300ms each and change
+// nothing. Cutting them off is what keeps the "Not Available" path from
+// spending its whole budget on a title no provider carries. A provider that
+// returned even one row still gets the full sweep — there the extra variants
+// are what break ties between near-matches.
+//
+// The cutoff is a FLOOR, not a cap: `bareTitleCount` raises it so the sweep can
+// never stop before both the original-language title and the display title have
+// each been searched once. Cheap variants of one name are what we want to skip;
+// a different name entirely is not a variant.
+const EMPTY_SEARCH_QUERY_LIMIT = 2;
+
+/**
+ * Maximum query rounds a provider gets per lookup, unless the title has more
+ * distinct bare spellings than that (then every spelling still goes out).
+ * Each round is one HTTP request against a provider that is already slow.
+ */
+const SEARCH_QUERY_BUDGET = 5;
+
+function shouldStopSearchingAfterEmptyQueries(
+  queryIndex: number,
+  resultCount: number,
+  bareTitleCount = 1
+): boolean {
+  const limit = Math.max(EMPTY_SEARCH_QUERY_LIMIT, bareTitleCount);
+  return resultCount === 0 && queryIndex + 1 >= limit;
 }
 
 function toAbsoluteUrl(baseUrl: string, href: string): string | null {
@@ -463,7 +591,7 @@ function toAbsoluteUrl(baseUrl: string, href: string): string | null {
 
 async function queryHdFilm(query: string): Promise<SearchResult[]> {
   try {
-    const response = await axios.get<{ results?: string[] }>(
+    const response = await hdFilmGet<{ results?: string[] }>(
       `${getHdfilmBaseUrl()}/search/?q=${encodeURIComponent(query)}`,
       {
         timeout: 6000,
@@ -499,7 +627,7 @@ async function verifyCast(pageUrl: string, castNames: string[]): Promise<number>
   if (castNames.length === 0) return 0;
 
   try {
-    const response = await axios.get<string>(pageUrl, {
+    const response = await hdFilmGet<string>(pageUrl, {
       timeout: 6000,
       headers: {
         "User-Agent": UA,
@@ -527,6 +655,33 @@ async function verifyCast(pageUrl: string, castNames: string[]): Promise<number>
   } catch {
     return 0;
   }
+}
+
+/**
+ * How many years apart the provider's listing and TMDB are, or null when
+ * either side doesn't state one.
+ */
+function yearDistance(candidateYear?: string | null, targetYear?: string | null): number | null {
+  const candidate = Number.parseInt(candidateYear ?? "", 10);
+  const target = Number.parseInt(targetYear ?? "", 10);
+  if (!Number.isFinite(candidate) || !Number.isFinite(target)) return null;
+  return Math.abs(candidate - target);
+}
+
+/**
+ * Turkish providers date a film by its LOCAL release, which routinely lands in
+ * the next calendar year (Dune: Part Two is 2024 on TMDB and 2023 on HDFilm).
+ * One year apart is the same film; anything wider is a different one —
+ * remakes, sequels and the Dune 1984/2021 pair are all far outside this.
+ *
+ * A near-miss year is still worse than an exact one: the scoring below keeps
+ * the +50 exact-year boost, so when both listings exist the exact match wins.
+ */
+const NEAR_YEAR_TOLERANCE = 1;
+
+function isYearIncompatible(candidateYear?: string | null, targetYear?: string | null): boolean {
+  const distance = yearDistance(candidateYear, targetYear);
+  return distance !== null && distance > NEAR_YEAR_TOLERANCE;
 }
 
 /**
@@ -559,13 +714,19 @@ function scoreHdFilmResult(result: SearchResult, target: string, targetYear?: st
   // null for searches whose title isn't actually present, and the Dizipal
   // fallback kicks in correctly.
   if (targetYear && result.resultYear) {
-    if (result.resultYear === targetYear) {
+    const distance = yearDistance(result.resultYear, targetYear);
+    if (distance === 0) {
       if (bestScore >= 60) {
         bestScore += 50; // strong title + correct year → near-certain match
       }
       // bestScore < 60 → no boost. Substring-only matches stay strictly below
       // the findBestHdFilmMatch 50-point cutoff so they can't beat the real
       // match on another provider just because the year coincides.
+    } else if (distance !== null && distance <= NEAR_YEAR_TOLERANCE) {
+      // Off by one — almost always the local release date, not a different
+      // film. Nudge it below an exact-year rival without sinking it under the
+      // 50-point cutoff.
+      bestScore -= 10;
     } else if (bestScore >= 80) {
       // High title match but WRONG year — penalize heavily so year-matching
       // results always win when both exist.
@@ -595,8 +756,13 @@ function scoreDizipalResult(result: SearchResult, target: string, targetYear?: s
   if (bestScore === 0) return 0;
 
   if (targetYear && result.resultYear) {
-    if (result.resultYear === targetYear) {
+    const distance = yearDistance(result.resultYear, targetYear);
+    if (distance === 0) {
       bestScore += 50;
+    } else if (distance !== null && distance <= NEAR_YEAR_TOLERANCE) {
+      // See NEAR_YEAR_TOLERANCE: the local release year, not a different film.
+      // The penalty has to stay small — Dizipal's own cutoff is 80.
+      bestScore -= 10;
     } else if (bestScore >= 80) {
       bestScore -= 55;
     } else if (bestScore >= 50) {
@@ -617,7 +783,7 @@ function scoreDizipalResult(result: SearchResult, target: string, targetYear?: s
  *  - Return only the #1 result — no array, no fallback to wrong movies
  */
 async function findBestHdFilmMatch(title: string, castNames: string[], year?: string | null, originalTitle?: string): Promise<MatchResult | null> {
-  const queries = generateSearchQueries(title, year, originalTitle);
+  const { queries, bareTitleCount } = generateSearchQueries(title, year, originalTitle);
   const allResults = new Map<string, SearchResult>();
 
   for (let qi = 0; qi < queries.length; qi++) {
@@ -635,7 +801,11 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
       return Math.max(s1, s2);
     }));
     if (bestSoFar >= 120) break;
-    if (qi >= 4) break;
+    if (shouldStopSearchingAfterEmptyQueries(qi, allResults.size, bareTitleCount)) break;
+    // Hard budget. It is a FLOOR of five rounds, raised when the title has more
+    // than five distinct spellings, so the bare-name sweep can never be cut off
+    // half-way through (see generateSearchQueries).
+    if (qi + 1 >= Math.max(SEARCH_QUERY_BUDGET, bareTitleCount)) break;
   }
 
   if (allResults.size === 0) return null;
@@ -657,10 +827,11 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
       // 1984's page title "Dune: Çöl Gezegeni  - Dune 1984" contains the
       // 2021 Turkish title "Dune: Çöl Gezegeni" verbatim → variant score
       // 100, year mismatch → 60, passes — and that movie then plays even
-      // though the user clicked the 2021 poster). When we know both years
-      // and they disagree, the candidate is the wrong movie. Reject it
-      // outright so the resolver falls through to Dizipal / direct.
-      if (year && entry.resultYear && entry.resultYear !== year) return false;
+      // though the user clicked the 2021 poster). When we know both years and
+      // they disagree by more than NEAR_YEAR_TOLERANCE, the candidate is the
+      // wrong movie. Reject it outright so the resolver falls through to
+      // Dizipal / direct.
+      if (isYearIncompatible(entry.resultYear, year)) return false;
       return true;
     })
     .sort((a, b) => b.titleScore - a.titleScore);
@@ -690,7 +861,7 @@ type VideoCheck = {
 
 async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
   try {
-    const response = await axios.get<string>(pageUrl, {
+    const response = await hdFilmGet<string>(pageUrl, {
       timeout: 6000,
       headers: {
         "User-Agent": UA,
@@ -804,7 +975,7 @@ async function findSeriesEpisodeUrl(
   }
 
   try {
-    const response = await axios.get<string>(seriesPageUrl, {
+    const response = await hdFilmGet<string>(seriesPageUrl, {
       timeout: 6000,
       headers: {
         "User-Agent": UA,
@@ -856,7 +1027,7 @@ async function resolvePlayableSeriesEpisodeUrl(
 
 async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<SearchResult[]> {
   try {
-    const response = await axios.get<DizipalSearchResponse>(`${getDizipalBaseUrl()}/ajax-search`, {
+    const response = await dizipalGet<DizipalSearchResponse>(`${getDizipalBaseUrl()}/ajax-search`, {
       timeout: 6000,
       params: { q: query },
       headers: {
@@ -985,7 +1156,11 @@ async function probeDizipalDirectSlug(
     try {
       const response = await axios.get<string>(url, {
         timeout: 6000,
-        maxRedirects: 5,
+        // No explicit maxRedirects: Dizipal's rotation means a base that has
+        // fallen a few days behind is a 10-20 hop 301 chain, and a cap of 5
+        // turned that into a hard ERR_FR_TOO_MANY_REDIRECTS — this probe was
+        // the one Dizipal call that failed outright on a stale base while the
+        // others merely got slow. Axios' default 21 matches them.
         headers: { "User-Agent": UA, Referer: getDizipalReferer() },
         validateStatus: (status) => status === 200,
       });
@@ -997,7 +1172,7 @@ async function probeDizipalDirectSlug(
       const pageYear = isYearVerifiedSlug
         ? year ?? null
         : extractDizipalPageYear(typeof response.data === "string" ? response.data : "");
-      if (year && pageYear && pageYear !== year) {
+      if (isYearIncompatible(pageYear, year)) {
         debugLog(
           `[WebPlayer] Dizipal direct-slug ${url} is year ${pageYear}, wanted ${year} — rejected`
         );
@@ -1024,7 +1199,7 @@ async function probeDizipalDirectSlug(
 
 async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: string | null, originalTitle?: string): Promise<MatchResult | null> {
   const safeOriginalTitle = isAlternateTitleSafeForDizipal(title, originalTitle) ? originalTitle : undefined;
-  const queries = generateSearchQueries(title, year, safeOriginalTitle);
+  const { queries, bareTitleCount } = generateSearchQueries(title, year, safeOriginalTitle);
   const allResults = new Map<string, SearchResult>();
 
   for (let qi = 0; qi < queries.length; qi++) {
@@ -1042,7 +1217,11 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
       return Math.max(s1, s2);
     }));
     if (bestSoFar >= 120) break;
-    if (qi >= 4) break;
+    if (shouldStopSearchingAfterEmptyQueries(qi, allResults.size, bareTitleCount)) break;
+    // Hard budget. It is a FLOOR of five rounds, raised when the title has more
+    // than five distinct spellings, so the bare-name sweep can never be cut off
+    // half-way through (see generateSearchQueries).
+    if (qi + 1 >= Math.max(SEARCH_QUERY_BUDGET, bareTitleCount)) break;
   }
 
   if (allResults.size === 0) {
@@ -1066,7 +1245,7 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
       // year's poster (e.g. Dune 2021), never substitute a same-title
       // different-year movie (Dune 1984) just because the title scored
       // high enough after the -55 penalty.
-      if (year && entry.resultYear && entry.resultYear !== year) return false;
+      if (isYearIncompatible(entry.resultYear, year)) return false;
       return isDizipalUrlTitleCompatible(entry.href, title, safeOriginalTitle);
     })
     .sort((a, b) => b.score - a.score);
@@ -1146,7 +1325,7 @@ function isDizipalUrlTitleCompatible(
 
 async function fetchDizipalPageHtml(pageUrl: string): Promise<string | null> {
   try {
-    const response = await axios.get<string>(pageUrl, {
+    const response = await dizipalGet<string>(pageUrl, {
       timeout: 7000,
       headers: {
         "User-Agent": UA,
@@ -1209,46 +1388,8 @@ function getCachedHdFilmNativeFallback(pageUrl: string, pageHtml: string) {
   return task;
 }
 
-const BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-function decodeBase64Binary(value: string): string {
-  const cleaned = value.replace(/[^A-Za-z0-9+/=]/g, "");
-  let output = "";
-  let buffer = 0;
-  let bits = 0;
-
-  for (const char of cleaned) {
-    if (char === "=") break;
-    const index = BASE64_CHARS.indexOf(char);
-    if (index === -1) continue;
-
-    buffer = (buffer << 6) | index;
-    bits += 6;
-
-    if (bits >= 8) {
-      bits -= 8;
-      output += String.fromCharCode((buffer >> bits) & 0xff);
-    }
-  }
-
-  return output;
-}
-
-function caesarShift(value: string, shift: number): string {
-  const normalized = ((shift % 26) + 26) % 26;
-  return value.replace(/[a-zA-Z]/g, (char) => {
-    const code = char.charCodeAt(0);
-    const base = code <= 90 ? 65 : 97;
-    return String.fromCharCode(((code - base + normalized) % 26) + base);
-  });
-}
-
 function rot13(value: string): string {
   return caesarShift(value, 13);
-}
-
-function reverseString(value: string): string {
-  return value.split("").reverse().join("");
 }
 
 /**
@@ -1363,6 +1504,18 @@ function decodeRapidrameValueCandidates(
     }
   }
   return candidates;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Index of `var <name>` / `let <name>` / `const <name>`, matched on a whole
+ * identifier so `var s_a` is not found inside `var s_abc`.
+ */
+function findVariableDeclaration(html: string, name: string): number {
+  return html.search(new RegExp(`\\b(?:var|let|const)\\s+${escapeRegExp(name)}\\b`));
 }
 
 function extractJsonArrayLiteral(value: string): string | null {
@@ -1481,26 +1634,30 @@ function tryUnpackInlinePackerJs(html: string): string {
 
 /**
  * Interpret the live `dc_*()` decoder body instead of matching it to a fixed
- * scheme. HDFilm now RANDOMIZES the decoder per request — the reverse count,
- * the Caesar shift amount, the unmix constant and the `(i + N)` offset all
- * change on every embed fetch — so no static transform list can keep up.
+ * scheme. HDFilm RANDOMIZES the decoder per request — the reverse count, the
+ * Caesar shifts, the de-scramble constants, and (since Aug 2026) the whole
+ * de-scramble family all change on every embed fetch — so no static transform
+ * list can keep up.
  *
- * The body is plain, un-obfuscated JS composed only of the provider's four
- * primitives (join → [reverse|base64|caesar]* → unmix). We read the ordered
- * operations and their parameters straight out of the source and replay them.
- * Returns null if the body isn't shaped the way we expect, so the caller can
- * fall back to the static schemes.
+ * The body is plain, un-obfuscated JS. `runRapidrameDecoder` parses and replays
+ * it (see rapidrameScript.ts for why that is safe and what subset is allowed).
+ * Returns null if the body steps outside that subset, so the caller can fall
+ * back to the static schemes.
  */
 function decodeRapidrameByInterpretingDcBody(embedHtml: string, sourceVariable: string, valueParts: string[]): string | null {
-  const assignmentIndex = embedHtml.indexOf(`var ${sourceVariable}`);
+  const assignmentIndex = findVariableDeclaration(embedHtml, sourceVariable);
   if (assignmentIndex === -1) return null;
 
+  // The decoder used to be named `dc_*`; since Sep 2026 it is a random short
+  // identifier, so match any callee here and let the `function <name>` lookup
+  // below decide whether it is a real local function. A built-in like `atob`
+  // simply finds no declaration and falls through to the static schemes.
   const decoderName = embedHtml
     .slice(assignmentIndex, assignmentIndex + 120)
-    .match(/=\s*(dc_[A-Za-z0-9_]+)\s*\(/)?.[1];
+    .match(/=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/)?.[1];
   if (!decoderName) return null;
 
-  const fnStart = embedHtml.indexOf(`function ${decoderName}`);
+  const fnStart = embedHtml.search(new RegExp(`\\bfunction\\s+${escapeRegExp(decoderName)}\\s*\\(`));
   if (fnStart === -1) return null;
 
   const braceStart = embedHtml.indexOf("{", fnStart);
@@ -1518,41 +1675,7 @@ function decodeRapidrameByInterpretingDcBody(embedHtml: string, sourceVariable: 
   }
   if (braceEnd === -1) return null;
 
-  const body = embedHtml.slice(braceStart, braceEnd);
-  const unmixLoopIndex = body.search(/for\s*\(/);
-  const head = unmixLoopIndex >= 0 ? body.slice(0, unmixLoopIndex) : body;
-
-  // Collect the pre-unmix operations in source order.
-  const operations: Array<{ index: number; apply: (value: string) => string }> = [];
-  for (const match of head.matchAll(/\.reverse\s*\(\s*\)/g)) {
-    operations.push({ index: match.index ?? 0, apply: reverseString });
-  }
-  for (const match of head.matchAll(/atob\s*\(/g)) {
-    operations.push({ index: match.index ?? 0, apply: decodeBase64Binary });
-  }
-  for (const match of head.matchAll(/\+\s*(\d+)\s*\)\s*%\s*26\b/g)) {
-    const shift = Number(match[1]);
-    if (Number.isFinite(shift)) {
-      operations.push({ index: match.index ?? 0, apply: (value) => caesarShift(value, shift) });
-    }
-  }
-  operations.sort((left, right) => left.index - right.index);
-
-  const unmixMatch = body.match(/(\d{6,})\s*%\s*\(\s*[A-Za-z_$][\w$]*\s*\+\s*(\d+)\s*\)/);
-  if (!unmixMatch) return null;
-  const constant = Number(unmixMatch[1]);
-  const offset = Number(unmixMatch[2]);
-  if (!Number.isSafeInteger(constant) || !Number.isSafeInteger(offset) || offset <= 0) return null;
-
-  try {
-    let result = valueParts.join("");
-    for (const operation of operations) {
-      result = operation.apply(result);
-    }
-    return unmixRapidrameBytes(result, constant, offset);
-  } catch {
-    return null;
-  }
+  return runRapidrameDecoder(embedHtml.slice(fnStart, braceEnd + 1), valueParts);
 }
 
 function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
@@ -1560,17 +1683,24 @@ function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
   // this is a no-op (no packed block). For the newer /rplayer/ flow it's what
   // makes the `s_* = dc_*(…)` assignment visible to the regex below.
   const embedHtml = tryUnpackInlinePackerJs(embedHtmlInput);
-  const sourceVariable = embedHtml.match(/sources\s*:\s*\[\s*\{\s*file\s*:\s*(s_[A-Za-z0-9_]+)/)?.[1];
+  // The parts variable was `s_*` until Sep 2026 and is a random short
+  // identifier since, so match any identifier. A quoted URL (`file: "http…"`)
+  // is not an identifier and correctly falls through to the m3u8 scrape.
+  const sourceVariable = embedHtml.match(
+    /sources\s*:\s*\[\s*\{\s*file\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)/
+  )?.[1];
   if (!sourceVariable) {
     return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
   }
 
-  const variableIndex = embedHtml.indexOf(`var ${sourceVariable}`);
+  const variableIndex = findVariableDeclaration(embedHtml, sourceVariable);
   if (variableIndex === -1) {
     return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
   }
 
-  const variableSnippet = embedHtml.slice(variableIndex, variableIndex + 2200);
+  // Wide enough for the largest parts array seen in the wild (39 chunks); the
+  // literal scanner below stops at the closing bracket regardless.
+  const variableSnippet = embedHtml.slice(variableIndex, variableIndex + 8000);
   const arrayLiteral = extractJsonArrayLiteral(variableSnippet);
   if (!arrayLiteral) return null;
 
@@ -1760,7 +1890,7 @@ async function resolveHdFilmNativeFallback(pageUrl: string, pageHtml: string): P
   if (!embedUrl) return null;
 
   try {
-    const response = await axios.get<string>(embedUrl, {
+    const response = await hdFilmGet<string>(embedUrl, {
       timeout: 8000,
       headers: {
         "User-Agent": UA,
@@ -1807,7 +1937,7 @@ export async function resolveHdFilmRuntimeStream(discoveredUrl: string, pageUrl:
   if (!isTrustedHdFilmEmbedUrl(absoluteUrl)) return null;
 
   try {
-    const response = await axios.get<string>(absoluteUrl, {
+    const response = await hdFilmGet<string>(absoluteUrl, {
       timeout: 8000,
       headers: {
         "User-Agent": UA,
@@ -2004,6 +2134,183 @@ type DizipalStreamResult = {
   embedUrl: string | null;
 };
 
+type DizipalPlayerConfigResponse = {
+  success?: boolean;
+  config?: { v?: string; t?: string; p?: string };
+};
+
+/**
+ * Read the CSRF token out of `/ajax-token`.
+ *
+ * The endpoint used to answer with the bare token string; it now answers with
+ * `{"t":"<hex>"}`. The old code did `String(data).trim()` on the parsed object,
+ * which yields the literal "[object Object]" — 15 characters of nonsense that
+ * every player-config POST then rejected with "Invalid token", so no Dizipal
+ * title could produce a native stream and all of them fell back to the
+ * provider's own WebView player. Handle both shapes.
+ */
+function parseDizipalToken(data: unknown): string {
+  if (typeof data === "string") {
+    const trimmed = data.trim();
+    if (!trimmed.startsWith("{")) return trimmed;
+    try {
+      const parsed = JSON.parse(trimmed) as { t?: unknown };
+      return typeof parsed.t === "string" ? parsed.t.trim() : "";
+    } catch {
+      return trimmed;
+    }
+  }
+
+  if (data && typeof data === "object") {
+    const token = (data as { t?: unknown }).t;
+    return typeof token === "string" ? token.trim() : "";
+  }
+
+  return "";
+}
+
+/**
+ * Mint a fresh token and exchange the page's `cfg` for the player config.
+ *
+ * Two properties of the live endpoint drive this shape:
+ *  - the token is SINGLE-USE, so it must be fetched immediately before each
+ *    POST and can never be cached or replayed; and
+ *  - validation covers the whole cookie set (`_ct`, `PHPSESSID` and the
+ *    DDoS-Guard `__ddg*` cookies), not just `_ct`. Hand-setting a `Cookie`
+ *    header REPLACES the platform cookie jar for that request, dropping the
+ *    others and failing validation — verified against the live endpoint. So we
+ *    let the native cookie store (OkHttp / NSURLSession) carry them and only
+ *    fall back to an explicit header if the jar-based attempt is rejected,
+ *    which covers runtimes without a cookie jar.
+ */
+/**
+ * Dizipal's `data-cfg` attribute is base64(url) of the exact JSON the
+ * player-config endpoint hands back: `{"v":…,"t":…,"p":…}`. Decoding it on
+ * device skips a token mint plus a POST (two round-trips on the critical path
+ * of every play) and, more importantly, keeps playback working across the
+ * endpoint renames the provider does every few months — 2026-09's
+ * `/ajax-player-config` → `/ajax/player-config` move broke every Dizipal
+ * title until this landed.
+ *
+ * Returns null on anything that isn't the expected shape so the caller falls
+ * back to the network path rather than playing something wrong.
+ */
+function decodeDizipalCfg(cfg: string): DizipalPlayerConfigResponse | null {
+  const normalized = cfg.trim().replace(/-/g, "+").replace(/_/g, "/");
+  if (!normalized || !/^[A-Za-z0-9+/=]+$/.test(normalized)) return null;
+
+  let json: string;
+  try {
+    json = decodeBase64Binary(normalized);
+  } catch {
+    return null;
+  }
+  if (!json.trim().startsWith("{")) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+
+  const config = parsed as { v?: unknown; t?: unknown; p?: unknown };
+  if (typeof config?.v !== "string" || !/^https?:\/\//i.test(config.v)) return null;
+  if (typeof config?.t !== "string" || !config.t) return null;
+
+  return {
+    success: true,
+    config: {
+      v: config.v,
+      t: config.t,
+      p: typeof config.p === "string" ? config.p : "",
+    },
+  };
+}
+
+/**
+ * Paths the player-config endpoint has lived at, newest first. Dizipal renamed
+ * `/ajax-player-config` to `/ajax/player-config` in Sept 2026; the old path now
+ * answers 404, which the caller treated as "no stream" and silently dropped
+ * every Dizipal title. Both are tried so a rename in either direction is a
+ * one-request penalty rather than an outage.
+ */
+const DIZIPAL_PLAYER_CONFIG_PATHS = ["/ajax/player-config", "/ajax-player-config"];
+
+async function requestDizipalPlayerConfig(
+  baseUrl: string,
+  pageUrl: string,
+  cfg: string
+): Promise<DizipalPlayerConfigResponse | null> {
+  const postConfigTo = (path: string, cookieHeader?: string) =>
+    axios.post<DizipalPlayerConfigResponse>(
+      `${baseUrl}${path}`,
+      `cfg=${encodeURIComponent(cfg)}`,
+      {
+        timeout: 6000,
+        withCredentials: true,
+        validateStatus: (status) => status >= 200 && status < 500,
+        headers: {
+          "User-Agent": UA,
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Requested-With": "XMLHttpRequest",
+          Referer: pageUrl,
+          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+        },
+      }
+    );
+
+  // Remember which path answered so the retry doesn't re-probe the dead one.
+  let livePath = DIZIPAL_PLAYER_CONFIG_PATHS[0];
+  const postConfig = async (cookieHeader?: string) => {
+    let last = await postConfigTo(livePath, cookieHeader);
+    if (last.status === 404) {
+      for (const path of DIZIPAL_PLAYER_CONFIG_PATHS) {
+        if (path === livePath) continue;
+        const attempt = await postConfigTo(path, cookieHeader);
+        if (attempt.status !== 404) {
+          livePath = path;
+          last = attempt;
+          break;
+        }
+      }
+    }
+    return last;
+  };
+
+  const mintToken = async (): Promise<string> => {
+    const tokenResp = await axios.get(`${baseUrl}/ajax-token`, {
+      timeout: 6000,
+      withCredentials: true,
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
+        Referer: pageUrl,
+      },
+    });
+    return parseDizipalToken(tokenResp.data);
+  };
+
+  try {
+    await mintToken();
+    const response = await postConfig();
+    if (response.data?.success) return response.data;
+
+    // Rejected — the token is now spent, so the retry needs a new one.
+    debugLog("[WebPlayer] Dizipal player-config rejected; retrying with an explicit cookie");
+    const retryToken = await mintToken();
+    if (!retryToken) return response.data ?? null;
+
+    const retry = await postConfig(`_ct=${retryToken}`);
+    return retry.data ?? null;
+  } catch (error: any) {
+    debugLog("[WebPlayer] Dizipal player-config failed:", error?.message ?? error);
+    return null;
+  }
+}
+
 async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResult | null> {
   try {
     const html = await fetchDizipalPageHtml(pageUrl);
@@ -2015,43 +2322,13 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
     const pageOrigin = new URL(pageUrl).origin;
     const baseUrl = pageOrigin.includes("dizipal") ? pageOrigin : getDizipalBaseUrl();
 
-    let csrfToken = "";
-    try {
-      const tokenResp = await axios.get<string>(`${baseUrl}/ajax-token`, {
-        timeout: 6000,
-        headers: {
-          "User-Agent": UA,
-          Accept: "*/*",
-          "X-Requested-With": "XMLHttpRequest",
-          Referer: pageUrl
-        }
-      });
-      csrfToken = typeof tokenResp.data === "string" ? tokenResp.data.trim() : String(tokenResp.data).trim();
-    } catch (e) {
-      return null;
-    }
+    // The page already carries the player config; only ask the server when the
+    // attribute isn't the shape we know.
+    const configResp =
+      decodeDizipalCfg(cfg) ?? (await requestDizipalPlayerConfig(baseUrl, pageUrl, cfg));
 
-    const configResp = await axios.post<{
-      success?: boolean;
-      config?: { v?: string; t?: string; p?: string };
-    }>(
-      `${baseUrl}/ajax-player-config`,
-      `cfg=${encodeURIComponent(cfg)}`,
-      {
-        timeout: 6000,
-        headers: {
-          "User-Agent": UA,
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-Requested-With": "XMLHttpRequest",
-          Referer: pageUrl,
-          Cookie: `_ct=${csrfToken}`
-        }
-      }
-    );
-
-    const config = configResp.data?.config;
-    if (!configResp.data?.success || !config?.v) return null;
+    const config = configResp?.config;
+    if (!configResp?.success || !config?.v) return null;
 
     const streamType = (config.t ?? "").toLowerCase();
 
@@ -2090,18 +2367,6 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
   } catch (e) {
     return null;
   }
-}
-
-async function hasPlayableDizipalVideo(pageUrl: string): Promise<boolean> {
-  const html = await fetchDizipalPageHtml(pageUrl);
-  if (!html) return false;
-
-  const cfg = extractDizipalCfg(html);
-  const hasPlayerShell =
-    /id=["']videoContainer["']/i.test(html) &&
-    /id=["']playerCover["']|id=["']mainPlayer["']|id=["']playerContent["']/i.test(html);
-
-  return Boolean(cfg) && hasPlayerShell;
 }
 
 function matchesDizipalEpisodeUrl(url: string, seasonNumber: number, episodeNumber: number): boolean {
@@ -2162,11 +2427,13 @@ async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<Diz
   }
 
   const result = await fetchDizipalStreamUrl(targetUrl);
-  if (result) return { pageUrl: targetUrl, stream: result.stream, embedUrl: result.embedUrl, qualityWarning };
+  if (result?.stream) {
+    return { pageUrl: targetUrl, stream: result.stream, embedUrl: result.embedUrl, qualityWarning };
+  }
 
-  const playable = await hasPlayableDizipalVideo(targetUrl);
-  if (playable) return { pageUrl: targetUrl, stream: null, embedUrl: null, qualityWarning };
-
+  // No extractable stream. There is deliberately no "the page looks playable"
+  // consolation result any more — see the caller: handing back a page or embed
+  // shell only puts the user inside the provider's own player.
   return null;
 }
 
@@ -2306,33 +2573,30 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
   }
 
   // 2. Dizipal — primary fallback when HDFilm produced no native stream.
+  //
+  //    ONLY a real extracted stream counts. Dizipal's page and embed shells
+  //    used to be returned as playable results too, but those render the
+  //    provider's own Playerjs in a WebView with no path back to native
+  //    playback — no stream discovery, no handoff — so the user ended up inside
+  //    a third-party player complete with its pre-roll ads and its own controls.
+  //    (The HDFilm WebView below is different: it injects a discovery script and
+  //    switches to expo-video the moment it finds the stream URL.) When the
+  //    extraction fails we now fall through to the next provider instead.
   {
     const dizipalResult = await resolvePlayableDizipalUrl(request);
-    if (dizipalResult) {
+    if (dizipalResult?.stream) {
       const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
-      if (stream) {
-        return {
-          url: pageUrl,
-          source: "dizipal_direct",
-          streamUrl: stream.streamUrl,
-          streamType: stream.streamType,
-          poster: stream.poster,
-          referer: stream.referer || "",
-          embedUrl: embedUrl ?? undefined,
-          subtitles: stream.subtitles,
-          qualityWarning,
-        };
-      }
-
-      if (embedUrl) {
-        return {
-          url: embedUrl,
-          source: "dizipal_embed",
-          embedUrl,
-          qualityWarning,
-        };
-      }
-      return { url: pageUrl, source: "dizipal", qualityWarning };
+      return {
+        url: pageUrl,
+        source: "dizipal_direct",
+        streamUrl: stream.streamUrl,
+        streamType: stream.streamType,
+        poster: stream.poster,
+        referer: stream.referer || "",
+        embedUrl: embedUrl ?? undefined,
+        subtitles: stream.subtitles,
+        qualityWarning,
+      };
     }
   }
 
@@ -2374,23 +2638,21 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
           }
         }
 
-        const dizipalRetry = await searchDizipal(altTitle, request.mediaType, request.year);
-        if (dizipalRetry) {
-          const retryRequest: WebPlayerRequest = { ...request, title: altTitle, originalTitle: undefined };
-          const dizipalResult = await resolvePlayableDizipalUrl(retryRequest);
-          if (dizipalResult) {
-            const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
-            if (stream) {
-              return {
-                url: pageUrl, source: "dizipal_direct",
-                streamUrl: stream.streamUrl, streamType: stream.streamType,
-                poster: stream.poster, referer: stream.referer || "",
-                embedUrl: embedUrl ?? undefined, subtitles: stream.subtitles, qualityWarning,
-              };
-            }
-            if (embedUrl) return { url: embedUrl, source: "dizipal_embed", embedUrl, qualityWarning };
-            return { url: pageUrl, source: "dizipal", qualityWarning };
-          }
+        // resolvePlayableDizipalUrl runs the search itself, so probing with a
+        // separate searchDizipal call first only duplicated the whole query
+        // sweep (up to five HTTP round-trips) and threw the result away.
+        const retryRequest: WebPlayerRequest = { ...request, title: altTitle, originalTitle: undefined };
+        const dizipalResult = await resolvePlayableDizipalUrl(retryRequest);
+        // Same rule as step 2: a Dizipal page/embed shell is not a playable
+        // result, only an extracted stream is.
+        if (dizipalResult?.stream) {
+          const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
+          return {
+            url: pageUrl, source: "dizipal_direct",
+            streamUrl: stream.streamUrl, streamType: stream.streamType,
+            poster: stream.poster, referer: stream.referer || "",
+            embedUrl: embedUrl ?? undefined, subtitles: stream.subtitles, qualityWarning,
+          };
         }
       }
     } catch { /* silent */ }
@@ -2851,12 +3113,19 @@ export async function resolveDirectWebPlayerFallback(
 
 export const __internal = {
   buildHdFilmResult,
+  providerGet,
+  isCloudflareChallengeStatus,
+  checkVideoAvailability,
+  decodeDizipalCfg,
   decodeRapidrameByInterpretingDcBody,
   decodeRapidrameValueCandidates,
   extractDizibalEmbedStream,
   extractDizipalPageYear,
   extractHdFilmEmbedUrl,
   extractRapidrameStreamUrl,
+  generateSearchQueries,
+  isYearIncompatible,
+  shouldStopSearchingAfterEmptyQueries,
   tryUnpackInlinePackerJs,
   hasStrictTitleIdentity,
   inspectRapidramePlaylist,

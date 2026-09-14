@@ -58,11 +58,13 @@ export const resources = {
         resumeBody: "You left off at {{time}}. Pick up where you stopped or start from the beginning.",
         resumeConfirm: "Resume",
         resumeStartOver: "Start over",
+        audio: "Audio",
         a11y: {
           close: "Close player",
           toggleFit: "Toggle video fit",
           subtitles: "Subtitles",
           quality: "Video quality",
+          audio: "Audio language",
           retry: "Retry playback"
         }
       },
@@ -454,6 +456,7 @@ export const resources = {
         watchCredits: "Watch credits",
         playNow: "Play now",
         cancel: "Cancel",
+        dismiss: "Close",
         autoPlayNext: "Auto-play next episode",
         episodes: "Episodes",
         season: "Season {{number}}",
@@ -475,11 +478,13 @@ export const resources = {
         resumeBody: "{{time}} noktasında kalmıştın. Kaldığın yerden sürdürebilir ya da baştan başlayabilirsin.",
         resumeConfirm: "Devam et",
         resumeStartOver: "Baştan başlat",
+        audio: "Ses",
         a11y: {
           close: "Oynatıcıyı kapat",
           toggleFit: "Video boyutunu değiştir",
           subtitles: "Altyazılar",
           quality: "Video kalitesi",
+          audio: "Ses dili",
           retry: "Tekrar oynat"
         }
       },
@@ -526,6 +531,7 @@ export const resources = {
         watchCredits: "Jeneriği izle",
         playNow: "Şimdi oynat",
         cancel: "İptal",
+        dismiss: "Kapat",
         autoPlayNext: "Sonraki bölümü otomatik oynat",
         episodes: "Bölümler",
         season: "{{number}}. Sezon",

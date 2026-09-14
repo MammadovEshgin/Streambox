@@ -79,6 +79,9 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
   // The peer has announced a live connection ready to negotiate. Kept in a ref
   // so a host that enables its camera later can still offer once it hears this.
   const peerReadyRef = useRef(false);
+  // An offer that arrived before this peer's connection existed, replayed once
+  // setup completes. Only the newest is kept — an older offer is superseded.
+  const pendingOfferRef = useRef<Extract<WebrtcSignal, { type: "webrtc-offer" }> | null>(null);
   const makingOfferRef = useRef(false);
   const lastOfferAtRef = useRef(0);
   const isInitiatorRef = useRef(isInitiator);
@@ -169,14 +172,29 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
         if (action === "offer") {
           if (pcRef.current) void makeOffer();
         } else {
-          // Guest replies so a host that just enabled learns the guest is ready.
-          if (pcRef.current) announceReady();
+          // Guest replies so a host that just enabled learns the guest is
+          // ready. Reply even while our own connection is still coming up:
+          // staying silent until then let the host's announce loop expire
+          // against a guest that was simply slow to open its camera, and the
+          // pair then never negotiated at all.
+          announceReady();
         }
         return;
       }
 
       const pc = pcRef.current;
-      if (!webrtc || !pc) return;
+      if (!webrtc) return;
+      if (!pc) {
+        // Setup is still running — `getUserMedia` is sitting on the camera
+        // permission dialog, or the TURN fetch is in flight. Dropping the
+        // offer here cost the pair a full re-announce round-trip at best, and
+        // the whole session at worst: if the host's announce loop had already
+        // spent its ~90s budget, nothing ever offered again and both sides sat
+        // in "connecting" forever. Hold it and apply it once we are wired.
+        if (signal.type === "webrtc-offer") pendingOfferRef.current = signal;
+        else if (signal.type === "webrtc-ice") pendingCandidatesRef.current.push(signal.candidate);
+        return;
+      }
       try {
         if (signal.type === "webrtc-offer") {
           await pc.setRemoteDescription(new webrtc.RTCSessionDescription({ type: "offer", sdp: signal.sdp }));
@@ -203,6 +221,19 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
     [flushPendingCandidates, announceReady, makeOffer]
   );
 
+  // `setup` runs inside an effect that must not re-subscribe every time
+  // `handleSignal` is rebuilt, so reach it through a ref.
+  const handleSignalRef = useRef(handleSignal);
+  handleSignalRef.current = handleSignal;
+
+  /** Replay the offer that arrived before this peer's connection existed. */
+  const drainPendingOffer = useCallback(async () => {
+    const pending = pendingOfferRef.current;
+    if (!pending) return;
+    pendingOfferRef.current = null;
+    await handleSignalRef.current(pending);
+  }, []);
+
   useEffect(() => {
     if (!enabled) return;
     const webrtc = getWebRtc();
@@ -220,6 +251,7 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
       // Fresh negotiation each time media turns on: a re-toggle starts clean.
       remoteDescSetRef.current = false;
       pendingCandidatesRef.current = [];
+      pendingOfferRef.current = null;
       makingOfferRef.current = false;
       lastOfferAtRef.current = 0;
       peerReadyRef.current = false;
@@ -251,23 +283,24 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
       setLocalStream(stream);
 
       const pc = new PC({ iceServers });
-      pcRef.current = pc;
 
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-
-      // Cap the face-cam bitrate; best-effort (older devices may not support
-      // setParameters).
-      try {
-        for (const sender of (pc as any).getSenders() ?? []) {
-          if (sender?.track?.kind !== "video") continue;
-          const params = sender.getParameters();
-          if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
-          params.encodings[0].maxBitrate = VIDEO_MAX_BITRATE_BPS;
-          await sender.setParameters(params);
-        }
-      } catch {
-        /* keep default encoder settings */
-      }
+      // ─────────────────────────────────────────────────────────────────────
+      // ORDER MATTERS. Everything below runs with NO await before the
+      // connection is published to `pcRef`.
+      //
+      // `handleSignal` answers an incoming offer the moment it can see
+      // `pcRef.current`. Publishing the connection before its handlers were
+      // attached — which is what happened while `setParameters` was awaited
+      // right here — meant an offer landing in that window was answered by a
+      // connection with no `ontrack` and no `onicecandidate`. Its own ICE
+      // candidates were never signalled and, worse, the partner's media track
+      // arrived at a connection that was not listening for it, so the remote
+      // tile stayed empty for the rest of the session.
+      //
+      // That is the "I opened the session and only my own video showed"
+      // report, and it only reproduced on some phones because the width of
+      // the window was the latency of a native round-trip.
+      // ─────────────────────────────────────────────────────────────────────
 
       (pc as any).onicecandidate = (event: any) => {
         if (event?.candidate) {
@@ -312,6 +345,33 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
           setConnectionState("closed");
         }
       };
+
+      // Local tracks must be attached BEFORE any answer is created, or the
+      // answer describes both m-lines as receive-only and this peer silently
+      // never sends — the other half of the one-way-video failure.
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+      // Fully wired: only now may `handleSignal` use it.
+      pcRef.current = pc;
+
+      // Cap the face-cam bitrate; best-effort (older devices may not support
+      // setParameters) and deliberately AFTER publishing, since it awaits.
+      try {
+        for (const sender of (pc as any).getSenders() ?? []) {
+          if (sender?.track?.kind !== "video") continue;
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+          params.encodings[0].maxBitrate = VIDEO_MAX_BITRATE_BPS;
+          await sender.setParameters(params);
+        }
+      } catch {
+        /* keep default encoder settings */
+      }
+      if (cancelled) return;
+
+      // Apply an offer that arrived while we were still acquiring the camera.
+      await drainPendingOffer();
+      if (cancelled) return;
 
       // Readiness handshake instead of an immediate offer: announce we're ready,
       // and (host only) offer as soon as we know the guest is ready too. This
@@ -375,13 +435,14 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
       localStreamRef.current = null;
       remoteDescSetRef.current = false;
       pendingCandidatesRef.current = [];
+      pendingOfferRef.current = null;
       makingOfferRef.current = false;
       peerReadyRef.current = false;
       setLocalStream(null);
       setRemoteStream(null);
       setConnectionState(isWebRtcAvailable ? "closed" : "unavailable");
     };
-  }, [enabled, isInitiator, selfUserId, generation, announceReady, makeOffer, scheduleRestart]);
+  }, [enabled, isInitiator, selfUserId, generation, announceReady, makeOffer, scheduleRestart, drainPendingOffer]);
 
   // Clear any pending auto-restart when the media layer is switched off.
   useEffect(() => {

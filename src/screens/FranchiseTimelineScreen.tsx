@@ -469,9 +469,9 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
       if (!entry.tmdbId) return;
 
       if (entry.mediaType === "tv") {
-        navigation.navigate("SeriesDetail", { seriesId: String(entry.tmdbId) });
+        navigation.push("SeriesDetail", { seriesId: String(entry.tmdbId) });
       } else {
-        navigation.navigate("MovieDetail", { movieId: String(entry.tmdbId) });
+        navigation.push("MovieDetail", { movieId: String(entry.tmdbId) });
       }
     },
     [navigation]
