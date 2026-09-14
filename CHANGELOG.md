@@ -10,6 +10,16 @@ this branch (`v1.2.0`) ships to **1.2.0**. See
 
 ## [Unreleased]
 
+### Fixed — Dizipal domain rotation (2026-09-14)
+
+Provider health sweep from a residential connection. HDFilm resolved 8/8 probe
+titles natively (1.1–5.2s), Dizibal 6/6 of the titles it carries, Dizipal 3/3
+series and 3/3 films. The one defect: **Dizipal rotated `dizipal2130.com` →
+`dizipal2131.com`**, so every Dizipal request walked a 301 that alone measured
+about a second. The shipped fallback — which `normaliseDizipalBaseUrl` treats
+as a floor over a stale Supabase row — is now 2131, and the test that guards
+the floor was raised with it.
+
 ### Fixed — search, provider coverage, library correctness, navigation, keyboard (2026-09-11)
 
 Eight reported defects. Several turned out to share a root cause, and two of

@@ -78,8 +78,10 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     // older than this one from ever being used.
     // Live chain on 2026-09-10 was 2126 → 2127 → 2128 → 2129 → 2130
     // (Supabase was still pinned at 2127, i.e. three dead hops per request).
-    baseUrl: "https://dizipal2130.com",
-    referer: "https://dizipal2130.com/",
+    // 2026-09-14: 2130 → 2131 (the 301 alone measured ~1s from a residential
+    // connection).
+    baseUrl: "https://dizipal2131.com",
+    referer: "https://dizipal2131.com/",
   },
   dizibal: {
     // dizibal.org (was .com until 2026-09; .com still 301s here) — Turkish
