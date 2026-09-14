@@ -69,17 +69,23 @@ the `app.config.js` runtime, not the branch you happen to be on.
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `07d9f6c` | `377d7005-7033-4da1-851a-f90370ac2fe8` |
-| 1.1.0 | `archive/release-1.1.0-navbar` @ `6658bff` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
-| 1.0.2 | `archive/release-1.0.2-legacy` @ `f9cfc56` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+| 1.2.0 | `v1.2.0` @ `6845830` | `377d7005-7033-4da1-851a-f90370ac2fe8` |
+| 1.1.0 | `archive/release-1.1.0-navbar` @ `c65d7db` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
+| 1.0.2 | `archive/release-1.0.2-legacy` @ `1da0cae` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
 
 - **2026-09-14 (1.2.0 only):** Provider health sweep from a residential
   connection, run through the shipped resolver with each tier isolated. HDFilm
   8/8 probe titles native (1.1–5.2s); Dizipal 3/3 series and 3/3 films; Dizibal
   6/6 of the titles it carries. The one defect: **Dizipal rotated 2130 → 2131**
   (the 301 alone ~1s). Shipped floor bumped to 2131; the operator updated the
-  Supabase row the same day. Deploy: `07d9f6c` → group
+  Supabase row the same day. Deploy: `6845830` → group
   `377d7005-7033-4da1-851a-f90370ac2fe8`.
+  - **Git history was rewritten the same day** (owner-approved): every commit
+    is authored by Eshgin Mammadov and AI co-author trailers were removed, so
+    all commit IDs changed; file contents did not. Commit IDs in this file were
+    remapped, but the EAS dashboard still shows the pre-rewrite IDs. The old
+    history survives only in the local backup bundle
+    `.git/backup/streambox-pre-rewrite-2026-09-14.bundle`.
   - **Dizipal lists films under Turkish titles** (`/film/baslangic` for
     Inception). An English-title probe with no TMDB access misses every film
     and looks like a broken movie path — it isn't; the app's Turkish alt-title
@@ -269,7 +275,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
   page's `data-cfg`, verified reachable from Worker egress before deploy.
   Measured after: 14/14 live titles resolve to a playing HLS manifest in
   0.5–3.1s (the same sweep beforehand had series failing at 7.7s).
-  Deploy: 1.2.0 `a73c28d` → group `4fc77eff-1b8f-43ff-a389-14cc79675de5`.
+  Deploy: 1.2.0 `faf0e43` → group `4fc77eff-1b8f-43ff-a389-14cc79675de5`.
   1.1.0/1.0.2 NOT shipped. 345 tests green. Worker deployed separately
   (version `6f2dc0a1-ad54-4efd-ac1c-295d04557c38`).
   Known upstream outage, not ours: Dizibal's rotating embed host
@@ -295,7 +301,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
   collided across consecutive days, the rate-limit fallback used a date-free
   index, and a hub refresh racing the liked/watched load stamped yesterday's hero
   as current (for an account with no liked/watched titles that never self-healed).
-  Deploy: 1.2.0 `3eb6b70` → group `de6dcbdb-b64d-4e4b-9d06-2d7b512f6852`.
+  Deploy: 1.2.0 `7d08cc1` → group `de6dcbdb-b64d-4e4b-9d06-2d7b512f6852`.
   1.1.0/1.0.2 NOT shipped. 335 tests green.
 
   Also recorded in `decoder-recovery.md`: `www.hdfilmcehennemi.nl` serves a
@@ -321,14 +327,14 @@ the `app.config.js` runtime, not the branch you happen to be on.
   and the failing op clogged the durable queue; ticking episodes now also
   reconciles watch history, fixing "watched on SeriesDetail, missing from
   Profile". Measured after: 13/13 live titles resolve natively in 0.9–3.2s.
-  Deploy: 1.2.0 `10e5a49` → group `f192271c-b031-4a42-9619-c40c871b4f6c`. 1.1.0/1.0.2 NOT shipped.
+  Deploy: 1.2.0 `effb1d8` → group `f192271c-b031-4a42-9619-c40c871b4f6c`. 1.1.0/1.0.2 NOT shipped.
 
 - **2026-07-23 (1.2.0 only, follow-up):** Reverted the custom YouTube expand/
   fullscreen player from earlier today — it was worse than the stock player, so
   trailers + Azerbaijani Classics return to the original portrait iframe (its own
   controls + `onFullScreenChange` landscape handling). The rest of the batch below
   is kept. Also renamed the AZ Classics play button "Play on YouTube" → "Watch
-  Now" / "Şimdi İzle". Deploy: 1.2.0 `7c6e29c` → group
+  Now" / "Şimdi İzle". Deploy: 1.2.0 `70ea35c` → group
   `9ad008d5-55d7-496e-b6c8-7c8b03d40c4f`.
 - **2026-07-23 (1.2.0 only):** UX + stability batch. (1) **Watch Together chat is
   now durably delivered** — un-acked chat lines queue in `watchRoomService` and
@@ -349,7 +355,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
   splash stays an opaque overlay so there is still no black flash. Pure JS — no
   native/dependency/SQL change. Branch `release/1.2.0-watch-together` renamed to
   `v1.2.0` and `feat/azerbaijani-classics` recorded as merged (already a strict
-  superset, so `-s ours`). Deploy: 1.2.0 `b7ef808` → group
+  superset, so `-s ours`). Deploy: 1.2.0 `b810246` → group
   `409f6556-fd0a-450b-a1d7-7275d4120768`.
 - **2026-07-21 (1.2.0 only):** Removed 30 incorrectly-included films that are not genuine Azerbaijani classics from `azClassics` catalog. Deploy: 1.2.0 `8681531` → group `3752ea2e-18f6-4929-8714-fc3809820e26`.
 - **2026-07-13 (ALL THREE fleets):** Dizibal resolver repair + anime support.
@@ -366,13 +372,13 @@ the `app.config.js` runtime, not the branch you happen to be on.
   FILMS already worked through `/api/movies`. `DIRECT_FALLBACK_TIMEOUT_MS`
   8s→12s. Pure JS in `WebPlayerService.ts` + test (no native/dependency/SQL
   change) — cherry-picked identically across all three (both files were
-  byte-identical pre-fix). Deploy: 1.2.0 `b54a87c` → group
-  `1116b7f6-1688-44b4-bf19-728af3e73abc`; 1.1.0 `6658bff` → group
-  `b4a79405-d989-4b16-858d-0f3bb1ebb055`; 1.0.2 `f9cfc56` (nav-bar guard clean)
+  byte-identical pre-fix). Deploy: 1.2.0 `b7da30a` → group
+  `1116b7f6-1688-44b4-bf19-728af3e73abc`; 1.1.0 `c65d7db` → group
+  `b4a79405-d989-4b16-858d-0f3bb1ebb055`; 1.0.2 `1da0cae` (nav-bar guard clean)
   → group `0513cd3d-1105-4d9c-b954-a8cb1b54c190`. Expo-verified by user on
   1.2.0 (anime plays via `kind=anime`).
 - **2026-07-11 latest (1.2.0 only):** Watch Together stability repair @
-  `caf8c25` → group `f06bbf09-4270-4861-a871-1984d68188cb` — memory uploads
+  `959af9e` → group `f06bbf09-4270-4861-a871-1984d68188cb` — memory uploads
   moved off the JS thread to cancellable native binary tasks; responder upload
   deadline covers signed-URL creation + body upload; room sends are acknowledged
   and socket/liveness checked; token refresh + reconnect/disconnect lifecycle
@@ -380,7 +386,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
   partner-left states never show the join code; chat is an in-layer overlay; a
   room-scoped recovery boundary + released-player/stream guards contain future
   white-screen paths. No wire-format, native, dependency, runtime, or SQL change.
-- **2026-07-11 later (1.2.0 only):** polaroid capture flow repair @ `239955e` —
+- **2026-07-11 later (1.2.0 only):** polaroid capture flow repair @ `ec8f03e` —
   responder still shoots at q0.3 with a 12s-bounded upload (decline on timeout;
   fixes the missing partner photo + forever-stuck spinner), getUserMedia leak on
   teardown race fixed (camera no longer wedges after rapid captures), preview
@@ -395,13 +401,13 @@ the `app.config.js` runtime, not the branch you happen to be on.
   sync queue survive; sign-out drains the queue in rounds and preserves it across
   the wipe; cross-account guard in bootstrap; enqueue falls back to the last
   bootstrapped user id; cold bootstrap flushes pending ops before the union
-  merge). Port chain: `38b01de` (1.2.0) → hunk-port `f77d5ff` (1.1.0, minus
+  merge). Port chain: `52a8825` (1.2.0) → hunk-port `561c01b` (1.1.0, minus
   watch-together-only bits in App.tsx/ProfileScreen/SharedSessionsSection) →
-  cherry-pick `01926b3` (1.0.2, nav-bar guard clean). 1.2.0 additionally got the
+  cherry-pick `a3c2275` (1.0.2, nav-bar guard clean). 1.2.0 additionally got the
   Shared Sessions polaroid rail restyle (bare polaroids, no poster containers).
 - **2026-07-10 (1.2.0 only):** Watch Together audit hardening (all 34 findings —
   ICE restart/re-announce, private Realtime channels [needs migration
-  `20260710190000`], memory outbox, audio ducking, capture privacy) @ `e1b8017`
+  `20260710190000`], memory outbox, audio ducking, capture privacy) @ `1361017`
   → group `98cbce14-4460-47a7-872c-8307a51af73c`.
 - Older deploy history: memory file `release-tracks.md` (agent memory) and the
   EAS dashboard. `docs/release-tracks.md` predates the 1.2.0 track and the

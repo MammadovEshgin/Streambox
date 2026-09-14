@@ -292,7 +292,7 @@ side.
 
 ### Fixed — non-Latin title search, audio menu, default subtitles, daily hero (2026-08-10)
 
-Shipped to runtime **1.2.0** only — `v1.2.0` @ `3eb6b70` → EAS update group
+Shipped to runtime **1.2.0** only — `v1.2.0` @ `7d08cc1` → EAS update group
 `de6dcbdb-b64d-4e4b-9d06-2d7b512f6852`. 1.1.0 / 1.0.2 not shipped.
 
 - **Films with a non-Latin original title reported "Not Available".** Harakiri
