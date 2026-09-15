@@ -65,13 +65,64 @@ the `app.config.js` runtime, not the branch you happen to be on.
 3. To ship to an older fleet, recreate its branch from the archive tag (e.g. `git switch -c release/1.1.0-navbar archive/release-1.1.0-navbar`), commit the JS change there (respecting rule 1 on 1.0.2), and publish an EAS update per runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
-### Current deployed state (last updated 2026-09-14, 1.2.0 Dizipal 2131)
+### Current deployed state (last updated 2026-09-15, 1.2.0 six-issue batch)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `6845830` | `377d7005-7033-4da1-851a-f90370ac2fe8` |
+| 1.2.0 | `v1.2.0` @ `fdcdb56` | `413b4741-25b4-413f-8ca1-8015e36830e3` |
 | 1.1.0 | `archive/release-1.1.0-navbar` @ `c65d7db` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `archive/release-1.0.2-legacy` @ `1da0cae` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
+
+- **2026-09-15 (1.2.0 only):** Six reported issues. Deploy: `fdcdb56` → group
+  `413b4741-25b4-413f-8ca1-8015e36830e3`. 435 tests green.
+  - **Providers.** HDFilm, Dizipal and Dizibal all resolve to live HLS
+    manifests (11 probe titles). Dizipal rotated **2131 → 2132**; floor bumped.
+  - **Resident Evil (2026) played the 2002 film.** No provider carries the
+    new one yet, so the chain reached Dizibal, whose title-only scorer took the
+    2002 record with the same name — Dizibal returned the *identical* stream for
+    both requests. `pickDizibalHit` now never title-scores a hit whose own TMDB
+    or IMDb id contradicts the request, or whose year is outside tolerance.
+  - **Stats still missed Cate Blanchett's LOTR films after the 09-11 fix.** The
+    data never changed: (1) `enrichEntry` stamped the new version even when
+    its request FAILED; (2) the backfill saved only when a full pass finished,
+    which a long history rarely did, so it restarted from scratch every launch
+    — in every mounted `useWatchHistory`, on every storage change; (3) cloud
+    rows hold 5 names (table CHECK) and were read back as current. Now: 20
+    de-duplicated people, `METADATA_VERSION` 7, a single-flight backfill per
+    session (8s after launch, 2 concurrent, paused while playing, saved every
+    20, failures retried next launch, lightweight
+    `getWatchHistoryMetadata` without the IMDb call), and full five-name
+    cloud rows come back as version 1 so they're refetched.
+  - **"The app got slower" since 09-11 was that backfill.** It also wrote a
+    minutes-old snapshot back at the end, undoing anything marked watched
+    meanwhile. All history writers now share `withWatchHistoryWriteLock` and
+    read storage inside it; the parsed history is cached module-wide by raw
+    string, so an unrelated storage change no longer re-parses it per screen.
+  - **Launch logo froze mid-spin.** `CONTENT_MOUNT_GATE_MS` (2.4s) dropped the
+    app-tree mount onto the spin-slide. It now opens at
+    `LAUNCH_SPLASH_MOTION_END_MS`; the static lockup holds until the tree has
+    painted (max +1.5s); the spinning `SplashLoading` no longer runs hidden
+    under the splash.
+  - **Turkish posters under an English UI.** `hydrateMediaIds` computed the
+    cache key up front, but queued requests read the language when they left;
+    a switch in between cached one language under the other's key for 7 days.
+    `getMovieSummary`/`getSeriesSummary` take the language explicitly; the
+    hydration cache moved to `-v2` and v1 is deleted.
+  - **Playback paused for a couple of seconds.** expo-video's Android
+    LoadControl resumes after a stall at 2s (1s initial) — play two seconds,
+    stall again on a slow CDN patch. `bufferOptions` now 4s / 60s forward.
+  - **Bakcell showed "network error" everywhere.** Workers Observability,
+    7 days of `streambox-tmdb-proxy`: ~18k sampled requests from Azercell,
+    Nar and the ISPs, **zero** from Bakcell (AS197830) — its network can't
+    reach `*.workers.dev`. `tmdb.ts` now fails over, on a request with no
+    response, to `tmdb.streamboxapp.stream` (same Worker, `routes` in
+    `wrangler.jsonc`) and persists the host that answered. ⚠ **The custom
+    domain must be attached to the Worker** (`wrangler deploy` in
+    `workers/tmdb-proxy`, or dashboard) — creating it from the agent was
+    blocked, so until then the fallback host doesn't resolve.
+  - Not changed: HDFilm finds *Dune: Part Two* but yields no native stream
+    for that page, so it plays from Dizipal (~6s). Per-title, not a decoder
+    failure (`npm run check:hdfilm` healthy).
 
 - **2026-09-14 (1.2.0 only):** Provider health sweep from a residential
   connection, run through the shipped resolver with each tier isolated. HDFilm
