@@ -1,9 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { InteractionManager } from "react-native";
 
 import {
-  getMovieDetails,
-  getSeriesDetails,
+  getWatchHistoryMetadata,
   type CastGender,
   type MediaType,
   type MovieDetails,
@@ -18,6 +18,7 @@ import {
 } from "../services/userDataSync";
 import { WATCH_HISTORY_STORAGE_KEY } from "../services/userDataStorage";
 import { pruneWatchedFromWatchlist } from "../services/mediaListStore";
+import { isPlayerActive } from "../services/playerActivityFlag";
 import { mapWithConcurrency } from "../utils/concurrency";
 import {
   applyWatchHistoryOps,
@@ -27,11 +28,12 @@ import {
   type WatchHistoryMutation,
 } from "../utils/watchHistoryOps";
 
-// 6 — cast depth raised from the top 5 billed names to WATCH_ENTRY_CAST_LIMIT,
-// and duplicate credits collapsed. Bumping this re-enriches existing entries on
-// next load, which is what backfills the Stats actor counts for titles logged
-// before the change.
-const METADATA_VERSION = 6;
+// 7 — cast depth raised to WATCH_ENTRY_CAST_LIMIT (20). It also re-runs the
+// backfill for titles version 6 stamped current without ever getting their
+// credits: that pass marked an entry done even when its request failed, and a
+// long history on a busy connection failed plenty of them. Bumping this
+// re-enriches existing entries in the background (see runMetadataBackfill).
+const METADATA_VERSION = 7;
 
 /**
  * How many billed cast members a watch-history entry remembers.
@@ -42,8 +44,15 @@ const METADATA_VERSION = 6;
  * and tapping her row showed a list with the films missing. Capped by
  * DETAILS_CAST_LIMIT in the TMDB client, which fetches 20.
  */
-const WATCH_ENTRY_CAST_LIMIT = 15;
-const LEGACY_METADATA_MIGRATION_CONCURRENCY = 4;
+const WATCH_ENTRY_CAST_LIMIT = 20;
+
+/** Held back until launch has settled, so the backfill never competes with the first screens. */
+const METADATA_BACKFILL_START_DELAY_MS = 8_000;
+/** Two requests at a time keeps a several-hundred-title backfill well inside the proxy's per-IP budget. */
+const METADATA_BACKFILL_CONCURRENCY = 2;
+/** Progress is written slice by slice, so closing the app mid-backfill keeps what finished. */
+const METADATA_BACKFILL_BATCH_SIZE = 20;
+const METADATA_BACKFILL_PLAYER_POLL_MS = 5_000;
 
 export type WatchPrecision = "day" | "month" | "none";
 export type WatchHistoryKind = "title" | "season";
@@ -263,16 +272,188 @@ function sortEntries(entries: WatchHistoryEntry[]) {
   return [...entries].sort((left, right) => getSortTimestamp(right) - getSortTimestamp(left));
 }
 
+// ── Shared stored copy ───────────────────────────────────────────────────────
+// A dozen screens mount this hook, and every storage change in the app reloaded
+// each of them: one AsyncStorage read plus a parse of the whole history (twenty
+// credits per title) per mounted screen, even when the change was a liked film
+// and the history hadn't moved. The last parse is kept here and reused while
+// the stored text is unchanged, so an unrelated change costs a string compare
+// and hands every screen the same array — nothing downstream recomputes.
+let storedHistoryRaw: string | null = null;
+let storedHistoryEntries: WatchHistoryEntry[] = [];
+
+function parseStoredHistory(raw: string | null): WatchHistoryEntry[] {
+  if (!raw) return [];
+  const parsed = JSON.parse(raw) as StoredEntry[];
+  if (!Array.isArray(parsed)) {
+    throw new Error("Stored watch history is not a list");
+  }
+  return sortEntries(parsed.map(normalizeStoredEntry));
+}
+
+/**
+ * The stored history for a WRITER. Throws when storage can't be read or parsed,
+ * because a writer handed an empty list would persist it over the real history.
+ */
+async function readEntriesForMutation(): Promise<WatchHistoryEntry[]> {
+  const raw = await AsyncStorage.getItem(WATCH_HISTORY_STORAGE_KEY);
+  if (raw !== storedHistoryRaw) {
+    storedHistoryEntries = parseStoredHistory(raw);
+    storedHistoryRaw = raw;
+  }
+  return storedHistoryEntries;
+}
+
+/** The stored history for display: an unreadable store simply shows nothing. */
 async function readEntriesFromStorage(): Promise<WatchHistoryEntry[]> {
   try {
-    const raw = await AsyncStorage.getItem(WATCH_HISTORY_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as StoredEntry[];
-    if (!Array.isArray(parsed)) return [];
-    return sortEntries(parsed.map(normalizeStoredEntry));
+    return await readEntriesForMutation();
   } catch {
     return [];
   }
+}
+
+async function writeEntriesToStorage(entries: WatchHistoryEntry[]): Promise<WatchHistoryEntry[]> {
+  const sorted = sortEntries(entries);
+  const raw = JSON.stringify(sorted);
+  await AsyncStorage.setItem(WATCH_HISTORY_STORAGE_KEY, raw);
+  storedHistoryRaw = raw;
+  storedHistoryEntries = sorted;
+  return sorted;
+}
+
+// Every write to the history from this module queues here — the mutations of
+// every mounted hook as well as the metadata backfill — and each one reads the
+// stored list inside the lock. Mutations used to start from their own hook's
+// in-memory copy, and the backfill from a snapshot taken minutes earlier, so
+// whichever wrote last silently undid the other: a title marked watched while
+// the backfill ran disappeared again when it finished.
+let watchHistoryWriteChain: Promise<unknown> = Promise.resolve();
+
+function withWatchHistoryWriteLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = watchHistoryWriteChain.then(task, task);
+  watchHistoryWriteChain = run.catch(() => undefined);
+  return run;
+}
+
+// ── Metadata backfill ────────────────────────────────────────────────────────
+// Entries logged under an older METADATA_VERSION are refreshed in the
+// background. This used to run inside every mounted hook, on every storage
+// change, for the whole list at once, and saved only when the entire pass
+// finished. A long history never finished — every launch restarted it from
+// scratch in several screens at once, which is what made the app feel slow
+// after version 6 shipped, and why the deeper cast never reached Stats. Now:
+// one run per app session, started after launch settles, paused during
+// playback, two requests at a time, saved slice by slice.
+
+type MetadataPatch = Partial<WatchHistoryEntry> & { metadataVersion: number };
+
+const metadataBackfillAttempted = new Set<string>();
+let metadataBackfillRun: Promise<void> | null = null;
+let metadataBackfillHasStarted = false;
+
+function getWatchEntryKey(entry: Pick<WatchHistoryEntry, "mediaType" | "id">) {
+  return `${entry.mediaType}:${entry.id}`;
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/** null = couldn't fetch right now; leave the entry for a later launch. */
+async function fetchMetadataPatch(entry: WatchHistoryEntry): Promise<MetadataPatch | null> {
+  // Seasons and non-TMDB ids have nothing to refetch.
+  if (entry.historyKind === "season" || typeof entry.id === "string") {
+    return { metadataVersion: METADATA_VERSION };
+  }
+
+  try {
+    const metadata = await getWatchHistoryMetadata(entry.mediaType, String(entry.id));
+    return {
+      genres: metadata.genres,
+      runtimeMinutes: metadata.runtimeMinutes,
+      episodeCount: entry.mediaType === "movie" ? null : metadata.episodeCount,
+      // Logged entries carry the IMDb rating, which this lighter fetch doesn't ask for.
+      voteAverage: entry.voteAverage > 0 ? entry.voteAverage : metadata.voteAverage,
+      year: metadata.releaseDate ? metadata.releaseDate.slice(0, 4) : entry.year,
+      ...topCast(metadata.cast),
+      ...topDirectors(metadata.directors),
+      metadataVersion: METADATA_VERSION,
+    };
+  } catch (error) {
+    // Gone from TMDB: nothing will ever come back, so stop asking.
+    if ((error as { response?: { status?: number } })?.response?.status === 404) {
+      return { metadataVersion: METADATA_VERSION };
+    }
+    // Offline, throttled, timed out: NOT stamped current. Version 6 stamped
+    // these anyway, which is how one failed request truncated a title's cast
+    // for good.
+    return null;
+  }
+}
+
+async function runMetadataBackfill(): Promise<boolean> {
+  if (!metadataBackfillHasStarted) {
+    metadataBackfillHasStarted = true;
+    await sleep(METADATA_BACKFILL_START_DELAY_MS);
+    await new Promise<void>((resolve) => InteractionManager.runAfterInteractions(() => resolve()));
+  }
+
+  let changed = false;
+  for (;;) {
+    const slice = (await readEntriesFromStorage())
+      .filter((entry) => entry.metadataVersion < METADATA_VERSION && !metadataBackfillAttempted.has(getWatchEntryKey(entry)))
+      .slice(0, METADATA_BACKFILL_BATCH_SIZE);
+    if (slice.length === 0) return changed;
+
+    // Don't compete with a playing stream for bandwidth.
+    while (isPlayerActive()) {
+      await sleep(METADATA_BACKFILL_PLAYER_POLL_MS);
+    }
+
+    slice.forEach((entry) => metadataBackfillAttempted.add(getWatchEntryKey(entry)));
+    const patches = await mapWithConcurrency(slice, METADATA_BACKFILL_CONCURRENCY, fetchMetadataPatch);
+
+    const patchByKey = new Map<string, MetadataPatch>();
+    slice.forEach((entry, index) => {
+      const patch = patches[index];
+      if (patch) patchByKey.set(getWatchEntryKey(entry), patch);
+    });
+    // A whole slice failing means the network is down; try again next launch
+    // instead of burning through the rest of the history.
+    if (patchByKey.size === 0) return changed;
+
+    await withWatchHistoryWriteLock(async () => {
+      const latest = await readEntriesForMutation();
+      let applied = false;
+      const next = latest.map((entry) => {
+        const patch = patchByKey.get(getWatchEntryKey(entry));
+        // An entry saved since the fetch began is already current and newer.
+        if (!patch || entry.metadataVersion >= METADATA_VERSION) return entry;
+        applied = true;
+        return { ...entry, ...patch };
+      });
+      if (applied) {
+        await writeEntriesToStorage(next);
+        changed = true;
+      }
+    });
+  }
+}
+
+function startMetadataBackfill(onChanged: () => void) {
+  if (metadataBackfillRun) return;
+
+  metadataBackfillRun = runMetadataBackfill()
+    .then((changed) => {
+      // One notification for the whole run, so the screens reload once rather
+      // than after every slice.
+      if (changed) onChanged();
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      metadataBackfillRun = null;
+    });
 }
 
 export type SeriesSeasonWatchedSave = {
@@ -290,141 +471,45 @@ export type SeriesWatchedBatchInput = {
 
 export function useWatchHistory() {
   const [entries, setEntries] = useState<WatchHistoryEntry[]>([]);
-  const entriesRef = useRef<WatchHistoryEntry[]>([]);
-  // Guards against mutating from a stale in-memory list: until the first load
-  // (or persist) completes, entriesRef is [] and using it as the mutation base
-  // would overwrite storage with a partial set (the movies-vanished bug).
-  const hasLoadedRef = useRef(false);
-  // Serializes mutations so two overlapping saves can't interleave their
-  // read-modify-write cycles.
-  const mutationChainRef = useRef<Promise<void>>(Promise.resolve());
   const [isLoading, setIsLoading] = useState(true);
   const { notifyStorageChanged, storageRevision } = useAppSettings();
-
-  useEffect(() => {
-    entriesRef.current = entries;
-  }, [entries]);
-
-  const enrichEntry = useCallback(async (entry: WatchHistoryEntry): Promise<WatchHistoryEntry> => {
-    if (entry.historyKind === "season") {
-      return {
-        ...entry,
-        metadataVersion: METADATA_VERSION,
-      };
-    }
-
-    if (typeof entry.id === "string") {
-      return {
-        ...entry,
-        metadataVersion: METADATA_VERSION,
-      };
-    }
-
-    try {
-      if (entry.mediaType === "movie") {
-        const details = await getMovieDetails(String(entry.id));
-        return {
-          ...entry,
-          genres: details.genres,
-          runtimeMinutes: details.runtimeMinutes,
-          episodeCount: null,
-          voteAverage: details.voteAverage,
-          year: details.releaseDate ? details.releaseDate.slice(0, 4) : entry.year,
-          ...topCast(details.cast),
-          ...topDirectors(details.directors),
-          metadataVersion: METADATA_VERSION,
-        };
-      }
-
-      const details = await getSeriesDetails(String(entry.id));
-      return {
-        ...entry,
-        genres: details.genres,
-        runtimeMinutes: details.episodeRuntimeMinutes,
-        episodeCount: details.numberOfEpisodes,
-        voteAverage: details.voteAverage,
-        year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : entry.year,
-        ...topCast(details.cast),
-        ...topDirectors(details.directors),
-        metadataVersion: METADATA_VERSION,
-      };
-    } catch {
-      return {
-        ...entry,
-        metadataVersion: METADATA_VERSION,
-      };
-    }
-  }, []);
-
-  const enrichLegacyEntries = useCallback(
-    async (currentEntries: WatchHistoryEntry[]) => {
-      const needsMigration = currentEntries.some((entry) => entry.metadataVersion < METADATA_VERSION);
-      if (!needsMigration) {
-        return;
-      }
-
-      const enriched = await mapWithConcurrency(
-        currentEntries,
-        LEGACY_METADATA_MIGRATION_CONCURRENCY,
-        async (entry) => entry.metadataVersion < METADATA_VERSION ? enrichEntry(entry) : entry
-      );
-
-      const sorted = sortEntries(enriched);
-      entriesRef.current = sorted;
-      setEntries(sorted);
-      await AsyncStorage.setItem(WATCH_HISTORY_STORAGE_KEY, JSON.stringify(sorted));
-    },
-    [enrichEntry]
-  );
 
   const loadEntries = useCallback(async () => {
     try {
       const normalized = await readEntriesFromStorage();
-      entriesRef.current = normalized;
-      hasLoadedRef.current = true;
       setEntries(normalized);
-      void enrichLegacyEntries(normalized);
+      if (normalized.some((entry) => entry.metadataVersion < METADATA_VERSION)) {
+        startMetadataBackfill(notifyStorageChanged);
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [enrichLegacyEntries]);
+  }, [notifyStorageChanged]);
 
   useEffect(() => {
     void loadEntries();
   }, [loadEntries, storageRevision]);
 
-  const persistEntries = useCallback(
-    async (nextEntries: WatchHistoryEntry[]) => {
-      const sorted = sortEntries(nextEntries);
-      entriesRef.current = sorted;
-      setEntries(sorted);
-      await AsyncStorage.setItem(WATCH_HISTORY_STORAGE_KEY, JSON.stringify(sorted));
-      notifyStorageChanged();
-    },
-    [notifyStorageChanged]
-  );
-
-  // Local-first: apply the whole batch to the authoritative entry list, write
-  // AsyncStorage once, and hand Supabase work to the debounced sync queue.
-  // No network round-trip happens on the save path anymore.
+  // Local-first: apply the whole batch to the stored list, write AsyncStorage
+  // once, and hand Supabase work to the debounced sync queue. No network
+  // round-trip happens on the save path.
   const applyWatchHistoryMutations = useCallback(
     async (mutations: WatchHistoryMutation[]) => {
       if (mutations.length === 0) {
         return;
       }
 
-      const run = mutationChainRef.current.then(async () => {
-        const currentEntries = hasLoadedRef.current
-          ? entriesRef.current
-          : await readEntriesFromStorage();
+      await withWatchHistoryWriteLock(async () => {
+        const currentEntries = await readEntriesForMutation();
         const listOps: WatchHistoryListOp[] = mutations.map((mutation) =>
           mutation.kind === "upsert"
             ? { kind: "upsert", entry: mutation.entry }
             : { kind: "remove", id: mutation.id, mediaType: mutation.mediaType }
         );
-        const nextEntries = applyWatchHistoryOps(currentEntries, listOps);
-        await persistEntries(nextEntries);
-        hasLoadedRef.current = true;
+        const nextEntries = await writeEntriesToStorage(applyWatchHistoryOps(currentEntries, listOps));
+        setEntries(nextEntries);
+        notifyStorageChanged();
+
         const queueItems: WatchHistoryQueueItem[] = mutations.map((mutation) =>
           mutation.kind === "upsert"
             ? { operation: "upsert", entry: mutation.entry, audit: mutation.auditDetails ?? {} }
@@ -445,10 +530,8 @@ export function useWatchHistory() {
           }
         }
       });
-      mutationChainRef.current = run.catch(() => undefined);
-      await run;
     },
-    [notifyStorageChanged, persistEntries]
+    [notifyStorageChanged]
   );
 
   const upsertWatchHistoryEntry = useCallback(
@@ -653,10 +736,12 @@ export function useWatchHistory() {
     [entries]
   );
 
+  const rawHistory = useMemo(() => sortEntries(entries), [entries]);
+
   return useMemo(
     () => ({
       history: titleHistory,
-      rawHistory: sortEntries(entries),
+      rawHistory,
       activityHistory,
       isLoading,
       isWatched,
@@ -673,13 +758,13 @@ export function useWatchHistory() {
     }),
     [
       activityHistory,
-      entries,
       getSeriesSeasonWatchEntries,
       getSeriesSeasonWatchEntry,
       getWatchHistoryEntry,
       isLoading,
       isWatched,
       loadEntries,
+      rawHistory,
       removeFromWatchHistory,
       removeSeriesSeasonFromWatchHistory,
       saveMovieToWatchHistory,

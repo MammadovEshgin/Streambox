@@ -18,7 +18,12 @@ import { I18nextProvider, useTranslation } from "react-i18next";
 import { ThemeProvider } from "styled-components/native";
 import styled from "styled-components/native";
 
-import { LaunchSplash, SplashLoading } from "./src/components/common/LaunchSplash";
+import {
+  LAUNCH_SPLASH_MOTION_END_MS,
+  LaunchSplash,
+  SplashBackdrop,
+  SplashLoading,
+} from "./src/components/common/LaunchSplash";
 import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
@@ -60,13 +65,14 @@ const LAST_STARTUP_ERROR_KEY = "@streambox/last-startup-error-v1";
 const FIRST_LAUNCH_FALLBACK_MS = 2200;
 const FONT_LOAD_FALLBACK_MS = 2600;
 // Hold the heavy app tree (Navigation + Home hub) out of the mount until the
-// launch splash's entrance + heartbeat beats (~2.3s, see LAUNCH_SPLASH timeline)
-// have played. Mounting hundreds of native views under a live Reanimated
-// animation is what made the reveal stutter on slower / storage-full phones;
-// deferring the mount to the splash's settle pause keeps the UI thread clear
-// for the most visible beats. The splash is an opaque overlay above the content,
-// so the slightly later mount still paints well before the fade — no black flash.
-const CONTENT_MOUNT_GATE_MS = 2400;
+// launch splash has stopped MOVING. Mounting hundreds of native views under a
+// live Reanimated animation is what made the reveal stutter on slower /
+// storage-full phones. The gate used to open at 2.4s — just before the
+// spin-slide, the biggest beat — so the mount landed on exactly that beat and
+// the logo visibly froze mid-spin. From LAUNCH_SPLASH_MOTION_END_MS the lockup
+// is static; the splash then holds (an opaque overlay) until the tree beneath
+// has painted, so the fade still reveals a finished screen — no black flash.
+const CONTENT_MOUNT_GATE_MS = LAUNCH_SPLASH_MOTION_END_MS;
 
 const INTERNAL_UPDATE_CHANNELS = new Set(["preview", "staging", "internal"]);
 
@@ -566,10 +572,28 @@ function AppShell() {
   const showResolvedScreen = !isContentPending;
   const startupBoundaryResetKey = `${session?.user.id ?? "guest"}:${startupRetryNonce}`;
 
+  // Whether whatever the splash hands off to has painted. Two frames after it
+  // mounts, the first one is on screen, so the fade reveals a finished screen
+  // rather than a tree still being laid out.
+  const [revealTargetHasPainted, setRevealTargetHasPainted] = useState(false);
+  useEffect(() => {
+    if (isContentPending) return;
+
+    let secondFrame = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => setRevealTargetHasPainted(true));
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+    };
+  }, [isContentPending]);
+  const revealTargetPainted = !isContentPending && revealTargetHasPainted;
+
   return (
     <ThemeProvider theme={activeTheme}>
       <StatusBar style="light" />
-      {showLoadingFallback ? <SplashLoading /> : null}
+      {showLoadingFallback ? (splashComplete ? <SplashLoading /> : <SplashBackdrop />) : null}
       {showResolvedScreen && launchPhase === "welcome" ? <WelcomeScreen onContinue={handleContinueFromWelcome} /> : null}
       {showResolvedScreen && launchPhase === "auth" ? (
         <>
@@ -623,7 +647,7 @@ function AppShell() {
         </StartupErrorBoundary>
       ) : null}
       {/* Top-most opaque overlay — content mounts and paints beneath it. */}
-      {!splashComplete ? <LaunchSplash onComplete={handleSplashComplete} /> : null}
+      {!splashComplete ? <LaunchSplash onComplete={handleSplashComplete} canReveal={revealTargetPainted} /> : null}
     </ThemeProvider>
   );
 }

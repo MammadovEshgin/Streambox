@@ -3,6 +3,12 @@
   "name": "streambox-tmdb-proxy",
   "main": "src/index.js",
   "compatibility_date": "2026-05-11",
+  // Served on workers.dev AND our own zone: Bakcell's mobile network can't
+  // reach *.workers.dev, and the app fails over to this host (src/api/tmdb.ts).
+  "routes": [
+    { "pattern": "tmdb.streamboxapp.stream", "custom_domain": true }
+  ],
+  "workers_dev": true,
   "observability": {
     "enabled": true,
     "head_sampling_rate": 0.1

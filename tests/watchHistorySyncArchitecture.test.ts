@@ -26,9 +26,26 @@ test("useWatchHistory persists locally and syncs only through the durable queue"
   );
   // Supabase writes flow through the debounced queue batch.
   assert.equal(source.includes("enqueueWatchHistoryBatch"), true);
-  // Mutations must be guarded against running from a stale, unloaded list.
-  assert.equal(source.includes("hasLoadedRef"), true);
-  assert.equal(source.includes("readEntriesFromStorage"), true);
+  // Mutations must never start from a stale list: every writer (each mounted
+  // hook AND the metadata backfill) queues on one module-level lock and reads
+  // the stored list inside it, with a reader that throws rather than hand a
+  // writer an empty list to persist over the real one.
+  assert.equal(source.includes("withWatchHistoryWriteLock"), true);
+  assert.match(source, /withWatchHistoryWriteLock\(async \(\) => \{\s*const currentEntries = await readEntriesForMutation\(\);/);
+  assert.equal(source.includes("mutationChainRef"), false, "a per-hook write chain can't serialize writers in other hooks");
+});
+
+test("the metadata backfill runs once per session and never stamps a failed fetch as current", () => {
+  const source = fs.readFileSync(useWatchHistoryPath, "utf8");
+
+  // Single-flight across every mounted hook.
+  assert.match(source, /function startMetadataBackfill\([\s\S]{0,120}?if \(metadataBackfillRun\) return;/);
+  // A non-404 failure leaves the entry for a later launch.
+  assert.match(source, /async function fetchMetadataPatch[\s\S]*?\/\/ Offline, throttled, timed out[\s\S]{0,200}?return null;/);
+  // Progress is written back through the shared lock, slice by slice.
+  assert.match(source, /async function runMetadataBackfill[\s\S]*?withWatchHistoryWriteLock/);
+  // Backfill yields to playback.
+  assert.equal(source.includes("isPlayerActive()"), true);
 });
 
 test("userDataSync no longer exposes a full-replace-with-prune watch-history sync", () => {

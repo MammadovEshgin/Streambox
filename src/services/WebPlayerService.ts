@@ -2735,6 +2735,8 @@ type DizibalSearchHit = {
   title_en?: string;
   original_name?: string;
   original_title?: string;
+  release_date?: string;
+  first_air_date?: string;
 };
 
 type DizibalSearchResponse = { success?: boolean; data?: DizibalSearchHit[] };
@@ -2792,15 +2794,29 @@ function pickDizibalHit(
   }
 
   // 2. IMDb id (movies only — series records don't always carry imdb_id).
-  if (request.imdbId && request.imdbId.startsWith("tt")) {
-    const byImdb = hits.find((h) => h.imdb_id === request.imdbId);
+  const requestImdbId = request.imdbId && request.imdbId.startsWith("tt") ? request.imdbId : null;
+  if (requestImdbId) {
+    const byImdb = hits.find((h) => h.imdb_id === requestImdbId);
     if (byImdb) return byImdb;
   }
 
-  // 3. Title score: pick the highest-scoring against the requested title.
+  // 3. Title score, but only over hits that don't contradict the request. A hit
+  //    carrying its OWN TMDB or IMDb id that differs from ours is a different
+  //    title however well its name matches: Resident Evil (2026, TMDB 1423191)
+  //    isn't on Dizibal yet, so the title scorer handed it Resident Evil (2002,
+  //    TMDB 1576) — same name — and the player opened the old film. Dizibal
+  //    dates its records too, so a year outside tolerance rules a hit out.
+  const hasTmdbId = Number.isFinite(tmdbNumeric) && tmdbNumeric > 0;
+  const titleCandidates = hits.filter((hit) => {
+    if (hasTmdbId && typeof hit.id === "number" && hit.id > 0) return false;
+    if (requestImdbId && hit.imdb_id?.startsWith("tt")) return false;
+    const hitYear = (hit.release_date ?? hit.first_air_date)?.slice(0, 4) ?? null;
+    return !isYearIncompatible(hitYear, request.year ?? null);
+  });
+
   let bestHit: DizibalSearchHit | null = null;
   let bestScore = 0;
-  for (const hit of hits) {
+  for (const hit of titleCandidates) {
     const variants = [
       hit.name_en,
       hit.title_en,

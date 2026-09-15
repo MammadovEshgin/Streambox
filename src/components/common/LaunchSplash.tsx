@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { type LayoutChangeEvent } from "react-native";
 import Animated, {
@@ -37,11 +37,20 @@ const HOLD_MS = 650;         // hold the formed lockup before handing off
 
 const PULSE_END = APPEAR_MS + BEAT_GROW + BEAT_SHRINK;
 const MOVE_START = PULSE_END + SETTLE_PAUSE;
+/**
+ * When the last moving beat (the spin-slide) lands. From here the lockup is
+ * static, so heavy work — mounting the app beneath — can no longer make the
+ * animation stutter.
+ */
+export const LAUNCH_SPLASH_MOTION_END_MS = MOVE_START + MOVE_MS;
 /** Total time from mount to the moment the lockup is fully settled. */
-export const LAUNCH_SPLASH_DURATION_MS = MOVE_START + MOVE_MS + HOLD_MS;
+export const LAUNCH_SPLASH_DURATION_MS = LAUNCH_SPLASH_MOTION_END_MS + HOLD_MS;
 // After the hold, the whole splash fades out to reveal the content already
 // painted beneath it (the splash is an opaque absolute overlay — see App.tsx).
 const FADE_OUT_MS = 260;
+// How long the settled lockup may wait for the content beneath to paint before
+// it fades regardless (the loading fallback takes over from there).
+const MAX_REVEAL_WAIT_MS = 1500;
 
 const Root = styled.View`
   flex: 1;
@@ -85,11 +94,16 @@ const Wordmark = styled(Animated.Text)`
 `;
 
 type LaunchSplashProps = {
-  /** Fires once the full reveal has finished (logo settled into the lockup). */
+  /** Fires once the splash has faded out. */
   onComplete?: () => void;
+  /**
+   * Whether the content beneath has painted. The settled lockup holds until it
+   * has (at most MAX_REVEAL_WAIT_MS), so the fade reveals a finished screen.
+   */
+  canReveal?: boolean;
 };
 
-export function LaunchSplash({ onComplete }: LaunchSplashProps) {
+export function LaunchSplash({ onComplete, canReveal = true }: LaunchSplashProps) {
   const enter = useSharedValue(0);
   const scale = useSharedValue(1);
   const move = useSharedValue(0);
@@ -98,6 +112,8 @@ export function LaunchSplash({ onComplete }: LaunchSplashProps) {
   // (the lockup reserves logo + gap + word; the logo sits left of that center
   // by half the gap+word, so we offset it right by that amount until it slides).
   const wordWidth = useSharedValue(150);
+  const [lockupSettled, setLockupSettled] = useState(false);
+  const [revealWaitExpired, setRevealWaitExpired] = useState(false);
 
   useEffect(() => {
     enter.value = withTiming(1, { duration: APPEAR_MS, easing: Easing.out(Easing.cubic) });
@@ -109,15 +125,24 @@ export function LaunchSplash({ onComplete }: LaunchSplashProps) {
 
     move.value = withDelay(MOVE_START, withTiming(1, { duration: MOVE_MS, easing: Easing.out(Easing.cubic) }));
 
-    // Reveal ends → fade the overlay away over the content beneath, and only
-    // then unmount (onComplete).
-    fade.value = withDelay(
-      LAUNCH_SPLASH_DURATION_MS,
-      withTiming(0, { duration: FADE_OUT_MS, easing: Easing.in(Easing.quad) })
-    );
-    const doneTimer = setTimeout(() => onComplete?.(), LAUNCH_SPLASH_DURATION_MS + FADE_OUT_MS);
+    const settledTimer = setTimeout(() => setLockupSettled(true), LAUNCH_SPLASH_DURATION_MS);
+    const revealWaitTimer = setTimeout(() => setRevealWaitExpired(true), LAUNCH_SPLASH_DURATION_MS + MAX_REVEAL_WAIT_MS);
+    return () => {
+      clearTimeout(settledTimer);
+      clearTimeout(revealWaitTimer);
+    };
+  }, [enter, scale, move]);
+
+  const shouldFade = lockupSettled && (canReveal || revealWaitExpired);
+
+  // Reveal ends → fade the overlay away over the content beneath, and only
+  // then unmount (onComplete).
+  useEffect(() => {
+    if (!shouldFade) return;
+    fade.value = withTiming(0, { duration: FADE_OUT_MS, easing: Easing.in(Easing.quad) });
+    const doneTimer = setTimeout(() => onComplete?.(), FADE_OUT_MS);
     return () => clearTimeout(doneTimer);
-  }, [enter, scale, move, fade, onComplete]);
+  }, [shouldFade, fade, onComplete]);
 
   const onWordLayout = (event: LayoutChangeEvent) => {
     const width = event.nativeEvent.layout.width;
@@ -173,4 +198,13 @@ export function SplashLoading() {
       <MovieLoader size={40} label={t("loaders.loading")} />
     </Root>
   );
+}
+
+/**
+ * The same canvas without the spinner, for underneath the splash: nothing
+ * there is visible, but a spinning loader still costs a redraw every frame on
+ * the UI thread the splash animation needs.
+ */
+export function SplashBackdrop() {
+  return <Root />;
 }

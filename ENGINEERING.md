@@ -620,10 +620,8 @@ All wired into `PlayerScreen`; typecheck + eslint clean.
 - Multi-line git commit messages: write the message to a temp file and use
   `git commit -F <file>` (embedded quotes in inline `-m` here-strings have mangled
   commits before). Delete the temp file after.
-- Commit message trailer (adjust the model name to whoever is committing):
-  ```
-  Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-  ```
+- Commit messages carry no trailers: no `Co-Authored-By:` or other AI
+  attribution (see §4).
 
 ---
 

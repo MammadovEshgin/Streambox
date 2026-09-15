@@ -24,6 +24,13 @@ EXPO_PUBLIC_TMDB_PROXY_BASE_URL=https://streambox-tmdb-proxy.<your-subdomain>.wo
 
 For production builds, remove `EXPO_PUBLIC_TMDB_API_KEY` and `EXPO_PUBLIC_TMDB_ACCESS_TOKEN` from Expo/EAS env so they are not embedded in the app bundle.
 
+## Custom domain
+
+The Worker is also served on `tmdb.streamboxapp.stream` (`routes` in
+`wrangler.jsonc`). Bakcell's mobile network can't reach `*.workers.dev`, and
+the app retries a request that gets no response on this host. Keep both
+hostnames on the same Worker.
+
 ## Notes
 
 - The Worker accepts `GET`, `HEAD`, and `OPTIONS` only.

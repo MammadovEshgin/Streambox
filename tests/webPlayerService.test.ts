@@ -361,6 +361,25 @@ test("pickDizibalHit rejects junk matches when no TMDB/IMDB and title scores too
   assert.equal(picked, null);
 });
 
+test("pickDizibalHit never plays a same-named title that carries a different identity", () => {
+  // Live Dizibal search for "Resident Evil" on 2026-09-15: the 2002 film is
+  // there, the 2026 film is not. The title scorer used to accept the 2002 hit
+  // for a 2026 request, so the player opened the wrong film.
+  const hits = [
+    { id: 1576, imdb_id: "tt0120804", slug: "resident-evil", title_en: "Resident Evil", original_title: "Resident Evil", release_date: "2002-03-15" },
+    { id: 71679, imdb_id: "tt1855325", slug: "resident-evil-5", title_en: "Resident Evil: Retribution", release_date: "2012-09-12" },
+  ];
+
+  const newFilm = { title: "Resident Evil", mediaType: "movie" as const, tmdbId: "1423191", imdbId: "tt35538033", year: "2026" };
+  assert.equal(__internal.pickDizibalHit(hits, newFilm), null);
+  // Without ids to contradict it, the year still rules the old record out.
+  assert.equal(__internal.pickDizibalHit(hits, { title: "Resident Evil", mediaType: "movie", year: "2026" }), null);
+
+  // The film that IS there still resolves — by id, and by title + year alone.
+  assert.equal(__internal.pickDizibalHit(hits, { ...newFilm, tmdbId: "1576", imdbId: "tt0120804", year: "2002" })?.id, 1576);
+  assert.equal(__internal.pickDizibalHit(hits, { title: "Resident Evil", mediaType: "movie", year: "2002" })?.id, 1576);
+});
+
 test("extractDizibalEmbedStream reads the deferred /dl path and subtitles", () => {
   // The live Playerjs embed defers the media URL behind a fetch('/dl?...') call
   // and lists subtitles as "[Label]url" (url may be absolute or root-relative).

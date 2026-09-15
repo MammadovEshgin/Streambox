@@ -65,6 +65,27 @@ test("the metadata version was bumped so existing entries are re-enriched", () =
   );
 });
 
+test("a cloud row cut short by the table's cast cap is re-enriched instead of trusted", () => {
+  // user_watch_history holds five billed names. A synced device used to take a
+  // full row's metadata version at face value, so its titles kept five names
+  // forever and Stats never saw an ensemble lead billed below them.
+  const rows = readSource("src", "utils", "watchHistoryRows.ts");
+  const sync = readSource("src", "services", "userDataSync.ts");
+
+  assert.equal(readNumericConstant(rows, "WATCH_HISTORY_REMOTE_CAST_LIMIT"), 5);
+  assert.match(
+    sync,
+    /coerceNumberArray\(e\.castIds\)\.length >= WATCH_HISTORY_REMOTE_CAST_LIMIT\s*\?\s*1/,
+    "a full remote cast list must come back below the current metadata version"
+  );
+});
+
+test("the TMDB details fetch keeps one slot per person", () => {
+  const tmdb = readSource("src", "api", "tmdb.ts");
+  assert.match(tmdb, /function selectBilledCast[\s\S]{0,900}?new Map<number/);
+  assert.match(tmdb, /cast: selectBilledCast\(data\.credits\?\.cast\)/);
+});
+
 test("a cast list never credits the same person twice", () => {
   // TMDB lists an actor once per credited role. Storing both wasted one of the
   // few slots available AND made the Stats tally exceed the number of titles it

@@ -8,7 +8,11 @@ import { mapWithConcurrency } from "../utils/concurrency";
 export type HydratedMediaCache = Map<string, MediaItem>;
 
 const sharedHydratedMediaCache: HydratedMediaCache = new Map();
-const PERSISTENT_HYDRATION_PREFIX = "@streambox/media-hydration-v1:";
+// v2: v1 could hold posters and titles in the wrong language under a
+// language's key (see fetchHydratedMediaItem) and kept them for the whole TTL,
+// so it is dropped rather than read.
+const PERSISTENT_HYDRATION_PREFIX = "@streambox/media-hydration-v2:";
+const LEGACY_HYDRATION_PREFIXES = ["@streambox/media-hydration-v1:"];
 const HYDRATION_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const HYDRATION_FLUSH_DEBOUNCE_MS = 250;
 const HYDRATION_MAX_PERSISTED_ENTRIES = 1000;
@@ -229,9 +233,15 @@ async function fetchHydratedMediaItem(
         return null;
       }
 
+      // The language travels with the request. `key` was computed when the
+      // hydrate pass began, but this request can leave seconds later from the
+      // concurrency queue; left to read the active language itself, a switch
+      // in between fetched the new language and stored it under the old key —
+      // Turkish posters and titles on the English profile shelves, persisted
+      // for the cache's whole week-long TTL.
       const item = mediaType === "movie"
-        ? await getMovieSummary(numericId)
-        : await getSeriesSummary(numericId);
+        ? await getMovieSummary(numericId, language)
+        : await getSeriesSummary(numericId, language);
 
       if (item) {
         cacheFreshMediaItem(cache, key, item, language);
@@ -287,6 +297,19 @@ export async function preloadPersistedMediaHydration(): Promise<void> {
   } catch {
     // Best-effort warm-up.
   }
+  void removeLegacyHydrationCaches();
+}
+
+async function removeLegacyHydrationCaches(): Promise<void> {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const legacy = keys.filter((key) => LEGACY_HYDRATION_PREFIXES.some((prefix) => key.startsWith(prefix)));
+    if (legacy.length > 0) {
+      await AsyncStorage.multiRemove(legacy);
+    }
+  } catch {
+    // Best-effort cleanup; nothing reads these keys any more.
+  }
 }
 
 export async function hydrateMediaIds(
@@ -340,7 +363,9 @@ export async function clearPersistedMediaHydrationCache(): Promise<void> {
 
   try {
     const keys = await AsyncStorage.getAllKeys();
-    const targets = keys.filter((key) => key.startsWith(PERSISTENT_HYDRATION_PREFIX));
+    const targets = keys.filter((key) =>
+      [PERSISTENT_HYDRATION_PREFIX, ...LEGACY_HYDRATION_PREFIXES].some((prefix) => key.startsWith(prefix))
+    );
     if (targets.length > 0) {
       await AsyncStorage.multiRemove(targets);
     }

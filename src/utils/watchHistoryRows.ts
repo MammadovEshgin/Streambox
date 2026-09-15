@@ -19,6 +19,13 @@ function genderAt(values: unknown, index: number): "male" | "female" | null {
 }
 
 /**
+ * The most billed cast members a user_watch_history row can hold (a CHECK
+ * constraint on the table). Local entries keep more, so a full row coming back
+ * from the cloud has been cut short.
+ */
+export const WATCH_HISTORY_REMOTE_CAST_LIMIT = 5;
+
+/**
  * The user_watch_history table requires every cast/director parallel array to
  * have the SAME length as its id array (and <= 5 entries, genders only
  * male/female/null). A single row breaking that fails the entire batch upsert —
@@ -30,7 +37,7 @@ function genderAt(values: unknown, index: number): "male" | "female" | null {
 export function buildWatchHistorySyncArrays(entry: WatchHistoryEntry) {
   const castIds = (Array.isArray(entry.castIds) ? entry.castIds : [])
     .filter((id): id is number => typeof id === "number" && Number.isFinite(id))
-    .slice(0, 5);
+    .slice(0, WATCH_HISTORY_REMOTE_CAST_LIMIT);
   const directorIds = (Array.isArray(entry.directorIds) ? entry.directorIds : [])
     .filter((id): id is number => typeof id === "number" && Number.isFinite(id))
     .slice(0, 5);

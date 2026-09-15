@@ -10,6 +10,58 @@ this branch (`v1.2.0`) ships to **1.2.0**. See
 
 ## [Unreleased]
 
+### Fixed — providers, Stats cast, language, playback stalls, Bakcell, launch smoothness (2026-09-15)
+
+**Resident Evil (2026) played Resident Evil (2002).** The new film isn't on any
+provider yet, so the resolver fell through to Dizibal, whose title-only scorer
+accepted the 2002 record with the same name — Dizibal returned the identical
+stream for both requests. A Dizibal hit whose own TMDB or IMDb id contradicts
+the request is now never considered, and one dated outside the year tolerance
+is ruled out. Provider sweep otherwise healthy (HDFilm, Dizipal, Dizibal all
+resolving to live HLS manifests); **Dizipal rotated again, 2131 → 2132**, and
+the shipped floor follows.
+
+**Stats still missed Cate Blanchett's Lord of the Rings films.** Three reasons
+the previous fix never reached the data. The backfill that re-reads old entries
+stamped an entry as up to date even when its request failed; it only saved when
+the whole pass finished, which a long history rarely did before the app closed,
+so it restarted from scratch on every launch in several screens at once; and a
+synced device took the cloud's five-name cast rows (the table's limit) as
+current. Entries now keep the top **20** billed people, de-duplicated; the
+backfill runs once per session after launch settles, two requests at a time,
+pauses during playback, saves slice by slice and retries failures on a later
+launch; and full cloud rows are refetched instead of trusted.
+
+**The app felt slower since the 2026-09-11 update.** That same backfill: every
+mounted screen ran it over the whole history on every storage change, fetching
+details plus a third-party IMDb rating per title, and a pass that finished
+could overwrite titles marked watched while it ran. Writes to the history now
+share one lock and read the stored list inside it, and the parsed history is
+shared by every screen instead of re-parsed by each on every storage change.
+
+**The launch logo seemed to freeze.** The app tree mounted 2.4s in, right on the
+splash's spin-slide. It now mounts once the motion has finished, the settled
+lockup holds until the screen beneath has painted, and no spinning loader runs
+invisibly under the splash.
+
+**Turkish posters and titles under an English UI (Watchlist, Liked).** Profile
+shelves hydrate through a concurrency queue, and each request read the language
+when it actually left — seconds after its cache key was computed — so a switch
+in between stored one language under the other's key for the cache's week-long
+TTL. The request now carries the key's language, and the old cache is dropped.
+
+**Playback paused for a couple of seconds, then carried on.** expo-video's
+Android defaults resume a stalled stream with just 2s buffered, so a dip in
+provider CDN speed played two seconds and stalled again. The player now waits
+for 4s and keeps a 60s forward buffer.
+
+**Nothing loaded on Bakcell mobile data.** A week of TMDB proxy logs shows every
+Azerbaijani carrier and ISP except Bakcell (AS197830) — its subscribers can't
+reach the proxy's `workers.dev` host. TMDB requests now fail over to the same
+Worker on `tmdb.streamboxapp.stream` when a request gets no response, and
+remember the host that answered. That custom domain has to be attached to the
+Worker in Cloudflare for the fallback to take effect.
+
 ### Fixed — Dizipal domain rotation (2026-09-14)
 
 Provider health sweep from a residential connection. HDFilm resolved 8/8 probe

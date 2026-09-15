@@ -1134,6 +1134,18 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     : null;
   const videoPlayer = useVideoPlayer(null as string | null, (player: any) => {
     player.loop = false;
+    // expo-video's Android defaults resume a stalled stream once just 2s is
+    // buffered (1s for the first frame). When a provider CDN dips below the
+    // stream's bitrate that plays two seconds and stalls again — the stop-start
+    // "pause for a couple of seconds" in the middle of films and episodes.
+    // ExoPlayer's own default waits for 5s; 4s keeps starts quick on HLS, where
+    // the first segment alone is usually longer, while giving every resume
+    // enough runway to ride out a slow segment. The larger forward buffer keeps
+    // more cushion in hand before a bad patch of network arrives.
+    player.bufferOptions = {
+      preferredForwardBufferDuration: 60,
+      minBufferForPlayback: 4,
+    };
   });
 
   useEffect(() => {

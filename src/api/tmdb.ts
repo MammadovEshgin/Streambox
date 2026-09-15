@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios, { AxiosHeaders } from "axios";
 import { getAlternateTmdbAuthMode, resolveTmdbAuth, TmdbAuthMode } from "./tmdbAuth";
 import { getCachedOmdbRatings } from "./ratingsProxy";
@@ -360,6 +361,56 @@ const TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p";
 
 const tmdbProxyBaseUrl = process.env.EXPO_PUBLIC_TMDB_PROXY_BASE_URL?.trim() || null;
 const usesTmdbProxy = Boolean(tmdbProxyBaseUrl);
+
+/**
+ * Every host the TMDB proxy Worker answers on, in preference order.
+ *
+ * The configured `*.workers.dev` host is unreachable from Bakcell's mobile
+ * network. Over a week of proxy logs (2026-09-08 → 15) Azercell, Nar and the
+ * country's fixed-line ISPs all appear, and Bakcell (AS197830) never once does —
+ * its subscribers got a "network error" on every screen until they switched
+ * carrier or joined Wi-Fi. The same Worker is served from a custom domain on our
+ * own zone, which a `workers.dev` block doesn't reach; a request that fails at
+ * the network level is retried there, and whichever host answered is
+ * remembered for later requests and launches.
+ */
+const TMDB_PROXY_CUSTOM_DOMAIN_ORIGIN = "https://tmdb.streamboxapp.stream";
+const TMDB_PROXY_BASE_PREFERENCE_KEY = "@streambox/tmdb-proxy-base-v1";
+const tmdbProxyBaseUrls = tmdbProxyBaseUrl
+  ? Array.from(new Set([
+      tmdbProxyBaseUrl,
+      tmdbProxyBaseUrl.replace(/^https?:\/\/[^/]+/i, TMDB_PROXY_CUSTOM_DOMAIN_ORIGIN),
+    ]))
+  : [];
+let activeTmdbProxyBaseIndex = 0;
+let rememberedTmdbProxyBaseUrl: string | null = null;
+
+if (tmdbProxyBaseUrls.length > 1) {
+  try {
+    void AsyncStorage.getItem(TMDB_PROXY_BASE_PREFERENCE_KEY)
+      .then((stored) => {
+        rememberedTmdbProxyBaseUrl = stored;
+        const index = stored ? tmdbProxyBaseUrls.indexOf(stored) : -1;
+        if (index >= 0) activeTmdbProxyBaseIndex = index;
+      })
+      .catch(() => undefined);
+  } catch {
+    // No storage (tests, scripts): start from the configured host.
+  }
+}
+
+function rememberTmdbProxyBase(index: number) {
+  activeTmdbProxyBaseIndex = index;
+  const baseUrl = tmdbProxyBaseUrls[index];
+  if (!baseUrl || baseUrl === rememberedTmdbProxyBaseUrl) return;
+  rememberedTmdbProxyBaseUrl = baseUrl;
+  try {
+    void AsyncStorage.setItem(TMDB_PROXY_BASE_PREFERENCE_KEY, baseUrl).catch(() => undefined);
+  } catch {
+    // Best effort; the next launch just starts from the configured host.
+  }
+}
+
 const tmdbApiKey = process.env.EXPO_PUBLIC_TMDB_API_KEY;
 const tmdbAccessToken = process.env.EXPO_PUBLIC_TMDB_ACCESS_TOKEN;
 const tmdbAuth = resolveTmdbAuth(tmdbApiKey, tmdbAccessToken);
@@ -445,8 +496,8 @@ const MIN_IMDB_POPULAR_SPOTLIGHT_ITEMS = 6;
  */
 const DETAILS_CAST_LIMIT = 20;
 
-function getLocalizedTmdbCacheKey(scope: string, id: string | number) {
-  return `${getTmdbRequestLanguage()}:${scope}:${id}`;
+function getLocalizedTmdbCacheKey(scope: string, id: string | number, locale: string = getTmdbRequestLanguage()) {
+  return `${locale}:${scope}:${id}`;
 }
 
 const tmdbClient = axios.create({
@@ -476,6 +527,12 @@ function applyTmdbAuthToConfig(config: any, mode: TmdbAuthMode) {
 
   if (usesTmdbProxy) {
     headers.set("X-StreamBox-Proxy-Target", "tmdb");
+    // Pinned per request, so a retry stays on the host it was retried on.
+    const baseIndex = typeof config._tmdbProxyBaseIndex === "number"
+      ? config._tmdbProxyBaseIndex
+      : activeTmdbProxyBaseIndex;
+    nextConfig._tmdbProxyBaseIndex = baseIndex;
+    nextConfig.baseURL = tmdbProxyBaseUrls[baseIndex] ?? tmdbProxyBaseUrl;
   } else if (mode === "api_key" && tmdbAuth.apiKeyParam) {
     nextConfig.params.api_key = tmdbAuth.apiKeyParam;
   } else if (mode === "bearer" && tmdbAuth.bearerToken) {
@@ -573,6 +630,28 @@ tmdbClient.interceptors.response.use(
         durationMs: config?._requestStartedAt ? Date.now() - config._requestStartedAt : null,
         rateLimitRemaining: error?.response?.headers?.["x-ratelimit-remaining"] ?? null,
       }, status === 429 ? "error" : "warning");
+    }
+
+    // No response at all — DNS failure, refused or dropped connection, timeout —
+    // is what a blocked host looks like, so move to the proxy's other host
+    // before spending retries on this one. An HTTP status means the host was
+    // reachable, and is left to the handling below.
+    if (usesTmdbProxy && config && !status && !axios.isCancel(error) && tmdbProxyBaseUrls.length > 1) {
+      const failedIndex = typeof config._tmdbProxyBaseIndex === "number" ? config._tmdbProxyBaseIndex : activeTmdbProxyBaseIndex;
+      const triedIndexes: number[] = Array.isArray(config._tmdbProxyBasesTried) ? config._tmdbProxyBasesTried : [];
+      if (!triedIndexes.includes(failedIndex)) triedIndexes.push(failedIndex);
+      const nextIndex = tmdbProxyBaseUrls.findIndex((_, index) => !triedIndexes.includes(index));
+      if (nextIndex >= 0) {
+        config._tmdbProxyBasesTried = triedIndexes;
+        config._tmdbProxyBaseIndex = nextIndex;
+        // Requests starting from now go straight to the other host instead of
+        // each waiting out the same failure first.
+        if (activeTmdbProxyBaseIndex === failedIndex) activeTmdbProxyBaseIndex = nextIndex;
+        return tmdbClient.request(config).then((response) => {
+          rememberTmdbProxyBase(nextIndex);
+          return response;
+        });
+      }
     }
 
     // Retry transient failures with bounded backoff. Applies to both proxy and
@@ -707,6 +786,36 @@ function normalizeCastMember(item: TmdbCastRecord): CastMember {
     profilePath: item.profile_path,
     gender: item.gender === 2 ? "male" : item.gender === 1 ? "female" : null
   };
+}
+
+/**
+ * The top DETAILS_CAST_LIMIT billed PEOPLE. TMDB lists an actor once per
+ * credited role, so a straight slice spent slots on repeats — pushing billed
+ * names out of the list — and handed the detail screen the same person twice.
+ * Repeat roles are folded into the first credit's character.
+ */
+function selectBilledCast(records: TmdbCastRecord[] = []): CastMember[] {
+  const byPerson = new Map<number, TmdbCastRecord>();
+  const ordered = records.slice().sort((left, right) => (left.order ?? 999) - (right.order ?? 999));
+  for (const record of ordered) {
+    const existing = byPerson.get(record.id);
+    if (existing) {
+      if (record.character && record.character !== existing.character) {
+        existing.character = existing.character ? `${existing.character} / ${record.character}` : record.character;
+      }
+      continue;
+    }
+    if (byPerson.size >= DETAILS_CAST_LIMIT) continue;
+    byPerson.set(record.id, { ...record });
+  }
+  return Array.from(byPerson.values()).map(normalizeCastMember);
+}
+
+function pickSeriesDirectors(data: Pick<TmdbTvDetailsWithCreditsResponse, "credits" | "created_by">): DirectorMember[] {
+  const directorsFromCrew = pickDirectorMembers(data.credits?.crew ?? []);
+  return directorsFromCrew.length > 0
+    ? directorsFromCrew
+    : (data.created_by ?? []).slice(0, 5).map((entry) => ({ id: entry.id, name: entry.name, profilePath: null }));
 }
 
 function pickDirectorMembers(crew: TmdbCrewRecord[] = []): DirectorMember[] {
@@ -1560,10 +1669,7 @@ async function fetchMovieDetails(id: string, cacheKey: string): Promise<MovieDet
     }
   });
 
-  const cast = (data.credits?.cast ?? [])
-    .sort((left, right) => (left.order ?? 999) - (right.order ?? 999))
-    .slice(0, DETAILS_CAST_LIMIT)
-    .map(normalizeCastMember);
+  const cast = selectBilledCast(data.credits?.cast);
 
   const imdbId = data.imdb_id ?? null;
   let voteAverage = Number.isFinite(data.vote_average) ? data.vote_average : 0;
@@ -1627,17 +1733,8 @@ async function fetchSeriesDetails(id: string, cacheKey: string): Promise<SeriesD
     }
   });
 
-  const cast = (data.credits?.cast ?? [])
-    .slice()
-    .sort((left, right) => left.order - right.order)
-    .slice(0, DETAILS_CAST_LIMIT)
-    .map(normalizeCastMember);
-
-  const directorsFromCrew = pickDirectorMembers(data.credits?.crew ?? []);
-  const directors =
-    directorsFromCrew.length > 0
-      ? directorsFromCrew
-      : (data.created_by ?? []).slice(0, 5).map((entry) => ({ id: entry.id, name: entry.name, profilePath: null }));
+  const cast = selectBilledCast(data.credits?.cast);
+  const directors = pickSeriesDirectors(data);
 
   const seasons = (data.seasons ?? [])
     .filter((season) => season.season_number > 0)
@@ -1685,6 +1782,56 @@ async function fetchSeriesDetails(id: string, cacheKey: string): Promise<SeriesD
 
   seriesDetailsCache.set(cacheKey, result);
   return result;
+}
+
+export type WatchHistoryMetadata = {
+  genres: string[];
+  runtimeMinutes: number | null;
+  episodeCount: number | null;
+  releaseDate: string;
+  voteAverage: number;
+  cast: CastMember[];
+  directors: DirectorMember[];
+};
+
+/**
+ * What a watch-history entry keeps, without the rest of a details fetch.
+ *
+ * Backfilling a long history used to go through getMovieDetails /
+ * getSeriesDetails, which also wait on a third-party IMDb rating per title and
+ * fill the detail-screen cache with hundreds of entries nobody is looking at.
+ * Same TMDB URLs as the details calls, so the proxy's edge cache serves both.
+ */
+export async function getWatchHistoryMetadata(mediaType: MediaType, id: string): Promise<WatchHistoryMetadata> {
+  assertCredentials();
+
+  if (mediaType === "movie") {
+    const { data } = await tmdbClient.get<TmdbMovieDetailsWithCreditsResponse>(`/movie/${id}`, {
+      params: { append_to_response: "credits" }
+    });
+    return {
+      genres: data.genres.map((entry) => entry.name),
+      runtimeMinutes: data.runtime,
+      episodeCount: null,
+      releaseDate: data.release_date ?? "",
+      voteAverage: Number.isFinite(data.vote_average) ? data.vote_average : 0,
+      cast: selectBilledCast(data.credits?.cast),
+      directors: pickDirectorMembers(data.credits?.crew ?? []),
+    };
+  }
+
+  const { data } = await tmdbClient.get<TmdbTvDetailsWithCreditsResponse>(`/tv/${id}`, {
+    params: { append_to_response: "credits,external_ids" }
+  });
+  return {
+    genres: data.genres.map((entry) => entry.name),
+    runtimeMinutes: data.episode_run_time.find((runtime) => Number.isFinite(runtime) && runtime > 0) ?? null,
+    episodeCount: data.number_of_episodes ?? 0,
+    releaseDate: data.first_air_date ?? "",
+    voteAverage: Number.isFinite(data.vote_average) ? data.vote_average : 0,
+    cast: selectBilledCast(data.credits?.cast),
+    directors: pickSeriesDirectors(data),
+  };
 }
 
 export async function getSeriesSeasonEpisodes(seriesId: string, seasonNumber: number): Promise<SeriesEpisode[]> {
@@ -1790,14 +1937,24 @@ export async function getSeriesExternalRatings(
   }
 }
 
-export async function getMovieSummary(id: number): Promise<MediaItem> {
+/**
+ * `language` pins one language for the cache key AND the request. Left to the
+ * request interceptor, the TMDB `language` param is read when the request
+ * actually leaves — which, from a hydration queue, can be seconds after the key
+ * was computed, and a language switch in between stored one language's
+ * posters and titles under the other's key.
+ */
+export async function getMovieSummary(id: number, language?: AppLanguage): Promise<MediaItem> {
   assertCredentials();
-  const cacheKey = getLocalizedTmdbCacheKey("movie-summary", id);
+  const locale = getLanguageLocale(language ?? getActiveContentLanguage());
+  const cacheKey = getLocalizedTmdbCacheKey("movie-summary", id, locale);
   const cached = movieSummaryCache.get(cacheKey);
   if (cached) {
     return cached;
   }
-  const { data } = await tmdbClient.get<TmdbMediaRecord & { genres?: TmdbGenre[] }>(`/movie/${id}`);
+  const { data } = await tmdbClient.get<TmdbMediaRecord & { genres?: TmdbGenre[] }>(`/movie/${id}`, {
+    params: { language: locale }
+  });
   const item = normalizeMedia(
     {
       ...data,
@@ -1810,14 +1967,18 @@ export async function getMovieSummary(id: number): Promise<MediaItem> {
   return enriched;
 }
 
-export async function getSeriesSummary(id: number): Promise<MediaItem> {
+/** `language` pins one language for the cache key and the request — see getMovieSummary. */
+export async function getSeriesSummary(id: number, language?: AppLanguage): Promise<MediaItem> {
   assertCredentials();
-  const cacheKey = getLocalizedTmdbCacheKey("series-summary", id);
+  const locale = getLanguageLocale(language ?? getActiveContentLanguage());
+  const cacheKey = getLocalizedTmdbCacheKey("series-summary", id, locale);
   const cached = seriesSummaryCache.get(cacheKey);
   if (cached) {
     return cached;
   }
-  const { data } = await tmdbClient.get<TmdbMediaRecord & { genres?: TmdbGenre[] }>(`/tv/${id}`);
+  const { data } = await tmdbClient.get<TmdbMediaRecord & { genres?: TmdbGenre[] }>(`/tv/${id}`, {
+    params: { language: locale }
+  });
   const item = normalizeMedia(
     {
       ...data,
