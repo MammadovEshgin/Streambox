@@ -59,8 +59,8 @@ for 4s and keeps a 60s forward buffer.
 Azerbaijani carrier and ISP except Bakcell (AS197830) — its subscribers can't
 reach the proxy's `workers.dev` host. TMDB requests now fail over to the same
 Worker on `tmdb.streamboxapp.stream` when a request gets no response, and
-remember the host that answered. That custom domain has to be attached to the
-Worker in Cloudflare for the fallback to take effect.
+remember the host that answered. The custom domain is attached to the Worker
+(`routes` in `workers/tmdb-proxy/wrangler.jsonc`).
 
 ### Fixed — Dizipal domain rotation (2026-09-14)
 

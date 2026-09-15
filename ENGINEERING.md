@@ -116,10 +116,10 @@ the `app.config.js` runtime, not the branch you happen to be on.
     Nar and the ISPs, **zero** from Bakcell (AS197830) — its network can't
     reach `*.workers.dev`. `tmdb.ts` now fails over, on a request with no
     response, to `tmdb.streamboxapp.stream` (same Worker, `routes` in
-    `wrangler.jsonc`) and persists the host that answered. ⚠ **The custom
-    domain must be attached to the Worker** (`wrangler deploy` in
-    `workers/tmdb-proxy`, or dashboard) — creating it from the agent was
-    blocked, so until then the fallback host doesn't resolve.
+    `wrangler.jsonc`) and persists the host that answered. The owner attached
+    the custom domain the same day with `wrangler deploy` (version
+    `e50b4a77-47a0-48ed-9200-ad91422c446b`); both hosts verified serving 200.
+    Keep both hostnames on the Worker.
   - Not changed: HDFilm finds *Dune: Part Two* but yields no native stream
     for that page, so it plays from Dizipal (~6s). Per-title, not a decoder
     failure (`npm run check:hdfilm` healthy).
