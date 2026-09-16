@@ -91,8 +91,16 @@ the `app.config.js` runtime, not the branch you happen to be on.
     function's production **slug is `clever-handler`** (name `external-ratings`);
     it was deployed from `supabase/functions/external-ratings` into that slug.
     `supabase functions deploy external-ratings` would create a second function
-    instead. The app calls `/functions/v1/external-ratings`, which returns 404 —
-    unresolved.
+    instead. The app calls `/functions/v1/external-ratings`, which returned 404.
+    **Fixed the same day:** `external-ratings` is now deployed under its own slug
+    (both slugs share the ratings cache; `clever-handler` is a now-unused
+    duplicate). The `external-ratings-hot-refresh` cron job had the literal
+    placeholder `<your_supabase_anon_key>` in its headers and got `401 Invalid JWT`
+    every run; it was rescheduled via `ensure_external_ratings_jobs(...)` with the
+    real anon key and a manual run returned 200.
+  - TURN Worker log sampling raised to 100% (`head_sampling_rate: 1`). Logs:
+    Cloudflare dashboard → Workers & Pages → `streambox-turn-credentials` →
+    Observability, or `npx wrangler tail streambox-turn-credentials` live.
 - **2026-09-15 (1.2.0 only):** Six reported issues. Deploy: `fdcdb56` → group
   `413b4741-25b4-413f-8ca1-8015e36830e3`. 435 tests green.
   - **Providers.** HDFilm, Dizipal and Dizibal all resolve to live HLS

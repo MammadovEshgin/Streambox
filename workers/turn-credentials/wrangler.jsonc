@@ -5,7 +5,9 @@
   "compatibility_date": "2026-05-11",
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 0.1
+    // Log every request: this Worker sees one call per Watch Together session,
+    // so 10% sampling left no logs at all to debug the auth gate with.
+    "head_sampling_rate": 1
   },
   "vars": {
     "ALLOWED_ORIGINS": "",
