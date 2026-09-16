@@ -65,17 +65,19 @@ the `app.config.js` runtime, not the branch you happen to be on.
 3. To ship to an older fleet, recreate its branch from the archive tag (e.g. `git switch -c release/1.1.0-navbar archive/release-1.1.0-navbar`), commit the JS change there (respecting rule 1 on 1.0.2), and publish an EAS update per runtime.
 4. **Fleet policy (2026-07-25, user decision):** New feature development targets ONLY the newest runtime going forward — currently **1.2.0** (branch `v1.2.0`). (A separate 1.3.0 runtime was planned for a social platform + player autonomy but was abandoned 2026-07-28; the social platform was dropped entirely and the player-autonomy features were folded into 1.2.0 as a JS-only OTA.) Older runtimes (1.0.2 / 1.1.0) receive shared OTA updates **only for streaming-provider/source fixes and critical bug fixes** — no feature back-ports.
 
-### Current deployed state (last updated 2026-09-15, 1.2.0 six-issue batch)
+### Current deployed state (last updated 2026-09-17, 1.2.0 audit-fix batch)
 
 | Runtime | Branch @ commit | EAS update group |
 |---------|-----------------|------------------|
-| 1.2.0 | `v1.2.0` @ `fdcdb56` | `413b4741-25b4-413f-8ca1-8015e36830e3` |
+| 1.2.0 | `v1.2.0` @ `c6357aa` | `136302d1-fa59-4fc9-820c-5dcb3c9e13b8` |
 | 1.1.0 | `archive/release-1.1.0-navbar` @ `c65d7db` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `archive/release-1.0.2-legacy` @ `1da0cae` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
 
-- **2026-09-17 (backend only — no OTA yet):** Audit fixes `e53a642`…`f59d298`.
-  The app-side fixes (`e53a642` sync queue, `8ccdc71` player WebView trust) are
-  committed but **not published**; the table above still reflects the last OTA.
+- **2026-09-17 (1.2.0 only):** Audit fixes `e53a642`…`f59d298`. OTA: `c6357aa` →
+  group `136302d1-fa59-4fc9-820c-5dcb3c9e13b8` (Runtime version 1.2.0) ships the
+  app-side fixes (`e53a642` sync queue backoff/dead-letter, `8ccdc71` player
+  WebView host-anchored trust). 461 tests green. Device check of HDFilm WebView
+  fallback and Dizipal playback still owed.
   - **Workers** (`d2f1f8f`): `streambox-turn-credentials` → version `f182c417`
     (verifies ES256 user tokens against the project JWKS — the project signs
     with ES256, so the old HS256-only check rejected every user), `streambox-tmdb-proxy`
