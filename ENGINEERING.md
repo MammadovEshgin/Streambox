@@ -81,9 +81,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 4. Backend, when touched:
    - Workers: `cd workers/<name> && npx wrangler deploy`. Nothing auto-deploys on push.
    - Edge Functions: `npx supabase functions deploy <slug> --project-ref zbeexmqmcwtlsbbuuqor --use-api`.
-     The ratings code is live under **two slugs**, `external-ratings` (what the app calls)
-     and `clever-handler` (an older, unused duplicate); a deploy by directory name only
-     updates `external-ratings`.
+     Slugs match the directory names under `supabase/functions/`.
    - Database: `npx supabase db push` after `--dry-run` (see `docs/DATABASE.md`).
 
 ### Current deployed state (2026-09-17)
@@ -95,7 +93,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 | `streambox-provider-monitor` | `c3ca7009` |
 | `streambox-turn-credentials` | `dcfe4675` |
 | Latest migration | `20260916211341_restore_watch_room_realtime_policies` |
-| Edge Functions | `external-ratings` v1, `clever-handler` v8, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
+| Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
 
 ### OTA history (runtime 1.2.0)
 Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
