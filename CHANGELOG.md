@@ -4,9 +4,9 @@ All notable changes to StreamBox are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Runtime versions (EAS Updates compatibility): **1.0.2**, **1.1.0**, **1.2.0** —
-this branch (`v1.2.0`) ships to **1.2.0**. See
-[`docs/release-tracks.md`](docs/release-tracks.md) for which fleet gets what.
+The app ships over-the-air on runtime **1.2.0** (branch `v1.2.0`). The older 1.0.2 and 1.1.0
+runtimes are retired; entries mentioning them are historical. Update group IDs for each
+release are recorded in [`ENGINEERING.md`](ENGINEERING.md).
 
 ## [Unreleased]
 

@@ -1,206 +1,120 @@
-# Watch Together — architecture & build plan
+# Watch Together — architecture
 
-Private, 2-person **Watch Room**: two people watch the same title in sync, see
-each other's faces over the video, talk, and capture a polaroid "memory" of the
-moment. Accounts stay independent — a room is joined by a **code**, not a
-friend graph.
-
-This document is the contract the client, backend, and infra are built against.
-It also tracks what is already in the repo vs. what is still to build.
+A private, **2-person Watch Room**: two people watch the same movie in sync, see each other's
+faces over the video, talk, react, chat, and capture polaroid "memories" that land on both
+profiles. Rooms are joined by **code**, not a friend graph. Operational rules and gotchas live
+in `ENGINEERING.md` §5; this document describes how the pieces fit together.
 
 ---
 
-## 1. The one thing to understand about performance
-
-**Camera and mic never travel through Supabase.** Live video/audio rides
-**WebRTC**, phone-to-phone (peer-to-peer). Supabase only carries small text
-messages: the WebRTC "let's connect" handshake, playback sync heartbeats, chat,
-reactions, and presence. Those are sub-kilobyte payloads with sub-second
-delivery, far under the free-tier ceilings (200 concurrent connections, 2M
-messages/month) for 2-person rooms. So Supabase free tier is **not** the
-bottleneck — the movie sync and face-cam are fast because the heavy media is on
-a direct P2P link, not on Supabase.
+## 1. Transport — media never touches Supabase
 
 ```
    Phone A  ── WebRTC media (camera + mic), direct P2P ──────────►  Phone B
       │                                                                │
       └──────────►  Supabase Realtime channel (tiny messages)  ◄───────┘
-                    · WebRTC signaling (offer/answer/ICE)
-                    · playback heartbeat (play/pause/position)
-                    · chat · reactions · presence (lobby)
+                    · WebRTC signalling (offer / answer / ICE / ready)
+                    · playback heartbeat + clock sync
+                    · chat · reactions · capture flow · presence
                           │
-      Cloudflare Worker ──┘ (only at call setup: mints short-lived TURN creds)
-      Supabase Postgres/Storage: durable room state + saved polaroids
+      Cloudflare Worker ──┘ (only at call setup: mints short-lived TURN credentials)
+      Supabase Postgres / Storage: durable room state + saved polaroids
 ```
 
----
+- **Media**: `react-native-webrtc` peer-to-peer (`src/hooks/useWebRtcPeers.ts`). STUN first,
+  **Cloudflare Realtime TURN** as relay when carrier NAT blocks a direct path.
+- **TURN credentials**: `src/services/turnCredentials.ts` calls `workers/turn-credentials`
+  (`EXPO_PUBLIC_TURN_CREDENTIALS_URL`) with the user's Supabase access token. The Worker only
+  mints for a signed-in user; without a session the call falls back to STUN only.
+- **Signalling**: `WatchRoomSignal` messages on the room's Realtime channel
+  (`watchRoomChannelName(code)`), a `private: true` channel authorized by two
+  `realtime.messages` RLS policies that check room membership.
+- Everything on the channel is sub-kilobyte, well inside Supabase's free-tier Realtime limits.
 
-## 2. Runtime isolation (why old APKs are safe)
+## 2. Rooms and nicknames
 
-Watch Together adds native modules (`react-native-webrtc`, `expo-camera`). Per
-`ENGINEERING.md §2`, native additions cannot go OTA and require a new
-`runtimeVersion`. This feature lives on a **third runtime, `1.2.0`**
-(`app.config.js`), built from branch `release/1.2.0-watch-together`.
+- 6-character codes from an unambiguous alphabet (`generateRoomCode`); share link
+  `streambox://room/<code>`.
+- The user picks a **session nickname** (unique within the room, case-insensitive; the last one
+  is remembered).
+- RPCs `create_watch_room` / `join_watch_room` / `end_watch_room` (SECURITY DEFINER) look rooms
+  up by code, enforce the 2-member cap and nickname uniqueness, and are idempotent on reconnect.
+  Tables: `watch_rooms`, `watch_room_members`, `watch_room_memories` (see the baseline schema).
+  The daily `watch-together-cleanup` cron removes expired rooms.
+- Entry point: the movie detail screen. Movies only; the in-player episode picker is disabled
+  inside rooms.
+- **The host can start alone.** Playback is never blocked while waiting; the "Waiting for your
+  partner" card is non-interactive, and a guest who joins later jumps to the host's position.
 
-EAS Update delivers a bundle only to installs on the matching runtime, so:
+## 3. Playback sync — host-authoritative clock
 
-- The **1.0.2 legacy** fleet and the **1.1.0 nav-bar** fleet can never receive
-  a 1.2.0 bundle → they can't be handed code that calls camera/WebRTC modules
-  they don't ship → **old APKs cannot break.**
-- 1.2.0 is its own OTA track. It never receives 1.0.2/1.1.0 updates and vice
-  versa.
+Each phone resolves **its own** stream (they may land on different providers), so sync is by
+content timecode:
 
-This branch is **not** ported back to the older release branches.
+- The host broadcasts a `playback` heartbeat (`isPlaying`, `positionSeconds`,
+  `updatedAtEpochMs`) on an interval, on play/pause, and immediately on a seek jump.
+- The guest measures the host clock offset with `sync-ping` / `sync-pong` (median of 5),
+  projects where the host should be, and hard-seeks only when drift exceeds 2s — with a 5s
+  cooldown and never while buffering. Transport (play/pause) is reconciled separately, and
+  playback signals are accepted only from the host.
+- If the guest's stream fails to resolve, the room stays alive as a social channel.
+- The sync math is pure and unit-tested in `src/utils/watchRoom.ts` / `tests/watchRoom.test.ts`.
 
----
+## 4. Connection lifecycle
 
-## 3. Media transport — Raw WebRTC P2P (+ Cloudflare TURN)
+- `webrtc-ready` gates the host's offer so it cannot arrive before the guest's peer
+  connection exists; it is re-announced every 2s until SDP lands. Early offers are queued.
+- Offers use `iceRestart`; failed or stuck connections rebuild up to 3 times, then the partner
+  tile shows "Tap to retry".
+- Realtime sends use server acknowledgements; a 20s liveness probe requires an open socket.
+  Auth refreshes before expiry and reconnects when the token is unusable.
+- Audio: explicit echo cancellation / noise suppression / AGC; face-cam capped at 640×480@24,
+  400 kbps; the movie volume ducks while someone talks (`useAudioDucking`).
 
-Chosen over a managed SFU (LiveKit) because the room is exactly 2 people:
-direct peer-to-peer is the lowest-latency, lowest-cost topology and reuses
-infra already in the stack (Supabase for signaling, Cloudflare for TURN).
+## 5. Polaroid memories
 
-- **Client:** `react-native-webrtc` — `RTCPeerConnection`, local camera/mic via
-  `mediaDevices.getUserMedia`, remote stream rendered with `RTCView`.
-- **Signaling:** exchanged as `WatchRoomSignal` messages over the room's
-  Supabase Realtime channel (`webrtc-offer` / `webrtc-answer` / `webrtc-ice`).
-- **NAT traversal:** STUN (public) first; **Cloudflare Realtime TURN** relay as
-  fallback. Ephemeral TURN creds come from `workers/turn-credentials`
-  (`EXPO_PUBLIC_TURN_CREDENTIALS_URL`) so the API secret never ships in the app.
-- **Audio while watching:** open mic with WebRTC's built-in echo cancellation,
-  plus a mute toggle. (Push-to-talk can come later if the movie audio bleed is
-  a problem in testing.)
+1. A user taps **Capture** → `capture-request`. If the partner's camera is off they answer
+   `capture-unavailable`. Capture requires both people present and a connected channel;
+   there is a shared 30s cooldown.
+2. Each phone takes a still with `expo-camera` by briefly handing the camera off from WebRTC
+   (screenshots of `RTCView` come out black), uploads it to the private `watch-memories`
+   bucket via a signed upload URL and native binary upload, and sends `capture-still`.
+3. The author composes `PolaroidCard` (code/SVG, captured at 1080×1451) and sends
+   `polaroid-preview` so the partner sees the finished card.
+4. The memory is saved local-first (PNG + AsyncStorage) and uploaded in the background with a
+   client-generated UUID; `syncPendingMemories()` retries idempotently. The cloud row lists
+   both `participant_user_ids` (taken from `watch_room_members`), so it appears on both
+   profiles' **Shared Sessions** shelf.
+5. Deleting removes only the caller (`remove_watch_memory`); the row and file are purged when
+   no participant remains.
 
----
+## 6. Wire protocol
 
-## 4. Playback sync — host-authoritative clock
-
-The movie itself is **not** shared as a file — each phone resolves its own
-stream via `WebPlayerService` (they may land on different providers/qualities),
-so sync is by **content timecode**, mirroring `useContinueWatching`'s approach.
-
-- The **host** samples its `expo-video` playhead and broadcasts a `playback`
-  heartbeat (`{ isPlaying, positionSeconds, updatedAtEpochMs }`) every
-  `WATCH_ROOM_HEARTBEAT_INTERVAL_MS`, and immediately on any play/pause/seek.
-- The **guest** projects where the host should be now
-  (`projectRemotePosition`) and applies `resolveSyncDecision`: hard-seek only
-  when drift exceeds `WATCH_ROOM_DEFAULT_HARD_SEEK_SECONDS` (2s), otherwise
-  leave the playhead alone to avoid stutter. Transport (play/pause) is
-  reconciled independently.
-- All of this math is pure and unit-tested in `src/utils/watchRoom.ts` /
-  `tests/watchRoom.test.ts`.
-- **Graceful degrade:** if the guest's stream fails to resolve, the room stays
-  alive as a social channel (faces, chat, reactions, polaroid) — playback sync
-  just goes idle for that side.
-
-> Clock skew: `resolveSyncDecision` accepts a `clockOffsetMs`. v1 assumes ~0
-> (NTP-close phones); a ping/pong round-trip over the channel can measure and
-> feed a real offset later if needed.
-
----
-
-## 5. Nicknames & rooms
-
-- Before joining, the user picks a **session nickname** (not their account
-  name), validated by `isValidNickname` / `isNicknameAvailable` — unique within
-  the room, case-insensitive. Last nickname is remembered
-  (`WATCH_TOGETHER_NICKNAME_STORAGE_KEY`) to prefill.
-- **Create/join by code.** Codes are 6 chars from an unambiguous alphabet
-  (`generateRoomCode`). Sharing also works via deep link
-  `streambox://room/<code>` (the app already registers the `streambox` scheme).
-- Backend: `create_watch_room` / `join_watch_room` / `end_watch_room` RPCs
-  (SECURITY DEFINER) look rooms up by code across RLS, enforce the 2-member cap
-  and nickname uniqueness, and are idempotent on reconnect. Tables + membership
-  RLS: `supabase/migrations/20260708120000_create_watch_together_platform.sql`.
-
----
-
-## 6. Polaroid memories
-
-The polaroid is composed from **camera stills**, never a screenshot — a
-screenshot can't capture the live camera or DRM video texture (same reason we
-never screenshot the movie).
-
-Flow:
-1. Either user taps **Capture** → `capture-request` broadcast; partner is
-   prompted to agree.
-2. On agreement, each phone snaps a still from its own camera
-   (`expo-camera` `takePictureAsync`) and uploads it to the private
-   `watch-memories` Supabase Storage bucket under `{room_id}/…`; the path is
-   shared via `capture-still`.
-3. A polaroid view is composited (poster/backdrop + both stills + nicknames +
-   movie title + timecode + date + design) and rasterized with
-   `react-native-view-shot` — the exact `captureRef → PNG → Sharing` pattern
-   already used by `ViewerPersona`'s share card.
-4. The memory row is written to `watch_room_memories` with both
-   `participant_user_ids`, so it shows on **both** accounts' "Movie Memories"
-   shelf even after the room expires. Export/share via `expo-sharing`.
-
----
-
-## 7. Wire protocol
-
-`WatchRoomSignal` (in `src/utils/watchRoom.ts`) is the typed contract for every
-message on a room's Realtime channel (`watchRoomChannelName(code)`):
+`WatchRoomSignal` in `src/utils/watchRoom.ts`:
 
 | type | when | payload |
 |------|------|---------|
 | `webrtc-offer` / `webrtc-answer` | connection setup | `sdp` |
 | `webrtc-ice` | connection setup | `candidate` |
-| `playback` | heartbeat + on transport change | `RemotePlaybackState` |
-| `reaction` | user taps an emoji | `emoji`, `at` |
-| `chat` | user sends a message | `text`, `at` |
-| `capture-request` | user wants a polaroid | `at` |
-| `capture-still` | a phone's still is uploaded | `nickname`, `imagePath`, `at` |
+| `webrtc-ready` | peer connection ready for an offer | — |
+| `playback` | heartbeat + transport change | `RemotePlaybackState` |
+| `sync-ping` / `sync-pong` | guest clock-offset measurement | `t0` (+ `t1`) |
+| `reaction` | emoji tap | `emoji`, `at` |
+| `chat` | message sent | `text`, `at` |
+| `capture-request` | polaroid requested | `captureId`, `at` |
+| `capture-still` | a still is uploaded | `captureId`, `nickname`, `imagePath`, `at` |
+| `capture-unavailable` | partner's camera is off | `captureId` |
+| `polaroid-preview` | finished card uploaded | `captureId`, `imagePath` |
 
----
+Every message also carries `from`. Changing a payload shape requires both devices to run the
+new bundle.
 
-## 8. Credentials / setup you must provide
+## 7. Setup for a new environment
 
-1. **Cloudflare Realtime TURN** key → set `TURN_KEY_ID` + `TURN_KEY_API_TOKEN`
-   as secrets on `workers/turn-credentials`, deploy it, and put its URL in
-   `EXPO_PUBLIC_TURN_CREDENTIALS_URL`.
-2. **Apply the migration** `20260708120000_create_watch_together_platform.sql`
-   to Supabase (manually — never `db push`). This also creates the
-   `watch-memories` Storage bucket + policies.
-3. **Enable Supabase Realtime** for the project (broadcast/presence are on by
-   default; confirm the anon role can use Realtime).
-4. Handle the `autoRefreshToken: false` client setting: the room session must
-   keep the Realtime socket authorized (call `supabase.realtime.setAuth` on a
-   timer, or refresh the token while a room is active).
-5. `npx expo install react-native-webrtc expo-camera @config-plugins/react-native-webrtc`
-   then a fresh **EAS dev/preview build** (runtime 1.2.0) — native modules can't
-   run in Expo Go or over OTA.
-
----
-
-## 9. Build phases
-
-- [x] **Phase 1 — Foundation (this branch, done):** isolated runtime 1.2.0 +
-  native plugins/permissions; deps; module shims; backend schema + RLS + RPCs +
-  Storage bucket; TURN-credentials Worker; pure sync/code/nickname core with
-  unit tests; this doc.
-- [x] **Phase 2 — Signaling & sync engine (done):** `watchRoomService`
-  (Realtime presence + broadcast, create/join/end RPCs, token-refresh loop),
-  `useWatchRoom`, and `useWatchRoomSession` host-clock heartbeat wired to the
-  player.
-- [x] **Phase 3 — WebRTC media (done):** `useWebRtcPeers` (getUserMedia, host-
-  offers peer connection, ICE via the TURN Worker, mic/camera/switch),
-  `FaceCamOverlay` (partner top-right + you bottom-right, ~30%).
-- [x] **Phase 4 — UI (done):** nickname + create/join setup, lobby "waiting"
-  overlay, chat sheet + floating reactions, capture flow + `PolaroidCard`
-  compositor, "Movie Memories" shelf on Profile, `streambox://room/<code>` deep
-  link, "Watch Together" entry on the movie detail.
-- [ ] **Remaining polish:** series entry point (needs an episode picker),
-  room-completion badges (needs a new event source — the badge engine is
-  history-derived), on-device visual iteration, i18n extraction of the new UI
-  strings, and validating live camera→still capture on real devices (currently
-  best-effort; the polaroid degrades to backdrop + names if a still is black).
-  Rive is available on this native build if we want a hero animation.
-
-## 10. Open questions
-
-- Do we gate Watch Together behind a minimum connection quality / show a
-  "connecting…" state while ICE negotiates?
-- Group rooms (3+) later would mean revisiting P2P mesh vs. an SFU.
-- Moderation/abuse posture before any "public rooms" idea.
+1. Cloudflare Realtime TURN key → `wrangler secret put TURN_KEY_ID` and `TURN_KEY_API_TOKEN` on
+   `workers/turn-credentials`; set `SUPABASE_URL` in its `wrangler.jsonc`; deploy; put the URL
+   (+ `/ice`) in `EXPO_PUBLIC_TURN_CREDENTIALS_URL`.
+2. Build the database from `supabase/migrations/` — the baseline creates the tables, RPCs and
+   `watch-memories` bucket; `20260916211341_restore_watch_room_realtime_policies.sql` adds the
+   channel policies.
+3. A 1.2.0 EAS build is required: the native WebRTC and camera modules cannot arrive over OTA.

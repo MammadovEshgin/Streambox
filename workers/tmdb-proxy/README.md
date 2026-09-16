@@ -37,5 +37,6 @@ hostnames on the same Worker.
 - `/3/movie/123` and `/movie/123` are both accepted.
 - Query params are forwarded except `api_key`, which is always stripped from client requests.
 - Search responses are cached for 5 minutes; other successful TMDB responses are cached for 6 hours.
-- Requests are rate-limited per client IP. Defaults are `120` requests per `60` seconds and can be tuned with `RATE_LIMIT_MAX_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS`.
-- Worker logs are structured JSON with `tmdb_proxy_response`, `tmdb_proxy_rate_limited`, and `tmdb_proxy_error` events for production monitoring.
+- Requests are rate-limited per client IP (`cf-connecting-ip` only; `x-forwarded-for` is ignored). The limit is an abuse ceiling of `600` requests per `60` seconds — mobile carriers put many users behind one IP — and edge-cache hits don't count. Tune with `RATE_LIMIT_MAX_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS`.
+- CORS allows no browser origins unless they are listed in `ALLOWED_ORIGINS`; the mobile app sends no `Origin` header.
+- Worker logs are structured JSON with `tmdb_proxy_response`, `tmdb_proxy_rate_limited`, and `tmdb_proxy_error` events, sampled at 10%. View them in the Cloudflare dashboard (Workers & Pages → `streambox-tmdb-proxy` → Observability) or live with `npx wrangler tail streambox-tmdb-proxy`.

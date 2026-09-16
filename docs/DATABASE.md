@@ -17,7 +17,30 @@ Project ref `zbeexmqmcwtlsbbuuqor` · Postgres 17 · linked via `supabase/.temp/
 | `supabase/seed.sql` | Reference data only — themes, provider configs, announcements, franchise catalogue, storage buckets. **Never user data.** |
 | `supabase/migrations_archive/` | The 39 pre-baseline migrations. Reference only, never replayed. See its README. |
 | `supabase/functions/` | Edge functions. |
-| `docs/DB_AUDIT_2026-07-28.md` | The audit that produced this structure. |
+| `supabase/verify/` | Read-only checks: `object_counts.sql` (rebuild fidelity), `write_amplification.sql`. |
+| `docs/DB_AUDIT_2026-07-28.md` | The audit that produced this structure (closed). |
+
+## Tables at a glance
+
+| Table | Holds |
+|---|---|
+| `user_profiles`, `user_settings` | Display name, bio, avatar/banner paths; theme and preferences (one row per user) |
+| `user_media_library` | Watchlist, liked and recently viewed items (`list_kind`) |
+| `user_watch_history` | Watched titles and seasons with the metadata Stats needs |
+| `user_episode_progress` | Per-episode watched flags |
+| `user_daily_recommendations` | Movie / series of the day history |
+| `user_franchise_progress` | Franchise timeline progress |
+| `user_announcement_views`, `app_announcements` | Live-ops popups and who has seen them |
+| `user_audit_logs`, `app_telemetry_events` | Audit trail and device telemetry (90-day retention) |
+| `watch_rooms`, `watch_room_members`, `watch_room_memories` | Watch Together rooms and shared polaroids |
+| `provider_configs` | Provider base URLs (updated by the Telegram bot) |
+| `external_ratings_cache`, `external_ratings_function_logs`, `external_ratings_alert_events` | OMDb ratings cache and its monitoring |
+| `franchise_collections`, `franchise_entries`, `app_themes` | Reference catalogues (seeded) |
+| `private.rate_limit_windows` | Server-only rate limiting (`consume_streambox_rate_limit`) |
+
+Storage buckets: `profile-assets` (avatars/banners, private per user) and `watch-memories`
+(polaroids, readable by room participants). Every user-keyed table cascades from `auth.users`
+and has RLS limiting rows to their owner.
 
 ## The baseline
 
@@ -60,7 +83,9 @@ fresh database.
 - **Triggers on `auth.users`** are wrapped in a guarded `DO` block. That table is owned by
   `supabase_auth_admin`; a missing privilege degrades to a notice instead of failing the build.
 - **The `external-ratings-hot-refresh` cron job** is not in the baseline — it embeds a project
-  URL and invokes an edge function with a per-environment secret. Recreate it per environment.
+  URL and the project's anon key. Recreate it per environment with
+  `select public.ensure_external_ratings_jobs('<project-url>', '<anon-key>');` (it only creates
+  jobs that don't exist; `cron.unschedule` the old one first to replace it).
 
 ---
 
@@ -72,7 +97,7 @@ fresh database.
    time, which on this machine has produced timestamps in the past; rename if needed or
    `db push` will refuse without `--include-all`.
 4. `supabase db advisors --linked --type security` and `--type performance`. Fix what it finds.
-5. `supabase db push`.
+5. With the owner's approval: `supabase db push --linked --dry-run`, then `supabase db push --linked`.
 6. Re-run the advisors and confirm the counts moved the way you expected.
 
 ### Rules
@@ -219,7 +244,8 @@ These are different problems and the repo solves only the second.
 - Four scheduled jobs: `external-ratings-alert-capture` (15 min),
   `external-ratings-monitoring-cleanup` (daily), `watch-together-cleanup` (daily),
   `streambox-event-log-cleanup` (daily, 90-day retention on telemetry + audit logs).
-  A fifth, `external-ratings-hot-refresh`, exists in prod but not in the baseline (see above).
+  A fifth, `external-ratings-hot-refresh` (every 6 hours), exists in prod but not in the
+  baseline (see above); it was recreated with a working key on 2026-09-17.
 - `anon` has no grants on user-keyed tables. It retains `SELECT` on the franchise catalogue,
   announcements and provider configs.
 - Accepted advisor warnings: 11 × `authenticated_security_definer_function_executable` (the

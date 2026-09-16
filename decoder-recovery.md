@@ -21,7 +21,8 @@ section.
 
 - Path on the user's machine: `C:\Users\e.a.mammadov\Desktop\Personal projects\Streambox`
 - GitHub: `MammadovEshgin/Streambox`
-- Branch: `main` (no PR needed for these fixes — push directly)
+- Branch: `v1.2.0` (no PR needed for these fixes). After pushing it, fast-forward `main`
+  to it and push `main` too — `main` never gets its own commits.
 - Shell: PowerShell on Windows (Bash tool also available; use whichever fits)
 
 ---
@@ -46,11 +47,13 @@ npm test
 # 4. Ship.
 git add -A
 git commit -m "fix(resolver): handle new HDFilm decoder shape"
-git push origin <the current release branch>
+git push origin v1.2.0
+git checkout main; git merge --ff-only v1.2.0; git push origin main; git checkout v1.2.0
 
 # 5. Publish the OTA to the runtime the branch pins (check app.config.js first).
 $SHA = (git rev-parse --short HEAD).Trim()
-npx eas-cli update --branch preview --message "HDFilm decoder recovery ($SHA)" --non-interactive
+npx eas-cli@latest update --branch preview --platform android --message "HDFilm decoder recovery ($SHA)" --non-interactive
+# The output must say "Runtime version 1.2.0"; record the group ID in ENGINEERING.md.
 ```
 
 Users get the fix on their next background→foreground cycle (silent reload, no
@@ -278,8 +281,9 @@ single sample will mislead you into thinking a constant is fixed.
 ### `git push` rejected (non-fast-forward)
 
 ```powershell
-git pull --rebase origin main
-git push origin main
+git pull --rebase origin v1.2.0
+git push origin v1.2.0
+git checkout main; git merge --ff-only v1.2.0; git push origin main; git checkout v1.2.0
 ```
 
 ### `eas update` says EXPO_TOKEN missing or not authenticated
@@ -418,13 +422,12 @@ place (see `recoverCurrentStream`).
 ## Hard constraints (DO NOT CHANGE)
 
 - **Runtime version.** `app.config.js` pins the runtime the checked-out branch
-  ships to — currently `1.2.0` on `v1.2.0`. An OTA only reaches installs on the
-  matching runtime, so **read `app.config.js` before every `eas update`** and
-  never bump it to "reach more users". There are three live fleets; see
-  [`docs/release-tracks.md`](docs/release-tracks.md).
+  ships to — `1.2.0` on `v1.2.0`, the only live runtime. An OTA only reaches
+  installs on the matching runtime, so **read `app.config.js` before every
+  `eas update`** and never bump it to "reach more users". See `ENGINEERING.md` §2.
 - **OTA branch.** Always `preview`. That's the channel installed apps listen
   on (`updates.url` in `app.config.js`).
-- **Test count.** 361 tests as of 2026-09-08. If the count drops or any fail,
+- **Test count.** 461 tests as of 2026-09-17. If the count drops or any fail,
   do not push.
 - **No resolver workflow in CI.** `.github/workflows/ci.yml` (typecheck / lint /
   test) is fine and stays. What must NOT be added is anything that reaches

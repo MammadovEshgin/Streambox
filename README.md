@@ -23,7 +23,7 @@
 - **Discovery** — personalised picks, trending lists, similar titles and franchise timelines.
 - **Native playback** — multi-provider stream resolution into a native HLS player with quality, audio and subtitle selection.
 - **Library** — watchlist, likes, watch history and viewing stats, synced across devices.
-- **Watch Together** — private rooms with synced playback and peer-to-peer video chat.
+- **Watch Together** — private two-person rooms with synced playback, peer-to-peer video chat and shared polaroid memories.
 - **Over-the-air updates** — JavaScript updates ship through EAS Update without a store release.
 - **English and Turkish** interface.
 
@@ -34,13 +34,15 @@
 | App | React Native 0.81, Expo SDK 54, TypeScript |
 | UI | styled-components, Reanimated 4, React Navigation |
 | Player | expo-video |
-| Backend | Supabase (auth, Postgres, storage, realtime) |
-| Data | TMDB via a Cloudflare Worker proxy |
+| Backend | Supabase (auth, Postgres, storage, realtime, edge functions) |
+| Data | TMDB via a Cloudflare Worker proxy, OMDb ratings via a Supabase edge function |
+| Calls | react-native-webrtc with Cloudflare Realtime TURN |
 | Build & delivery | EAS Build, EAS Update |
 
 ## Quick Start
 
-Requires Node.js 22 and a Supabase project plus TMDB proxy credentials.
+Requires Node.js 22 and a Supabase project plus TMDB proxy credentials. The app uses native
+modules (WebRTC, camera), so run it in an EAS development build rather than Expo Go.
 
 ```bash
 git clone https://github.com/MammadovEshgin/Streambox.git
@@ -59,19 +61,20 @@ npm start
 | `npm test` | Run the test suite |
 | `npm run typecheck` | Type-check with `tsc` |
 | `npm run lint` | Lint with ESLint |
+| `npm run check:hdfilm` | Check the HDFilm stream decoder against live titles |
 
 ## Project Structure
 
 ```
 src/        App source: screens, components, hooks, services, localization
 tests/      Unit tests (node:test)
-supabase/   Database migrations
+supabase/   Database migrations, seed data and edge functions
 workers/    Cloudflare Workers (TMDB proxy, provider monitor, TURN credentials)
 docs/       Architecture and operations notes
 scripts/    Maintenance and health-check scripts
 ```
 
-See [`ENGINEERING.md`](ENGINEERING.md) for runtime tracks and the deploy workflow.
+See [`ENGINEERING.md`](ENGINEERING.md) for the runtime, deploy workflow and engineering guardrails.
 
 ## License
 

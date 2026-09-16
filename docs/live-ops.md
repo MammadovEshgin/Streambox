@@ -1,62 +1,23 @@
 # StreamBox Live Ops
 
-This project now supports two post-release live-ops layers:
+Three post-release levers, none of which need a new APK:
 
-1. EAS Update for JavaScript, UI, translation, and bundled-asset changes.
-2. Supabase-managed one-time announcements for feature popups.
+1. **EAS Update** for JavaScript, UI, translation and bundled-asset changes.
+2. **Supabase announcements** for one-time feature popups.
+3. **Telemetry** in `public.app_telemetry_events` to see what happened on devices.
 
 ## OTA updates
 
-Configured pieces:
+The app runs a single runtime, `1.2.0`, and listens on EAS branch `preview`. The publish
+command, deploy order and deployed-state record are in `ENGINEERING.md` §3.
 
-- `expo-updates`
-- `runtimeVersion = 1.1.0` in `app.config.js`
-- EAS update URL in `app.config.js`
-- channels in `eas.json`
-  - `development`
-  - `preview`
-  - `production`
+Use OTA for JavaScript, UI/UX, translations, non-native logic and bundled assets. Use a new
+EAS build (and a `runtimeVersion` bump) for native libraries, Android permissions, icons,
+splash or any other native config.
 
-### Use OTA when
-
-- changing React Native / Expo JavaScript
-- improving UI or UX
-- updating translations
-- shipping non-native logic changes
-- publishing bundled assets
-
-### Use a new store build when
-
-- adding or removing a native library
-- changing Android/iOS permissions
-- changing icons, splash, or native config
-- changing anything that affects the native runtime
-
-### Release commands
-
-First production build:
-
-```bash
-npx eas-cli build --platform android --profile production
-```
-
-Future production OTA updates:
-
-```bash
-npx eas-cli update --branch production --message "Describe the release"
-```
-
-Future preview OTA updates:
-
-```bash
-npx eas-cli update --branch preview --message "Preview update"
-```
-
-By default, EAS channels map to branches with the same name.
-
-The runtime version must match the APK line that users installed. If a GitHub
-release is distributed as a new native APK line, publish OTA updates with the
-same runtime version, or those APKs will not receive the update.
+On device, `src/services/appUpdateService.ts` checks every 5 minutes and
+`src/components/common/LiveOpsHost.tsx` reloads silently on the next background → foreground
+transition, never during playback.
 
 ## Announcements
 
@@ -131,3 +92,49 @@ insert into public.app_announcements (
 ### Re-showing an announcement
 
 If you want users to see a revised version of an older popup, keep the same slug and increment `display_version`.
+
+## Telemetry queries
+
+Run with `npx supabase db query --linked "<sql>"` or in the dashboard SQL editor (read-only).
+
+Recent crashes:
+
+```sql
+select occurred_at, event_name, severity, metadata
+from public.app_telemetry_events
+where event_category = 'crash'
+order by occurred_at desc
+limit 50;
+```
+
+Which source served each play (a shift away from `hdfilm`/`direct`, or a jump in `not_found`, is the tier-1 outage signal):
+
+```sql
+select date_trunc('day', occurred_at) as day, metadata->>'source' as source, count(*)
+from public.app_telemetry_events
+where event_name = 'player_resolve'
+group by 1, 2
+order by 1 desc, 3 desc;
+```
+
+TMDB / proxy failures:
+
+```sql
+select date_trunc('hour', occurred_at) as hour, event_name, metadata->>'status' as status, count(*)
+from public.app_telemetry_events
+where event_category = 'tmdb'
+group by 1, 2, 3
+order by 1 desc;
+```
+
+Sync writes the server kept rejecting and dropped after 8 attempts:
+
+```sql
+select occurred_at, metadata
+from public.app_telemetry_events
+where event_name = 'sync_operation_dead_lettered'
+order by occurred_at desc
+limit 50;
+```
+
+Telemetry and audit logs are pruned after 90 days by the `streambox-event-log-cleanup` cron.

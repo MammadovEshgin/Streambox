@@ -26,7 +26,7 @@ TMDB stays responsible for:
 ## Runtime Rules
 
 - List, rail, and grid browsing must not call Supabase Edge rating functions.
-- `external-ratings` is reserved for detail pages unless `EXPO_PUBLIC_ENABLE_LIST_EXTERNAL_RATINGS=1` is explicitly set.
+- The `external-ratings` Edge Function is reserved for detail pages unless `EXPO_PUBLIC_ENABLE_LIST_EXTERNAL_RATINGS=1` is explicitly set (it is `0` in the preview build).
 - Public asset URLs may be absolute URLs or relative Cloudflare paths. Relative paths are resolved through `EXPO_PUBLIC_STREAMBOX_ASSET_BASE_URL`.
 - Supabase Storage should not host public poster catalogs. If an image is public and static, it belongs on Cloudflare.
 
@@ -40,8 +40,6 @@ R2 must be enabled in the Cloudflare dashboard before buckets can be created thr
 4. Store announcement images with stable paths such as `announcements/2026-05-feature.webp`.
 5. In Supabase `app_announcements.image_url`, store either the full URL or the relative path.
 
-## Supabase Cleanup
+## History
 
-The migration `20260501_remove_azerbaijani_classics.sql` drops the storage-backed Azerbaijani Classics catalog and removes internal-ID user rows. It is destructive and should only be applied after confirming the section is permanently removed from the product.
-
-The migration `20260501160000_remove_franchise_custom_poster_columns.sql` removes `logo_url` and `poster_url` from franchise tables so the app cannot accidentally fall back to Supabase-hosted custom posters. After applying it, delete the old `franchise-posters` Storage bucket from the Supabase dashboard if it still exists.
+Storage-backed poster catalogues were removed in May 2026: franchise tables no longer carry custom `logo_url` / `poster_url` columns, and the Azerbaijani Classics section is now a bundled catalogue (`scripts/generate-az-classics.py`) rather than Supabase Storage.

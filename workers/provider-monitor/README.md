@@ -103,17 +103,18 @@ npx wrangler deploy
 
 ## Telegram Commands
 
-The bot supports two admin-only commands:
+The bot supports three admin-only commands:
 
 ```text
 /status
-/set_dizipal https://dizipal2070.com
+/set_dizipal https://dizipal2132.com
+/set_dizibal https://dizibal.org
 ```
 
-`/set_dizipal` only updates Supabase after both checks pass:
-
-- `https://new-domain/`
-- `https://new-domain/ajax-search?q=breaking%20bad`
+`/status` re-runs every check and reports rotations and scraper-shape changes. A `/set_` command
+runs that provider's checks against the new domain (for Dizipal: home, search and the
+`data-cfg` playback probe) and only updates the Supabase `provider_configs` row when all of
+them pass. Installed apps pick the new URL up on their next provider-config refresh.
 
 Only the configured `TELEGRAM_CHAT_ID` can use these commands.
 

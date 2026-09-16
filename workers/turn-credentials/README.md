@@ -40,8 +40,22 @@ share of phone-to-phone calls fail to connect.
     { "urls": "stun:stun.l.google.com:19302" },
     { "urls": ["turn:turn.cloudflare.com:3478?transport=udp", "..."], "username": "…", "credential": "…" }
   ],
-  "ttl": 86400
+  "ttl": 14400
 }
 ```
 
 Feed `iceServers` straight into `new RTCPeerConnection({ iceServers })`.
+
+## Logs
+
+Every request is logged (`head_sampling_rate: 1`). Open the Cloudflare dashboard →
+Workers & Pages → `streambox-turn-credentials` → **Observability**, or stream live with
+`npx wrangler tail streambox-turn-credentials`. The `event` field tells you what happened:
+
+| event | meaning |
+|---|---|
+| `issued` | credentials minted for a signed-in user |
+| `unauthorized` | no token, the anon key, or a token that failed verification |
+| `misconfigured` | a required secret or `SUPABASE_URL` is missing |
+| `verify_error` | the JWKS fetch or token parsing threw |
+| `cf_error` / `exception` | Cloudflare's TURN API failed |
