@@ -50,7 +50,7 @@ the `app.config.js` runtime, not the branch you happen to be on.
 
 ### Other branches
 - `main` — default branch. Since 2026-09-14 it carries `v1.2.0` (merged, then kept identical): commit on `v1.2.0` and fast-forward `main` to it. Never force-push it without the owner's explicit say-so.
-- `feature/android-tv` — **real, in-progress** Android TV work (its own commit line, not in the release branches). Do NOT treat as stale; do NOT delete.
+- Android TV — **abandoned**; no TV build will ship. The old `feature/android-tv` commit line (pre-rewrite history, never merged into any release branch) is dropped and not kept as a tag.
 - Ephemeral `feat/*` work branches — cut from `v1.2.0`, merged back, then deleted once `git diff v1.2.0 <branch>` is empty. Don't let them accumulate.
 - `archive/release-1.1.0-navbar` / `archive/release-1.0.2-legacy` (tags) — the exact code lines of the two older fleets, kept when their branches were deleted on 2026-09-14. Everything else on them (splash, loaders, Watch Together resolver, Azerbaijani classics) is already in `v1.2.0`.
 - `archive/navbar-apk-base` (tag) — the retired `release/navbar-apk` base of the 1.1.0 line, preserved for history; fully contained in `archive/release-1.1.0-navbar`.
