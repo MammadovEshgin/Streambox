@@ -190,7 +190,8 @@ export class WatchRoomService {
     const channel = supabase.channel(watchRoomChannelName(room.code), {
       config: {
         // Private channel: receiving/sending requires the realtime.messages RLS
-        // policies from migration 20260710190000 — the join code alone is no
+        // policies from the restore_watch_room_realtime_policies migration
+        // (originally 20260710190000) — the join code alone is no
         // longer enough to eavesdrop or inject signals; membership is.
         private: true,
         // Server acknowledgements turn every user action into a liveness

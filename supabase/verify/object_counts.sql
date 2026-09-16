@@ -10,6 +10,9 @@
 -- DO block. If the build role lacked privilege on auth.users they are skipped, and the
 -- trigger row reports 31 instead of 33. That is a known-acceptable outcome on a scratch
 -- project -- it is NOT acceptable on a real rebuild of production.
+--
+-- 'policies realtime.messages' counts the Watch Together channel policies restored by
+-- 20260916211341_restore_watch_room_realtime_policies.sql; they are not in the baseline.
 
 with expected(obj, want) as (values
   ('tables',                      22),
@@ -21,7 +24,8 @@ with expected(obj, want) as (values
   ('constraints foreign key',     20),
   ('triggers (all schemas)',      33),
   ('policies public+private',     43),
-  ('policies storage.objects',     8)
+  ('policies storage.objects',     8),
+  ('policies realtime.messages',   2)
 ),
 actual(obj, got) as (
   select 'tables', count(*)::int from pg_class
@@ -54,6 +58,9 @@ actual(obj, got) as (
   union all
   select 'policies storage.objects', count(*)::int
     from pg_policy where polrelid = to_regclass('storage.objects')
+  union all
+  select 'policies realtime.messages', count(*)::int
+    from pg_policy where polrelid = to_regclass('realtime.messages')
 )
 select
   case when a.got = e.want then 'PASS' else 'FAIL' end as result,

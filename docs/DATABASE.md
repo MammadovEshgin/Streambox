@@ -36,6 +36,7 @@ contains. Verified object-for-object against prod at generation time:
 | Constraints (PK/unique/check + FK) | 115 + 20 |
 | Triggers | 33 |
 | Policies | 43 (`public`/`private`) + 8 (`storage.objects`) |
+| Policies (`realtime.messages`) | 2 — **not in the baseline**; from `20260916211341_restore_watch_room_realtime_policies.sql` |
 
 Section order, which matters:
 
@@ -112,6 +113,10 @@ fresh database.
 > The first attempt **failed** with `42883` — constraints were emitted before functions, and
 > `user_watch_history`'s CHECK constraint calls `cast_gender_array_is_valid()`. That is the
 > bug this exercise existed to catch. Re-verify after any change to the baseline.
+
+Since 2026-09-17 `object_counts.sql` has an eleventh row, `policies realtime.messages`
+(expected 2): the Watch Together channel policies, which the baseline never emitted and which
+now come from the `restore_watch_room_realtime_policies` migration.
 
 This machine has **no Docker and no native `pg_dump`/`psql`**, so `supabase db reset` and
 `supabase migration squash` do not run locally. Use Option B.

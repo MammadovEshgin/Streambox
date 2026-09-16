@@ -535,7 +535,9 @@ storage UPDATE policy for outbox retries, join throttle, expired-room cleanup.
 **MUST be applied BEFORE testing any build from 2026-07-10 on**: the client now
 joins the room channel with `private: true`, which Realtime rejects until the
 realtime.messages policies exist). Apply with `npx supabase db push` **by the
-user**, not the agent.
+user**, not the agent. (2026-09-17: these files are archived; their content is in the
+baseline except the two realtime.messages policies, which now live in
+`supabase/migrations/20260916211341_restore_watch_room_realtime_policies.sql`.)
 
 ### Deploy specifics for 1.2.0
 - The CLI binary lives in package **`eas-cli`**, not `eas`: use
