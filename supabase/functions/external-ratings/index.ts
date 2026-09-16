@@ -500,26 +500,15 @@ Deno.serve(async (request) => {
   try {
     body = await request.json();
   } catch {
-    await safeLogFunctionEvent(supabase, {
-      functionName: "external-ratings",
-      eventType: "invalid_json",
-      statusCode: 400,
-      latencyMs: Date.now() - startedAt,
-      errorMessage: "Invalid JSON body.",
-    });
+    // Not written to the log table: that path is reachable with only the public
+    // anon key, so logging before validation was an unbounded-insert vector.
+    console.warn("external-ratings: invalid JSON body");
     return json({ error: "Invalid JSON body." }, 400);
   }
 
   const imdbId = String(body.imdbId ?? "").trim();
   if (!isValidImdbId(imdbId)) {
-    await safeLogFunctionEvent(supabase, {
-      functionName: "external-ratings",
-      eventType: "invalid_imdb_id",
-      statusCode: 400,
-      imdbId,
-      latencyMs: Date.now() - startedAt,
-      errorMessage: "A valid imdbId is required.",
-    });
+    console.warn(`external-ratings: invalid imdbId ${JSON.stringify(imdbId.slice(0, 64))}`);
     return json({ error: "A valid imdbId is required." }, 400);
   }
 

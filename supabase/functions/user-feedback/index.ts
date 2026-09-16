@@ -104,8 +104,15 @@ Deno.serve(async (req) => {
     const feedbackFromEmail = Deno.env.get("FEEDBACK_FROM_EMAIL") ?? "";
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+    const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-    if (!resendApiKey || !feedbackFromEmail || !supabaseUrl || !supabaseAnonKey) {
+    if (
+      !resendApiKey ||
+      !feedbackFromEmail ||
+      !supabaseUrl ||
+      !supabaseAnonKey ||
+      !supabaseServiceRoleKey
+    ) {
       return jsonResponse({ success: false, message: "Feedback service is not configured." }, 500);
     }
 
@@ -141,6 +148,33 @@ Deno.serve(async (req) => {
       return jsonResponse(
         { success: false, message: "Feedback must be between 10 and 2000 characters." },
         400
+      );
+    }
+
+    // Abuse guard: sign-up needs no email confirmation, so an unverified account can
+    // otherwise drive unbounded outbound mail. consume_streambox_rate_limit is
+    // SECURITY DEFINER and revoked from anon/authenticated, hence the service-role client.
+    // It runs after validation so a rejected message does not use up a hit.
+    const admin = createClient(supabaseUrl, supabaseServiceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data: limit, error: limitError } = await admin.rpc("consume_streambox_rate_limit", {
+      target_user_id: user.id,
+      action_key: "user_feedback",
+      max_hits: 3,
+      window_seconds: 3600,
+    });
+    if (limitError) {
+      console.error(`user-feedback rate limit check failed: ${limitError.message}`);
+      return jsonResponse({ success: false, message: "Feedback is temporarily unavailable." }, 503);
+    }
+    if (!limit?.allowed) {
+      return jsonResponse(
+        {
+          success: false,
+          message: "You have sent several messages recently. Please try again later.",
+        },
+        429
       );
     }
 
@@ -189,6 +223,7 @@ Deno.serve(async (req) => {
 
     return jsonResponse({ success: true, id: result?.id ?? null });
   } catch (error) {
-    return jsonResponse({ success: false, message: String(error) }, 500);
+    console.error("user-feedback failed:", error instanceof Error ? error.message : String(error));
+    return jsonResponse({ success: false, message: "Unable to send feedback right now." }, 500);
   }
 });
