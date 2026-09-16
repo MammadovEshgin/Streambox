@@ -146,8 +146,13 @@ Invoke-WebRequest "https://streambox-provider-monitor.<your-subdomain>.workers.d
   -Headers @{ "x-monitor-token" = "<MANUAL_RUN_TOKEN>" }
 ```
 
-Status endpoint:
+Status endpoint (also requires the token; it returns 401 without it):
 
 ```powershell
-Invoke-WebRequest "https://streambox-provider-monitor.<your-subdomain>.workers.dev/"
+Invoke-WebRequest "https://streambox-provider-monitor.<your-subdomain>.workers.dev/" `
+  -Headers @{ "x-monitor-token" = "<MANUAL_RUN_TOKEN>" }
 ```
+
+`TELEGRAM_WEBHOOK_SECRET` and `MANUAL_RUN_TOKEN` are required. The Worker fails
+closed without them: Telegram webhooks are rejected (401) and `/run` and `/`
+return 503 until they are set.

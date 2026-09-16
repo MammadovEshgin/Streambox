@@ -20,7 +20,14 @@ share of phone-to-phone calls fail to connect.
    ```
    wrangler secret put TURN_KEY_ID
    wrangler secret put TURN_KEY_API_TOKEN
+   wrangler secret put SUPABASE_JWT_SECRET
    ```
+   The Worker only mints credentials for a signed-in user's token
+   (`role: authenticated` with a `sub`), never for the public anon key.
+   ES256/RS256 tokens (asymmetric signing keys) are verified against the
+   project JWKS at `SUPABASE_URL` (a var in `wrangler.jsonc`); legacy HS256
+   tokens use `SUPABASE_JWT_SECRET` (Supabase dashboard → Settings → API).
+   With neither configured the Worker returns 503.
 3. Deploy: `wrangler deploy`
 4. Put the deployed URL (+ `/ice`) into the app env as
    `EXPO_PUBLIC_TURN_CREDENTIALS_URL`.

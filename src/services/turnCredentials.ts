@@ -4,10 +4,10 @@
 // fallback when the worker URL is unset (direct P2P will still work on many
 // networks, just without a relay for symmetric-NAT cases).
 //
-// The request carries the caller's Supabase access token: once the worker has
-// SUPABASE_JWT_SECRET configured it only mints relay credentials for signed-in
-// StreamBox users, instead of for anyone who finds the URL (relay bandwidth is
-// billed). Until then the worker ignores the header — sending it is free.
+// The request carries the caller's Supabase access token: the worker only
+// mints relay credentials for signed-in StreamBox users, instead of for anyone
+// who finds the URL (relay bandwidth is billed). Without a session it answers
+// 401 and the call falls back to STUN.
 
 import { supabase } from "./supabase";
 

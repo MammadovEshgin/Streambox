@@ -9,12 +9,17 @@
   },
   "vars": {
     "ALLOWED_ORIGINS": "",
-    "CRED_TTL_SECONDS": "14400"
+    "CRED_TTL_SECONDS": "14400",
+    // User tokens signed with the project's asymmetric keys (ES256/RS256) are
+    // verified against <SUPABASE_URL>/auth/v1/.well-known/jwks.json.
+    "SUPABASE_URL": "https://zbeexmqmcwtlsbbuuqor.supabase.co"
   }
   // Secrets (do NOT commit): set with
   //   wrangler secret put TURN_KEY_ID
   //   wrangler secret put TURN_KEY_API_TOKEN
-  //   wrangler secret put SUPABASE_JWT_SECRET   (optional — enables the auth
-  //     gate; use the project's legacy HS256 JWT secret from the Supabase
-  //     dashboard → Settings → API. Skip if the project uses asymmetric JWTs.)
+  //   wrangler secret put SUPABASE_JWT_SECRET   (verifies legacy HS256 user
+  //     tokens; from the Supabase dashboard → Settings → API. The Worker
+  //     returns 503 when neither this nor SUPABASE_URL is configured.)
+  // ALLOWED_ORIGINS: comma list of browser origins; empty = allow none (the
+  //   mobile app sends no Origin header).
 }

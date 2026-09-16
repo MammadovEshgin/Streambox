@@ -8,15 +8,16 @@
 // Secrets (set with `wrangler secret put`):
 //   TURN_KEY_ID          — Cloudflare Realtime TURN key id
 //   TURN_KEY_API_TOKEN   — API token bound to that TURN key
-//   SUPABASE_JWT_SECRET  — (optional) the Supabase project's legacy HS256 JWT
-//                          secret (dashboard → Settings → API). When set, the
-//                          worker only mints credentials for requests carrying
-//                          a valid signed-in user token — relay bandwidth is
-//                          billed, so an open endpoint is a cost hole. When
-//                          unset, behaves as before (open) so the client can
-//                          ship the Authorization header ahead of the redeploy.
+//   SUPABASE_JWT_SECRET  — the Supabase project's legacy HS256 JWT secret
+//                          (dashboard → Settings → API), for HS256 user tokens.
 // Vars (wrangler.jsonc):
-//   ALLOWED_ORIGINS      — comma list; empty = allow any
+//   SUPABASE_URL         — project URL; ES256/RS256 user tokens (asymmetric
+//                          signing keys) are verified against its JWKS.
+//   ALLOWED_ORIGINS      — comma list; empty = allow none (the app sends no Origin)
+//
+// The worker only mints credentials for a live, signed-in user token — relay
+// bandwidth is billed, so an open endpoint is a cost hole. With neither
+// SUPABASE_JWT_SECRET nor SUPABASE_URL configured it refuses to mint (503).
 //   CRED_TTL_SECONDS     — lifetime of the minted credentials
 
 const CF_TURN_API = "https://rtc.live.cloudflare.com/v1/turn/keys";
@@ -33,10 +34,9 @@ function buildCorsHeaders(request, env) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
-  const allowAny = configured.length === 0;
-  const allowedOrigin = allowAny || (origin && configured.includes(origin))
-    ? origin || "*"
-    : configured[0] || "*";
+  // Never reflect an arbitrary caller: the mobile app sends no Origin, so an
+  // empty list means no browser origin is allowed.
+  const allowedOrigin = origin && configured.includes(origin) ? origin : "null";
   return {
     "access-control-allow-origin": allowedOrigin,
     "access-control-allow-methods": "GET, OPTIONS",
@@ -65,32 +65,81 @@ function base64UrlToBytes(value) {
   return bytes;
 }
 
-// Verifies a Supabase HS256 access token: signature against the project JWT
-// secret + expiry. Returns true only for a live, correctly-signed token.
-async function verifySupabaseJwt(token, secret) {
-  const parts = token.split(".");
-  if (parts.length !== 3) return false;
-  const [headerB64, payloadB64, signatureB64] = parts;
-  try {
-    const encoder = new TextEncoder();
+const JWKS_CACHE_TTL_MS = 10 * 60 * 1000;
+let jwksCache = { url: "", keys: [], fetchedAt: 0 };
+
+function decodeJsonSegment(segment) {
+  return JSON.parse(new TextDecoder().decode(base64UrlToBytes(segment)));
+}
+
+// Supabase projects on asymmetric signing keys publish their public keys here.
+// Cached per isolate; a kid miss forces one refetch so a key rotation is picked up.
+async function getJwksKeys(env, forceRefresh = false) {
+  const url = `${String(env.SUPABASE_URL).replace(/\/+$/, "")}/auth/v1/.well-known/jwks.json`;
+  const fresh = jwksCache.url === url && Date.now() - jwksCache.fetchedAt < JWKS_CACHE_TTL_MS;
+  if (fresh && !forceRefresh) return jwksCache.keys;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`jwks_http_${res.status}`);
+  const body = await res.json();
+  const keys = Array.isArray(body && body.keys) ? body.keys : [];
+  jwksCache = { url, keys, fetchedAt: Date.now() };
+  return keys;
+}
+
+async function findJwk(env, header) {
+  const pick = (keys) => keys.find((k) => k.kid === header.kid && (!k.alg || k.alg === header.alg));
+  return pick(await getJwksKeys(env)) || pick(await getJwksKeys(env, true)) || null;
+}
+
+async function verifySignature(header, signingInput, signature, env) {
+  if (header.alg === "HS256") {
+    if (!env.SUPABASE_JWT_SECRET) return false;
     const key = await crypto.subtle.importKey(
       "raw",
-      encoder.encode(secret),
+      new TextEncoder().encode(env.SUPABASE_JWT_SECRET),
       { name: "HMAC", hash: "SHA-256" },
       false,
       ["verify"]
     );
-    const valid = await crypto.subtle.verify(
-      "HMAC",
-      key,
-      base64UrlToBytes(signatureB64),
-      encoder.encode(`${headerB64}.${payloadB64}`)
-    );
+    return crypto.subtle.verify("HMAC", key, signature, signingInput);
+  }
+  if ((header.alg === "ES256" || header.alg === "RS256") && env.SUPABASE_URL && header.kid) {
+    const jwk = await findJwk(env, header);
+    if (!jwk) return false;
+    if (header.alg === "ES256") {
+      const key = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+      return crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signature, signingInput);
+    }
+    const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    return crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signature, signingInput);
+  }
+  // Anything else ("none", HS384, unknown) is rejected outright.
+  return false;
+}
+
+// Verifies a Supabase access token: HS256 against the project JWT secret, or
+// ES256/RS256 against the project's JWKS; then expiry and a signed-in user
+// (role authenticated + sub). Returns true only for a live, correctly-signed
+// user token.
+async function verifySupabaseJwt(token, env) {
+  const parts = token.split(".");
+  if (parts.length !== 3) return false;
+  const [headerB64, payloadB64, signatureB64] = parts;
+  try {
+    const header = decodeJsonSegment(headerB64);
+    if (!header || typeof header.alg !== "string") return false;
+    const signingInput = new TextEncoder().encode(`${headerB64}.${payloadB64}`);
+    const valid = await verifySignature(header, signingInput, base64UrlToBytes(signatureB64), env);
     if (!valid) return false;
-    const payload = JSON.parse(new TextDecoder().decode(base64UrlToBytes(payloadB64)));
+    const payload = decodeJsonSegment(payloadB64);
     if (typeof payload.exp !== "number" || payload.exp * 1000 < Date.now()) return false;
+    // A signed-in user token, not the project's public anon/service key (those are
+    // also JWTs signed by the same project).
+    if (payload.role !== "authenticated") return false;
+    if (typeof payload.sub !== "string" || payload.sub.length === 0) return false;
     return true;
-  } catch {
+  } catch (error) {
+    logMetric("verify_error", { message: String(error && error.message) });
     return false;
   }
 }
@@ -110,15 +159,17 @@ export default {
       return jsonResponse({ error: "turn_not_configured" }, { status: 503 }, cors);
     }
 
-    // Auth gate — only enforced once the secret exists, so the client and the
-    // worker can be rolled out independently.
-    if (env.SUPABASE_JWT_SECRET) {
-      const auth = request.headers.get("authorization") || "";
-      const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-      if (!token || !(await verifySupabaseJwt(token, env.SUPABASE_JWT_SECRET))) {
-        logMetric("unauthorized");
-        return jsonResponse({ error: "unauthorized" }, { status: 401 }, cors);
-      }
+    // Auth gate. Relay bandwidth is billed, so the endpoint never runs open:
+    // with no way to verify a user token configured it refuses to mint at all.
+    if (!env.SUPABASE_JWT_SECRET && !env.SUPABASE_URL) {
+      logMetric("misconfigured", { missing: "SUPABASE_JWT_SECRET|SUPABASE_URL" });
+      return jsonResponse({ error: "turn_not_configured" }, { status: 503 }, cors);
+    }
+    const auth = request.headers.get("authorization") || "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!token || !(await verifySupabaseJwt(token, env))) {
+      logMetric("unauthorized");
+      return jsonResponse({ error: "unauthorized" }, { status: 401 }, cors);
     }
 
     const ttl = Number(env.CRED_TTL_SECONDS) || DEFAULT_TTL_SECONDS;

@@ -76,3 +76,11 @@ test("no HDFilm host is ever fetched from the Worker", () => {
     .replace(/^\s*\/\/.*$/gm, "");
   assert.equal(/hdfilm/i.test(withoutComments), false);
 });
+
+test("the monitor never runs open: missing secrets reject instead of allow", () => {
+  assert.doesNotMatch(monitorSource, /if \(!env\.TELEGRAM_WEBHOOK_SECRET\) return true;/);
+  assert.match(monitorSource, /if \(!env\.MANUAL_RUN_TOKEN\)/);
+  assert.match(monitorSource, /reason: "secret_not_configured"/);
+  assert.match(monitorSource, /reason: "token_not_configured"/);
+  assert.match(monitorSource, /async function handleStatus\(request, env\) \{\s*const rejection = requireMonitorToken/);
+});

@@ -594,7 +594,11 @@ function getTelegramCommand(text) {
 }
 
 function isAllowedTelegramRequest(request, env) {
-  if (!env.TELEGRAM_WEBHOOK_SECRET) return true;
+  // Fail closed: without the webhook secret anyone could post updates here.
+  if (!env.TELEGRAM_WEBHOOK_SECRET) {
+    logMetric("telegram_webhook_rejected", { reason: "secret_not_configured" });
+    return false;
+  }
   const token = request.headers.get("x-telegram-bot-api-secret-token") ?? "";
   return token === env.TELEGRAM_WEBHOOK_SECRET;
 }
@@ -870,13 +874,23 @@ async function handleTelegramWebhook(request, env) {
   }
 }
 
-async function handleManualRun(request, env) {
-  if (env.MANUAL_RUN_TOKEN) {
-    const token = request.headers.get("x-monitor-token") ?? "";
-    if (token !== env.MANUAL_RUN_TOKEN) {
-      return jsonResponse({ error: "Unauthorized" }, { status: 401 });
-    }
+// Gates /run and the status route. Returns a rejection Response, or null when
+// the caller presented the right token. A missing token is a 503, never open.
+function requireMonitorToken(request, env) {
+  if (!env.MANUAL_RUN_TOKEN) {
+    logMetric("manual_run_rejected", { reason: "token_not_configured" });
+    return jsonResponse({ error: "Not configured" }, { status: 503 });
   }
+  const token = request.headers.get("x-monitor-token") ?? "";
+  if (token !== env.MANUAL_RUN_TOKEN) {
+    return jsonResponse({ error: "Unauthorized" }, { status: 401 });
+  }
+  return null;
+}
+
+async function handleManualRun(request, env) {
+  const rejection = requireMonitorToken(request, env);
+  if (rejection) return rejection;
 
   try {
     return jsonResponse(await runMonitor(env));
@@ -891,7 +905,9 @@ async function handleManualRun(request, env) {
   }
 }
 
-async function handleStatus(env) {
+async function handleStatus(request, env) {
+  const rejection = requireMonitorToken(request, env);
+  if (rejection) return rejection;
   const state = await loadState(env);
   return jsonResponse({
     service: "streambox-provider-monitor",
@@ -915,7 +931,7 @@ export default {
       return handleTelegramWebhook(request, env);
     }
 
-    return handleStatus(env);
+    return handleStatus(request, env);
   },
 
   async scheduled(_event, env, ctx) {

@@ -37,10 +37,9 @@ function buildCorsHeaders(request, env) {
     .map((item) => item.trim())
     .filter(Boolean);
 
-  const allowAnyOrigin = configuredOrigins.length === 0;
-  const allowedOrigin = allowAnyOrigin || (origin && configuredOrigins.includes(origin))
-    ? origin || "*"
-    : configuredOrigins[0] || "*";
+  // Never reflect an arbitrary caller: the mobile app sends no Origin, so an
+  // empty ALLOWED_ORIGINS means no browser origin is allowed.
+  const allowedOrigin = origin && configuredOrigins.includes(origin) ? origin : "null";
 
   return {
     "access-control-allow-origin": allowedOrigin,
@@ -52,9 +51,9 @@ function buildCorsHeaders(request, env) {
 }
 
 function getClientIp(request) {
-  return request.headers.get("cf-connecting-ip")
-    || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || "unknown";
+  // Cloudflare always sets cf-connecting-ip in front of a Worker; a client-supplied
+  // x-forwarded-for must not be able to choose its own rate-limit bucket.
+  return request.headers.get("cf-connecting-ip") || "unknown";
 }
 
 function getRateLimitConfig(env) {
