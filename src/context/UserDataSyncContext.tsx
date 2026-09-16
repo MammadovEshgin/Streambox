@@ -7,6 +7,7 @@ import {
   flushSupabaseUserDataSync,
   hasWarmBootstrappedUserData,
 } from "../services/userDataSync";
+import { trackAppError } from "../services/telemetryService";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
 type UserDataSyncContextValue = {
@@ -78,14 +79,20 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
       appState = nextState;
 
       if (movedToBackground) {
-        void flushSupabaseUserDataSync(userId);
+        void flushSupabaseUserDataSync(userId).catch((error) => {
+          trackAppError("sync_flush_failed", error, { trigger: "background" });
+        });
       }
 
       if (cameToForeground) {
-        void flushSupabaseUserDataSync(userId).then(async () => {
-          await reloadPersistedSettings();
-          notifyStorageChanged();
-        });
+        void flushSupabaseUserDataSync(userId)
+          .then(async () => {
+            await reloadPersistedSettings();
+            notifyStorageChanged();
+          })
+          .catch((error) => {
+            trackAppError("sync_flush_failed", error, { trigger: "foreground" });
+          });
       }
     });
 

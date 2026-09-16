@@ -24,10 +24,18 @@ import {
   buildProfileRowPayload,
   isLocalFileUri,
 } from "../utils/profileSyncPayload";
-import { reconcileQueueAfterFlush } from "../utils/syncQueue";
+import {
+  computeSyncRetryDelayMs,
+  isExpiredSessionSyncError,
+  isTransientNetworkSyncError,
+  partitionExhaustedSyncOperations,
+  reconcileQueueAfterFlush,
+  recordFailedSyncAttempts,
+  type RetryableSyncOperation,
+} from "../utils/syncQueue";
 import { deriveStableUuidFromKey } from "../utils/uuid";
 import { supabase } from "./supabase";
-import { trackNetworkFailure } from "./telemetryService";
+import { trackAppError, trackNetworkFailure } from "./telemetryService";
 import {
   CONTINUE_WATCHING_STORAGE_KEY,
   LIKED_MOVIES_STORAGE_KEY,
@@ -171,10 +179,11 @@ type QueuedEpisodeProgressOperation = { kind: "episode_progress"; userId: string
 type QueuedDailyRecommendationOperation = { kind: "daily_recommendation"; userId: string; recommendationKind: string; recommendationDate: string; mediaType: MediaType; tmdbId: number | null; imdbId: string | null; strategy: string | null; snapshot: SyncMetadata; };
 type QueuedAuthEventOperation = { kind: "auth_event"; userId: string; actionCategory: string; actionType: string; entityType: string | null; entityKey: string | null; metadata: SyncMetadata; createdAt: string; };
 
-type PendingSyncOperation =
+type PendingSyncOperation = (
   | QueuedProfileSettingsOperation | QueuedAssetUploadOperation | QueuedMediaLibraryOperation
   | QueuedWatchHistoryUpsertOperation | QueuedWatchHistoryDeleteOperation | QueuedEpisodeProgressOperation
-  | QueuedDailyRecommendationOperation | QueuedAuthEventOperation;
+  | QueuedDailyRecommendationOperation | QueuedAuthEventOperation
+) & RetryableSyncOperation;
 
 export type UserMediaSyncDetails = { title?: string; imdbId?: string | null; posterPath?: string | null; year?: string | null; overview?: string | null; };
 
@@ -183,6 +192,11 @@ const SYNC_FLUSH_DEBOUNCE_MS = 30_000;
 const SYNC_RETRY_DEBOUNCE_MS = 5_000;
 const MAX_SYNC_OPERATIONS_PER_FLUSH = 25;
 const scheduledFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// Consecutive flushes per user that hit only connectivity or expired-session
+// failures. Kept in memory (not on the ops) so being offline backs off retries
+// without counting toward the dead-letter limit: an offline user must never
+// lose queued writes.
+const networkFailureStreaks = new Map<string, number>();
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function resolveThemeId(value: unknown): ThemeId { return typeof value === "string" && VALID_THEME_IDS.has(value as ThemeId) ? (value as ThemeId) : DEFAULT_THEME_ID; }
@@ -908,24 +922,27 @@ async function executePendingOperation(op: PendingSyncOperation) {
     }
     case "media_library": {
       const ids = getSyncIds(op.tmdbId);
-      await supabase.rpc("sync_streambox_media_library_item", { p_operation: op.operation, p_list_kind: op.listKind, p_media_type: op.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_imdb_id: op.imdbId, p_collected_at: op.collectedAt, p_snapshot: op.snapshot, p_audit_metadata: op.auditMetadata });
+      const { error } = await supabase.rpc("sync_streambox_media_library_item", { p_operation: op.operation, p_list_kind: op.listKind, p_media_type: op.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_imdb_id: op.imdbId, p_collected_at: op.collectedAt, p_snapshot: op.snapshot, p_audit_metadata: op.auditMetadata });
+      if (error) throw error;
       break;
     }
     case "watch_history_upsert": {
       const ids = getSyncIds(op.entry.id); const arrays = buildWatchHistorySyncArrays(op.entry);
-      await supabase.rpc("sync_streambox_watch_history_entry", { p_media_type: op.entry.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_imdb_id: (op.entry as any).imdbId, p_title: op.entry.title, p_poster_path: op.entry.posterPath, p_genres: op.entry.genres, p_runtime_minutes: op.entry.runtimeMinutes, p_episode_count: op.entry.episodeCount, p_vote_average: op.entry.voteAverage, p_release_year: op.entry.year ? Number(op.entry.year) : null, p_cast_ids: arrays.castIds, p_cast_names: arrays.castNames, p_cast_profile_paths: arrays.castProfilePaths, p_cast_genders: arrays.castGenders, p_director_ids: arrays.directorIds, p_director_names: arrays.directorNames, p_director_profile_paths: arrays.directorProfilePaths, p_watched_at: new Date(op.entry.watchedAt).toISOString(), p_metadata_version: op.entry.metadataVersion, p_snapshot: { historyKind: op.entry.historyKind, seasonNumber: op.entry.seasonNumber, sourceTmdbId: op.entry.sourceTmdbId, watchPrecision: op.entry.watchPrecision }, p_audit_metadata: op.auditMetadata });
+      const { error } = await supabase.rpc("sync_streambox_watch_history_entry", { p_media_type: op.entry.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_imdb_id: (op.entry as any).imdbId, p_title: op.entry.title, p_poster_path: op.entry.posterPath, p_genres: op.entry.genres, p_runtime_minutes: op.entry.runtimeMinutes, p_episode_count: op.entry.episodeCount, p_vote_average: op.entry.voteAverage, p_release_year: op.entry.year ? Number(op.entry.year) : null, p_cast_ids: arrays.castIds, p_cast_names: arrays.castNames, p_cast_profile_paths: arrays.castProfilePaths, p_cast_genders: arrays.castGenders, p_director_ids: arrays.directorIds, p_director_names: arrays.directorNames, p_director_profile_paths: arrays.directorProfilePaths, p_watched_at: new Date(op.entry.watchedAt).toISOString(), p_metadata_version: op.entry.metadataVersion, p_snapshot: { historyKind: op.entry.historyKind, seasonNumber: op.entry.seasonNumber, sourceTmdbId: op.entry.sourceTmdbId, watchPrecision: op.entry.watchPrecision }, p_audit_metadata: op.auditMetadata });
+      if (error) throw error;
       break;
     }
-    case "watch_history_delete": { const ids = getSyncIds(op.tmdbId); await supabase.rpc("delete_streambox_watch_history_entry", { p_media_type: op.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_audit_metadata: op.auditMetadata }); break; }
-    case "episode_progress": await supabase.rpc("sync_streambox_episode_progress", { p_series_tmdb_id: op.seriesTmdbId, p_season_number: op.seasonNumber, p_episode_number: op.episodeNumber, p_is_watched: op.isWatched, p_watched_at: op.watchedAt, p_snapshot: {}, p_audit_metadata: op.auditMetadata }); break;
+    case "watch_history_delete": { const ids = getSyncIds(op.tmdbId); const { error } = await supabase.rpc("delete_streambox_watch_history_entry", { p_media_type: op.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_audit_metadata: op.auditMetadata }); if (error) throw error; break; }
+    case "episode_progress": { const { error } = await supabase.rpc("sync_streambox_episode_progress", { p_series_tmdb_id: op.seriesTmdbId, p_season_number: op.seasonNumber, p_episode_number: op.episodeNumber, p_is_watched: op.isWatched, p_watched_at: op.watchedAt, p_snapshot: {}, p_audit_metadata: op.auditMetadata }); if (error) throw error; break; }
     case "daily_recommendation": {
       const ids = getSyncIds(op.tmdbId);
       // Conflict target must be the 3-column PK. The old 4-column form (with tmdb_id or
       // internal_id appended) matched no unique index, so every write returned 42P10.
-      await supabase.from("user_daily_recommendations").upsert({ user_id: op.userId, recommendation_kind: op.recommendationKind, recommendation_date: op.recommendationDate, media_type: op.mediaType, ...ids, imdb_id: op.imdbId, strategy: op.strategy, snapshot: op.snapshot }, { onConflict: "user_id,recommendation_kind,recommendation_date" });
+      const { error } = await supabase.from("user_daily_recommendations").upsert({ user_id: op.userId, recommendation_kind: op.recommendationKind, recommendation_date: op.recommendationDate, media_type: op.mediaType, ...ids, imdb_id: op.imdbId, strategy: op.strategy, snapshot: op.snapshot }, { onConflict: "user_id,recommendation_kind,recommendation_date" });
+      if (error) throw error;
       break;
     }
-    case "auth_event": await supabase.rpc("log_streambox_user_event", { action_category: op.actionCategory, action_type: op.actionType, entity_type: op.entityType, entity_key: op.entityKey, metadata: op.metadata }); break;
+    case "auth_event": { const { error } = await supabase.rpc("log_streambox_user_event", { action_category: op.actionCategory, action_type: op.actionType, entity_type: op.entityType, entity_key: op.entityKey, metadata: op.metadata }); if (error) throw error; break; }
   }
 }
 
@@ -971,6 +988,10 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
     const batch = a.slice(0, MAX_SYNC_OPERATIONS_PER_FLUSH);
     const remaining = a.slice(MAX_SYNC_OPERATIONS_PER_FLUSH);
     const f: PendingSyncOperation[] = [];
+    // Failures the server actually rejected (not connectivity or an expired
+    // session) count toward dead-lettering. Ops are pushed unmodified so
+    // serialized matching in recordFailedSyncAttempts still works.
+    const rejected: PendingSyncOperation[] = [];
     const succeeded: PendingSyncOperation[] = [];
     for (const op of batch) {
       try {
@@ -980,9 +1001,10 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
         console.warn("Sync failed", e);
         trackNetworkFailure("supabase", {
           operationKind: op.kind,
-          message: e instanceof Error ? e.message : String(e),
+          message: e instanceof Error ? e.message : isRecord(e) && typeof e.message === "string" ? e.message : String(e),
         }, "error");
         f.push(op);
+        if (!isTransientNetworkSyncError(e) && !isExpiredSessionSyncError(e)) rejected.push(op);
       }
     }
     // Executing a batch can take seconds (asset uploads), and ops enqueued in
@@ -990,12 +1012,30 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
     // stale pre-execution snapshot silently erased them (a banner upload
     // enqueued while the avatar was uploading never reached Supabase). So:
     // re-read under the queue lock and remove ONLY what actually executed.
+    const networkStreak = f.length > 0 && rejected.length === 0 ? (networkFailureStreaks.get(uid) ?? 0) + 1 : 0;
+    networkFailureStreaks.set(uid, networkStreak);
+    let nextDelayMs = SYNC_RETRY_DEBOUNCE_MS;
     await withQueueLock(async () => {
       const latest = await readPendingQueue();
-      await writePendingQueue(reconcileQueueAfterFlush(latest, succeeded));
+      const afterSuccess = reconcileQueueAfterFlush(latest, succeeded);
+      const stamped = recordFailedSyncAttempts(afterSuccess, rejected);
+      // Dead-letter: an op the server has rejected SYNC_MAX_ATTEMPTS times is
+      // parked, not retried. Otherwise a permanently rejected write (bad payload,
+      // RLS denial, schema drift) keeps failing and wakes the radio for the life
+      // of the install. The drop is reported so it is visible in telemetry.
+      const { retryable, exhausted } = partitionExhaustedSyncOperations(stamped);
+      for (const op of exhausted) {
+        trackAppError("sync_operation_dead_lettered", new Error("sync attempts exhausted"), {
+          operationKind: op.kind, attempts: op.attempts ?? 0,
+        });
+      }
+      await writePendingQueue(retryable);
+      // Back off exponentially while failures repeat, instead of a flat 5s loop.
+      const maxAttempts = Math.max(0, networkStreak - 1, ...retryable.filter(o => o.userId === uid).map(o => o.attempts ?? 0));
+      nextDelayMs = computeSyncRetryDelayMs(maxAttempts);
     });
     if (remaining.length > 0 || f.length > 0) {
-      scheduleSupabaseUserDataSync(uid, SYNC_RETRY_DEBOUNCE_MS);
+      scheduleSupabaseUserDataSync(uid, f.length > 0 ? nextDelayMs : SYNC_RETRY_DEBOUNCE_MS);
     }
   })().finally(() => { flushPromise = null; });
   await flushPromise;
