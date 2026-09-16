@@ -4,11 +4,14 @@ import test from "node:test";
 import {
   BLOCKED_PLAYER_NAVIGATION_PATTERNS,
   PLAYER_PASSIVE_ASSET_PATTERN,
+  TRUSTED_PLAYER_FRAME_HOST_TOKENS,
   TRUSTED_PLAYER_FRAME_PATTERNS,
+  hostMatchesTrustedToken,
   isBlockedPlayerNavigation,
   isLikelyHdFilmRuntimeStreamUrl,
   isLikelyPassivePlayerAsset,
   isLikelyUnknownDocumentNavigation,
+  isTrustedHdFilmRuntimeContext,
   isTrustedPlayerFrameUrl,
   shouldAcceptDiscoveredHdFilmStream,
   shouldAllowPlayerWebViewRequest
@@ -147,6 +150,73 @@ test("shouldAllowPlayerWebViewRequest blocks top-frame jumps to unrelated hosts"
 test("shouldAllowPlayerWebViewRequest rejects non-http(s) schemes", () => {
   assert.equal(
     shouldAllowPlayerWebViewRequest({ url: "ftp://x.example/foo" }, "https://hdfilmcehennemi.nl/"),
+    false
+  );
+});
+
+test("hostMatchesTrustedToken anchors brand tokens to hostname labels", () => {
+  assert.equal(hostMatchesTrustedToken("dizipal2131.com", "dizipal"), true); // rotated domain
+  assert.equal(hostMatchesTrustedToken("cdn.dizipal.net", "dizipal"), true);
+  assert.equal(hostMatchesTrustedToken("notdizipal.com", "dizipal"), false);
+  assert.equal(hostMatchesTrustedToken("m.ok.ru", "ok.ru"), true);
+  assert.equal(hostMatchesTrustedToken("ok.ru.evil.example", "ok.ru"), false);
+  assert.equal(hostMatchesTrustedToken("voe.sx", "voe."), true);
+  assert.equal(hostMatchesTrustedToken("voetest.example", "voe."), false);
+  assert.equal(hostMatchesTrustedToken("", "dizipal"), false);
+});
+
+test("TRUSTED_PLAYER_FRAME_HOST_TOKENS drops the path-only hints", () => {
+  assert.equal(TRUSTED_PLAYER_FRAME_HOST_TOKENS.includes("hls"), false);
+  assert.equal(TRUSTED_PLAYER_FRAME_HOST_TOKENS.includes("m3u8"), false);
+  assert.equal(TRUSTED_PLAYER_FRAME_HOST_TOKENS.includes("dizipal"), true);
+});
+
+test("a trusted token in the query string or path no longer makes a frame trusted", () => {
+  // Before this change these were all `true` — a page could steer the top frame
+  // anywhere by putting a magic word in the URL.
+  assert.equal(isTrustedPlayerFrameUrl("https://attacker.example/watch?src=hls"), false);
+  assert.equal(isTrustedPlayerFrameUrl("https://attacker.example/x.m3u8"), false);
+  assert.equal(isTrustedPlayerFrameUrl("https://attacker.example/dizipal/embed"), false);
+  assert.equal(isTrustedPlayerFrameUrl("https://attacker.example/?ref=rapidrame"), false);
+  assert.equal(isTrustedPlayerFrameUrl("rapidrame"), false); // not a URL at all
+});
+
+test("rotated provider domains stay trusted", () => {
+  assert.equal(isTrustedPlayerFrameUrl("https://dizipal2131.com/film/x"), true);
+  assert.equal(isTrustedPlayerFrameUrl("https://www.hdfilmcehennemi.nl/"), true);
+});
+
+test("top-frame navigation to a host that merely mentions a token is blocked", () => {
+  assert.equal(
+    shouldAllowPlayerWebViewRequest(
+      { url: "https://attacker.example/?x=hls", isTopFrame: true },
+      "https://hdfilmcehennemi.nl/movie"
+    ),
+    false
+  );
+  // Subframes keep the legacy leniency: they cannot steer the top frame.
+  assert.equal(
+    shouldAllowPlayerWebViewRequest(
+      { url: "https://player.example/hls/embed", isTopFrame: false },
+      "https://hdfilmcehennemi.nl/movie"
+    ),
+    true
+  );
+});
+
+test("a page-supplied referer with a token in the query is not trusted HDFilm context", () => {
+  assert.equal(isTrustedHdFilmRuntimeContext("https://attacker.example/?r=rapidrame"), false);
+  assert.equal(isTrustedHdFilmRuntimeContext("https://rapidrame.example/embed/abc"), true);
+  assert.equal(isTrustedHdFilmRuntimeContext("https://hdfilmcehennemi.mobi/video/embed/x"), true);
+  // The main site is not an embed context (same as the regex this replaced).
+  assert.equal(isTrustedHdFilmRuntimeContext("https://www.hdfilmcehennemi.nl/film"), false);
+  // A bare .m3u8 on an unknown CDN with an untrusted referer: nothing vouches for it.
+  assert.equal(
+    shouldAcceptDiscoveredHdFilmStream(
+      "https://cdn.attacker.example/x.m3u8",
+      "https://attacker.example/?r=rapidrame",
+      "https://attacker.example/?r=rapidrame"
+    ),
     false
   );
 });

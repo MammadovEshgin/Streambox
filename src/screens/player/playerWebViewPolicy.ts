@@ -94,6 +94,39 @@ export const TRUSTED_PLAYER_FRAME_PATTERNS = [
   "m3u8",
 ];
 
+/**
+ * Provider brand tokens matched against the URL *hostname* only. Kept TLD-less on
+ * purpose: providers rotate domains (dizipal2131.com → dizipal2132.com), so a token
+ * matches when some hostname label starts with it. Tokens containing a dot are
+ * matched as a host suffix on a label boundary. This list is the one the React-side
+ * trust decisions use; TRUSTED_PLAYER_FRAME_PATTERNS above stays as the substring
+ * list serialised into the in-page ad-guard script ("hls"/"m3u8" are path hints,
+ * never host evidence).
+ */
+export const TRUSTED_PLAYER_FRAME_HOST_TOKENS = TRUSTED_PLAYER_FRAME_PATTERNS.filter(
+  (token) => token !== "hls" && token !== "m3u8"
+);
+
+/**
+ * HDFilm/Rapidrame-family hosts whose pages are a trusted *context* for a discovered
+ * stream. Same set as the regex this replaced; "hdfilmcehennemi.mobi" stays pinned to
+ * the embed domain so the main site's own pages (where ads also run) do not vouch.
+ */
+export const HDFILM_RUNTIME_CONTEXT_HOST_TOKENS = [
+  "rapidrame",
+  "hdfilmcehennemi.mobi",
+  "rplayer",
+  "vidmoly",
+  "closeload",
+  "fastplayer",
+  "filemoon",
+  "voe",
+  "streamwish",
+  "dood",
+  "mixdrop",
+  "streamtape",
+];
+
 export const PLAYER_PASSIVE_ASSET_PATTERN =
   /\.(m3u8|mp4|m4v|webm|mov|ts|m4s|vtt|srt|png|jpe?g|gif|webp|svg|css|js|woff2?|ttf|otf)(?:[?#].*)?$/i;
 
@@ -114,19 +147,54 @@ export function isBlockedPlayerNavigation(url: string): boolean {
   return BLOCKED_PLAYER_NAVIGATION_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
+/**
+ * True when `host` (already lowercased, `www.` stripped — see getUrlHost) matches a
+ * brand token on a label boundary. "dizipal" matches "dizipal2131.com" and
+ * "cdn.dizipal.net" but not "notdizipal.com"; "ok.ru" matches "ok.ru" and "m.ok.ru"
+ * but not "ok.ru.evil.example"; "voe." matches a host with an exact "voe" label.
+ */
+export function hostMatchesTrustedToken(host: string, token: string): boolean {
+  if (!host || !token) return false;
+  const t = token.toLowerCase();
+  if (t.endsWith(".")) {
+    return host.split(".").includes(t.slice(0, -1));
+  }
+  if (t.includes(".")) {
+    return host === t || host.endsWith(`.${t}`);
+  }
+  return host.split(".").some((label) => label.startsWith(t));
+}
+
+export function hostMatchesAnyTrustedToken(host: string, tokens: readonly string[]): boolean {
+  return tokens.some((token) => hostMatchesTrustedToken(host, token));
+}
+
+/**
+ * Trusted provider frame, decided by hostname. A token in the path or query string
+ * ("https://attacker.example/?x=hls") does not count — this gates top-frame jumps.
+ */
 export function isTrustedPlayerFrameUrl(url: string): boolean {
+  return hostMatchesAnyTrustedToken(getUrlHost(url), TRUSTED_PLAYER_FRAME_HOST_TOKENS);
+}
+
+/**
+ * The looser, legacy substring match (same rule as the injected in-page guard).
+ * Only used to keep subframes loading: a subframe cannot take over the top frame
+ * (that still goes through the host-anchored check) or hand a stream to native.
+ */
+function urlMentionsTrustedFramePattern(url: string): boolean {
   const normalized = url.toLowerCase();
   return TRUSTED_PLAYER_FRAME_PATTERNS.some((pattern) => normalized.includes(pattern));
 }
 
 export function isTrustedHdFilmRuntimeContext(url: string): boolean {
-  return /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape/i.test(url);
+  return hostMatchesAnyTrustedToken(getUrlHost(url), HDFILM_RUNTIME_CONTEXT_HOST_TOKENS);
 }
 
 export function isLikelyHdFilmRuntimeStreamUrl(url: string): boolean {
   const normalized = url.toLowerCase();
   return (
-    /rapidrame|hdfilmcehennemi\.mobi|rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape/i.test(normalized) ||
+    isTrustedHdFilmRuntimeContext(url) ||
     /\/hls2?\//i.test(normalized) ||
     /\.urlset\//i.test(normalized) ||
     /\/(?:master|index|playlist|manifest)\.m3u8(?:[?#]|$)/i.test(normalized)
@@ -199,7 +267,7 @@ export function shouldAllowPlayerWebViewRequest(
 
   if (!req.isTopFrame) {
     if (initialHost && nextHost === initialHost) return true;
-    if (isTrustedPlayerFrameUrl(url)) return true;
+    if (urlMentionsTrustedFramePattern(url)) return true;
     if (isLikelyPassivePlayerAsset(url)) return true;
     return !isLikelyUnknownDocumentNavigation(url);
   }
