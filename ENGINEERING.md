@@ -73,6 +73,24 @@ the `app.config.js` runtime, not the branch you happen to be on.
 | 1.1.0 | `archive/release-1.1.0-navbar` @ `c65d7db` | `b4a79405-d989-4b16-858d-0f3bb1ebb055` |
 | 1.0.2 | `archive/release-1.0.2-legacy` @ `1da0cae` | `0513cd3d-1105-4d9c-b954-a8cb1b54c190` |
 
+- **2026-09-17 (backend only — no OTA yet):** Audit fixes `e53a642`…`f59d298`.
+  The app-side fixes (`e53a642` sync queue, `8ccdc71` player WebView trust) are
+  committed but **not published**; the table above still reflects the last OTA.
+  - **Workers** (`d2f1f8f`): `streambox-turn-credentials` → version `f182c417`
+    (verifies ES256 user tokens against the project JWKS — the project signs
+    with ES256, so the old HS256-only check rejected every user), `streambox-tmdb-proxy`
+    → `56f844af`, `streambox-provider-monitor` → `c3ca7009` (status route, `/run`
+    and the Telegram webhook now require their secrets). Smoke-tested: TURN 401
+    without a user token or with the anon key; TMDB 200 on both hosts with
+    `access-control-allow-origin: null`; monitor `/`, `/run`, `/telegram` 401.
+  - **Database** (`bf1a7c4`): `20260916211341_restore_watch_room_realtime_policies`
+    pushed; both `realtime.messages` policies present for `authenticated`.
+  - **Edge Functions** (`f59d298`): `user-feedback` redeployed. The ratings
+    function's production **slug is `clever-handler`** (name `external-ratings`);
+    it was deployed from `supabase/functions/external-ratings` into that slug.
+    `supabase functions deploy external-ratings` would create a second function
+    instead. The app calls `/functions/v1/external-ratings`, which returns 404 —
+    unresolved.
 - **2026-09-15 (1.2.0 only):** Six reported issues. Deploy: `fdcdb56` → group
   `413b4741-25b4-413f-8ca1-8015e36830e3`. 435 tests green.
   - **Providers.** HDFilm, Dizipal and Dizibal all resolve to live HLS
