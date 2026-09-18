@@ -90,7 +90,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 |-------|---------|
 | App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `c6357aa` → group `136302d1-fa59-4fc9-820c-5dcb3c9e13b8` |
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
-| `streambox-provider-monitor` | `c3ca7009` |
+| `streambox-provider-monitor` | `e2b74bee` |
 | `streambox-turn-credentials` | `dcfe4675` |
 | Latest migration | `20260916211341_restore_watch_room_realtime_policies` |
 | Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
@@ -121,10 +121,14 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 - HDFilm `/dizi/` pages challenge the **first** request on a fresh connection and pass after;
   `hdFilmGet()` retries past it. `/rplayer/` embeds remain unreachable.
 - HDFilm does not tokenize apostrophes: search `Rosemarys Baby`, not `Rosemary's Baby`.
-- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2132). Hops are
+- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2133). Hops are
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal
   rotates, and update the Supabase row with the Telegram bot (`/set_dizipal <url>`).
+- `/set_dizipal` saves a failing candidate when the configured URL 301s to it — a brand-new
+  Dizipal host can 403 the Worker for its first minutes (2026-09-18: the bot rejected the very
+  command its own rotation alert suggested). Failure reasons carry the page title; the Worker
+  logs only 10% of invocations, so the Telegram reply and KV state are the record.
 - Dizipal's player config comes from the page's base64 `data-cfg` attribute; the network
   endpoint was renamed once already. Dizipal lists films under **Turkish** titles.
 - Dizipal and HDFilm serve intermittent Cloudflare challenges; both go through `providerGet`

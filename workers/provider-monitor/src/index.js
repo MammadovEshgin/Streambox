@@ -143,8 +143,21 @@ function compareOrigins(requestedUrl, finalUrl) {
 const CHALLENGE_RETRIES = 2;
 const CHALLENGE_RETRY_DELAY_MS = 750;
 
+// `cf-mitigated: challenge` is Cloudflare's own marker on every challenge
+// response, whatever language or template the page body is served in; the
+// body terms stay as a fallback for pages served without it.
 function isChallengeResponse(response, body) {
-  return (response.status === 403 || response.status === 503) && looksLikeChallengePage(body);
+  if (response.status !== 403 && response.status !== 503) return false;
+  return response.headers.get("cf-mitigated") === "challenge" || looksLikeChallengePage(body);
+}
+
+// A bare "HTTP 403" says nothing about WHO refused. On 2026-09-18 a freshly
+// rotated Dizipal domain answered the Worker 403 for a few minutes and the
+// monitor recorded nothing else, so there was no way to tell afterwards
+// whether it was a challenge, a WAF block or the origin itself.
+function pageTitle(body) {
+  const title = body.match(/<title[^>]*>([^<]{1,120})<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim();
+  return title || null;
 }
 
 async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
@@ -185,7 +198,9 @@ async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
     const rotationNote = rotation.rotated
       ? `URL rotated: ${rotation.requestedOrigin} → ${rotation.finalOrigin}`
       : "";
-    const failureReason = validatorResult.reason || `HTTP ${response.status}`;
+    const title = response.ok ? null : pageTitle(body);
+    const failureReason = (validatorResult.reason || `HTTP ${response.status}`)
+      + (title ? ` (page: "${title}")` : "");
     const challengeNote = challengedAttempts > 0
       ? ` (survived ${challengedAttempts} Cloudflare challenge${challengedAttempts === 1 ? "" : "s"})`
       : "";
@@ -659,8 +674,18 @@ function normalizeCandidateProviderUrl(rawUrl, providerId) {
 // dry-run a candidate before persisting. Other providers retain their
 // current configured URLs (so a /set_vidsrc never accidentally re-checks
 // against a stale Dizipal config).
+//
+// A candidate that fails its checks is still accepted when the CONFIGURED URL
+// redirects to it. On 2026-09-18 Dizipal rotated 2132 → 2133 and the new host
+// answered the Worker 403 for its first minutes; the monitor's rotation alert
+// said "/set_dizipal https://dizipal2133.com", and this function then rejected
+// that exact command because 2133 was failing. But the upstream's own 301 is
+// what proves which domain is live, and the old URL only put a redirect hop in
+// front of the same failure — refusing to save it fixed nothing and left the
+// config one hop further behind.
 async function validateProviderCandidate(env, providerId, candidateBaseUrl) {
   const providers = await fetchProviderConfigs(env);
+  const configuredBaseUrl = normalizeBaseUrl(providers[providerId]?.baseUrl);
   providers[providerId] = { baseUrl: candidateBaseUrl, referer: `${candidateBaseUrl}/` };
 
   const allResults = await runProviderChecks(env, providers);
@@ -668,7 +693,41 @@ async function validateProviderCandidate(env, providerId, candidateBaseUrl) {
     PROVIDER_DEFINITIONS[providerId].checkIdPrefixes.some((prefix) => r.id.startsWith(prefix)),
   );
   const failed = ownResults.filter((r) => !r.ok);
-  return { ok: failed.length === 0, results: ownResults, failed };
+  if (failed.length === 0) {
+    return { ok: true, results: ownResults, failed, redirectedFrom: null };
+  }
+
+  const redirectedFrom = configuredBaseUrl
+    && configuredBaseUrl !== candidateBaseUrl
+    && (await finalRedirectOrigin(env, configuredBaseUrl)) === candidateBaseUrl
+    ? configuredBaseUrl
+    : null;
+  return { ok: Boolean(redirectedFrom), results: ownResults, failed, redirectedFrom };
+}
+
+// Follows `baseUrl`'s redirect chain hop by hop and returns the origin it ends
+// at. Walking it manually means the far end does not have to answer: a host
+// that 403s — or does not respond at all — is still where the chain points.
+// 25 hops clears axios' 21-redirect ceiling (Dizipal has had 22-hop chains).
+async function finalRedirectOrigin(env, baseUrl, maxHops = 25) {
+  let url = `${baseUrl}/`;
+  for (let hop = 0; hop < maxHops; hop++) {
+    let response;
+    try {
+      response = await fetchWithTimeout(url, {
+        method: "GET",
+        redirect: "manual",
+        headers: baseHeaders(`${baseUrl}/`),
+      }, getTimeoutMs(env));
+    } catch {
+      break;
+    }
+    await response.body?.cancel();
+    const location = response.headers.get("location");
+    if (response.status < 300 || response.status >= 400 || !location) break;
+    url = new URL(location, url).href;
+  }
+  return new URL(url).origin;
 }
 
 async function updateProviderConfig(env, providerId, baseUrl) {
@@ -795,19 +854,27 @@ async function handleTelegramSetProvider(env, chatId, providerId, args) {
   }
 
   await updateProviderConfig(env, providerId, candidateUrl);
-  await sendTelegramMessage(
-    env,
-    chatId,
-    [
-      `${providerId} updated successfully.`,
-      "",
-      `New URL: ${candidateUrl}`,
-      "",
-      formatCheckResults(validation.results),
-      "",
-      "Active app installs will pick this up on next provider-config refresh.",
-    ].join("\n"),
-  );
+  const outcome = validation.redirectedFrom
+    ? [
+        `${providerId} updated — but it is failing right now.`,
+        "",
+        `New URL: ${candidateUrl}`,
+        "",
+        `${validation.redirectedFrom} redirects here, so this is the live domain. Its checks fail from the monitor at the moment:`,
+        "",
+        formatCheckResults(validation.results),
+        "",
+        "Saved anyway: the old URL only added a redirect in front of the same failure. The monitor reports it as down if this persists.",
+      ]
+    : [
+        `${providerId} updated successfully.`,
+        "",
+        `New URL: ${candidateUrl}`,
+        "",
+        formatCheckResults(validation.results),
+      ];
+  outcome.push("", "Active app installs will pick this up on next provider-config refresh.");
+  await sendTelegramMessage(env, chatId, outcome.join("\n"));
 }
 
 async function handleTelegramWebhook(request, env) {

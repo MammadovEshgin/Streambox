@@ -107,14 +107,26 @@ The bot supports three admin-only commands:
 
 ```text
 /status
-/set_dizipal https://dizipal2132.com
+/set_dizipal https://dizipal2133.com
 /set_dizibal https://dizibal.org
 ```
 
 `/status` re-runs every check and reports rotations and scraper-shape changes. A `/set_` command
 runs that provider's checks against the new domain (for Dizipal: home, search and the
-`data-cfg` playback probe) and only updates the Supabase `provider_configs` row when all of
-them pass. Installed apps pick the new URL up on their next provider-config refresh.
+`data-cfg` playback probe) and updates the Supabase `provider_configs` row when all of them
+pass. Installed apps pick the new URL up on their next provider-config refresh.
+
+If the checks fail, the command still saves when the **currently configured** URL redirects to
+the new domain, and replies "updated — but it is failing right now" with the failing checks.
+The upstream's own 301 is the proof of which domain is live; keeping the old URL would only
+put a redirect in front of the same failure. On 2026-09-18 Dizipal's brand-new 2133 host
+answered the Worker 403 for its first minutes, and the bot rejected the exact
+`/set_dizipal https://dizipal2133.com` its own rotation alert had just suggested. A domain
+nothing redirects to, or one that itself redirects further on, is still rejected.
+
+Failure reasons for non-2xx responses carry the page title (`HTTP 403 (page: "…")`) so a
+refusal can be told apart as challenge, WAF block or origin error after the fact — the Worker
+samples only 10% of its logs, so the reply and the KV state are the only record.
 
 Only the configured `TELEGRAM_CHAT_ID` can use these commands.
 

@@ -4,6 +4,10 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-09-18
+
+- Fixed: slow Dizipal playback after the provider moved to a new domain.
+
 ## 2026-09-17
 
 - Fixed: likes, watchlist and watch-history changes could silently fail to sync to your
