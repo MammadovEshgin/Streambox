@@ -84,11 +84,11 @@ Deploys happen **only when the owner approves them**. Typical sequence:
      Slugs match the directory names under `supabase/functions/`.
    - Database: `npx supabase db push` after `--dry-run` (see `docs/DATABASE.md`).
 
-### Current deployed state (2026-09-17)
+### Current deployed state (2026-09-18)
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `c6357aa` → group `136302d1-fa59-4fc9-820c-5dcb3c9e13b8` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `d83c558` → group `88228e31-f0bd-4fca-bb5f-a7c769eacc97` |
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
 | `streambox-provider-monitor` | `e2b74bee` |
 | `streambox-turn-credentials` | `dcfe4675` |
@@ -100,6 +100,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-09-18 | `d83c558` | `88228e31-f0bd-4fca-bb5f-a7c769eacc97` | Dizipal 2132 → 2133 floor |
 | 2026-09-17 | `c6357aa` | `136302d1-fa59-4fc9-820c-5dcb3c9e13b8` | Sync queue surfaces rejected writes with backoff/dead-letter; WebView trust anchored to hostnames |
 | 2026-09-15 | `fdcdb56` | `413b4741-25b4-413f-8ca1-8015e36830e3` | Dizibal wrong-film guard, Stats cast backfill, language/poster cache, playback buffer, Bakcell host failover, launch splash |
 | 2026-09-14 | `6845830` | `377d7005-7033-4da1-851a-f90370ac2fe8` | Dizipal 2130 → 2131 floor |
