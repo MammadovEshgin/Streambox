@@ -6,8 +6,8 @@ import monitor from "../workers/provider-monitor/src/index.js";
 // ---------------------------------------------------------------------------
 // The 2026-09-18 rejected /set_dizipal.
 //
-// Dizipal rotated 2132 → 2133 and the new host answered the Worker 403 for its
-// first minutes. The monitor's rotation alert said "/set_dizipal
+// Dizipal rotated 2132 → 2133 and the new host (behind DDoS-Guard) answered the
+// Worker 403. The monitor's rotation alert said "/set_dizipal
 // https://dizipal2133.com"; the command re-ran the checks against 2133, got the
 // same 403 and refused to save — the bot rejected the exact command it had just
 // told the user to send. These drive the real webhook handler end to end.

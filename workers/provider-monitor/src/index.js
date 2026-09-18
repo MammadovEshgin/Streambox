@@ -151,10 +151,10 @@ function isChallengeResponse(response, body) {
   return response.headers.get("cf-mitigated") === "challenge" || looksLikeChallengePage(body);
 }
 
-// A bare "HTTP 403" says nothing about WHO refused. On 2026-09-18 a freshly
-// rotated Dizipal domain answered the Worker 403 for a few minutes and the
-// monitor recorded nothing else, so there was no way to tell afterwards
-// whether it was a challenge, a WAF block or the origin itself.
+// A bare "HTTP 403" says nothing about WHO refused. On 2026-09-18 Dizipal's
+// new 2133 host answered the Worker 403 and the monitor recorded nothing else;
+// the page title ("Error 403") was what showed it was DDoS-Guard blocking the
+// Worker's IPs rather than the site being down.
 function pageTitle(body) {
   const title = body.match(/<title[^>]*>([^<]{1,120})<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim();
   return title || null;
@@ -676,8 +676,8 @@ function normalizeCandidateProviderUrl(rawUrl, providerId) {
 // against a stale Dizipal config).
 //
 // A candidate that fails its checks is still accepted when the CONFIGURED URL
-// redirects to it. On 2026-09-18 Dizipal rotated 2132 → 2133 and the new host
-// answered the Worker 403 for its first minutes; the monitor's rotation alert
+// redirects to it. On 2026-09-18 Dizipal rotated 2132 → 2133, moving from
+// Cloudflare to DDoS-Guard, which answers the Worker's IPs 403; the rotation alert
 // said "/set_dizipal https://dizipal2133.com", and this function then rejected
 // that exact command because 2133 was failing. But the upstream's own 301 is
 // what proves which domain is live, and the old URL only put a redirect hop in

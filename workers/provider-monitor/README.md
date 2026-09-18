@@ -119,8 +119,8 @@ pass. Installed apps pick the new URL up on their next provider-config refresh.
 If the checks fail, the command still saves when the **currently configured** URL redirects to
 the new domain, and replies "updated — but it is failing right now" with the failing checks.
 The upstream's own 301 is the proof of which domain is live; keeping the old URL would only
-put a redirect in front of the same failure. On 2026-09-18 Dizipal's brand-new 2133 host
-answered the Worker 403 for its first minutes, and the bot rejected the exact
+put a redirect in front of the same failure. On 2026-09-18 Dizipal's new 2133 host (behind
+DDoS-Guard, which blocks the Worker's IPs) answered the Worker 403, and the bot rejected the exact
 `/set_dizipal https://dizipal2133.com` its own rotation alert had just suggested. A domain
 nothing redirects to, or one that itself redirects further on, is still rejected.
 

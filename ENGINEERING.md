@@ -90,7 +90,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 |-------|---------|
 | App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `d83c558` → group `88228e31-f0bd-4fca-bb5f-a7c769eacc97` |
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
-| `streambox-provider-monitor` | `e2b74bee` |
+| `streambox-provider-monitor` | `be363817` |
 | `streambox-turn-credentials` | `dcfe4675` |
 | Latest migration | `20260916211341_restore_watch_room_realtime_policies` |
 | Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
@@ -126,10 +126,14 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal
   rotates, and update the Supabase row with the Telegram bot (`/set_dizipal <url>`).
-- `/set_dizipal` saves a failing candidate when the configured URL 301s to it — a brand-new
-  Dizipal host can 403 the Worker for its first minutes (2026-09-18: the bot rejected the very
-  command its own rotation alert suggested). Failure reasons carry the page title; the Worker
-  logs only 10% of invocations, so the Telegram reply and KV state are the record.
+- `/set_dizipal` saves a failing candidate when the configured URL 301s to it (2026-09-18: the
+  bot rejected the very command its own rotation alert suggested). Failure reasons carry the
+  page title; the Worker logs only 10% of invocations, so the Telegram reply and KV state are
+  the record.
+- Since 2133 (2026-09-18) Dizipal sits behind **DDoS-Guard**, which answers the monitor's
+  Cloudflare IPs 403 ("Error 403") while residential users get 200. The bot therefore reports
+  Dizipal failing/down and cannot see the next rotation. Owner's decision: no workaround — when
+  the bot alerts, the owner asks for the new URL to be set (bump the floor + OTA, `/set_dizipal`).
 - Dizipal's player config comes from the page's base64 `data-cfg` attribute; the network
   endpoint was renamed once already. Dizipal lists films under **Turkish** titles.
 - Dizipal and HDFilm serve intermittent Cloudflare challenges; both go through `providerGet`
