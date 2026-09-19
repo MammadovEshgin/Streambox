@@ -89,11 +89,11 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `aeb3510` → group `9b4e6424-b175-49a4-bede-e04f841762c2` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `4dd1670` → group `8c96926e-594b-4974-8f3b-c7eb12957da6` |
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
 | `streambox-provider-monitor` | `e2481240` (hourly cron) |
 | `streambox-turn-credentials` | `dcfe4675` |
-| Latest migration | `20260920120100_retire_june_2026_announcements` |
+| Latest migration | `20260920200000_watch_history_cast_depth_20` |
 | Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
 
 ### OTA history (runtime 1.2.0)
@@ -101,6 +101,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-09-20 | `4dd1670` | `8c96926e-594b-4974-8f3b-c7eb12957da6` | Full cast (20) survives the cloud round-trip so Stats keeps ensemble leads; resolver awaits its in-flight pass and skips the pointless retry ("Not available" 3.3 s → 1.2 s); player error/Not-available copy localised |
 | 2026-09-20 | `aeb3510` | `9b4e6424-b175-49a4-bede-e04f841762c2` | Dizipal encrypted `data-cfg` + HDFilm Sep-20 decoder (both tiers native again); provider player never shown, failed HDFilm tries others natively, real Retry; announcements older than the install hidden |
 | 2026-09-18 | `d83c558` | `88228e31-f0bd-4fca-bb5f-a7c769eacc97` | Dizipal 2132 → 2133 floor |
 | 2026-09-17 | `c6357aa` | `136302d1-fa59-4fc9-820c-5dcb3c9e13b8` | Sync queue surfaces rejected writes with backoff/dead-letter; WebView trust anchored to hostnames |
