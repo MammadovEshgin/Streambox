@@ -85,15 +85,15 @@ Deploys happen **only when the owner approves them**. Typical sequence:
      Slugs match the directory names under `supabase/functions/`.
    - Database: `npx supabase db push` after `--dry-run` (see `docs/DATABASE.md`).
 
-### Current deployed state (2026-09-18)
+### Current deployed state (2026-09-20)
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `d83c558` → group `88228e31-f0bd-4fca-bb5f-a7c769eacc97` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `aeb3510` → group `9b4e6424-b175-49a4-bede-e04f841762c2` |
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
-| `streambox-provider-monitor` | `be363817` |
+| `streambox-provider-monitor` | `d3f75aae` (hourly cron) |
 | `streambox-turn-credentials` | `dcfe4675` |
-| Latest migration | `20260916211341_restore_watch_room_realtime_policies` |
+| Latest migration | `20260916211341_restore_watch_room_realtime_policies` — **`20260920120000` and `20260920120100` are in the repo but not yet pushed** |
 | Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
 
 ### OTA history (runtime 1.2.0)
@@ -101,6 +101,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-09-20 | `aeb3510` | `9b4e6424-b175-49a4-bede-e04f841762c2` | Dizipal encrypted `data-cfg` + HDFilm Sep-20 decoder (both tiers native again); provider player never shown, failed HDFilm tries others natively, real Retry; announcements older than the install hidden |
 | 2026-09-18 | `d83c558` | `88228e31-f0bd-4fca-bb5f-a7c769eacc97` | Dizipal 2132 → 2133 floor |
 | 2026-09-17 | `c6357aa` | `136302d1-fa59-4fc9-820c-5dcb3c9e13b8` | Sync queue surfaces rejected writes with backoff/dead-letter; WebView trust anchored to hostnames |
 | 2026-09-15 | `fdcdb56` | `413b4741-25b4-413f-8ca1-8015e36830e3` | Dizibal wrong-film guard, Stats cast backfill, language/poster cache, playback buffer, Bakcell host failover, launch splash |

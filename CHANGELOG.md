@@ -4,6 +4,17 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-09-20
+
+- Fixed: most titles failed to play natively after both main providers changed their sites;
+  episodes like "Mezarlık" showed "Not available" on the first tap and played on the second.
+- Fixed: some titles (e.g. "Neagley") opened a provider's own web player. Playback now always
+  uses the app's player; if a stream won't start, another provider is tried.
+- Fixed: "Retry" on a playback error did nothing, and the error could stay hidden behind the
+  loading screen. "Not available" now has a Try again.
+- Fixed: new installs were greeted by old announcements (the June Letterboxd import notice).
+- Fixed: new accounts started on the orange theme instead of green.
+
 ## 2026-09-18
 
 - Fixed: slow Dizipal playback after the provider moved to a new domain.
