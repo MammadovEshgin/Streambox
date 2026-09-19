@@ -52,13 +52,51 @@ function healthyDizipal(url: URL): Response {
  * the Location (as a real fetch would), while `redirect: "manual"` sees the
  * 3xx itself.
  */
-async function sendCommand(text: string, configured: string, dizipal: Route) {
+/** DNS-over-HTTPS answer for a host: resolves, or the placeholder SERVFAIL. */
+function dohAnswer(url: URL, resolving: string[] | null): Response {
+  if (resolving === null) throw new TypeError("fetch failed");
+  const name = url.searchParams.get("name") ?? "";
+  return new Response(
+    JSON.stringify(
+      resolving.includes(name)
+        ? { Status: 0, Answer: [{ name, type: 1, data: "95.129.238.70" }] }
+        : { Status: 2 }
+    ),
+    { status: 200 }
+  );
+}
+
+const ddosGuardWall = () =>
+  new Response("<html><title>Error 403</title><body>DDoS-Guard</body></html>", {
+    status: 403,
+    headers: { server: "ddos-guard" },
+  });
+
+async function sendCommand(text: string, configured: string, dizipal: Route, resolving: string[] | null = null) {
+  const request = new Request("https://monitor.test/telegram", {
+    method: "POST",
+    headers: { "x-telegram-bot-api-secret-token": "hook" },
+    body: JSON.stringify({ message: { chat: { id: 42 }, text } }),
+  });
+  return callMonitor(request, env, configured, dizipal, resolving);
+}
+
+async function callMonitor(
+  request: Request,
+  monitorEnv: Record<string, unknown>,
+  configured: string,
+  dizipal: Route,
+  resolving: string[] | null
+) {
   const telegram: string[] = [];
   const patches: Array<Record<string, string>> = [];
   const originalFetch = globalThis.fetch;
 
   const route = async (input: string, init: RequestInit = {}): Promise<Response> => {
     const url = new URL(input);
+    if (url.hostname === "cloudflare-dns.com" || url.hostname === "dns.google") {
+      return dohAnswer(url, resolving);
+    }
     if (url.origin === SUPABASE && url.pathname === "/functions/v1/provider-configs") {
       return new Response(JSON.stringify({
         success: true,
@@ -92,18 +130,29 @@ async function sendCommand(text: string, configured: string, dizipal: Route) {
   };
 
   globalThis.fetch = ((input: string, init?: RequestInit) => route(String(input), init)) as typeof fetch;
+  let body: any;
   try {
-    const request = new Request("https://monitor.test/telegram", {
-      method: "POST",
-      headers: { "x-telegram-bot-api-secret-token": "hook" },
-      body: JSON.stringify({ message: { chat: { id: 42 }, text } }),
-    });
-    const response = await monitor.fetch(request, env);
+    const response = await monitor.fetch(request, monitorEnv);
     assert.equal(response.status, 200);
+    body = await response.json();
   } finally {
     globalThis.fetch = originalFetch;
   }
-  return { telegram, patches };
+  return { telegram, patches, body };
+}
+
+/** A scheduled-style run through `/run`, with KV state carried between calls. */
+async function runOnce(configured: string, dizipal: Route, resolving: string[] | null, kv: Map<string, string>) {
+  const runEnv = {
+    ...env,
+    MANUAL_RUN_TOKEN: "run",
+    PROVIDER_MONITOR_KV: {
+      get: async (key: string) => kv.get(key) ?? null,
+      put: async (key: string, value: string) => { kv.set(key, value); },
+    },
+  };
+  const request = new Request("https://monitor.test/run", { headers: { "x-monitor-token": "run" } });
+  return callMonitor(request, runEnv, configured, dizipal, resolving);
 }
 
 test("the command the rotation alert suggests is saved even while the new host is failing", async () => {
@@ -185,4 +234,153 @@ test("a Cloudflare challenge is recognised by its header, not only by English pa
     },
   );
   assert.equal(patches.length, 1, "one challenged request must not fail validation");
+});
+
+// ---------------------------------------------------------------------------
+// DDoS-Guard (2026-09-18 onward).
+//
+// Since 2133, DDoS-Guard answers every request from Cloudflare's network 403,
+// so the Worker sees neither the new domain's pages nor the old domain's 301.
+// The bot reported a permanent outage and could neither detect the next
+// rotation nor accept the /set_dizipal for it. DNS is outside the wall:
+// Dizipal's pre-registered future domains SERVFAIL until the day they go live.
+// ---------------------------------------------------------------------------
+
+test("a walled candidate that resolves in DNS is saved", async () => {
+  const { telegram, patches } = await sendCommand(
+    "/set_dizipal https://dizipal2134.com",
+    "https://dizipal2133.com",
+    () => ddosGuardWall(),
+    ["dizipal2133.com", "dizipal2134.com"],
+  );
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].base_url, "https://dizipal2134.com");
+  assert.match(telegram[0], /dizipal updated\./);
+  assert.match(telegram[0], /resolves in DNS/);
+  assert.match(telegram[0], /BLOCKED Dizipal home: 403 \(blocked by DDoS-Guard/);
+});
+
+test("a walled candidate that does not resolve is rejected, with the force escape hatch", async () => {
+  const { telegram, patches } = await sendCommand(
+    "/set_dizipal https://dizipal2135.com",
+    "https://dizipal2133.com",
+    () => ddosGuardWall(),
+    ["dizipal2133.com"],
+  );
+  assert.equal(patches.length, 0);
+  assert.match(telegram[0], /dizipal update rejected/);
+  assert.match(telegram[0], /does not resolve in DNS/);
+  assert.match(telegram[0], /\/set_dizipal https:\/\/dizipal2135\.com force/);
+});
+
+test("a walled candidate is not saved when DNS cannot be asked", async () => {
+  const { telegram, patches } = await sendCommand(
+    "/set_dizipal https://dizipal2134.com",
+    "https://dizipal2133.com",
+    () => ddosGuardWall(),
+    null,
+  );
+  assert.equal(patches.length, 0);
+  assert.match(telegram[0], /DNS could not be checked/);
+});
+
+test("a candidate older than the configured domain is rejected even if it resolves", async () => {
+  const { telegram, patches } = await sendCommand(
+    "/set_dizipal https://dizipal2132.com",
+    "https://dizipal2133.com",
+    () => ddosGuardWall(),
+    ["dizipal2132.com", "dizipal2133.com"],
+  );
+  assert.equal(patches.length, 0);
+  assert.match(telegram[0], /older than the configured https:\/\/dizipal2133\.com/);
+});
+
+test("force saves a candidate the checks cannot confirm", async () => {
+  const { telegram, patches } = await sendCommand(
+    "/set_dizipal https://dizipal2135.com force",
+    "https://dizipal2133.com",
+    () => ddosGuardWall(),
+    [],
+  );
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].base_url, "https://dizipal2135.com");
+  assert.match(telegram[0], /forced/);
+});
+
+test("Dizipal's encrypted data-cfg passes the playback check", async () => {
+  const cfg = '{&quot;ciphertext&quot;:&quot;abc+/=&quot;,&quot;iv&quot;:&quot;00&quot;,&quot;salt&quot;:&quot;aa&quot;}';
+  const { telegram, patches } = await sendCommand(
+    "/set_dizipal https://dizipal2133.com",
+    "https://dizipal2133.com",
+    (url) => url.pathname.startsWith("/bolum/")
+      ? new Response(`<div id="videoContainer" data-cfg="${cfg}"></div>`, { status: 200 })
+      : healthyDizipal(url),
+  );
+  assert.equal(patches.length, 1);
+  assert.match(telegram[0], /dizipal updated successfully/);
+});
+
+test("a run detects the rotation through DNS while the pages are walled, and never pages 'down'", async () => {
+  const kv = new Map<string, string>();
+  const walled = () => ddosGuardWall();
+
+  // Three runs on 2133 with nothing newer in DNS: walled, not down.
+  for (let run = 0; run < 3; run++) {
+    const { telegram, body } = await runOnce("https://dizipal2133.com", walled, ["dizipal2133.com"], kv);
+    assert.equal(telegram.some((text) => /is down/.test(text)), false, "a walled check must never page 'down'");
+    const domain = body.results.find((r: { id: string }) => r.id === "dizipal_domain");
+    assert.equal(domain.ok, true);
+    if (run === 0) {
+      assert.equal(telegram.filter((text) => /can't see these checks/.test(text)).length, 1, "the wall is reported once, merged");
+    } else {
+      assert.equal(telegram.some((text) => /can't see these checks/.test(text)), false, "and only once");
+    }
+  }
+  const state = JSON.parse(kv.get("provider-monitor-state-v1")!);
+  assert.equal(state.checks.dizipal_home.status, "blocked");
+
+  // 2134 goes live.
+  const { telegram, body } = await runOnce("https://dizipal2133.com", walled, ["dizipal2133.com", "dizipal2134.com"], kv);
+  const domain = body.results.find((r: { id: string }) => r.id === "dizipal_domain");
+  assert.equal(domain.rotated, true);
+  assert.equal(domain.latestBaseUrl, "https://dizipal2134.com");
+  const alert = telegram.find((text) => /rotated/.test(text));
+  assert.ok(alert, "the rotation must be alerted");
+  assert.match(alert!, /\/set_dizipal https:\/\/dizipal2134\.com/);
+
+  // The same rotation is not re-alerted on the next run.
+  const again = await runOnce("https://dizipal2133.com", walled, ["dizipal2133.com", "dizipal2134.com"], kv);
+  assert.equal(again.telegram.some((text) => /rotated/.test(text)), false);
+});
+
+test("a skipped suffix is still found, and the newest live domain wins", async () => {
+  const kv = new Map<string, string>();
+  const { body } = await runOnce(
+    "https://dizipal2133.com",
+    () => ddosGuardWall(),
+    ["dizipal2133.com", "dizipal2134.com", "dizipal2136.com"],
+    kv,
+  );
+  const domain = body.results.find((r: { id: string }) => r.id === "dizipal_domain");
+  assert.equal(domain.latestBaseUrl, "https://dizipal2136.com");
+});
+
+test("a configured domain that stops resolving with nothing newer counts towards down", async () => {
+  const kv = new Map<string, string>();
+  let last: Awaited<ReturnType<typeof runOnce>> | null = null;
+  for (let run = 0; run < 3; run++) {
+    last = await runOnce("https://dizipal2133.com", () => ddosGuardWall(), [], kv);
+  }
+  assert.ok(last!.telegram.some((text) => /Dizipal domain \(DNS\) failed/.test(text)));
+});
+
+test("DNS being unreachable is 'unknown', never 'down' or a rotation", async () => {
+  const kv = new Map<string, string>();
+  for (let run = 0; run < 3; run++) {
+    const { telegram, body } = await runOnce("https://dizipal2133.com", () => ddosGuardWall(), null, kv);
+    const domain = body.results.find((r: { id: string }) => r.id === "dizipal_domain");
+    assert.equal(domain.blocked, true);
+    assert.equal(domain.rotated, false);
+    assert.equal(telegram.some((text) => /is down/.test(text)), false);
+  }
 });

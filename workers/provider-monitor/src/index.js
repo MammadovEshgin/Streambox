@@ -160,6 +160,147 @@ function pageTitle(body) {
   return title || null;
 }
 
+/**
+ * Names the anti-bot wall when a refusal is one, else null.
+ *
+ * Since 2026-09-18 Dizipal sits behind DDoS-Guard, which answers every request
+ * from Cloudflare's network 403 while residential users get 200. Counting that
+ * as "down" paged an outage nobody had and, worse, trained the reader to ignore
+ * the bot. A walled check is reported as `blocked` — not observable from here —
+ * and the domain rotation is watched through DNS instead (`checkDizipalDomain`).
+ */
+function blockingWall(response, body) {
+  if (response.status !== 403 && response.status !== 429 && response.status !== 503) return null;
+  const server = (response.headers.get("server") ?? "").toLowerCase();
+  if (server.includes("ddos-guard") || /ddos-guard/i.test(body)) return "DDoS-Guard";
+  if (isChallengeResponse(response, body)) return "a Cloudflare challenge";
+  return null;
+}
+
+// ─── DNS ─────────────────────────────────────────────────────────────
+// DDoS-Guard walls off Dizipal's pages, but not the DNS. Dizipal registers its
+// numbered domains in bulk ahead of time (2134–2150+ were all registered on
+// 2026-07-22) on placeholder nameservers that do not serve the zone, so a future
+// domain answers SERVFAIL until the day it goes live and gets real records.
+// "The next dizipalN resolves" is therefore the rotation signal, and asking a
+// public resolver over HTTPS is not something the wall can see or block.
+const DOH_ENDPOINTS = [
+  (name) => `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=A`,
+  (name) => `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=A`,
+];
+const DNS_ADDRESS_TYPES = new Set([1, 5, 28]); // A, CNAME, AAAA
+const DNS_TIMEOUT_MS = 5000;
+
+/**
+ * Whether `hostname` has address records. true / false, or null when no
+ * resolver could be asked — callers must treat null as "unknown", never "gone".
+ */
+async function resolvesInDns(hostname) {
+  for (const endpoint of DOH_ENDPOINTS) {
+    try {
+      const response = await fetchWithTimeout(endpoint(hostname), {
+        method: "GET",
+        headers: { accept: "application/dns-json" },
+      }, DNS_TIMEOUT_MS);
+      if (!response.ok) continue;
+      const data = await response.json();
+      if (typeof data?.Status !== "number") continue;
+      // NXDOMAIN (3) and SERVFAIL (2 — the placeholder nameservers) both mean
+      // "not live".
+      return data.Status === 0
+        && Array.isArray(data.Answer)
+        && data.Answer.some((answer) => DNS_ADDRESS_TYPES.has(answer?.type));
+    } catch {
+      // Try the next resolver.
+    }
+  }
+  return null;
+}
+
+/** `https://dizipal2133.com` → { number: 2133, prefix: "", tld: "com" }. */
+function parseDizipalHost(baseUrl) {
+  let host;
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  const match = host.match(/^((?:[a-z0-9-]+\.)?)dizipal(\d+)\.([a-z.]+)$/);
+  if (!match) return null;
+  return { prefix: match[1], number: Number(match[2]), tld: match[3] };
+}
+
+function dizipalOrigin(parsed, number) {
+  return `https://${parsed.prefix}dizipal${number}.${parsed.tld}`;
+}
+
+// Dizipal skips numbers now and then (2079 → 2123 was 22 hops), so look a
+// little further ahead than the next one.
+const DIZIPAL_DNS_LOOKAHEAD = 12;
+
+async function checkDizipalDomain(providers) {
+  const startedAt = Date.now();
+  const configured = normalizeBaseUrl(providers.dizipal.baseUrl);
+  const finish = (fields) => ({
+    id: "dizipal_domain",
+    label: "Dizipal domain (DNS)",
+    url: `${configured}/`,
+    finalUrl: null,
+    status: null,
+    rotated: false,
+    latestBaseUrl: null,
+    blocked: false,
+    challengedAttempts: 0,
+    ...fields,
+    durationMs: Date.now() - startedAt,
+    checkedAt: new Date().toISOString(),
+  });
+
+  const parsed = parseDizipalHost(configured);
+  if (!parsed) {
+    return finish({ ok: true, reason: "configured host is not dizipalN — DNS rotation watch skipped" });
+  }
+
+  const numbers = Array.from({ length: DIZIPAL_DNS_LOOKAHEAD + 1 }, (_, index) => parsed.number + index);
+  const answers = await Promise.all(
+    numbers.map((number) => resolvesInDns(new URL(dizipalOrigin(parsed, number)).hostname))
+  );
+
+  if (answers.every((answer) => answer === null)) {
+    return finish({ ok: false, blocked: true, reason: "DNS-over-HTTPS unavailable — rotation watch skipped this run" });
+  }
+
+  const configuredHost = new URL(configured).hostname;
+  let newest = null;
+  for (let index = answers.length - 1; index >= 1; index--) {
+    if (answers[index] === true) {
+      newest = numbers[index];
+      break;
+    }
+  }
+
+  if (newest !== null) {
+    const latest = dizipalOrigin(parsed, newest);
+    const configuredState = answers[0] === false ? "no longer resolves" : "still resolves and should now redirect";
+    return finish({
+      ok: false,
+      rotated: true,
+      latestBaseUrl: latest,
+      finalUrl: `${latest}/`,
+      reason: `URL rotated: ${new URL(latest).hostname} resolves in DNS; ${configuredHost} ${configuredState}`,
+    });
+  }
+
+  if (answers[0] === false) {
+    return finish({
+      ok: false,
+      reason: `${configuredHost} no longer resolves in DNS and no newer dizipalN.${parsed.tld} does`,
+    });
+  }
+
+  return finish({ ok: true, reason: `ok (${configuredHost} resolves; no newer dizipalN in DNS)` });
+}
+
 async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
   const startedAt = Date.now();
   const timeoutMs = getTimeoutMs(env);
@@ -199,7 +340,9 @@ async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
       ? `URL rotated: ${rotation.requestedOrigin} → ${rotation.finalOrigin}`
       : "";
     const title = response.ok ? null : pageTitle(body);
-    const failureReason = (validatorResult.reason || `HTTP ${response.status}`)
+    const wall = transport ? null : blockingWall(response, body);
+    const failureReason = (wall ? `blocked by ${wall} — ` : "")
+      + (validatorResult.reason || `HTTP ${response.status}`)
       + (title ? ` (page: "${title}")` : "");
     const challengeNote = challengedAttempts > 0
       ? ` (survived ${challengedAttempts} Cloudflare challenge${challengedAttempts === 1 ? "" : "s"})`
@@ -218,6 +361,7 @@ async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
       reason,
       rotated: rotation.rotated,
       latestBaseUrl: rotation.rotated ? rotation.finalOrigin : null,
+      blocked: Boolean(wall),
       challengedAttempts,
       durationMs: Date.now() - startedAt,
       checkedAt: new Date().toISOString(),
@@ -233,6 +377,7 @@ async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
       reason: error instanceof Error ? error.message : String(error),
       rotated: false,
       latestBaseUrl: null,
+      blocked: false,
       challengedAttempts: 0,
       durationMs: Date.now() - startedAt,
       checkedAt: new Date().toISOString(),
@@ -336,9 +481,12 @@ function buildProviderChecks(providers) {
       // PLAY. In Sept 2026 Dizipal renamed /ajax-player-config to
       // /ajax/player-config; search kept answering 200 while every title
       // silently failed to produce a stream, and this monitor stayed green
-      // for the whole outage. The app now reads the player config straight
-      // out of the page's base64 `data-cfg` attribute, so probing that one
-      // attribute covers the real playback path in a single request.
+      // for the whole outage. The app reads the player config out of the
+      // page's `data-cfg` attribute, so probing that one attribute covers the
+      // real playback path in a single request. Two shapes are live-valid:
+      // base64 JSON {v,t} (until 2026-09-18) and the encrypted
+      // {ciphertext,iv,salt} JSON written with &quot; entities that the app
+      // entity-decodes and POSTs to /ajax.
       //
       // Canary is a long-running catalog title at a stable slug.
       url: `${dizipalBaseUrl}/bolum/breaking-bad-1-sezon-1-bolum`,
@@ -350,9 +498,21 @@ function buildProviderChecks(providers) {
         if (looksLikeChallengePage(body)) {
           return { ok: false, reason: "Cloudflare/challenge page" };
         }
-        const cfg = body.match(/id=["']videoContainer["'][^>]*data-cfg=["']([^"']+)["']/i)?.[1];
-        if (!cfg) {
+        const rawCfg = body.match(/id=["']videoContainer["'][^>]*data-cfg=["']([^"']+)["']/i)?.[1];
+        if (!rawCfg) {
           return { ok: false, reason: "episode page has no data-cfg — push OTA" };
+        }
+        const cfg = rawCfg.replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+        if (cfg.trim().startsWith("{")) {
+          try {
+            const encrypted = JSON.parse(cfg);
+            const ok = typeof encrypted?.ciphertext === "string"
+              && typeof encrypted?.iv === "string"
+              && typeof encrypted?.salt === "string";
+            return { ok, reason: ok ? "ok" : "data-cfg JSON lacks {ciphertext,iv,salt} — push OTA" };
+          } catch {
+            return { ok: false, reason: "data-cfg is neither base64 nor JSON — push OTA" };
+          }
         }
         try {
           const decoded = JSON.parse(atob(cfg.replace(/-/g, "+").replace(/_/g, "/")));
@@ -442,7 +602,9 @@ async function saveState(env, state) {
 }
 
 function buildNextCheckState(previous, result, failureThreshold) {
-  const failedCount = result.ok ? 0 : (previous?.failedCount ?? 0) + 1;
+  // A walled check says nothing about the site, so it neither counts towards
+  // "down" nor keeps an earlier count alive.
+  const failedCount = result.ok || result.blocked ? 0 : (previous?.failedCount ?? 0) + 1;
   const previousStatus = previous?.status ?? "unknown";
   // Rotation is a softer state than "down" — the upstream is reachable, just
   // at a new domain. Stop the failedCount climb from declaring it down.
@@ -450,11 +612,13 @@ function buildNextCheckState(previous, result, failureThreshold) {
     ? "up"
     : result.rotated
       ? "rotated"
-      : failedCount >= failureThreshold
-        ? "down"
-        : previousStatus === "down"
+      : result.blocked
+        ? "blocked"
+        : failedCount >= failureThreshold
           ? "down"
-          : "degraded";
+          : previousStatus === "down"
+            ? "down"
+            : "degraded";
 
   return {
     status: nextStatus,
@@ -491,14 +655,13 @@ function buildAlerts(previous, next, result) {
   }
 
   // Scraper-shape change — distinct from URL rotation. The hop is still
-  // reachable but no longer emits the expected markup (e.g. vsembed stops
-  // emitting data-hash divs). The fix is a code change in
-  // src/services/DirectLinkService.ts followed by an OTA push.
-  if (!result.ok && !result.rotated && /push OTA/i.test(result.reason ?? "") && previous.lastReason !== result.reason) {
+  // reachable but no longer emits the expected markup. The fix is a code
+  // change in src/services/WebPlayerService.ts followed by an OTA push.
+  if (!result.ok && !result.rotated && !result.blocked && /push OTA/i.test(result.reason ?? "") && previous.lastReason !== result.reason) {
     alerts.push({
       type: "shape_change",
       title: `${result.label} scraper-shape change`,
-      message: `${result.label} markup changed at ${result.url}.\n\n${result.reason}\n\nNext step: open the URL in a browser, inspect the new pattern, update the matching regex in src/services/DirectLinkService.ts, then \`eas update --branch preview\`.`,
+      message: `${result.label} markup changed at ${result.url}.\n\n${result.reason}\n\nNext step: open the URL in a browser, inspect the new pattern, update the matching parser in src/services/WebPlayerService.ts, then \`eas update --branch preview\`.`,
     });
   }
 
@@ -510,15 +673,50 @@ function buildAlerts(previous, next, result) {
     });
   }
 
-  if (previous.status === "down" && next.status === "up") {
+  if (previous.status !== "blocked" && next.status === "blocked") {
+    alerts.push({
+      type: "blocked",
+      title: `${result.label} is not observable`,
+      message: `${result.label}: ${result.reason}`,
+    });
+  }
+
+  if ((previous.status === "down" || previous.status === "blocked") && next.status === "up") {
     alerts.push({
       type: "recovered",
       title: `${result.label} recovered`,
-      message: `${result.label} is back up at ${result.url}\nHTTP: ${result.status}\nDuration: ${result.durationMs}ms`,
+      message: previous.status === "blocked"
+        ? `${result.label} is visible to the monitor again at ${result.url}\nHTTP: ${result.status ?? "n/a"}`
+        : `${result.label} is back up at ${result.url}\nHTTP: ${result.status}\nDuration: ${result.durationMs}ms`,
     });
   }
 
   return alerts;
+}
+
+// One walled provider trips every one of its checks at once; say it once.
+function mergeBlockedAlerts(alerts) {
+  const blocked = alerts.filter((alert) => alert.type === "blocked");
+  if (blocked.length <= 1) return alerts;
+  return [
+    ...alerts.filter((alert) => alert.type !== "blocked"),
+    {
+      type: "blocked",
+      title: "Checks not observable",
+      message: blocked.map((alert) => alert.message).join("\n"),
+    },
+  ];
+}
+
+function formatAlert(alert) {
+  if (alert.type !== "blocked") return alert.message;
+  return [
+    "The monitor can't see these checks from Cloudflare's network:",
+    "",
+    alert.message,
+    "",
+    "They are not counted as down. Dizipal domain rotations are still detected through DNS.",
+  ].join("\n");
 }
 
 async function sendTelegramAlert(env, alert) {
@@ -530,7 +728,7 @@ async function sendTelegramAlert(env, alert) {
   await sendTelegramMessage(
     env,
     env.TELEGRAM_CHAT_ID,
-    `StreamBox provider alert\n\n${alert.message}`
+    `StreamBox provider alert\n\n${formatAlert(alert)}`
   );
 }
 
@@ -561,14 +759,25 @@ async function runProviderChecks(env, providers) {
   return Promise.all(checks.map((check) => checkHttpEndpoint(check, env)));
 }
 
+// HTTP checks plus the DNS rotation watch. The DNS check is deliberately NOT
+// part of `runProviderChecks`: that set also validates a /set_ candidate, and
+// "a newer domain exists" says nothing about whether the candidate is healthy.
+async function runAllChecks(env, providers) {
+  const [httpResults, domainResult] = await Promise.all([
+    runProviderChecks(env, providers),
+    checkDizipalDomain(providers),
+  ]);
+  return [...httpResults, domainResult];
+}
+
 async function runMonitor(env) {
   const startedAt = Date.now();
   const failureThreshold = getFailureThreshold(env);
   const providers = await fetchProviderConfigs(env);
-  const results = await runProviderChecks(env, providers);
+  const results = await runAllChecks(env, providers);
   const state = await loadState(env);
   const nextState = { checks: {}, lastRunAt: new Date().toISOString() };
-  const alerts = [];
+  let alerts = [];
 
   for (const result of results) {
     const previous = state.checks[result.id] ?? { status: "unknown", failedCount: 0 };
@@ -576,6 +785,7 @@ async function runMonitor(env) {
     nextState.checks[result.id] = next;
     alerts.push(...buildAlerts(previous, next, result));
   }
+  alerts = mergeBlockedAlerts(alerts);
 
   await saveState(env, nextState);
 
@@ -683,7 +893,13 @@ function normalizeCandidateProviderUrl(rawUrl, providerId) {
 // what proves which domain is live, and the old URL only put a redirect hop in
 // front of the same failure — refusing to save it fixed nothing and left the
 // config one hop further behind.
-async function validateProviderCandidate(env, providerId, candidateBaseUrl) {
+//
+// Since 2026-09-18 neither of those can happen for Dizipal: DDoS-Guard walls the
+// Worker off from the candidate's pages AND from the old domain's redirect. So a
+// candidate whose only failures are that wall is accepted when DNS vouches for
+// it (it resolves, and it is not behind the configured domain). `force` is the
+// owner's override for anything else.
+async function validateProviderCandidate(env, providerId, candidateBaseUrl, { force = false } = {}) {
   const providers = await fetchProviderConfigs(env);
   const configuredBaseUrl = normalizeBaseUrl(providers[providerId]?.baseUrl);
   providers[providerId] = { baseUrl: candidateBaseUrl, referer: `${candidateBaseUrl}/` };
@@ -693,8 +909,12 @@ async function validateProviderCandidate(env, providerId, candidateBaseUrl) {
     PROVIDER_DEFINITIONS[providerId].checkIdPrefixes.some((prefix) => r.id.startsWith(prefix)),
   );
   const failed = ownResults.filter((r) => !r.ok);
+  const verdict = { results: ownResults, failed, configuredBaseUrl, redirectedFrom: null, vouchedBy: null, behind: false, resolves: null };
   if (failed.length === 0) {
-    return { ok: true, results: ownResults, failed, redirectedFrom: null };
+    return { ...verdict, ok: true };
+  }
+  if (force) {
+    return { ...verdict, ok: true, vouchedBy: "force" };
   }
 
   const redirectedFrom = configuredBaseUrl
@@ -702,7 +922,24 @@ async function validateProviderCandidate(env, providerId, candidateBaseUrl) {
     && (await finalRedirectOrigin(env, configuredBaseUrl)) === candidateBaseUrl
     ? configuredBaseUrl
     : null;
-  return { ok: Boolean(redirectedFrom), results: ownResults, failed, redirectedFrom };
+  if (redirectedFrom) {
+    return { ...verdict, ok: true, redirectedFrom, vouchedBy: "redirect" };
+  }
+
+  const behind = isBehindConfigured(configuredBaseUrl, candidateBaseUrl);
+  if (behind || !failed.every((r) => r.blocked)) {
+    return { ...verdict, ok: false, behind };
+  }
+  const resolves = await resolvesInDns(new URL(candidateBaseUrl).hostname);
+  return { ...verdict, ok: resolves === true, resolves, vouchedBy: resolves === true ? "dns" : null };
+}
+
+// Dizipal only moves forward, so a numbered candidate older than the
+// configured domain is always a mistake. Non-numbered hosts are never "behind".
+function isBehindConfigured(configuredBaseUrl, candidateBaseUrl) {
+  const configured = parseDizipalHost(configuredBaseUrl);
+  const candidate = parseDizipalHost(candidateBaseUrl);
+  return Boolean(configured && candidate && candidate.number < configured.number);
 }
 
 // Follows `baseUrl`'s redirect chain hop by hop and returns the origin it ends
@@ -763,7 +1000,7 @@ async function updateProviderConfig(env, providerId, baseUrl) {
 function formatCheckResults(results) {
   return results
     .map((result) => {
-      const marker = result.ok ? "OK" : result.rotated ? "ROTATED" : "FAIL";
+      const marker = result.ok ? "OK" : result.rotated ? "ROTATED" : result.blocked ? "BLOCKED" : "FAIL";
       const status = result.status ?? "network";
       return `${marker} ${result.label}: ${status} (${result.reason})`;
     })
@@ -783,7 +1020,7 @@ function summariseRotation(results) {
 
 async function handleTelegramStatus(env, chatId) {
   const providers = await fetchProviderConfigs(env);
-  const results = await runProviderChecks(env, providers);
+  const results = await runAllChecks(env, providers);
   const state = await loadState(env);
 
   const lines = ["StreamBox provider status", ""];
@@ -796,8 +1033,9 @@ async function handleTelegramStatus(env, chatId) {
       def.checkIdPrefixes.some((prefix) => r.id.startsWith(prefix)),
     );
     const rotatedOrigins = summariseRotation(own);
-    const shapeIssue = own.find((r) => !r.ok && !r.rotated && /push OTA/i.test(r.reason ?? ""));
-    const failedChecks = own.filter((r) => !r.ok && !r.rotated);
+    const shapeIssue = own.find((r) => !r.ok && !r.rotated && !r.blocked && /push OTA/i.test(r.reason ?? ""));
+    const failedChecks = own.filter((r) => !r.ok && !r.rotated && !r.blocked);
+    const blockedChecks = own.filter((r) => !r.ok && !r.rotated && r.blocked);
 
     lines.push(`── ${providerId} ──`);
     lines.push(`Configured: ${normalizeBaseUrl(cfg.baseUrl)}`);
@@ -822,6 +1060,9 @@ async function handleTelegramStatus(env, chatId) {
           : `${failedChecks.length} health check(s) failing.`,
       );
     }
+    if (blockedChecks.length > 0) {
+      lines.push(`${blockedChecks.length} check(s) not observable from Cloudflare (walled off, not counted as down).`);
+    }
     lines.push("", formatCheckResults(own), "");
   }
 
@@ -831,10 +1072,12 @@ async function handleTelegramStatus(env, chatId) {
 async function handleTelegramSetProvider(env, chatId, providerId, args) {
   const def = PROVIDER_DEFINITIONS[providerId];
   const candidateUrl = normalizeCandidateProviderUrl(args[0], providerId);
-  const validation = await validateProviderCandidate(env, providerId, candidateUrl);
+  const force = String(args[1] ?? "").toLowerCase() === "force";
+  const validation = await validateProviderCandidate(env, providerId, candidateUrl, { force });
 
   if (!validation.ok) {
     const rotatedOrigins = summariseRotation(validation.results);
+    const candidateHost = new URL(candidateUrl).hostname;
     const lines = [
       `${providerId} update rejected.`,
       "",
@@ -848,31 +1091,60 @@ async function handleTelegramSetProvider(env, chatId, providerId, args) {
         `Use:  ${def.setCommand} ${latest}`,
       );
     }
+    if (validation.behind) {
+      lines.push("", `Candidate is older than the configured ${validation.configuredBaseUrl} — Dizipal only moves forward.`);
+    } else if (validation.resolves === false) {
+      lines.push("", `The monitor is walled off from ${candidateHost}, and ${candidateHost} does not resolve in DNS — check the URL.`);
+    } else if (validation.resolves === null && validation.failed.every((r) => r.blocked)) {
+      lines.push("", `The monitor is walled off from ${candidateHost}, and DNS could not be checked just now.`);
+    }
     lines.push("", formatCheckResults(validation.results));
+    lines.push("", `To save it anyway: ${def.setCommand} ${candidateUrl} force`);
     await sendTelegramMessage(env, chatId, lines.join("\n"));
     return;
   }
 
   await updateProviderConfig(env, providerId, candidateUrl);
-  const outcome = validation.redirectedFrom
-    ? [
-        `${providerId} updated — but it is failing right now.`,
-        "",
-        `New URL: ${candidateUrl}`,
-        "",
-        `${validation.redirectedFrom} redirects here, so this is the live domain. Its checks fail from the monitor at the moment:`,
-        "",
-        formatCheckResults(validation.results),
-        "",
-        "Saved anyway: the old URL only added a redirect in front of the same failure. The monitor reports it as down if this persists.",
-      ]
-    : [
-        `${providerId} updated successfully.`,
-        "",
-        `New URL: ${candidateUrl}`,
-        "",
-        formatCheckResults(validation.results),
-      ];
+  let outcome;
+  if (validation.vouchedBy === "redirect") {
+    outcome = [
+      `${providerId} updated — but it is failing right now.`,
+      "",
+      `New URL: ${candidateUrl}`,
+      "",
+      `${validation.redirectedFrom} redirects here, so this is the live domain. Its checks fail from the monitor at the moment:`,
+      "",
+      formatCheckResults(validation.results),
+      "",
+      "Saved anyway: the old URL only added a redirect in front of the same failure. The monitor reports it as down if this persists.",
+    ];
+  } else if (validation.vouchedBy === "dns") {
+    outcome = [
+      `${providerId} updated.`,
+      "",
+      `New URL: ${candidateUrl}`,
+      "",
+      `The monitor can't load its pages (${validation.failed[0]?.reason ?? "blocked"}), but ${new URL(candidateUrl).hostname} resolves in DNS, so it was saved.`,
+      "",
+      formatCheckResults(validation.results),
+    ];
+  } else if (validation.vouchedBy === "force") {
+    outcome = [
+      `${providerId} updated (forced — checks were not required to pass).`,
+      "",
+      `New URL: ${candidateUrl}`,
+      "",
+      formatCheckResults(validation.results),
+    ];
+  } else {
+    outcome = [
+      `${providerId} updated successfully.`,
+      "",
+      `New URL: ${candidateUrl}`,
+      "",
+      formatCheckResults(validation.results),
+    ];
+  }
   outcome.push("", "Active app installs will pick this up on next provider-config refresh.");
   await sendTelegramMessage(env, chatId, outcome.join("\n"));
 }
@@ -928,8 +1200,10 @@ async function handleTelegramWebhook(request, env) {
         "",
         "Use:",
         "/status",
-        "/set_dizipal https://dizipal2123.com",
+        "/set_dizipal https://dizipal2134.com",
         "/set_dizibal https://dizibal.org",
+        "",
+        "Append `force` to save a URL the checks cannot confirm.",
       ].join("\n")
     );
     return jsonResponse({ ok: true });

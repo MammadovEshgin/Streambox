@@ -9,7 +9,7 @@
     "head_sampling_rate": 0.1
   },
   "triggers": {
-    "crons": ["0 */12 * * *"]
+    "crons": ["0 * * * *"]
   },
   "vars": {
     "SUPABASE_URL": "https://zbeexmqmcwtlsbbuuqor.supabase.co",

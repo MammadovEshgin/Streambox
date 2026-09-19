@@ -1,14 +1,32 @@
 # StreamBox Provider Monitor
 
-Cloudflare Worker Cron monitor for streaming provider domains. It reads the current provider URLs from the Supabase `provider_configs` table, checks the endpoints consumed by the app every 12 hours, stores status in KV, and sends Telegram alerts only when a provider changes from healthy to down or from down to recovered.
+Cloudflare Worker Cron monitor for streaming provider domains. It reads the current provider URLs from the Supabase `provider_configs` table, checks the endpoints consumed by the app every hour, stores status in KV, and sends Telegram alerts only on transitions (down, rotated, blocked, recovered, scraper-shape change).
 
 ## What It Checks
 
 - Dizipal home: `base_url/`
 - Dizipal search: `base_url/ajax-search?q=breaking%20bad`
 - Dizipal playback config: `base_url/bolum/breaking-bad-1-sezon-1-bolum`
+- Dizipal domain (DNS): does a newer `dizipalN` resolve? (DNS-over-HTTPS, 12 suffixes ahead)
 - Dizibal site-config API: `base_url/api/site-config/maintenance`
 - Dizibal movie-search response shape: `base_url/api/movies?search=shawshank&limit=3`
+
+### DDoS-Guard and the DNS rotation watch
+
+Since 2026-09-18 (`dizipal2133.com`) Dizipal sits behind DDoS-Guard, which answers every
+request from Cloudflare's network `403` ("Error 403", `server: ddos-guard`) while residential
+users get `200`. The Worker can then see neither Dizipal's pages nor the old domain's `301` to
+the next one — so the bot reported a permanent outage and could not detect a rotation.
+
+- A check refused by DDoS-Guard (or by a Cloudflare challenge that survives the retries) is
+  `blocked`: reported once, never counted towards "down".
+- Rotations are detected through DNS, which the wall does not cover. Dizipal registers its
+  future domains in bulk ahead of time (2134–2150+ were all registered on 2026-07-22) on
+  placeholder nameservers that do not serve the zone — they answer SERVFAIL until the day they
+  go live. `dizipal_domain` asks Cloudflare DoH (Google DoH as fallback) about the configured
+  suffix and the 12 after it; the newest one that resolves is the rotation alert, with the
+  `/set_dizipal` to send. If the configured domain stops resolving and nothing newer does, that
+  counts towards "down". DoH being unreachable is "unknown", never "down".
 
 Dizibal's browser homepage is intentionally not checked because it rejects Cloudflare Worker egress with HTTP 403 even while the JSON APIs used by StreamBox are healthy.
 
@@ -27,7 +45,7 @@ Do not add an HDFilm check here unless it stops challenging Worker egress — an
 
 ### Why `dizipal_playback` exists
 
-Search being healthy says nothing about whether a title can actually PLAY. In Sept 2026 Dizipal renamed `/ajax-player-config` to `/ajax/player-config`: search kept answering 200, every title silently failed to produce a stream, and this monitor stayed green for the entire outage. The app now reads the player config straight out of the episode page's base64 `data-cfg` attribute, so the check decodes that one attribute and asserts it still carries `{v, t}` — one request covering the real playback path.
+Search being healthy says nothing about whether a title can actually PLAY. In Sept 2026 Dizipal renamed `/ajax-player-config` to `/ajax/player-config`: search kept answering 200, every title silently failed to produce a stream, and this monitor stayed green for the entire outage. The app reads the player config out of the episode page's `data-cfg` attribute, so the check asserts that attribute still has a known shape — base64 JSON `{v, t}` (until 2026-09-18) or the encrypted `{ciphertext, iv, salt}` JSON written with `&quot;` entities (since) — one request covering the real playback path. While DDoS-Guard walls the Worker off, this check is `blocked` and the app's `player_resolve` telemetry is the playback signal.
 
 The canary is a long-running catalog title at a stable slug. `data-cfg` sits ~44 KiB into a ~95 KiB page, which is why `readLimitedText` reads up to 128 KiB. Verified reachable from Worker egress (`wrangler dev --remote`, 2026-09-02) — all five checks return 200 and the attribute decodes.
 
@@ -107,8 +125,9 @@ The bot supports three admin-only commands:
 
 ```text
 /status
-/set_dizipal https://dizipal2133.com
+/set_dizipal https://dizipal2134.com
 /set_dizibal https://dizibal.org
+/set_dizipal https://dizipal2134.com force
 ```
 
 `/status` re-runs every check and reports rotations and scraper-shape changes. A `/set_` command
@@ -123,6 +142,11 @@ put a redirect in front of the same failure. On 2026-09-18 Dizipal's new 2133 ho
 DDoS-Guard, which blocks the Worker's IPs) answered the Worker 403, and the bot rejected the exact
 `/set_dizipal https://dizipal2133.com` its own rotation alert had just suggested. A domain
 nothing redirects to, or one that itself redirects further on, is still rejected.
+
+Behind DDoS-Guard even that redirect is invisible, so a candidate whose **only** failures are
+`blocked` checks is saved when it resolves in DNS and is not older than the configured domain
+(Dizipal only moves forward). Anything else is rejected with the reason and the override:
+`/set_dizipal <url> force` saves without the checks passing.
 
 Failure reasons for non-2xx responses carry the page title (`HTTP 403 (page: "…")`) so a
 refusal can be told apart as challenge, WAF block or origin error after the fact — the Worker

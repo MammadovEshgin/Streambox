@@ -131,11 +131,19 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   page title; the Worker logs only 10% of invocations, so the Telegram reply and KV state are
   the record.
 - Since 2133 (2026-09-18) Dizipal sits behind **DDoS-Guard**, which answers the monitor's
-  Cloudflare IPs 403 ("Error 403") while residential users get 200. The bot therefore reports
-  Dizipal failing/down and cannot see the next rotation. Owner's decision: no workaround — when
-  the bot alerts, the owner asks for the new URL to be set (bump the floor + OTA, `/set_dizipal`).
-- Dizipal's player config comes from the page's base64 `data-cfg` attribute; the network
-  endpoint was renamed once already. Dizipal lists films under **Turkish** titles.
+  Cloudflare IPs 403 ("Error 403") while residential users get 200. The monitor marks those
+  checks `blocked` (never "down") and watches rotations through **DNS** instead: Dizipal
+  bulk-registers future `dizipalN.com` domains on placeholder nameservers that SERVFAIL until
+  the day they go live, so "a newer dizipalN resolves" is the rotation alert
+  (`checkDizipalDomain`, hourly cron, 12-suffix lookahead). `/set_dizipal` accepts a walled
+  candidate when it resolves in DNS and is not behind the configured domain; `… force`
+  overrides. The app picks the new row up without an OTA (remote wins when ahead of the floor).
+- Dizipal's player config: the episode page's `data-cfg` attribute. Until 2026-09-18 it was
+  base64 JSON `{v,t,p}` (decoded on device); since then it is an encrypted
+  `{ciphertext,iv,salt}` JSON written with `&quot;` entities, which must be entity-decoded and
+  POSTed as `cfg=` to `/ajax` (older `/ajax/player-config` still answers). No token or cookie
+  is required. The endpoint has been renamed twice — keep the path list. Dizipal lists films
+  under **Turkish** titles.
 - Dizipal and HDFilm serve intermittent Cloudflare challenges; both go through `providerGet`
   / `hdFilmGet` retries.
 - **Dizibal**: resolver follows `/api/stream/embed` → Playerjs embed → `/dl?op=get_stream`
