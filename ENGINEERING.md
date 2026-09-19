@@ -93,7 +93,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
 | `streambox-provider-monitor` | `d3f75aae` (hourly cron) |
 | `streambox-turn-credentials` | `dcfe4675` |
-| Latest migration | `20260916211341_restore_watch_room_realtime_policies` — **`20260920120000` and `20260920120100` are in the repo but not yet pushed** |
+| Latest migration | `20260920120100_retire_june_2026_announcements` |
 | Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
 
 ### OTA history (runtime 1.2.0)
