@@ -53,15 +53,19 @@ test("unknown / invalid gender values become null, never a foreign value", () =>
   assert.deepEqual(arrays.castGenders, ["male", null]);
 });
 
-test("caps cast and director arrays at 5 entries", () => {
+test("caps cast at 20 and directors at 5 entries", () => {
+  const ids = Array.from({ length: 25 }, (_, index) => index + 1);
   const arrays = buildWatchHistorySyncArrays(
     entry({
-      castIds: [1, 2, 3, 4, 5, 6, 7],
-      castNames: ["a", "b", "c", "d", "e", "f", "g"],
+      castIds: ids,
+      castNames: ids.map((id) => `actor ${id}`),
       directorIds: [1, 2, 3, 4, 5, 6],
     })
   );
-  assert.equal(arrays.castIds.length, 5);
+  // 20 matches WATCH_ENTRY_CAST_LIMIT, so an upload no longer truncates the
+  // cast an entry holds — the cloud round-trip is lossless.
+  assert.equal(arrays.castIds.length, 20);
+  assert.equal(arrays.castNames[19], "actor 20");
   assert.equal(arrays.directorIds.length, 5);
   assertMatchingCardinality(arrays);
 });

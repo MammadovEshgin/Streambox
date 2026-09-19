@@ -65,19 +65,53 @@ test("the metadata version was bumped so existing entries are re-enriched", () =
   );
 });
 
-test("a cloud row cut short by the table's cast cap is re-enriched instead of trusted", () => {
-  // user_watch_history holds five billed names. A synced device used to take a
-  // full row's metadata version at face value, so its titles kept five names
-  // forever and Stats never saw an ensemble lead billed below them.
+test("the cloud keeps the whole cast an entry holds", () => {
+  // The table held five billed names while entries kept 20, so every upload was
+  // truncated and a device hydrating from the cloud was back to five per title
+  // — Stats lost ensemble leads again until a full local refetch happened to
+  // finish. The cap and the entry limit must stay equal.
   const rows = readSource("src", "utils", "watchHistoryRows.ts");
-  const sync = readSource("src", "services", "userDataSync.ts");
+  const hook = readSource("src", "hooks", "useWatchHistory.ts");
+  const migrations = fs
+    .readdirSync(path.join(rootPath, "supabase", "migrations"))
+    .filter((name) => name.endsWith(".sql"))
+    .sort()
+    .map((name) => fs.readFileSync(path.join(rootPath, "supabase", "migrations", name), "utf8"));
 
-  assert.equal(readNumericConstant(rows, "WATCH_HISTORY_REMOTE_CAST_LIMIT"), 5);
+  const remoteLimit = readNumericConstant(rows, "WATCH_HISTORY_REMOTE_CAST_LIMIT");
+  assert.equal(remoteLimit, readNumericConstant(hook, "WATCH_ENTRY_CAST_LIMIT"));
+  assert.ok(remoteLimit > ENSEMBLE_LEAD_BILLING_INDEX);
+
+  // …and the database has to allow it, or every upsert fails the CHECK.
+  const constraint = [...migrations]
+    .reverse()
+    .map((sql) => sql.match(/user_watch_history_cast_ids_check check \(cardinality\(cast_ids\) <= (\d+)\)/i))
+    .find(Boolean);
+  assert.ok(constraint, "a migration must define the cast_ids cap");
+  assert.ok(
+    Number(constraint![1]) >= remoteLimit,
+    `table caps cast at ${constraint![1]} but uploads send ${remoteLimit}`
+  );
+});
+
+test("rows uploaded before the deep-cast sync are re-enriched instead of trusted", () => {
+  // A row written by an older client is five names deep whatever version it
+  // claims, so its version must not be taken at face value.
+  const sync = readSource("src", "services", "userDataSync.ts");
   assert.match(
     sync,
-    /coerceNumberArray\(e\.castIds\)\.length >= WATCH_HISTORY_REMOTE_CAST_LIMIT\s*\?\s*1/,
-    "a full remote cast list must come back below the current metadata version"
+    /\(e\.metadataVersion \|\| 1\) < WATCH_HISTORY_CAST_SYNC_VERSION\s*\?\s*1/,
+    "a pre-cutover remote row must come back below the current metadata version"
   );
+  const hook = readSource("src", "hooks", "useWatchHistory.ts");
+  const rows = readSource("src", "utils", "watchHistoryRows.ts");
+  assert.equal(
+    readNumericConstant(hook, "METADATA_VERSION"),
+    readNumericConstant(rows, "WATCH_HISTORY_CAST_SYNC_VERSION"),
+    "entries must be stamped with the version the sync layer trusts"
+  );
+  // Deep local entries upgrade without re-downloading the whole history.
+  assert.match(hook, /entry\.castIds\.length >= WATCH_ENTRY_CAST_LIMIT/);
 });
 
 test("the TMDB details fetch keeps one slot per person", () => {

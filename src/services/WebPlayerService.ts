@@ -11,7 +11,7 @@
  */
 
 import axios from "axios";
-import { getProviderConfig, isProviderConfigReady, recordObservedBaseUrl, refreshProviderConfigs } from "./providerConfigService";
+import { getAllProviderConfigs, getProviderConfig, isProviderConfigReady, recordObservedBaseUrl, refreshProviderConfigs } from "./providerConfigService";
 import { caesarShift, decodeBase64Binary, reverseString, runRapidrameDecoder } from "./rapidrameScript";
 import { foldNonDecomposingLetters } from "../utils/textFolding";
 
@@ -2578,20 +2578,38 @@ const RESOLVER_ATTEMPT_TIMEOUT_MS = RESOLVER_TOTAL_TIMEOUT_MS;
 const RESOLVER_MAX_TOTAL_MS = 20_000;
 const RESOLVER_RETRY_REFRESH_TIMEOUT_MS = 3_000;
 
-async function attemptResolveWebPlayerUrl(
-  request: WebPlayerRequest,
+/** The pipeline's answer, or `null` when it is still running after `timeoutMs`. */
+async function awaitResolveWithin(
+  pending: Promise<WebPlayerResult>,
   timeoutMs: number
-): Promise<WebPlayerResult> {
-  // Race the full pipeline against a hard timeout. Without this, a combination
-  // of slow provider failures can stack to 60-90 seconds and the user sees an
-  // unbounded spinner. On timeout we return not_found so the UI shows the
-  // "Not Available" message instead of hanging.
-  return Promise.race([
-    resolveWebPlayerUrlInner(request),
-    new Promise<WebPlayerResult>((resolve) =>
-      setTimeout(() => resolve({ url: "", source: "not_found" }), timeoutMs)
-    ),
-  ]);
+): Promise<WebPlayerResult | null> {
+  // Bound the wait. Without this, a combination of slow provider failures can
+  // stack to 60-90 seconds and the user sees an unbounded spinner. The pass
+  // itself is NOT cancelled — the caller can keep waiting on the same promise.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function startResolvePass(request: WebPlayerRequest): Promise<WebPlayerResult> {
+  // A rejection here is a bug, not a provider failure (every provider helper
+  // swallows its own errors), but the caller races this promise twice, so it
+  // must never reject.
+  return resolveWebPlayerUrlInner(request).catch(() => ({ url: "", source: "not_found" }));
+}
+
+/** Published base URLs, to tell "the operator rotated a domain" from "nothing changed". */
+function summariseProviderBaseUrls(): string {
+  const configs = getAllProviderConfigs();
+  return `${configs.hdfilm.baseUrl}|${configs.dizipal.baseUrl}|${configs.dizibal.baseUrl}`;
 }
 
 export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {
@@ -2606,33 +2624,44 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   await ensureProviderConfigReady();
 
   const deadline = Date.now() + RESOLVER_MAX_TOTAL_MS;
-  const first = await attemptResolveWebPlayerUrl(request, RESOLVER_ATTEMPT_TIMEOUT_MS);
-  if (isNativeResult(first)) return first;
+  const pending = startResolvePass(request);
+  const first = await awaitResolveWithin(pending, RESOLVER_ATTEMPT_TIMEOUT_MS);
+  if (first && isNativeResult(first)) return first;
 
-  // The first pass found no native stream ("Not Available").
-  // In practice this is almost always transient: the Dizipal domain rotates
-  // every few days, so the first request runs against a stale host and either
-  // times out chasing the redirect chain or completes and self-heals the host
-  // (recordObservedBaseUrl pins the post-redirect origin). Either way, a moment
-  // later the providers resolve where they wouldn't before — which is exactly
-  // why a manual "tap again" lands on the native player. Automate that: force a
-  // fresh provider config (covers the timed-out case), then retry the native
-  // pipeline once before accepting the fallback. Keep whichever result is best.
+  // Still running. It used to be abandoned here and the whole pipeline started
+  // again from the top — re-paying for the very requests that were slow, with
+  // less budget left than the first pass had. Wait on the pass already in
+  // flight instead: a stale Dizipal domain, the usual cause, self-heals inside
+  // it (recordObservedBaseUrl pins the post-redirect origin as soon as one
+  // request completes), so the answer is on its way.
+  if (!first) {
+    const remainingForPass = deadline - Date.now();
+    const late = remainingForPass > 0 ? await awaitResolveWithin(pending, remainingForPass) : null;
+    return late ?? { url: "", source: "not_found" };
+  }
+
+  // A definitive miss: every provider answered and none had a native stream.
+  // Running them again changes nothing unless the published domains moved, so
+  // refresh the config and retry only if it actually did. That is what makes
+  // "Not available" arrive after one pass instead of two for a title that is
+  // genuinely on no provider.
   const remaining = deadline - Date.now();
   if (remaining < 3_000) return first;
 
+  const baseUrlsBefore = summariseProviderBaseUrls();
   await Promise.race([
     refreshProviderConfigs(),
     new Promise<void>((resolve) =>
       setTimeout(resolve, Math.min(RESOLVER_RETRY_REFRESH_TIMEOUT_MS, remaining))
     ),
   ]).catch(() => undefined);
+  if (summariseProviderBaseUrls() === baseUrlsBefore) return first;
 
   const retryBudget = deadline - Date.now();
   if (retryBudget <= 0) return first;
 
-  const retry = await attemptResolveWebPlayerUrl(request, retryBudget);
-  return preferResolution(first, retry);
+  const retry = await awaitResolveWithin(startResolvePass(request), retryBudget);
+  return retry ? preferResolution(first, retry) : first;
 }
 
 async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebPlayerResult> {

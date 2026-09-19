@@ -4,7 +4,7 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import type { MediaType } from "../api/tmdb";
 import type { WatchHistoryEntry, WatchPrecision } from "../hooks/useWatchHistory";
-import { buildWatchHistorySyncArrays, clampIntOrNull, WATCH_HISTORY_REMOTE_CAST_LIMIT } from "../utils/watchHistoryRows";
+import { buildWatchHistorySyncArrays, clampIntOrNull, WATCH_HISTORY_CAST_SYNC_VERSION } from "../utils/watchHistoryRows";
 import { buildSeriesSeasonInternalId } from "../utils/watchHistoryOps";
 import { normalizeAppLanguage } from "../localization/types";
 import {
@@ -584,14 +584,15 @@ function convertRemoteWatchHistory(entries: RemoteWatchHistoryEntry[]): WatchHis
       directorProfilePaths: e.directorProfilePaths,
       watchedAt: Date.parse(e.watchedAt) || Date.now(),
       watchPrecision: (snapshot.watchPrecision === "month" ? "month" : snapshot.watchPrecision === "none" ? "none" : "day") as WatchPrecision,
-      // The table holds at most WATCH_HISTORY_REMOTE_CAST_LIMIT billed names,
-      // so a full row was cut short on upload whatever version it claims.
+      // Until WATCH_HISTORY_CAST_SYNC_VERSION the table held five billed names,
+      // so any older row was cut short on upload whatever version it claims.
       // Taking that version at face value left a synced device with five names
       // per title for good — Cate Blanchett, billed 13th, never reached her
       // Lord of the Rings entries. Version 1 hands the row to the local
-      // metadata backfill, which refetches the full cast once.
+      // metadata backfill, which refetches the full cast once. Rows written at
+      // or above that version are complete and are trusted as they are.
       metadataVersion:
-        snapshot.historyKind !== "season" && coerceNumberArray(e.castIds).length >= WATCH_HISTORY_REMOTE_CAST_LIMIT
+        snapshot.historyKind !== "season" && (e.metadataVersion || 1) < WATCH_HISTORY_CAST_SYNC_VERSION
           ? 1
           : e.metadataVersion || 1,
     }));

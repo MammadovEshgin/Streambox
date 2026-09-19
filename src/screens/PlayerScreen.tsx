@@ -556,7 +556,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       .then((alternative) => {
         if (playerResultRef.current !== failed) return;
         if (alternative.source === "not_found" || !alternative.streamUrl) {
-          setLoadError("Failed to load this stream. Please try again later.");
+          setLoadError(t("player.errorStream"));
           return;
         }
         setPlayerResult(alternative);
@@ -564,13 +564,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       })
       .catch(() => {
         if (playerResultRef.current === failed) {
-          setLoadError("Failed to load this stream. Please try again later.");
+          setLoadError(t("player.errorStream"));
         }
       })
       .finally(() => {
         setIsResolving(false);
       });
-  }, [buildWebPlayerRequest]);
+  }, [buildWebPlayerRequest, t]);
 
   useEffect(() => {
     playerResultRef.current = playerResult;
@@ -950,10 +950,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
       // The title WAS found — the stream just will not start. "Isn't in our
       // catalog" would send the viewer away from something Retry usually fixes.
-      setLoadError("Failed to load this stream. Please try again later.");
+      setLoadError(t("player.errorStream"));
     }, 8_000);
     return () => clearTimeout(timer);
-  }, [playerResult, isPlaybackReady, recoverFromDizipalFailure, recoverFromHdFilmFailure]);
+  }, [playerResult, isPlaybackReady, recoverFromDizipalFailure, recoverFromHdFilmFailure, t]);
 
   useEffect(() => {
     if (playerResult?.source !== "dizipal_html5") return;
@@ -1187,8 +1187,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   }, [showControls, switchToDiscoveredHdFilmStream, switchToHdFilmNativeFallback]);
   const handleError = useCallback(() => {
     setIsPlaybackReady(false);
-    setLoadError("Failed to load. Please check your connection.");
-  }, []);
+    setLoadError(t("player.errorNetwork"));
+  }, [t]);
 
   // Native video player for direct streams
   const directStreamUrl = (playerResult?.source === "dizipal_direct" || playerResult?.source === "direct") 
@@ -1384,12 +1384,12 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         })
         .catch((error: unknown) => {
           debugLog("[Player] In-place recovery failed:", (error as Error)?.message ?? String(error));
-          setLoadError("Failed to load this stream. Please try again later.");
+          setLoadError(t("player.errorStream"));
         });
 
       return true;
     },
-    [videoPlayer, directStreamUrl, streamReferer, directStreamType]
+    [videoPlayer, directStreamUrl, streamReferer, directStreamType, t]
   );
 
   // Restore the viewer's remembered soundtrack choice before the first stream
@@ -1513,7 +1513,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           // NOT `not_found`. We resolved this title on a provider — the stream
           // just won't play. Claiming "isn't in our catalog yet" sends the
           // viewer away from a title that a retry usually fixes.
-          setLoadError("Failed to load this stream. Please try again later.");
+          setLoadError(t("player.errorStream"));
           return prev;
         });
       }
@@ -1564,7 +1564,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       audioSub.remove();
       audioTrackSub.remove();
     };
-  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks, enforceSubtitlesOff, recoverCurrentStream, recoverFromHdFilmFailure]);
+  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks, enforceSubtitlesOff, recoverCurrentStream, recoverFromHdFilmFailure, t]);
 
   useEffect(() => {
     if (!selectedExternalSubtitle || selectedExternalSubtitle.url.includes(".m3u8")) {
@@ -2158,10 +2158,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       {/* Error */}
       {loadError && !isLoading && (
         <View style={styles.loaderOverlay}>
-          <Text style={styles.errorTitle}>Playback Error</Text>
+          <Text style={styles.errorTitle}>{t("player.errorTitle")}</Text>
           <Text style={styles.errorText}>{loadError}</Text>
           <TouchableOpacity style={[styles.retryButton, { backgroundColor: theme.colors.primary }]} accessibilityRole="button" accessibilityLabel={t("player.a11y.retry")} onPress={retryPlayback}>
-            <Text style={styles.retryText}>Retry</Text>
+            <Text style={styles.retryText}>{t("common.retry")}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -2174,20 +2174,18 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
               <Feather name="film" size={34} color={theme.colors.primary} />
             </View>
           </View>
-          <Text style={styles.notAvailableTitle}>Not available yet</Text>
+          <Text style={styles.notAvailableTitle}>{t("player.notAvailableTitle")}</Text>
           <Text style={styles.notAvailableSubtitle} numberOfLines={2}>
-            “{route.params.title}” isn’t in our catalog yet.
+            {t("player.notAvailableBody", { title: route.params.title })}
           </Text>
-          <Text style={styles.notAvailableHint}>
-            We add new titles all the time — check back soon.
-          </Text>
+          <Text style={styles.notAvailableHint}>{t("player.notAvailableHint")}</Text>
           <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.85} accessibilityRole="button" accessibilityLabel={t("common.goBack")}>
             <Feather name="arrow-left" size={16} color="#FFFFFF" />
-            <Text style={styles.goBackText}>Go Back</Text>
+            <Text style={styles.goBackText}>{t("common.goBack")}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.tryAgainButton} onPress={retryPlayback} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t("player.a11y.retry")}>
             <Feather name="refresh-cw" size={14} color="rgba(255,255,255,0.7)" />
-            <Text style={styles.tryAgainText}>Try again</Text>
+            <Text style={styles.tryAgainText}>{t("player.tryAgain")}</Text>
           </TouchableOpacity>
         </Reanimated.View>
       )}

@@ -10,6 +10,7 @@ import {
   preferResolution,
   resolveDirectWebPlayerFallback,
   resolveNativeAlternativeToHdFilm,
+  resolveWebPlayerUrl,
   type WebPlayerResult,
 } from "../src/services/WebPlayerService";
 
@@ -457,6 +458,52 @@ test("Dizibal resolver follows embed → /dl → m3u8 and uses the embed host as
     axios.get = originalGet;
     (globalThis as any).__DEV__ = originalDev;
   }
+});
+
+test("a title no provider has is answered after ONE pass, not two", async () => {
+  // The resolver used to re-run the whole ladder whenever the first pass found
+  // nothing, doubling the wait before "Not available" for a title that simply
+  // is not there. A second pass can only change the answer if the published
+  // provider domains moved, so with the config unchanged there must be no
+  // repeat of the same requests.
+  const originalGet = axios.get;
+  const originalPost = axios.post;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+  const requested: string[] = [];
+
+  // Key by URL *and* params: one pass legitimately hits /ajax-search twice
+  // with different queries, and that is not a repeat.
+  axios.get = (async (url: string, config?: any) => {
+    requested.push(`${url} ${JSON.stringify(config?.params ?? {})}`);
+    throw new Error("offline");
+  }) as typeof axios.get;
+  axios.post = (async () => { throw new Error("offline"); }) as typeof axios.post;
+
+  try {
+    const result = await resolveWebPlayerUrl({ mediaType: "movie", title: "Nothing Anywhere 9471", year: "2031" });
+    assert.equal(result.source, "not_found");
+    const duplicates = requested.filter((url, index) => requested.indexOf(url) !== index);
+    assert.deepEqual(duplicates, [], "no request may be made twice — that is a second pass");
+  } finally {
+    axios.get = originalGet;
+    axios.post = originalPost;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("a slow pass is awaited, not abandoned and restarted", () => {
+  const source = fs.readFileSync(path.join(process.cwd(), "src", "services", "WebPlayerService.ts"), "utf8");
+  const resolve = source.slice(
+    source.indexOf("export async function resolveWebPlayerUrl("),
+    source.indexOf("async function resolveWebPlayerUrlInner(")
+  );
+  assert.ok(resolve.length > 0, "resolveWebPlayerUrl should be locatable");
+  // The same in-flight promise is waited on again for the rest of the budget.
+  assert.match(resolve, /const pending = startResolvePass\(request\);/);
+  assert.match(resolve, /await awaitResolveWithin\(pending, remainingForPass\)/);
+  // And a retry only happens when the published domains actually changed.
+  assert.match(resolve, /if \(summariseProviderBaseUrls\(\) === baseUrlsBefore\) return first;/);
 });
 
 test("a failed HDFilm stream is replaced by another provider's native stream, never a page", async () => {

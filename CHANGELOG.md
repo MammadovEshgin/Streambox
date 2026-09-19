@@ -4,6 +4,15 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-09-20 (2)
+
+- Fixed: Stats "most watched actors" lost ensemble leads again (e.g. Cate Blanchett and the
+  Lord of the Rings films) on any device that restored its history from the cloud — only five
+  cast members per title survived the sync, instead of the 20 the app keeps.
+- Improved: "Not available" now appears in about a second instead of three, because the app no
+  longer re-checks every provider when they have all already answered.
+- Fixed: player error and "Not available" messages appear in Turkish when the app is Turkish.
+
 ## 2026-09-20
 
 - Fixed: most titles failed to play natively after both main providers changed their sites;

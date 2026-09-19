@@ -33,7 +33,13 @@ import {
 // credits: that pass marked an entry done even when its request failed, and a
 // long history on a busy connection failed plenty of them. Bumping this
 // re-enriches existing entries in the background (see runMetadataBackfill).
-const METADATA_VERSION = 7;
+// 8 — the cloud stopped truncating cast to five on upload (migration
+// 20260920200000). Rows written before this are five names deep whatever
+// version they carry, so 8 marks "deep cast, and it survives a sync". Entries
+// that already hold a full local cast are upgraded without a refetch. Must stay
+// equal to WATCH_HISTORY_CAST_SYNC_VERSION, which the sync layer uses to decide
+// whether a remote row predates the deeper cast.
+const METADATA_VERSION = 8;
 
 /**
  * How many billed cast members a watch-history entry remembers.
@@ -364,6 +370,13 @@ function sleep(ms: number) {
 async function fetchMetadataPatch(entry: WatchHistoryEntry): Promise<MetadataPatch | null> {
   // Seasons and non-TMDB ids have nothing to refetch.
   if (entry.historyKind === "season" || typeof entry.id === "string") {
+    return { metadataVersion: METADATA_VERSION };
+  }
+
+  // Already as deep as a refetch could make it — the version-8 bump is about
+  // the cloud no longer truncating, not about missing data. Free upgrade, so a
+  // long local history does not re-download itself over TMDB.
+  if (entry.castIds.length >= WATCH_ENTRY_CAST_LIMIT) {
     return { metadataVersion: METADATA_VERSION };
   }
 

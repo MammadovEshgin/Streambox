@@ -20,14 +20,26 @@ function genderAt(values: unknown, index: number): "male" | "female" | null {
 
 /**
  * The most billed cast members a user_watch_history row can hold (a CHECK
- * constraint on the table). Local entries keep more, so a full row coming back
- * from the cloud has been cut short.
+ * constraint on the table — migration `20260920200000`).
+ *
+ * This was 5 while entries kept 20, so the cloud silently truncated every cast
+ * list on the way up: a device that hydrated from the cloud got five names per
+ * title and Stats lost ensemble leads again (Cate Blanchett, billed 13th on
+ * Fellowship) until a full local refetch happened to finish. It matches
+ * WATCH_ENTRY_CAST_LIMIT now, so the round-trip is lossless.
  */
-export const WATCH_HISTORY_REMOTE_CAST_LIMIT = 5;
+export const WATCH_HISTORY_REMOTE_CAST_LIMIT = 20;
+
+/**
+ * The metadata version from which cast survives the cloud round-trip. Any row
+ * stamped below this was uploaded by a client that truncated to five, whatever
+ * version it claims, so it must be re-enriched locally.
+ */
+export const WATCH_HISTORY_CAST_SYNC_VERSION = 8;
 
 /**
  * The user_watch_history table requires every cast/director parallel array to
- * have the SAME length as its id array (and <= 5 entries, genders only
+ * have the SAME length as its id array (and <= 20 entries, genders only
  * male/female/null). A single row breaking that fails the entire batch upsert —
  * which is why importing 800 films (lots of unknown-gender cast) never reached
  * the cloud. Rebuild each array strictly from the id array so the cardinality
