@@ -15,7 +15,8 @@ doubt, **stop and ask** rather than guess.
   Function), imdbapi.dev, Letterboxd import.
 - Playback: streams are resolved **on device** by scraping providers in
   `src/services/WebPlayerService.ts` (HDFilm → Dizipal → Dizibal) and played in the native
-  expo-video player. An HDFilm WebView exists only as a last-resort fallback.
+  expo-video player. A provider's own web player is never shown — no native stream means
+  "Not available" with a Retry that re-resolves.
 - Backend: Supabase (Auth, Postgres + RLS, RPCs, Storage, Realtime, Edge Functions) and
   three Cloudflare Workers.
 - Watch Together: private two-person rooms with synced playback, WebRTC face-cam/voice and
@@ -251,8 +252,10 @@ wire protocol: `docs/watch-together.md`.
   that writes to production. Schema changes are always a new migration file first.
 - **Never echo, log, or commit secrets** (Supabase keys, tokens, `.env`).
 - Temporary scripts live in `scripts/` and are deleted when done.
-- Keep the player **native**: no WebView/iframe player in `PlayerScreen.tsx` beyond the
-  existing HDFilm fallback, and keep `useNativeControls={false}`.
+- Keep the player **native**: never show a provider's own web player. The resolver returns a
+  native stream or `not_found`; a failed HDFilm stream asks Dizipal/Dizibal for a native one
+  (`resolveNativeAlternativeToHdFilm`). The only WebViews left are trailer pages and the
+  app-owned hls.js surface (`dizipal_html5`). Keep `useNativeControls={false}`.
 - Match the surrounding code style; don't reformat unrelated code.
 
 ---

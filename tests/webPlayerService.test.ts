@@ -9,6 +9,7 @@ import {
   isNativeResult,
   preferResolution,
   resolveDirectWebPlayerFallback,
+  resolveNativeAlternativeToHdFilm,
   type WebPlayerResult,
 } from "../src/services/WebPlayerService";
 
@@ -454,6 +455,45 @@ test("Dizibal resolver follows embed → /dl → m3u8 and uses the embed host as
     );
   } finally {
     axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("a failed HDFilm stream is replaced by another provider's native stream, never a page", async () => {
+  const originalGet = axios.get;
+  const originalPost = axios.post;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  axios.post = (async () => { throw new Error("offline"); }) as typeof axios.post;
+  axios.get = (async (url: string) => {
+    if (url.includes("dizipal")) throw new Error("dizipal unreachable");
+    if (url.endsWith("/api/series")) return { data: { success: true, data: [{ id: 76479, slug: "the-boys" }] } };
+    if (url.endsWith("/api/series/the-boys/seasons/1")) {
+      return { data: { success: true, data: { episodes: [{ episode_number: 4, src: "2ibfbt9ftb6d" }] } } };
+    }
+    if (url.endsWith("/api/stream/embed")) {
+      return { data: { success: true, embedUrl: "https://x.ag2m4.cfd/embed-2ibfbt9ftb6d.html?autoplay=1" } };
+    }
+    if (url.includes("/embed-2ibfbt9ftb6d.html")) {
+      return { data: `fetch('/dl?op=get_stream&view_id=1&hash=abc').then(function(r){return r.json();})` };
+    }
+    if (url.includes("/dl?op=get_stream")) return { data: { url: "https://cdn.example/master.m3u8" } };
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  const request = { mediaType: "tv" as const, title: "The Boys", tmdbId: "76479", seasonNumber: 1, episodeNumber: 4 };
+  try {
+    const alternative = await resolveNativeAlternativeToHdFilm(request);
+    assert.equal(isNativeResult(alternative), true);
+    assert.equal(alternative.streamUrl, "https://cdn.example/master.m3u8");
+
+    axios.get = (async () => { throw new Error("offline"); }) as typeof axios.get;
+    const nothing = await resolveNativeAlternativeToHdFilm(request);
+    assert.equal(nothing.source, "not_found", "no provider → Not available, not a provider page");
+  } finally {
+    axios.get = originalGet;
+    axios.post = originalPost;
     (globalThis as any).__DEV__ = originalDev;
   }
 });

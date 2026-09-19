@@ -112,3 +112,42 @@ test("the quality switch reports failure instead of dropping the rejection", () 
   assert.ok(selectQuality.length > 0, "selectQuality should be locatable");
   assert.equal(selectQuality.includes(".catch("), true);
 });
+
+// ---------------------------------------------------------------------------
+// The provider's own player is never shown (2026-09-20, "Neagley"). A failed
+// HDFilm stream used to drop to hdfilmcehennemi's page player; it now asks
+// Dizipal/Dizibal for a native stream of the same title, and says "Failed to
+// load" with a Retry that really re-resolves when neither has one.
+// ---------------------------------------------------------------------------
+
+test("a failed HDFilm stream asks the other providers instead of opening HDFilm's page", () => {
+  const source = fs.readFileSync(playerScreenPath, "utf8");
+  assert.equal(
+    /setPlayerResult\(\{ url: prev\.webViewFallbackUrl, source: "hdfilm" \}\)/.test(source),
+    false,
+    "the stall watchdog must not open the provider page"
+  );
+  assert.equal(
+    /return \{ url: prev\.webViewFallbackUrl, source: "hdfilm" \}/.test(source),
+    false,
+    "the playback-error branch must not open the provider page"
+  );
+  assert.match(source, /recoverFromHdFilmFailure\("native_stall"\)/);
+  assert.match(source, /recoverFromHdFilmFailure\(ev\.error\?\.message \?\? "native_error"\)/);
+  assert.match(source, /resolveNativeAlternativeToHdFilm\(buildWebPlayerRequest\(\)\)/);
+});
+
+test("Retry re-runs the resolve for native streams and Not available", () => {
+  const source = fs.readFileSync(playerScreenPath, "utf8");
+  const retry = source.slice(source.indexOf("const retryPlayback = () => {"), source.indexOf("const isLoading = "));
+  assert.ok(retry.length > 0, "retryPlayback should be locatable");
+  assert.equal(retry.includes("setResolveNonce((nonce) => nonce + 1);"), true);
+  assert.match(source, /\}, \[route\.params, buildWebPlayerRequest, resolveNonce\]\);/);
+  // Both the error card and the Not available card use it.
+  assert.equal(source.split("onPress={retryPlayback}").length - 1, 2);
+});
+
+test("a load error is visible, not hidden behind the loading overlay", () => {
+  const source = fs.readFileSync(playerScreenPath, "utf8");
+  assert.match(source, /const isLoading = isResolving \|\| \(!isPlaybackReady && !loadError && /);
+});

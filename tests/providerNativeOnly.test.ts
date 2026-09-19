@@ -40,15 +40,17 @@ test("Dizipal only resolves when a real stream was extracted", () => {
   );
 });
 
-test("the HDFilm WebView fallback is still the last resort, after every native tier", () => {
-  const dizibalIndex = source.indexOf("resolveDirectWebPlayerFallback(request)");
-  const webViewFallbackIndex = source.indexOf("if (hdfilmWebViewFallback) return hdfilmWebViewFallback");
-
-  assert.ok(dizibalIndex > 0 && webViewFallbackIndex > 0);
-  assert.ok(
-    dizibalIndex < webViewFallbackIndex,
-    "Dizibal (native) must be tried before falling back to the HDFilm WebView"
+test("the resolver never returns HDFilm's page player — native or Not Available", () => {
+  // An HDFilm page whose decoder yielded nothing used to be kept as a
+  // last-resort result, which showed hdfilmcehennemi's own player ("Neagley",
+  // 2026-09-20). Only an extracted stream may come out of the HDFilm tier.
+  assert.equal(source.includes("hdfilmWebViewFallback"), false, "the deferred page result must stay deleted");
+  const inner = source.slice(
+    source.indexOf("async function resolveWebPlayerUrlInner"),
+    source.indexOf("export async function resolveNativeAlternativeToHdFilm")
   );
+  assert.match(inner, /const considerHdFilmResult = \(result: WebPlayerResult\): WebPlayerResult \| null =>\s*result\.streamUrl \? result : null;/);
+  assert.equal(/source: "hdfilm"/.test(inner), false, "no page result may be built in the orchestration");
 });
 
 // ---------------------------------------------------------------------------

@@ -41,6 +41,7 @@ import Reanimated, {
 import {
   resolveDirectWebPlayerFallback,
   resolveHdFilmRuntimeStream,
+  resolveNativeAlternativeToHdFilm,
   resolveWebPlayerUrl,
   type WebPlayerRequest,
   type WebPlayerResult
@@ -396,6 +397,20 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit_700Bold",
     fontSize: 15,
     letterSpacing: 0.2
+  },
+  tryAgainButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 10
+  },
+  tryAgainText: {
+    color: "rgba(255,255,255,0.7)",
+    fontFamily: "Outfit_700Bold",
+    fontSize: 14,
+    letterSpacing: 0.2
   }
 });
 
@@ -472,6 +487,9 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const playerResultRef = useRef<WebPlayerResult | null>(null);
   const directFallbackPromiseRef = useRef<Promise<WebPlayerResult> | null>(null);
   const dizipalRecoveryTriggeredRef = useRef(false);
+  const hdfilmRecoveryTriggeredRef = useRef(false);
+  // Bumped by the Retry buttons to run the whole resolve again.
+  const [resolveNonce, setResolveNonce] = useState(0);
   // In-place recoveries spent on the current source; reset whenever it changes.
   const streamRecoveryAttemptsRef = useRef(0);
 
@@ -520,6 +538,38 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     }).finally(() => {
       setIsResolving(false);
     });
+  }, [buildWebPlayerRequest]);
+
+  // An HDFilm stream that resolved but will not play here. The provider's own
+  // page player is never an option, so ask the other providers for a native
+  // stream of the same title; if none has one, say so with a working Retry.
+  const recoverFromHdFilmFailure = useCallback((reason: string) => {
+    if (hdfilmRecoveryTriggeredRef.current) return;
+    hdfilmRecoveryTriggeredRef.current = true;
+    debugLog("[Player] HDFilm stream failed; trying the other providers:", reason);
+    const failed = playerResultRef.current;
+    setLoadError(null);
+    setIsPlaybackReady(false);
+    setIsResolving(true);
+
+    void resolveNativeAlternativeToHdFilm(buildWebPlayerRequest())
+      .then((alternative) => {
+        if (playerResultRef.current !== failed) return;
+        if (alternative.source === "not_found" || !alternative.streamUrl) {
+          setLoadError("Failed to load this stream. Please try again later.");
+          return;
+        }
+        setPlayerResult(alternative);
+        setCurrentStreamUrl(alternative.streamUrl);
+      })
+      .catch(() => {
+        if (playerResultRef.current === failed) {
+          setLoadError("Failed to load this stream. Please try again later.");
+        }
+      })
+      .finally(() => {
+        setIsResolving(false);
+      });
   }, [buildWebPlayerRequest]);
 
   useEffect(() => {
@@ -707,6 +757,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     hdfilmNativeFallbackTriggeredRef.current = false;
     hdfilmRuntimeDiscoveryKeysRef.current.clear();
     dizipalRecoveryTriggeredRef.current = false;
+    hdfilmRecoveryTriggeredRef.current = false;
     directFallbackPromiseRef.current = null;
 
     if (route.params.playbackSource === "youtube" && route.params.videoId) {
@@ -757,8 +808,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         // or a jump in `not_found`, is the tier-1 outage signal.
         trackPerformance("player_resolve", Date.now() - resolveStartedAt, {
           source: result.source,
+          // `direct` is shared by HDFilm and Dizibal; only HDFilm carries its page.
+          provider: result.source === "dizipal_direct"
+            ? "dizipal"
+            : result.source === "direct"
+              ? (result.webViewFallbackUrl ? "hdfilm" : "dizibal")
+              : null,
           mediaType: route.params.mediaType,
           isEpisode: route.params.episodeNumber != null,
+          isRetry: resolveNonce > 0,
         });
 
         if (result.qualityWarning && result.source !== "not_found") {
@@ -772,13 +830,21 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       })
       .catch(() => {
         if (!cancelled) {
+          trackPerformance("player_resolve", Date.now() - resolveStartedAt, {
+            source: "not_found",
+            provider: null,
+            mediaType: route.params.mediaType,
+            isEpisode: route.params.episodeNumber != null,
+            isRetry: resolveNonce > 0,
+            threw: true,
+          });
           setPlayerResult({ url: "", source: "not_found" });
           setIsResolving(false);
         }
       });
 
     return () => { cancelled = true; };
-  }, [route.params, buildWebPlayerRequest]);
+  }, [route.params, buildWebPlayerRequest, resolveNonce]);
 
   // Prepare a provider-independent alternative without delaying native playback.
   useEffect(() => {
@@ -844,14 +910,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   // titles' deleted media files. After 8s with no readyToPlay, route to the
   // appropriate fallback:
   //
-  //   • direct + webViewFallbackUrl  → hdfilm WebView (known to work)
+  //   • direct + webViewFallbackUrl  → HDFilm stream: ask Dizipal/Dizibal for a
+  //                                     native one (never the provider's page)
   //   • dizipal_direct + imagestoo   → SKIP dizipal_html5 entirely. The media
   //                                     file is gone; the WebView fallback
   //                                     would just stall another 18s before
   //                                     the watchdog routes us here anyway.
   //                                     Go straight to direct providers.
   //   • dizipal_direct + other host  → dizipal_html5 clean WebView fallback
-  //   • direct                       → "Not Available"
+  //   • direct (Dizibal)             → "Failed to load" with Retry
   useEffect(() => {
     if (!playerResult) return;
     const source = playerResult.source;
@@ -863,8 +930,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       const prev = playerResultRef.current;
 
       if (prev?.source === "direct" && prev.webViewFallbackUrl) {
-        setLoadError(null);
-        setPlayerResult({ url: prev.webViewFallbackUrl, source: "hdfilm" });
+        recoverFromHdFilmFailure("native_stall");
         return;
       }
 
@@ -882,16 +948,12 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         return;
       }
 
-      if (prev?.source === "direct") {
-        setLoadError(null);
-        setPlayerResult({ url: "", source: "not_found" });
-        return;
-      }
-
+      // The title WAS found — the stream just will not start. "Isn't in our
+      // catalog" would send the viewer away from something Retry usually fixes.
       setLoadError("Failed to load this stream. Please try again later.");
     }, 8_000);
     return () => clearTimeout(timer);
-  }, [playerResult, isPlaybackReady, recoverFromDizipalFailure]);
+  }, [playerResult, isPlaybackReady, recoverFromDizipalFailure, recoverFromHdFilmFailure]);
 
   useEffect(() => {
     if (playerResult?.source !== "dizipal_html5") return;
@@ -1436,16 +1498,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         if (hasStarted && recoverCurrentStream(ev.error?.message)) return;
 
         setIsPlaybackReady(false);
+        // An HDFilm stream that will not start: ask the other providers for a
+        // native stream of the same title. Never the provider's page player.
+        const failed = playerResultRef.current;
+        if (failed?.source === "direct" && failed.webViewFallbackUrl) {
+          recoverFromHdFilmFailure(ev.error?.message ?? "native_error");
+          return;
+        }
         setPlayerResult((prev) => {
-          // HDFilm-derived direct streams carry the original page URL so we can
-          // gracefully drop to the on-page JWPlayer if the native stream fails
-          // (broken segment, expired token, geo block, etc.). HDFilm's WebView
-          // path is known to render the player; this is a useful fallback.
-          if (prev?.source === "direct" && prev.webViewFallbackUrl) {
-            debugLog("[Player] Direct stream failed; falling back to HDFilm WebView:", prev.webViewFallbackUrl);
-            setLoadError(null);
-            return { url: prev.webViewFallbackUrl, source: "hdfilm" };
-          }
           if (prev?.source === "dizipal_direct" && prev.streamUrl) {
             setLoadError(null);
             return { ...prev, source: "dizipal_html5" };
@@ -1504,7 +1564,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       audioSub.remove();
       audioTrackSub.remove();
     };
-  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks, enforceSubtitlesOff, recoverCurrentStream]);
+  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks, enforceSubtitlesOff, recoverCurrentStream, recoverFromHdFilmFailure]);
 
   useEffect(() => {
     if (!selectedExternalSubtitle || selectedExternalSubtitle.url.includes(".m3u8")) {
@@ -1729,7 +1789,25 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const qualityButtonRight = slotRight(hasMultipleAudioTracks ? 1 : 0);
   const episodeButtonRight = slotRight((hasMultipleAudioTracks ? 1 : 0) + (hasQualityOptions ? 1 : 0));
 
-  const isLoading = isResolving || (!isPlaybackReady && playerResult?.source !== "not_found");
+  // Retry. A provider WebView (only trailer pages now) reloads in place; a
+  // native stream or "Not available" re-runs the whole resolve — reloading a
+  // WebView that is not there did nothing.
+  const retryPlayback = () => {
+    setLoadError(null);
+    setIsPlaybackReady(false);
+    const source = playerResult?.source;
+    if (source === "hdfilm" || source === "dizipal" || source === "dizipal_embed") {
+      webViewRef.current?.reload();
+      return;
+    }
+    setPlayerResult(null);
+    setCurrentStreamUrl(null);
+    setResolveNonce((nonce) => nonce + 1);
+  };
+
+  // A load error ends the loading state — otherwise the error card (which only
+  // renders when not loading) sat forever behind the spinner.
+  const isLoading = isResolving || (!isPlaybackReady && !loadError && playerResult?.source !== "not_found");
   const isNotAvailable = playerResult?.source === "not_found";
 
   const isDirectStream = playerResult?.source === "dizipal_direct" || playerResult?.source === "direct";
@@ -2082,11 +2160,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         <View style={styles.loaderOverlay}>
           <Text style={styles.errorTitle}>Playback Error</Text>
           <Text style={styles.errorText}>{loadError}</Text>
-          <TouchableOpacity style={[styles.retryButton, { backgroundColor: theme.colors.primary }]} accessibilityRole="button" accessibilityLabel={t("player.a11y.retry")} onPress={() => {
-            setLoadError(null);
-            setIsPlaybackReady(false);
-            webViewRef.current?.reload();
-          }}>
+          <TouchableOpacity style={[styles.retryButton, { backgroundColor: theme.colors.primary }]} accessibilityRole="button" accessibilityLabel={t("player.a11y.retry")} onPress={retryPlayback}>
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
         </View>
@@ -2110,6 +2184,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           <TouchableOpacity style={[styles.goBackButton, { backgroundColor: theme.colors.primary, shadowColor: theme.colors.primary }]} onPress={handleClose} activeOpacity={0.85} accessibilityRole="button" accessibilityLabel={t("common.goBack")}>
             <Feather name="arrow-left" size={16} color="#FFFFFF" />
             <Text style={styles.goBackText}>Go Back</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.tryAgainButton} onPress={retryPlayback} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={t("player.a11y.retry")}>
+            <Feather name="refresh-cw" size={14} color="rgba(255,255,255,0.7)" />
+            <Text style={styles.tryAgainText}>Try again</Text>
           </TouchableOpacity>
         </Reanimated.View>
       )}

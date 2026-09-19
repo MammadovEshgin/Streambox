@@ -93,8 +93,8 @@ export type WebPlayerResult = {
   /**
    * Set only on HDFilm-derived `direct` results: the original HDFilm page URL.
    * If the native stream fails (broken segment, geo block, expired token, etc.)
-   * PlayerScreen can drop back to loading this page in a WebView so the user
-   * still has a chance to watch via the provider's on-page JWPlayer.
+   * PlayerScreen asks Dizipal/Dizibal for a native stream of the same title.
+   * The page itself is never shown — the provider's own player is off-limits.
    */
   webViewFallbackUrl?: string;
 };
@@ -947,17 +947,17 @@ function buildHdFilmResult(pageUrl: string, qualityWarning?: string, nativeFallb
       referer: nativeFallback.referer,
       embedUrl: nativeFallback.referer,
       subtitles: nativeFallback.subtitles,
-      // Safety net: if the native stream fails at runtime (broken segment,
-      // expired token, regional block), PlayerScreen drops back to loading
-      // this page in a WebView so playback can still be attempted.
+      // Marks the stream as HDFilm-derived: if it fails at runtime (broken
+      // segment, expired token, regional block) PlayerScreen asks the other
+      // providers for a native stream instead.
       webViewFallbackUrl: pageUrl,
       qualityWarning
     };
   }
 
-  // Decoder couldn't extract a stream — fall back to the on-page JWPlayer via
-  // WebView. This is the only remaining reason to enter the WebView path; over
-  // time we should reduce how often this happens by improving extraction.
+  // Decoder couldn't extract a stream. The page result has no `streamUrl`, and
+  // the resolver treats that as "HDFilm has nothing playable" — it never hands
+  // the provider's own page player to the user.
   return {
     url: pageUrl,
     source: "hdfilm",
@@ -1396,6 +1396,17 @@ function getCachedHdFilmNativeFallback(pageUrl: string, pageHtml: string) {
 
   const task = resolveHdFilmNativeFallback(pageUrl, pageHtml);
   hdfilmNativeFallbackCache.set(cacheKey, task);
+  // Only a success is worth remembering. A miss (embed unreachable, decoder
+  // rotated) memoised for the whole session made the resolver's own retry and
+  // every manual Retry return the same cached null instantly.
+  void task.then(
+    (stream) => {
+      if (!stream && hdfilmNativeFallbackCache.get(cacheKey) === task) hdfilmNativeFallbackCache.delete(cacheKey);
+    },
+    () => {
+      if (hdfilmNativeFallbackCache.get(cacheKey) === task) hdfilmNativeFallbackCache.delete(cacheKey);
+    }
+  );
 
   if (hdfilmNativeFallbackCache.size > HDFILM_NATIVE_FALLBACK_CACHE_LIMIT) {
     const oldestKey = hdfilmNativeFallbackCache.keys().next().value;
@@ -2598,7 +2609,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   const first = await attemptResolveWebPlayerUrl(request, RESOLVER_ATTEMPT_TIMEOUT_MS);
   if (isNativeResult(first)) return first;
 
-  // The first pass degraded to the provider WebView page or "Not Available".
+  // The first pass found no native stream ("Not Available").
   // In practice this is almost always transient: the Dizipal domain rotates
   // every few days, so the first request runs against a stale host and either
   // times out chasing the redirect chain or completes and self-heals the host
@@ -2625,30 +2636,16 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
 }
 
 async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebPlayerResult> {
-  // 1. HDFilm — try to extract a real native stream. We DEFER the WebView
-  //    fallback (source: "hdfilm" pointing at an HDFilm page) because that
-  //    path is fragile: HDFilm sometimes shows a page with alternative-link
-  //    buttons or a placeholder iframe but no actually-playable source, and
-  //    the WebView then shows a blank player. If Dizipal (or any other
-  //    provider) can deliver a real stream we always want that instead.
-  //
-  //    Concrete bug this prevents: titles where HDFilm has a page but the
-  //    decoder yields no native stream, while Dizipal has the same title
-  //    with a working stream. Before this change the resolver returned the
-  //    HDFilm WebView immediately and Dizipal was never tried.
+  // 1. HDFilm — only a real extracted stream counts. An HDFilm page whose
+  //    decoder yields nothing used to be kept as a last-resort WebView result,
+  //    which put the user inside hdfilmcehennemi's own player (pre-rolls, its
+  //    controls) whenever no other provider had the title. Playback is native
+  //    or it is "Not available"; the page is never a result.
   const isSeries = request.mediaType !== "movie";
   const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year, request.originalTitle);
 
-  let hdfilmWebViewFallback: WebPlayerResult | null = null;
-  const considerHdFilmResult = (result: WebPlayerResult): WebPlayerResult | null => {
-    // A native stream is the strong outcome — return immediately.
-    if (result.streamUrl) return result;
-    // Otherwise the result is a WebView-pointing HDFilm page. Save it as the
-    // last-resort fallback (only used if everything else fails) and keep
-    // looking for a provider that yields a real stream.
-    if (!hdfilmWebViewFallback) hdfilmWebViewFallback = result;
-    return null;
-  };
+  const considerHdFilmResult = (result: WebPlayerResult): WebPlayerResult | null =>
+    result.streamUrl ? result : null;
 
   if (hdfilmMatch) {
     if (isSeries) {
@@ -2667,8 +2664,6 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
           const ret = considerHdFilmResult(built);
           if (ret) return ret;
         }
-      } else if (!hdfilmWebViewFallback) {
-        hdfilmWebViewFallback = { url: hdfilmMatch.url, source: "hdfilm", qualityWarning: hdfilmMatch.qualityWarning };
       }
     } else {
       const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
@@ -2684,12 +2679,9 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
   //
   //    ONLY a real extracted stream counts. Dizipal's page and embed shells
   //    used to be returned as playable results too, but those render the
-  //    provider's own Playerjs in a WebView with no path back to native
-  //    playback — no stream discovery, no handoff — so the user ended up inside
-  //    a third-party player complete with its pre-roll ads and its own controls.
-  //    (The HDFilm WebView below is different: it injects a discovery script and
-  //    switches to expo-video the moment it finds the stream URL.) When the
-  //    extraction fails we now fall through to the next provider instead.
+  //    provider's own Playerjs in a WebView — the user ended up inside a
+  //    third-party player complete with its pre-roll ads and its own controls.
+  //    When the extraction fails we fall through to the next provider instead.
   {
     const dizipalResult = await resolvePlayableDizipalUrl(request);
     if (dizipalResult?.stream) {
@@ -2774,12 +2766,39 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
   const directFallback = await resolveDirectWebPlayerFallback(request);
   if (directFallback.source !== "not_found") return directFallback;
 
-  // 4. Last resort: HDFilm WebView. Only reached when no provider produced
-  //    a native stream — better than not_found, even if the JS injection in
-  //    PlayerScreen sometimes loses the race against pre-roll ads.
-  if (hdfilmWebViewFallback) return hdfilmWebViewFallback;
-
   return { url: "", source: "not_found" };
+}
+
+/**
+ * A native stream of the same title from a provider OTHER than HDFilm — for
+ * when an HDFilm stream resolved but will not play on this device. Dizipal
+ * first (same catalog depth, native), then Dizibal. Never throws; answers
+ * `not_found` when neither has it within the budget.
+ */
+export async function resolveNativeAlternativeToHdFilm(request: WebPlayerRequest): Promise<WebPlayerResult> {
+  try {
+    const dizipal = await Promise.race([
+      resolvePlayableDizipalUrl(request),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), DIRECT_FALLBACK_TIMEOUT_MS)),
+    ]);
+    if (dizipal?.stream) {
+      const { pageUrl, stream, embedUrl, qualityWarning } = dizipal;
+      return {
+        url: pageUrl,
+        source: "dizipal_direct",
+        streamUrl: stream.streamUrl,
+        streamType: stream.streamType,
+        poster: stream.poster,
+        referer: stream.referer || "",
+        embedUrl: embedUrl ?? undefined,
+        subtitles: stream.subtitles,
+        qualityWarning,
+      };
+    }
+  } catch {
+    /* fall through to Dizibal */
+  }
+  return resolveDirectWebPlayerFallback(request);
 }
 
 // ===========================================================================
