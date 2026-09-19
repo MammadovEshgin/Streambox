@@ -319,7 +319,7 @@ const styles = StyleSheet.create({
     marginTop: 18,
     paddingHorizontal: 28,
     paddingVertical: 11,
-    backgroundColor: "#FF4D00",
+    backgroundColor: "#22C55E",
     borderRadius: 8
   },
   retryText: {
@@ -383,9 +383,9 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 30,
     paddingVertical: 13,
-    backgroundColor: "#FF4D00",
+    backgroundColor: "#22C55E",
     borderRadius: 999,
-    shadowColor: "#FF4D00",
+    shadowColor: "#22C55E",
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.35,
     shadowRadius: 16,
@@ -2082,7 +2082,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         <View style={styles.loaderOverlay}>
           <Text style={styles.errorTitle}>Playback Error</Text>
           <Text style={styles.errorText}>{loadError}</Text>
-          <TouchableOpacity style={styles.retryButton} accessibilityRole="button" accessibilityLabel={t("player.a11y.retry")} onPress={() => {
+          <TouchableOpacity style={[styles.retryButton, { backgroundColor: theme.colors.primary }]} accessibilityRole="button" accessibilityLabel={t("player.a11y.retry")} onPress={() => {
             setLoadError(null);
             setIsPlaybackReady(false);
             webViewRef.current?.reload();
