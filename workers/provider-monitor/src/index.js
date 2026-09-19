@@ -247,6 +247,7 @@ async function checkDizipalDomain(providers) {
     url: `${configured}/`,
     finalUrl: null,
     status: null,
+    statusLabel: "dns",
     rotated: false,
     latestBaseUrl: null,
     blocked: false,
@@ -1001,7 +1002,9 @@ function formatCheckResults(results) {
   return results
     .map((result) => {
       const marker = result.ok ? "OK" : result.rotated ? "ROTATED" : result.blocked ? "BLOCKED" : "FAIL";
-      const status = result.status ?? "network";
+      // HTTP checks report their status code; the DNS check has none, and
+      // "network" there reads like a network error rather than the signal used.
+      const status = result.status ?? result.statusLabel ?? "network";
       return `${marker} ${result.label}: ${status} (${result.reason})`;
     })
     .join("\n");

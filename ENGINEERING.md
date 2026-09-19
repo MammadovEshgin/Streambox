@@ -91,7 +91,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 |-------|---------|
 | App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `aeb3510` → group `9b4e6424-b175-49a4-bede-e04f841762c2` |
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
-| `streambox-provider-monitor` | `d3f75aae` (hourly cron) |
+| `streambox-provider-monitor` | `e2481240` (hourly cron) |
 | `streambox-turn-credentials` | `dcfe4675` |
 | Latest migration | `20260920120100_retire_june_2026_announcements` |
 | Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
