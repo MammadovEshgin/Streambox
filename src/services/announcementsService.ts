@@ -1,8 +1,10 @@
 import { Platform } from "react-native";
 
 import type { AppLanguage } from "../localization/types";
+import { isAnnouncementRelevantToInstall } from "../utils/announcementEligibility";
 import { supabase } from "./supabase";
 import {
+  getInstallFirstSeenAt,
   hasSeenAnnouncementLocally,
   markAnnouncementSeenLocally,
   markThrottledCheck,
@@ -226,11 +228,13 @@ export async function fetchNextLiveAnnouncement(input: {
     }
 
     const nowIso = new Date().toISOString();
+    const installFirstSeenAt = await getInstallFirstSeenAt();
     const candidates = ((data ?? []) as unknown as AnnouncementRow[]).filter((row) => (
       isActiveNow(row, nowIso)
       && supportsPlatform(row)
       && supportsAppVersion(row, input.appVersion)
       && (!row.requires_auth || Boolean(input.userId))
+      && isAnnouncementRelevantToInstall(row, installFirstSeenAt, nowIso)
     ));
 
     if (candidates.length === 0) {

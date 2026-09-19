@@ -1,6 +1,26 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const SEEN_ANNOUNCEMENTS_KEY = "@streambox/live-ops/seen-announcements-v1";
+const INSTALL_FIRST_SEEN_KEY = "@streambox/live-ops/install-first-seen-at-v1";
+
+/**
+ * ISO time this install first asked for announcements; written once. On any
+ * storage failure it answers "now", which errs towards hiding old news rather
+ * than replaying it.
+ */
+export async function getInstallFirstSeenAt(now = Date.now()): Promise<string> {
+  const nowIso = new Date(now).toISOString();
+  try {
+    const stored = await AsyncStorage.getItem(INSTALL_FIRST_SEEN_KEY);
+    if (stored && Number.isFinite(Date.parse(stored))) {
+      return stored;
+    }
+    await AsyncStorage.setItem(INSTALL_FIRST_SEEN_KEY, nowIso);
+  } catch {
+    // Non-blocking best effort cache.
+  }
+  return nowIso;
+}
 
 type SeenAnnouncementMap = Record<string, number>;
 

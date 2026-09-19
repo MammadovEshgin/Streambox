@@ -31,6 +31,21 @@ Behavior:
 - shown once per signed-in user across devices
 - shown once per device for guests
 - app version and platform targeting are supported
+- an install never sees an announcement that started before it first checked for announcements,
+  unless it is a still-running time-boxed campaign (`ends_at` in the future); see
+  `src/utils/announcementEligibility.ts`
+
+**Operating rule:** publish every announcement with an `ends_at`. An open-ended one stays
+eligible forever for every existing install that has not dismissed it. To retire one:
+
+```sql
+update public.app_announcements
+   set is_active = false, updated_at = timezone('utc', now())
+ where slug = '<slug>';
+```
+
+The two open-ended June 2026 announcements (Letterboxd import, June polish) were retired by
+migration `20260920120100_retire_june_2026_announcements`.
 
 ### Tables
 
