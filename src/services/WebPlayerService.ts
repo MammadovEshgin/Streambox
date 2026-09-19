@@ -1264,11 +1264,28 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
   };
 }
 
+/**
+ * An HTML attribute value as written in markup → the string the DOM exposes.
+ * Since 2026-09-18 Dizipal's `data-cfg` is a JSON object serialised with
+ * `&quot;` entities; `dataset.cfg` in the browser decodes them, so the site's
+ * own POST carries real quotes. Sending the raw markup gets "Invalid config".
+ */
+function decodeHtmlAttribute(value: string): string {
+  return value
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*34;/g, '"')
+    .replace(/&#x0*22;/gi, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&#x0*27;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&"); // last, so "&amp;quot;" does not double-decode
+}
+
 function extractDizipalCfg(html: string): string | null {
   const match = html.match(/id=["']videoContainer["'][^>]*data-cfg=["']([^"']+)["']/i);
-  if (match?.[1]) return match[1];
-
-  return html.match(/data-cfg=["']([^"']+)["']/i)?.[1] ?? null;
+  const raw = match?.[1] ?? html.match(/data-cfg=["']([^"']+)["']/i)?.[1] ?? null;
+  return raw ? decodeHtmlAttribute(raw) : null;
 }
 
 function normalizeDizipalEmbedUrl(embedUrl: string, pageUrl: string, baseUrl: string): string | null {
@@ -1559,6 +1576,87 @@ function extractJsonArrayLiteral(value: string): string | null {
   return null;
 }
 
+/** `text` up to its first `;` outside a string literal (all of it if none). */
+function sliceStatement(text: string): string {
+  let quote: string | null = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote) {
+      if (char === "\\") index += 1;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") quote = char;
+    else if (char === ";") return text.slice(0, index);
+  }
+  return text;
+}
+
+/** The JS string literal starting at `text[start]`, decoded, plus where it ends. */
+function readStringLiteral(text: string, start: number): { value: string; end: number } | null {
+  const quote = text[start];
+  if (quote !== '"' && quote !== "'") return null;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char !== quote) continue;
+    const inner = text.slice(start + 1, index);
+    // JSON covers every escape the provider emits; a single-quoted body only
+    // needs its quotes swapped round first.
+    const asJson = quote === '"' ? inner : inner.replace(/\\'/g, "'").replace(/"/g, '\\"');
+    try {
+      return { value: JSON.parse(`"${asJson}"`) as string, end: index + 1 };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * The decoder's argument, as string parts. Two call forms are live:
+ *   name(["a","b",…])            — array literal (until 2026-09-19)
+ *   name("a|b|…".split("|"))     — delimited string (since 2026-09-20)
+ * `declarationSnippet` starts at `var <sourceVariable>`; only that statement is
+ * read, so an unrelated `[` later in the script (the decoy `hzz2([...])` call,
+ * the jwplayer setup) can never be picked up.
+ */
+function extractRapidrameParts(declarationSnippet: string): string[] | null {
+  const statement = sliceStatement(declarationSnippet);
+  const open = statement.indexOf("(");
+  if (open === -1) return null;
+
+  let cursor = open + 1;
+  while (/\s/.test(statement[cursor] ?? "")) cursor += 1;
+
+  let parts: unknown;
+  if (statement[cursor] === "[") {
+    const literal = extractJsonArrayLiteral(statement.slice(cursor));
+    if (!literal) return null;
+    try {
+      parts = JSON.parse(literal);
+    } catch {
+      return null;
+    }
+  } else {
+    const literal = readStringLiteral(statement, cursor);
+    if (!literal) return null;
+    const split = statement.slice(literal.end).match(/^\s*\.\s*split\s*\(\s*/);
+    if (!split) return null;
+    const separatorStart = literal.end + split[0].length;
+    const separator = readStringLiteral(statement, separatorStart);
+    if (!separator || !/^\s*\)/.test(statement.slice(separator.end))) return null;
+    parts = literal.value.split(separator.value);
+  }
+
+  return Array.isArray(parts) && parts.length > 0 && parts.every((part) => typeof part === "string")
+    ? parts
+    : null;
+}
+
 function normalizeExtractedMediaUrl(value: string | null): string | null {
   const normalized = value
     ?.replace(/\\\//g, "/")
@@ -1657,8 +1755,19 @@ function decodeRapidrameByInterpretingDcBody(embedHtml: string, sourceVariable: 
     .match(/=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/)?.[1];
   if (!decoderName) return null;
 
-  const fnStart = embedHtml.search(new RegExp(`\\bfunction\\s+${escapeRegExp(decoderName)}\\s*\\(`));
-  if (fnStart === -1) return null;
+  // `function name(…) {…}` until 2026-09-19; since then a function EXPRESSION,
+  // `var name = function (…) {…};`, which is rewritten into the declaration
+  // form the interpreter parses.
+  let fnStart = embedHtml.search(new RegExp(`\\bfunction\\s+${escapeRegExp(decoderName)}\\s*\\(`));
+  let declarationPrefix = "";
+  if (fnStart === -1) {
+    const expression = new RegExp(
+      `\\b(?:var|let|const)\\s+${escapeRegExp(decoderName)}\\s*=\\s*function\\s*\\(`
+    ).exec(embedHtml);
+    if (!expression) return null;
+    fnStart = embedHtml.indexOf("(", expression.index + expression[0].length - 1);
+    declarationPrefix = `function ${decoderName}`;
+  }
 
   const braceStart = embedHtml.indexOf("{", fnStart);
   if (braceStart === -1) return null;
@@ -1675,7 +1784,7 @@ function decodeRapidrameByInterpretingDcBody(embedHtml: string, sourceVariable: 
   }
   if (braceEnd === -1) return null;
 
-  return runRapidrameDecoder(embedHtml.slice(fnStart, braceEnd + 1), valueParts);
+  return runRapidrameDecoder(declarationPrefix + embedHtml.slice(fnStart, braceEnd + 1), valueParts);
 }
 
 function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
@@ -1698,11 +1807,13 @@ function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
     return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
   }
 
-  // Wide enough for the largest parts array seen in the wild (39 chunks); the
-  // literal scanner below stops at the closing bracket regardless.
-  const variableSnippet = embedHtml.slice(variableIndex, variableIndex + 8000);
-  const arrayLiteral = extractJsonArrayLiteral(variableSnippet);
-  if (!arrayLiteral) return null;
+  // Wide enough for the largest parts payload seen in the wild (~6 KB); the
+  // statement scanner in extractRapidrameParts stops at the `;` regardless.
+  const variableSnippet = embedHtml.slice(variableIndex, variableIndex + 16000);
+  const parts = extractRapidrameParts(variableSnippet);
+  if (!parts) {
+    return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
+  }
 
   // Read the live unmix constant + divisor offset from the dc_*() body so a
   // rotation of just those numbers (the provider's most common change)
@@ -1710,11 +1821,6 @@ function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
   const unmixParams = parseRapidrameUnmixConstant(embedHtml);
 
   try {
-    const parts = JSON.parse(arrayLiteral);
-    if (!Array.isArray(parts) || parts.some((part) => typeof part !== "string")) {
-      return null;
-    }
-
     // Primary path: interpret the live dc_*() body (handles the per-request
     // randomized schemes). Falls through to the static schemes on any mismatch.
     const interpreted = decodeRapidrameByInterpretingDcBody(embedHtml, sourceVariable, parts);
@@ -2233,9 +2339,11 @@ function decodeDizipalCfg(cfg: string): DizipalPlayerConfigResponse | null {
  * `/ajax-player-config` to `/ajax/player-config` in Sept 2026; the old path now
  * answers 404, which the caller treated as "no stream" and silently dropped
  * every Dizipal title. Both are tried so a rename in either direction is a
- * one-request penalty rather than an outage.
+ * one-request penalty rather than an outage. `/ajax` is what the site's
+ * `main.js` posts to since 2026-09-18; `/ajax/player-config` still answers as
+ * of 2026-09-20.
  */
-const DIZIPAL_PLAYER_CONFIG_PATHS = ["/ajax/player-config", "/ajax-player-config"];
+const DIZIPAL_PLAYER_CONFIG_PATHS = ["/ajax", "/ajax/player-config", "/ajax-player-config"];
 
 async function requestDizipalPlayerConfig(
   baseUrl: string,
@@ -3136,8 +3244,10 @@ export const __internal = {
   decodeRapidrameByInterpretingDcBody,
   decodeRapidrameValueCandidates,
   extractDizibalEmbedStream,
+  extractDizipalCfg,
   extractDizipalPageYear,
   extractHdFilmEmbedUrl,
+  extractRapidrameParts,
   extractRapidrameStreamUrl,
   generateSearchQueries,
   isYearIncompatible,

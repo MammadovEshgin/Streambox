@@ -1141,6 +1141,63 @@ test("Dizipal cfg decoding fails closed so the caller falls back to the endpoint
   });
 });
 
+test("HDFilm decoder parts come from either call form, and never from past the statement", () => {
+  const parts = __internal.extractRapidrameParts;
+  assert.deepEqual(parts('var s_A = dc_X(["ab","cd"]);'), ["ab", "cd"]);
+  assert.deepEqual(parts('var f74xr = ke14l("ab|cd|ef".split("|"));'), ["ab", "cd", "ef"]);
+  assert.deepEqual(parts("var q = k('ab,cd'.split(','));"), ["ab", "cd"]);
+  // The decoy array after the statement's end must not be read.
+  assert.equal(parts('var q = k(someVar); var bry7a = hzz2(["x","y"]);'), null);
+  assert.equal(parts('var q = k("ab|cd"); x(["y"]);'), null, "a bare string is not a parts list");
+  assert.equal(parts('var q = k("unterminated'), null);
+});
+
+test("HDFilm Sep-20-2026 embed: function-expression decoder over split('|') parts, behind a decoy call", () => {
+  const url = "https://srv1.example-cdn.shop/hls/title.mp4/txt/master.m3u8";
+  const reversed = url.split("").reverse().join("");
+  const chunks = [reversed.slice(0, 20), reversed.slice(20, 40), reversed.slice(40)];
+  const embedHtml = [
+    'var bry7a = hzz2(["decoy","parts"]);',
+    "function hzz2(p) { return 'https://decoy.example/never.m3u8'; }",
+    "var ke14l = function (n8z3f) { var s = n8z3f.join(''); return s.split('').reverse().join(''); };",
+    `var f74xr = ke14l(${JSON.stringify(chunks.join("|"))}.split("|"));`,
+    'var player = jwplayer("videoplayer").setup({ sources: [{file: f74xr, type: "hls"}] });',
+  ].join("\n");
+
+  assert.equal(__internal.extractRapidrameStreamUrl(embedHtml), url);
+});
+
+test("Dizipal's encrypted data-cfg (2026-09-18) is entity-decoded before it is POSTed", () => {
+  // Posting the markup as-is (`{&quot;ciphertext…`) gets "Invalid config"; the
+  // browser's dataset.cfg — what the site itself sends — has real quotes.
+  const html =
+    '<div class="video-player-container" id="videoContainer" ' +
+    'data-cfg="{&quot;ciphertext&quot;:&quot;abc+/=&quot;,&quot;iv&quot;:&quot;00ff&quot;,&quot;salt&quot;:&quot;aa&quot;}" ' +
+    'data-content-type="episode">';
+
+  const cfg = __internal.extractDizipalCfg(html);
+  assert.equal(cfg, '{"ciphertext":"abc+/=","iv":"00ff","salt":"aa"}');
+  assert.deepEqual(JSON.parse(cfg!), { ciphertext: "abc+/=", iv: "00ff", salt: "aa" });
+  // Not the legacy base64 shape, so the caller must go to the endpoint.
+  assert.equal(__internal.decodeDizipalCfg(cfg!), null);
+});
+
+test("Dizipal's legacy base64 data-cfg still extracts untouched and decodes on device", () => {
+  const legacy = "eyJ2IjoiaHR0cHM6Ly94LmV4YW1wbGUvYS5tM3U4IiwidCI6Im0zdTgifQ";
+  const cfg = __internal.extractDizipalCfg(`<div id="videoContainer" data-cfg="${legacy}">`);
+  assert.equal(cfg, legacy);
+  assert.notEqual(__internal.decodeDizipalCfg(cfg!), null);
+});
+
+test("Dizipal data-cfg entity decoding does not double-decode &amp;quot;", () => {
+  assert.equal(__internal.extractDizipalCfg('<div data-cfg="a&amp;quot;b">'), "a&quot;b");
+});
+
+test("Dizipal player-config posts to /ajax first — the path the site's own main.js uses", () => {
+  const source = fs.readFileSync(path.join(process.cwd(), "src", "services", "WebPlayerService.ts"), "utf8");
+  assert.match(source, /DIZIPAL_PLAYER_CONFIG_PATHS = \["\/ajax",/);
+});
+
 test("an HDFilm Cloudflare challenge is retried instead of read as 'not on HDFilm'", async () => {
   // Live behaviour (2026-09-02): a /dizi/ URL answers 403 `cf-mitigated:
   // challenge` on the first request over a fresh connection and 200 on every

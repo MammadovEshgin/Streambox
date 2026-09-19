@@ -86,6 +86,15 @@ shapes. There is no "current scheme" to pin down.
 | until Aug 2026 | arithmetic: `c - (CONST % (i + N))` |
 | Aug 2026 | rolling XOR: `acc=(acc+step)%256; plain=b^acc; acc=(acc+b)%256` (feedback off the CIPHER byte) |
 | Sep 2026 | seeded shuffle: two literal seed strings derive an LCG + XOR seed, Fisher-Yates un-shuffles the chars, THEN rolling XOR |
+| 2026-09-20 | same family, but the key and the ops string are **spliced out of the parts** (`Array.splice`), the decoder is a function **expression** (`var x = function (p) {…}`), the call is `x("a\|b\|…".split("\|"))` instead of an array literal, and a decoy old-style `var y = z([…])` call precedes it |
+
+The 2026-09-20 rotation broke three things at once, each fatal alone: the
+interpreter had no `splice`, the decoder lookup only found `function name(`,
+and the parts reader only understood an array literal (it would even have read
+the decoy). Parts are now read by `extractRapidrameParts` (bounded to the
+declaration's own statement, both call forms), and a function expression is
+rewritten to a declaration before interpretation. `tests/rapidrameScript.test.ts`
+carries the live body plus a native-execution oracle.
 
 The Sep-2026 body is much richer than its predecessors — arrays and element
 assignment, several loops including descending ones, `if/else if/else`,

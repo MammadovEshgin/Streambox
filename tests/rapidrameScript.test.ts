@@ -262,6 +262,92 @@ test("seeded-shuffle decoder tolerates the dead guards moving around the body", 
   );
 });
 
+// ---------------------------------------------------------------------------
+// 2026-09-20: the key and the ops string moved INTO the parts array and are
+// pulled out with Array.prototype.splice; the XOR now steps before it applies.
+// `npm run check:hdfilm` read 0/2 until splice was supported. Real body and
+// parts served for "Edge of Tomorrow" on 2026-09-20.
+// ---------------------------------------------------------------------------
+
+const LIVE_SEP_20_2026_PARTS: string[] = [
+  "PVVMZ", "zh1ZD", "hTWEQ", "zrQvWp0HrPsQQxZWLGWFQ", "rRWxo", "QVZIQ",
+  "lVuWj", "Y3K1J", "xTEtB", "MW8xM", "EF4cH", "737",
+  "U2QUl", "0a2U5", "ckxwR", "1R2ZS", "9DUWY", "xaTY1",
+  "anZDV", "HVkZE", "l1bkJ", "XMHU5", "MGJrR", "lhKRE",
+  "lobHl", "oVE9t", "cEQ2Y", "XBKV1", "B4SWN", "hM3lE",
+  "azYzS", "0ovME", "tsWmJ", "5cUxW", "N3c0N", "TlROU",
+  "d6U2d", "mR05O", "UEJPM", "kg="
+];
+
+const LIVE_SEP_20_2026_SOURCE = `function ke14l(n8z3f) {
+  var iwv = n8z3f.length - 2, oqba = iwv % 7, rxf = 8 + (iwv % 5);
+  var w487t = n8z3f.splice(rxf, 1)[0], k1s34 = n8z3f.splice(oqba, 1)[0];
+  var wd22 = n8z3f.join('');
+  if (k1s34.length > 4096) { wd22 = atob(wd22); }
+  var scw = 0, eqfmq = 0, ymxs, c9h;
+  for (ymxs = 0; ymxs < k1s34.length; ymxs++) {
+    c9h = k1s34.charCodeAt(ymxs);
+    scw = (scw * 37 + c9h) % 241;
+    eqfmq = (eqfmq + ((c9h << 1) ^ ymxs)) & 255;
+  }
+  var crn5 = (scw * 3 + eqfmq) % 256, ewyki = (eqfmq % 11) + 5, qzv = ((eqfmq * 251 + scw) % 65519) + 1;
+  var h9u, abdx;
+  for (ymxs = w487t.length - 1; ymxs >= 0; ymxs--) {
+    h9u = w487t.charAt(ymxs);
+    if (h9u === '7') { wd22 = atob(wd22); }
+    else if (h9u === '3') { wd22 = wd22.split('').reverse().join(''); }
+    else {
+      abdx = (26 - ((h9u.charCodeAt(0) - 96) % 26)) % 26;
+      wd22 = wd22.replace(/[a-zA-Z]/g, function (sg0) {
+        var ez7 = sg0.charCodeAt(0), k9wt = (ez7 <= 90) ? 65 : 97;
+        return String.fromCharCode((ez7 - k9wt + abdx) % 26 + k9wt);
+      });
+    }
+  }
+  if (w487t.length > 2048) { wd22 = wd22.split('').reverse().join(''); }
+  iwv = wd22.length;
+  var s5h0 = [], sp7tr, g491l, wcf;
+  for (ymxs = iwv - 1; ymxs >= 1; ymxs--) { qzv = (qzv * 97 + 41) % 65519; s5h0[ymxs] = qzv % (ymxs + 1); }
+  sp7tr = wd22.split('');
+  for (ymxs = 1; ymxs < iwv; ymxs++) { g491l = s5h0[ymxs]; wcf = sp7tr[ymxs]; sp7tr[ymxs] = sp7tr[g491l]; sp7tr[g491l] = wcf; }
+  wd22 = sp7tr.join('');
+  var tum3 = crn5, l28h = '';
+  for (ymxs = 0; ymxs < wd22.length; ymxs++) {
+    c9h = wd22.charCodeAt(ymxs);
+    tum3 = (tum3 * 5 + ewyki) % 256;
+    l28h += String.fromCharCode(c9h ^ tum3);
+    tum3 = (tum3 + c9h) % 256;
+  }
+  return l28h;
+}`;
+
+test("splice removes in place and returns the removed items", () => {
+  assert.equal(
+    runRapidrameDecoder("function f(p) { var x = p.splice(1, 1)[0]; return x + '|' + p.join(''); }", ["ab", "cd", "ef"]),
+    "cd|abef"
+  );
+  assert.equal(
+    runRapidrameDecoder("function f(p) { var r = p.splice(1); return r.join('') + '|' + p.join(''); }", ["ab", "cd", "ef"]),
+    "cdef|ab"
+  );
+});
+
+test("splice'd-key decoder: the live Sep-20-2026 body decodes to its real stream", () => {
+  assert.equal(
+    runRapidrameDecoder(LIVE_SEP_20_2026_SOURCE, LIVE_SEP_20_2026_PARTS.slice()),
+    "https://srv12.cdnimages2033.shop/hls/edgeoftomorrow2014bluray1080pdualmp4-aFlcLkKnwQx.mp4/txt/master.txt"
+  );
+});
+
+test("splice'd-key decoder matches native execution on arbitrary parts", () => {
+  // Ground truth from the JS engine itself (tests only — never in src/): the
+  // interpreter must agree byte for byte, whatever the ops string says.
+  const parts = ["aGVs", "bG8g", "d29y", "bGQh", "QUJD", "s3cr3tKey", "REVG", "R0hJ", "SktM", "TU5P", "3c3", "UFFS", "U1RV", "VldY"];
+  const native = new Function("parts", `return (${LIVE_SEP_20_2026_SOURCE})(parts);`)(parts.slice()) as string;
+  assert.ok(native.length > 0);
+  assert.equal(runRapidrameDecoder(LIVE_SEP_20_2026_SOURCE, parts.slice()), native);
+});
+
 test("interpreter rejects a catastrophic-backtracking regex instead of running it", () => {
   // The pattern is supplied by the provider's page, so a nested quantifier is
   // a hang primitive. Only classes and literals are allowed through to RegExp.

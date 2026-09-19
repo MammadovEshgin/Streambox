@@ -1288,6 +1288,15 @@ class Interpreter {
         return receiver.indexOf(args[0]);
       case "concat":
         return receiver.concat(...args.map((argument) => (Array.isArray(argument) ? argument : [argument])));
+      case "splice": {
+        // Mutates the receiver and returns the removed items — the Sep-20-2026
+        // decoder pulls its ops string and key out of the parts this way.
+        const start = args[0] === undefined ? 0 : toNumber(args[0]);
+        const deleteCount = args[1] === undefined ? receiver.length : toNumber(args[1]);
+        const inserted = args.slice(2);
+        if (receiver.length + inserted.length > MAX_ARRAY_LENGTH) bail("array budget exceeded");
+        return receiver.splice(start, deleteCount, ...inserted);
+      }
     }
     return bail(`unsupported array method: .${method}()`);
   }
