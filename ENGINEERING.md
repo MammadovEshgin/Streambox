@@ -149,10 +149,20 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   under **Turkish** titles.
 - Dizipal and HDFilm serve intermittent Cloudflare challenges; both go through `providerGet`
   / `hdFilmGet` retries.
-- **Dizibal**: resolver follows `/api/stream/embed` → Playerjs embed → `/dl?op=get_stream`
-  (needs an `Origin` header) → `master.m3u8` played with the embed host as `Referer`. Anime
-  series live under `/api/anime`. A Dizibal hit whose own TMDB/IMDb id contradicts the request
-  is never title-scored.
+- **Dizibal** rebuilt its site in Sept 2026 (Laravel); the old `/api/*` JSON routes all 404.
+  The resolver now follows the browser: `/ara/oneri?q=` (JSON search; Turkish titles, but it
+  matches English names too; no TMDB ids, so the year from `meta` must fit) → the movie page or
+  `{series|anime url}/season/S/episode/E` (anime films are anime entries, episode 1×1) → the
+  player box. `embed`: `https://{player host}/assets/js/s.php?s={data-pv}` with the Dizibal
+  origin as `Referer` (403 otherwise) → `window.__PLAYER__` → AES-128 HLS `stream` + WebVTT
+  `subs`. `direct`: `/video/bolum/{id}` MP4, HEAD-probed first (some ids 502 upstream). A
+  Turkish-named listing is confirmed by the page's JSON-LD `alternateName` (≤3 pages). The site
+  IP-bans datacenter IPs (monitor: `blocked`); the player host does not.
+- A stream the resolver found but that will not start is never "Not available": the player
+  re-resolves once silently (`failPlayableTitle`), then shows the retryable stream error. The
+  stall watchdog is 15s (`minBufferForPlayback: 4` + imagestoo's per-segment hostnames made cold
+  starts outrun 8s). A resolve pass in which a request got no answer (timeout, 5xx, 403/429 —
+  never 404) is retried; a clean miss still answers after one pass.
 - **A provider alert that names a symptom the site does not have is a monitor bug until
   proven otherwise.** Re-probe from Worker egress (`npx wrangler dev --remote`) first.
 - **A scoring heuristic must never outrank the literal thing the user typed** unless it has

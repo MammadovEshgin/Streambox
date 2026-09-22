@@ -39,6 +39,7 @@ import Reanimated, {
   FadeIn
 } from "react-native-reanimated";
 import {
+  isNativeResult,
   resolveDirectWebPlayerFallback,
   resolveHdFilmRuntimeStream,
   resolveNativeAlternativeToHdFilm,
@@ -93,6 +94,15 @@ function debugLog(...args: unknown[]) {
 // a stream that is genuinely dead.
 const MAX_STREAM_RECOVERY_ATTEMPTS = 3;
 
+// How long a native stream may take to reach readyToPlay before the stall
+// watchdog walks the fallback ladder. It was 8s when ExoPlayer started on 1s
+// of buffered media; `minBufferForPlayback: 4` (2026-09-15) made readyToPlay
+// wait for 4s, and Dizipal's imagestoo streams put every 2s segment on a
+// different, never-seen hostname (a fresh DNS + TLS each), so a cold start on
+// mobile data routinely outran 8s. The watchdog then tore down a stream that
+// was about to play — and the viewer's second tap, on warm DNS, played it.
+const NATIVE_STALL_TIMEOUT_MS = 15_000;
+
 function isImagestooStream(url?: string | null): boolean {
   if (!url) return false;
   try {
@@ -112,13 +122,15 @@ type DirectSubtitleOption = {
   lang: string;
 };
 
+// An HLS master with LANGUAGE="" makes ExoPlayer parse the next attribute as
+// the language code (`",name=` on imagestoo streams); never print one.
+function isReadableTrackText(value?: string | null): value is string {
+  return Boolean(value?.trim()) && !/["=,;<>{}]/.test(value ?? "");
+}
+
 function getSubtitleTrackLabel(track: SubtitleTrack): string {
-  const label = track.label?.trim();
-  if (label) return label;
-
-  const language = track.language?.trim();
-  if (language) return language.toUpperCase();
-
+  if (isReadableTrackText(track.label)) return track.label.trim();
+  if (isReadableTrackText(track.language)) return track.language.trim().toUpperCase();
   return "Subtitle";
 }
 
@@ -492,6 +504,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const [resolveNonce, setResolveNonce] = useState(0);
   // In-place recoveries spent on the current source; reset whenever it changes.
   const streamRecoveryAttemptsRef = useRef(0);
+  // Re-opens the current source even when a re-resolve hands back the same URL
+  // (HDFilm's decoded stream is cached per page, so the URL often is the same).
+  const [sourceGeneration, setSourceGeneration] = useState(0);
+  // One silent re-resolve per resolve before any error card (see failPlayableTitle).
+  const silentRetryUsedRef = useRef(false);
+  const isPlaybackReadyRef = useRef(false);
+  isPlaybackReadyRef.current = isPlaybackReady;
 
   const buildWebPlayerRequest = useCallback((): WebPlayerRequest => ({
     mediaType: route.params.mediaType,
@@ -505,6 +524,54 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     castNames: route.params.castNames,
     videoId: route.params.videoId
   }), [route.params]);
+
+  /**
+   * The title WAS found — its stream just would not start. That is never "Not
+   * available yet" (which means no provider has the title), and it is usually
+   * not final either: a cold connection is the common cause, and a fresh
+   * resolve over the now-warm one is exactly what the viewer's own Retry kept
+   * fixing. So resolve once more, silently, behind the loader; only if that
+   * also fails show the retryable error.
+   */
+  const failPlayableTitle = useCallback((reason: string) => {
+    if (silentRetryUsedRef.current) {
+      setLoadError(t("player.errorStream"));
+      return;
+    }
+    silentRetryUsedRef.current = true;
+    const failed = playerResultRef.current;
+    const startedAt = Date.now();
+    debugLog("[Player] Stream would not start; resolving once more before erroring:", reason);
+    setLoadError(null);
+    setIsPlaybackReady(false);
+    setIsResolving(true);
+
+    void resolveWebPlayerUrl(buildWebPlayerRequest())
+      .then((result) => {
+        trackPerformance("player_silent_retry", Date.now() - startedAt, { reason, source: result.source });
+        // The viewer moved on, or the original stream came up after all.
+        if (playerResultRef.current !== failed || isPlaybackReadyRef.current) return;
+        if (!isNativeResult(result)) {
+          setLoadError(t("player.errorStream"));
+          return;
+        }
+        // A fresh source gets a fresh fallback ladder.
+        dizipalRecoveryTriggeredRef.current = false;
+        hdfilmRecoveryTriggeredRef.current = false;
+        directFallbackPromiseRef.current = null;
+        setPlayerResult(result);
+        setCurrentStreamUrl(result.streamUrl ?? null);
+        setSourceGeneration((generation) => generation + 1);
+      })
+      .catch(() => {
+        if (playerResultRef.current === failed && !isPlaybackReadyRef.current) {
+          setLoadError(t("player.errorStream"));
+        }
+      })
+      .finally(() => {
+        setIsResolving(false);
+      });
+  }, [buildWebPlayerRequest, t]);
 
   const recoverFromDizipalFailure = useCallback((reason: string) => {
     if (dizipalRecoveryTriggeredRef.current) return;
@@ -526,19 +593,28 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         debugLog("[Player] Direct fallback ignored — playerResult moved on:", current?.source);
         return;
       }
+      // The Dizipal stream came up while the fallback was resolving: keep it.
+      if (isPlaybackReadyRef.current) return;
+
+      // Dizipal HAD the title. No other provider having it too does not make
+      // it "not in our catalog" — that card sent viewers away from titles a
+      // second tap played.
+      if (fallback.source === "not_found" || !fallback.streamUrl) {
+        failPlayableTitle("dizipal_fallback_empty");
+        return;
+      }
 
       setLoadError(null);
       setIsPlaybackReady(false);
       setPlayerResult(fallback);
       setCurrentStreamUrl(fallback.streamUrl ?? null);
     }).catch((error) => {
-      debugLog("[Player] Direct fallback threw — falling through to not_found:", error?.message ?? String(error));
-      setPlayerResult({ url: "", source: "not_found" });
-      setCurrentStreamUrl(null);
+      debugLog("[Player] Direct fallback threw:", error?.message ?? String(error));
+      if (!isPlaybackReadyRef.current) failPlayableTitle("dizipal_fallback_threw");
     }).finally(() => {
       setIsResolving(false);
     });
-  }, [buildWebPlayerRequest]);
+  }, [buildWebPlayerRequest, failPlayableTitle]);
 
   // An HDFilm stream that resolved but will not play here. The provider's own
   // page player is never an option, so ask the other providers for a native
@@ -555,22 +631,24 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     void resolveNativeAlternativeToHdFilm(buildWebPlayerRequest())
       .then((alternative) => {
         if (playerResultRef.current !== failed) return;
+        // The HDFilm stream came up while the others were being asked: keep it.
+        if (isPlaybackReadyRef.current) return;
         if (alternative.source === "not_found" || !alternative.streamUrl) {
-          setLoadError(t("player.errorStream"));
+          failPlayableTitle("hdfilm_no_alternative");
           return;
         }
         setPlayerResult(alternative);
         setCurrentStreamUrl(alternative.streamUrl);
       })
       .catch(() => {
-        if (playerResultRef.current === failed) {
-          setLoadError(t("player.errorStream"));
+        if (playerResultRef.current === failed && !isPlaybackReadyRef.current) {
+          failPlayableTitle("hdfilm_alternative_threw");
         }
       })
       .finally(() => {
         setIsResolving(false);
       });
-  }, [buildWebPlayerRequest, t]);
+  }, [buildWebPlayerRequest, failPlayableTitle]);
 
   useEffect(() => {
     playerResultRef.current = playerResult;
@@ -759,6 +837,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     dizipalRecoveryTriggeredRef.current = false;
     hdfilmRecoveryTriggeredRef.current = false;
     directFallbackPromiseRef.current = null;
+    silentRetryUsedRef.current = false;
 
     if (route.params.playbackSource === "youtube" && route.params.videoId) {
       // Azerbaijani Classics: play straight through the in-app YouTube player,
@@ -950,10 +1029,10 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
       // The title WAS found — the stream just will not start. "Isn't in our
       // catalog" would send the viewer away from something Retry usually fixes.
-      setLoadError(t("player.errorStream"));
-    }, 8_000);
+      failPlayableTitle("native_stall");
+    }, NATIVE_STALL_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [playerResult, isPlaybackReady, recoverFromDizipalFailure, recoverFromHdFilmFailure, t]);
+  }, [playerResult, isPlaybackReady, recoverFromDizipalFailure, recoverFromHdFilmFailure, failPlayableTitle]);
 
   useEffect(() => {
     if (playerResult?.source !== "dizipal_html5") return;
@@ -1329,7 +1408,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     streamRecoveryAttemptsRef.current = 0;
     void videoPlayer.replaceAsync(source);
     // Don't call play() here â€” wait for readyToPlay status so play() doesn't silently fail
-  }, [videoPlayer, directStreamUrl, streamReferer, directStreamType]);
+  }, [videoPlayer, directStreamUrl, streamReferer, directStreamType, sourceGeneration]);
 
   /**
    * Re-open the CURRENT stream at the position it died on.
@@ -1505,17 +1584,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           recoverFromHdFilmFailure(ev.error?.message ?? "native_error");
           return;
         }
-        setPlayerResult((prev) => {
-          if (prev?.source === "dizipal_direct" && prev.streamUrl) {
-            setLoadError(null);
-            return { ...prev, source: "dizipal_html5" };
-          }
-          // NOT `not_found`. We resolved this title on a provider — the stream
-          // just won't play. Claiming "isn't in our catalog yet" sends the
-          // viewer away from a title that a retry usually fixes.
-          setLoadError(t("player.errorStream"));
-          return prev;
-        });
+        if (failed?.source === "dizipal_direct" && failed.streamUrl) {
+          setLoadError(null);
+          setPlayerResult({ ...failed, source: "dizipal_html5" });
+          return;
+        }
+        // NOT `not_found`. We resolved this title on a provider — the stream
+        // just won't play. Claiming "isn't in our catalog yet" sends the
+        // viewer away from a title that a retry usually fixes.
+        failPlayableTitle(ev.error?.message ?? "native_error");
       }
     });
 
@@ -1564,7 +1641,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       audioSub.remove();
       audioTrackSub.remove();
     };
-  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks, enforceSubtitlesOff, recoverCurrentStream, recoverFromHdFilmFailure, t]);
+  }, [videoPlayer, handleContinueWatchingReady, applyAudioTracks, enforceSubtitlesOff, recoverCurrentStream, recoverFromHdFilmFailure, failPlayableTitle]);
 
   useEffect(() => {
     if (!selectedExternalSubtitle || selectedExternalSubtitle.url.includes(".m3u8")) {

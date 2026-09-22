@@ -66,6 +66,19 @@ function dohAnswer(url: URL, resolving: string[] | null): Response {
   );
 }
 
+// Dizibal's own origin since its Sept 2026 rebuild, for any datacenter IP.
+const dizibalIpBan = () =>
+  new Response(
+    "<html><title>403 — Erişim Engellendi</title><p>Erişiminiz engellendi. Bu IP adresi güvenlik nedeniyle yasaklanmıştır.</p></html>",
+    { status: 403, headers: { server: "cloudflare" } },
+  );
+
+// The pilavyer player page Dizibal embeds; it answers the Worker.
+let dizibalPlayer: (url: URL, init: RequestInit) => Response = (_url, init) =>
+  new Headers(init.headers).get("referer") === "https://dizibal.org/"
+    ? new Response(`<script>window.__PLAYER__ = {"v":"b0ef","stream":"https://pilavyerplay.top/api/stream.php?v=b0ef&token=t","subs":[]};</script>`, { status: 200 })
+    : new Response("<title>Erişim engellendi</title>", { status: 403 });
+
 const ddosGuardWall = () =>
   new Response("<html><title>Error 403</title><body>DDoS-Guard</body></html>", {
     status: 403,
@@ -100,7 +113,10 @@ async function callMonitor(
     if (url.origin === SUPABASE && url.pathname === "/functions/v1/provider-configs") {
       return new Response(JSON.stringify({
         success: true,
-        providers: { dizipal: { baseUrl: configured, referer: `${configured}/` } },
+        providers: {
+          dizipal: { baseUrl: configured, referer: `${configured}/` },
+          dizibal: { baseUrl: "https://dizibal.org", referer: "https://dizibal.org/" },
+        },
       }), { status: 200 });
     }
     if (url.origin === SUPABASE && init.method === "PATCH") {
@@ -111,9 +127,8 @@ async function callMonitor(
       telegram.push(JSON.parse(String(init.body)).text);
       return new Response("{}", { status: 200 });
     }
-    if (url.hostname.includes("dizibal")) {
-      return new Response(JSON.stringify({ success: true, data: [] }), { status: 200 });
-    }
+    if (url.hostname.includes("dizibal")) return dizibalIpBan();
+    if (url.hostname === "pilavyerplay.top") return dizibalPlayer(url, init);
     if (url.hostname.includes("dizipal")) {
       let current = url;
       for (let hop = 0; hop < 30; hop++) {
@@ -382,5 +397,34 @@ test("DNS being unreachable is 'unknown', never 'down' or a rotation", async () 
     assert.equal(domain.blocked, true);
     assert.equal(domain.rotated, false);
     assert.equal(telegram.some((text) => /is down/.test(text)), false);
+  }
+});
+
+test("/status: Dizibal's IP ban reads as blocked, and its player is still watched", async () => {
+  const request = new Request("https://monitor.test/telegram", {
+    method: "POST",
+    headers: { "x-telegram-bot-api-secret-token": "hook" },
+    body: JSON.stringify({ message: { chat: { id: 42 }, text: "/status" } }),
+  });
+  const { telegram } = await callMonitor(request, env, "https://dizipal2133.com", () => ddosGuardWall(), ["dizipal2133.com"]);
+  const dizibal = telegram[0].slice(telegram[0].indexOf("── dizibal ──"));
+  assert.match(dizibal, /BLOCKED Dizibal search: 403 \(blocked by Dizibal's IP ban/);
+  assert.match(dizibal, /OK Dizibal player: 200 \(ok\)/);
+  assert.match(dizibal, /Up to date\./, "a wall is not a failing check");
+  assert.doesNotMatch(dizibal, /FAIL/);
+});
+
+test("a Dizibal player that stops carrying a stream is a real failure, not a wall", async () => {
+  const healthy = dizibalPlayer;
+  dizibalPlayer = () => new Response("<title>Breaking Bad</title><script>window.__PLAYER__ = {\"v\":\"b0ef\"};</script>", { status: 200 });
+  try {
+    const kv = new Map<string, string>();
+    const { body } = await runOnce("https://dizipal2133.com", () => ddosGuardWall(), ["dizipal2133.com"], kv);
+    const player = body.results.find((r: { id: string }) => r.id === "dizibal_player");
+    assert.equal(player.ok, false);
+    assert.equal(player.blocked, false);
+    assert.match(player.reason, /push OTA/);
+  } finally {
+    dizibalPlayer = healthy;
   }
 });

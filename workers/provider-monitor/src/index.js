@@ -168,11 +168,16 @@ function pageTitle(body) {
  * as "down" paged an outage nobody had and, worse, trained the reader to ignore
  * the bot. A walled check is reported as `blocked` — not observable from here —
  * and the domain rotation is watched through DNS instead (`checkDizipalDomain`).
+ *
+ * Since its Sept 2026 rebuild Dizibal does the same from its own origin: every
+ * page answers datacenter IPs 403 "Erişim Engellendi … Bu IP adresi güvenlik
+ * nedeniyle yasaklanmıştır" (this IP is banned) while residential users get 200.
  */
 function blockingWall(response, body) {
   if (response.status !== 403 && response.status !== 429 && response.status !== 503) return null;
   const server = (response.headers.get("server") ?? "").toLowerCase();
   if (server.includes("ddos-guard") || /ddos-guard/i.test(body)) return "DDoS-Guard";
+  if (/IP adresi güvenlik nedeniyle yasaklanmış/i.test(body)) return "Dizibal's IP ban";
   if (isChallengeResponse(response, body)) return "a Cloudflare challenge";
   return null;
 }
@@ -302,7 +307,7 @@ async function checkDizipalDomain(providers) {
   return finish({ ok: true, reason: `ok (${configuredHost} resolves; no newer dizipalN in DNS)` });
 }
 
-async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
+async function checkHttpEndpoint({ id, label, url, referer, validator, watchRotation = true }, env) {
   const startedAt = Date.now();
   const timeoutMs = getTimeoutMs(env);
 
@@ -330,7 +335,10 @@ async function checkHttpEndpoint({ id, label, url, referer, validator }, env) {
       ? validator(response, body)
       : { ok: response.ok, reason: response.ok ? "ok" : `HTTP ${response.status}` };
     const transport = Boolean(response.ok && validatorResult.ok);
-    const rotation = compareOrigins(url, response.url ?? url);
+    // A third-party host (Dizibal's player) moving is not the provider rotating.
+    const rotation = watchRotation
+      ? compareOrigins(url, response.url ?? url)
+      : { rotated: false, requestedOrigin: null, finalOrigin: null };
     // Endpoint is only "ok" if it works AND the origin hasn't rotated.
     // A 200 from a redirected host means the user's configured URL is stale.
     const ok = transport && !rotation.rotated;
@@ -447,8 +455,8 @@ function buildProviderChecks(providers) {
   // datacenter IPs and are challenged exactly like Worker egress; that
   // workflow existed once and was deleted after it did nothing but send false
   // alarms. The in-app `player_resolve` telemetry is the passive tier-1
-  // outage signal. Re-verified from Worker egress 2026-09-10: HDFilm 403,
-  // Dizipal 200, Dizibal 200.
+  // outage signal. Re-verified from Worker egress 2026-09-22: HDFilm 403,
+  // Dizipal 403 (DDoS-Guard), Dizibal site 403 (IP ban), Dizibal player 200.
   return [
     {
       id: "dizipal_home",
@@ -525,61 +533,46 @@ function buildProviderChecks(providers) {
       },
     },
     // ─── Dizibal ─────────────────────────────────────────────────
-    // The app consumes Dizibal's JSON APIs, not its browser homepage. The
-    // homepage rejects Cloudflare Worker egress with HTTP 403 while these API
-    // endpoints remain healthy, so probing `/` creates a permanent false
-    // alarm and must not participate in provider health.
+    // Dizibal rebuilt its site in Sept 2026: the JSON API (/api/movies,
+    // /api/site-config/…) is gone (404) and the app now reads the header
+    // search box, the watch page, and the "pilavyer" player the page embeds.
+    // The site itself IP-bans Cloudflare's network (`blockingWall`), so the
+    // search check is `blocked` from here; the player host is not walled and
+    // is the half of the chain that can actually be watched.
     {
-      id: "dizibal_api",
-      label: "Dizibal site-config API",
-      // Canary endpoint that always exists and is fast. If this stops being
-      // success:true, the API contract has changed and the on-device
-      // scraper needs an OTA push.
-      url: `${dizibalBaseUrl}/api/site-config/maintenance`,
+      id: "dizibal_search",
+      label: "Dizibal search",
+      url: `${dizibalBaseUrl}/ara/oneri?q=breaking%20bad`,
       referer: dizibalReferer,
       validator: (response, body) => {
-        if (response.status !== 200) {
-          return { ok: false, reason: `HTTP ${response.status}` };
-        }
+        if (response.status !== 200) return { ok: false, reason: `HTTP ${response.status}` };
         try {
           const parsed = JSON.parse(body);
-          const ok = parsed?.success === true;
-          return { ok, reason: ok ? "ok" : "site-config no longer returns success:true — push OTA" };
+          const ok = Array.isArray(parsed?.series)
+            && parsed.series.some((item) => /\/series\/breaking-bad\/?$/.test(item?.url ?? ""));
+          return { ok, reason: ok ? "ok" : "search no longer lists /series/{slug} urls — push OTA" };
         } catch {
-          return { ok: false, reason: "site-config did not return JSON" };
+          return { ok: false, reason: "search did not return JSON — push OTA" };
         }
       },
     },
     {
-      id: "dizibal_search_shape",
-      label: "Dizibal search shape",
-      // Search for The Shawshank Redemption — universal catalog coverage.
-      // We're checking that the response is a JSON array with the slug + src
-      // fields the on-device scraper depends on.
-      url: `${dizibalBaseUrl}/api/movies?search=shawshank&limit=3`,
-      referer: dizibalReferer,
+      id: "dizibal_player",
+      label: "Dizibal player",
+      // The player page Breaking Bad 1×1 mounts (its data-pv slug is stable).
+      // It is origin-locked: 403 unless the Referer is the Dizibal origin.
+      url: "https://pilavyerplay.top/assets/js/s.php?s=yEILM0ysEtqZE5fmdNHeeg",
+      referer: `${dizibalBaseUrl}/`,
+      watchRotation: false,
       validator: (response, body) => {
-        if (response.status !== 200) {
-          return { ok: false, reason: `HTTP ${response.status}` };
-        }
+        if (response.status === 404) return { ok: false, reason: "canary video gone (HTTP 404) — pick a new data-pv slug" };
+        if (response.status !== 200) return { ok: false, reason: `HTTP ${response.status}` };
+        const raw = body.match(/window\.__PLAYER__\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/)?.[1];
         try {
-          const parsed = JSON.parse(body);
-          const hits = Array.isArray(parsed?.data) ? parsed.data : null;
-          if (!hits || hits.length === 0) {
-            return { ok: false, reason: "search returned no hits — push OTA" };
-          }
-          const first = hits[0];
-          const hasSlug = typeof first.slug === "string" && first.slug.length > 0;
-          const hasSrc = typeof first.src === "string" && first.src.length > 0;
-          if (!hasSlug || !hasSrc) {
-            return {
-              ok: false,
-              reason: `search shape changed (slug=${hasSlug} src=${hasSrc}) — push OTA`,
-            };
-          }
-          return { ok: true, reason: "ok" };
+          const ok = /^https:\/\//.test(JSON.parse(raw ?? "")?.stream ?? "");
+          return { ok, reason: ok ? "ok" : "__PLAYER__ has no stream url — push OTA" };
         } catch {
-          return { ok: false, reason: "search did not return JSON" };
+          return { ok: false, reason: "player page no longer carries window.__PLAYER__ — push OTA" };
         }
       },
     },

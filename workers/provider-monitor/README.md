@@ -8,8 +8,10 @@ Cloudflare Worker Cron monitor for streaming provider domains. It reads the curr
 - Dizipal search: `base_url/ajax-search?q=breaking%20bad`
 - Dizipal playback config: `base_url/bolum/breaking-bad-1-sezon-1-bolum`
 - Dizipal domain (DNS): does a newer `dizipalN` resolve? (DNS-over-HTTPS, 12 suffixes ahead)
-- Dizibal site-config API: `base_url/api/site-config/maintenance`
-- Dizibal movie-search response shape: `base_url/api/movies?search=shawshank&limit=3`
+- Dizibal search: `base_url/ara/oneri?q=breaking%20bad` (JSON, lists `/series/breaking-bad`)
+- Dizibal player: `https://pilavyerplay.top/assets/js/s.php?s=yEILM0ysEtqZE5fmdNHeeg` with the
+  Dizibal origin as Referer — Breaking Bad 1×1's player page must carry `window.__PLAYER__`
+  with a `stream` URL
 
 ### DDoS-Guard and the DNS rotation watch
 
@@ -28,11 +30,25 @@ the next one — so the bot reported a permanent outage and could not detect a r
   `/set_dizipal` to send. If the configured domain stops resolving and nothing newer does, that
   counts towards "down". DoH being unreachable is "unknown", never "down".
 
-Dizibal's browser homepage is intentionally not checked because it rejects Cloudflare Worker egress with HTTP 403 even while the JSON APIs used by StreamBox are healthy.
+### Dizibal's rebuild and IP ban (2026-09-22)
+
+Dizibal rebuilt its site in Sept 2026 (Laravel). The JSON API the app and this monitor used
+(`/api/movies`, `/api/series`, `/api/anime`, `/api/site-config/…`, `/api/stream/embed`) is gone —
+every route answers `404` — and the app now reads the header search box (`/ara/oneri`), the
+watch page, and the "pilavyer" player the page embeds (`s.php?s={data-pv}` → `__PLAYER__`
+JSON with an AES-128 HLS `stream` and WebVTT `subs`; some anime use a direct MP4 instead).
+
+The new origin also IP-bans Cloudflare's network: every page answers `403 — Erişim Engellendi`
+("Bu IP adresi güvenlik nedeniyle yasaklanmıştır"), while residential users get `200`.
+`blockingWall` recognises that page, so `dizibal_search` is `blocked`, never "down". The player
+host is not walled, so `dizibal_player` is a real check of the playback half of the chain; it
+does not watch redirects (`watchRotation: false`) — the player host moving is not Dizibal
+rotating. If Breaking Bad 1×1's `data-pv` slug ever 404s ("Video bulunamadı"), pick a new one
+from any episode page.
 
 ### Why HDFilm is NOT checked here — and what covers it instead
 
-HDFilm is the app's **tier 1** provider, and this monitor cannot see it. It sits behind Cloudflare and challenges Cloudflare Worker egress: from a Worker, both `www.hdfilmcehennemi.nl` and `hdfilmcehennemi.mobi` return **403 "Just a moment…"** on every path (verified with `wrangler dev --remote`, 2026-09-08). GitHub Actions runners are datacenter IPs too and are blocked the same way. Any HDFilm check added here would fail permanently and train everyone to ignore the alerts — the same trap as Dizibal's homepage above.
+HDFilm is the app's **tier 1** provider, and this monitor cannot see it. It sits behind Cloudflare and challenges Cloudflare Worker egress: from a Worker, both `www.hdfilmcehennemi.nl` and `hdfilmcehennemi.mobi` return **403 "Just a moment…"** on every path (verified with `wrangler dev --remote`, 2026-09-08). GitHub Actions runners are datacenter IPs too and are blocked the same way. Any HDFilm check added here would fail permanently and train everyone to ignore the alerts — the same trap as Dizibal's IP-banned pages above.
 
 This is not theoretical. In Sept 2026 HDFilm changed its stream obfuscation, every title on it stopped playing, and **this monitor stayed entirely green** because it has never probed HDFilm at all. The outage surfaced only when a user noticed a series had "disappeared".
 

@@ -332,82 +332,83 @@ test("HDFilm buildHdFilmResult goes native for the legacy preferNative=true shap
   assert.equal(result.webViewFallbackUrl, pageUrl);
 });
 
-test("pickDizibalHit prefers an exact TMDB-id match over higher-scoring titles", () => {
-  // tmdbId-driven match short-circuits the title scorer. The first hit has
-  // the same TMDB id we asked for; the second has a fuzzier but technically
-  // higher title-score. We expect the TMDB match to win.
-  const hits = [
-    { id: 76479, slug: "the-boys", name_en: "The Boys" },
-    { id: 99999, slug: "the-boyz", name_en: "The Boyz", name_tr: "The Boys (Korean drama)" },
-  ];
-  const picked = __internal.pickDizibalHit(hits, {
-    title: "The Boys",
-    mediaType: "tv",
-    tmdbId: "76479",
-    year: "2019",
-  });
-  assert.equal(picked?.slug, "the-boys");
+// ---------------------------------------------------------------------------
+// Dizibal, rebuilt Sept 2026: /ara/oneri search → title/episode page →
+// pilavyer s.php player config (or a direct MP4). The old /api/* routes 404.
+// Shapes below are trimmed copies of live responses from 2026-09-22.
+// ---------------------------------------------------------------------------
+
+const dizibalSuggest = (movies: object[], series: object[] = []) => ({ movies, series, people: [], searchUrl: "" });
+
+const dizibalEmbedPage = (slug: string, host = "https://pilavyerplay.top") => `
+  <div class="tb-box" data-player data-player-type="embed" data-duration="2400">
+    <div data-pv="${slug}" class="absolute inset-0 h-full w-full"></div>
+    <script src="${host}/assets/js/core.js" async></script>
+  </div>`;
+
+const dizibalPlayerPage = (stream: string, subs: object[] = []) =>
+  `<script>window.__PLAYER__ = ${JSON.stringify({ v: "b0ef", stream, subs, audios: [] })};</script>
+   <script src="https://pilavyerplay.top/assets/js/player.js"></script>`;
+
+const dizibalTitlePage = (type: "Movie" | "TVSeries", name: string, alternateName: string) =>
+  `<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","name":"DiziBal"}]}</script>
+   <script type="application/ld+json">${JSON.stringify({ "@context": "https://schema.org", "@graph": [{ "@type": type, name, alternateName }] })}</script>`;
+
+test("Dizibal suggestions: year rules out a same-named title, exact names rank first", () => {
+  const response = dizibalSuggest(
+    [{ title: "Criminal Minds Movie", url: "https://dizibal.org/movie/cm", meta: "Film · 2005" }],
+    [
+      { title: "Criminal: Birleşik Krallık", url: "https://dizibal.org/series/criminal-birlesik-krallik", meta: "Dizi · 2019" },
+      { title: "Criminal Minds: Beyond Borders", url: "https://dizibal.org/series/cm-bb", meta: "Dizi · 2016" },
+      { title: "Criminal Minds", url: "https://dizibal.org/series/criminal-minds", meta: "Dizi · 2005" },
+    ],
+  );
+  const ranked = __internal.rankDizibalSuggestions(response, { mediaType: "tv", title: "Criminal Minds", year: "2005" });
+  // A tv request never considers films; other years are not candidates at all.
+  assert.deepEqual(ranked.map((c) => c.url), ["https://dizibal.org/series/criminal-minds"]);
+  assert.equal(ranked[0].titleScore, 100);
 });
 
-test("pickDizibalHit rejects junk matches when no TMDB/IMDB and title scores too low", () => {
-  // None of the candidates look like the requested title — refuse to return
-  // a fallback rather than play random content.
-  const hits = [
-    { id: 1, slug: "completely-different", name_en: "Completely Different Show" },
-  ];
-  const picked = __internal.pickDizibalHit(hits, {
-    title: "The Boys",
-    mediaType: "tv",
-    tmdbId: "76479",
-  });
-  assert.equal(picked, null);
-});
-
-test("pickDizibalHit never plays a same-named title that carries a different identity", () => {
-  // Live Dizibal search for "Resident Evil" on 2026-09-15: the 2002 film is
-  // there, the 2026 film is not. The title scorer used to accept the 2002 hit
-  // for a 2026 request, so the player opened the wrong film.
-  const hits = [
-    { id: 1576, imdb_id: "tt0120804", slug: "resident-evil", title_en: "Resident Evil", original_title: "Resident Evil", release_date: "2002-03-15" },
-    { id: 71679, imdb_id: "tt1855325", slug: "resident-evil-5", title_en: "Resident Evil: Retribution", release_date: "2012-09-12" },
-  ];
-
-  const newFilm = { title: "Resident Evil", mediaType: "movie" as const, tmdbId: "1423191", imdbId: "tt35538033", year: "2026" };
-  assert.equal(__internal.pickDizibalHit(hits, newFilm), null);
-  // Without ids to contradict it, the year still rules the old record out.
-  assert.equal(__internal.pickDizibalHit(hits, { title: "Resident Evil", mediaType: "movie", year: "2026" }), null);
-
-  // The film that IS there still resolves — by id, and by title + year alone.
-  assert.equal(__internal.pickDizibalHit(hits, { ...newFilm, tmdbId: "1576", imdbId: "tt0120804", year: "2002" })?.id, 1576);
-  assert.equal(__internal.pickDizibalHit(hits, { title: "Resident Evil", mediaType: "movie", year: "2002" })?.id, 1576);
-});
-
-test("extractDizibalEmbedStream reads the deferred /dl path and subtitles", () => {
-  // The live Playerjs embed defers the media URL behind a fetch('/dl?...') call
-  // and lists subtitles as "[Label]url" (url may be absolute or root-relative).
-  const html = `
-    <script>fetch('/dl?op=get_stream&view_id=44356597&hash=1783922324-abc')
-      .then(function(r){return r.json();}).then(function(d){
-        var player=new Playerjs({id:"playerjs",file:d.url,
-          "subtitle":"[Türkçe]/srt/00/x_tur.vtt,[İngilizce]https://cdn77.services/vtt/x_eng.vtt"});
-      });</script>`;
-  const parsed = __internal.extractDizibalEmbedStream(html, "https://x.ag2m4.cfd");
-  assert.equal(parsed?.dlPath, "/dl?op=get_stream&view_id=44356597&hash=1783922324-abc");
-  assert.equal(parsed?.m3u8Url, undefined);
-  assert.deepEqual(parsed?.subtitles, [
-    { url: "https://x.ag2m4.cfd/srt/00/x_tur.vtt", label: "Türkçe", lang: "tr" },
-    { url: "https://cdn77.services/vtt/x_eng.vtt", label: "İngilizce", lang: "en" },
+test("Dizibal suggestions: a movie request also sees anime films, which are listed as anime series", () => {
+  const response = dizibalSuggest([], [
+    { title: "Jujutsu Kaisen", url: "https://dizibal.org/anime/jujutsu-kaisen", meta: "Anime · 2020" },
+    { title: "Jujutsu Kaisen 0 Movie", url: "https://dizibal.org/anime/jujutsu-kaisen-0-movie", meta: "Anime · 2021" },
+    { title: "Some Show", url: "https://dizibal.org/series/some-show", meta: "Dizi · 2021" },
   ]);
+  const ranked = __internal.rankDizibalSuggestions(response, { mediaType: "movie", title: "Jujutsu Kaisen 0", year: "2021" });
+  assert.equal(ranked[0].url, "https://dizibal.org/anime/jujutsu-kaisen-0-movie");
+  assert.ok(ranked[0].titleScore >= 70);
+  assert.equal(ranked.some((c) => c.url.includes("/series/")), false, "live-action series are never films");
 });
 
-test("extractDizibalEmbedStream falls back to an inline file: m3u8", () => {
-  const html = `new Playerjs({id:"playerjs", file:"https://cdn.example/inline/master.m3u8"});`;
-  const parsed = __internal.extractDizibalEmbedStream(html, "https://x.ag2m4.cfd");
-  assert.equal(parsed?.m3u8Url, "https://cdn.example/inline/master.m3u8");
-  assert.equal(parsed?.dlPath, undefined);
+test("Dizibal page parsers read the title identity, the player box and the player config", () => {
+  assert.deepEqual(
+    __internal.readDizibalPageNames(dizibalTitlePage("Movie", "Siyah Telefon 2", "Black Phone 2")),
+    ["Siyah Telefon 2", "Black Phone 2"],
+  );
+
+  assert.deepEqual(__internal.extractDizibalPlayerBox(dizibalEmbedPage("qYgBz2qocvO7PPHkxrf5Mg", "https://play2.pilavyerplay.top")), {
+    type: "embed", slug: "qYgBz2qocvO7PPHkxrf5Mg", playerOrigin: "https://play2.pilavyerplay.top",
+  });
+  assert.deepEqual(
+    __internal.extractDizibalPlayerBox(`<div data-player data-player-type="direct"><video playsinline controls crossorigin
+      data-src="https://dizibal.org/video/bolum/181" poster="x.webp"></video></div>`),
+    { type: "direct", src: "https://dizibal.org/video/bolum/181" },
+  );
+  assert.deepEqual(__internal.extractDizibalPlayerBox(`<div data-player data-player-type="none"></div>`), { type: "none" });
+
+  const config = __internal.extractPilavyerPlayerConfig(dizibalPlayerPage("https://pilavyerplay.top/api/stream.php?v=b0ef&token=t", [
+    { sid: "a", lang: "tr", label: "Türkçe Altyazı", src: "https://pilavyerplay.top/api/sub.php?v=b0ef&sid=a&token=t" },
+    { sid: "b", lang: "", label: "", src: "javascript:alert(1)" },
+  ]));
+  assert.equal(config?.stream, "https://pilavyerplay.top/api/stream.php?v=b0ef&token=t");
+  assert.deepEqual(config?.subtitles, [
+    { url: "https://pilavyerplay.top/api/sub.php?v=b0ef&sid=a&token=t", label: "Türkçe Altyazı", lang: "tr" },
+  ]);
+  assert.equal(__internal.extractPilavyerPlayerConfig("<title>Video bulunamadı</title>"), null);
 });
 
-test("Dizibal resolver follows embed → /dl → m3u8 and uses the embed host as referer", async () => {
+test("Dizibal resolver: search → episode page → origin-locked player config → HLS + subtitles", async () => {
   const originalGet = axios.get;
   const originalDev = (globalThis as any).__DEV__;
   const calls: Array<{ url: string; config: any }> = [];
@@ -415,45 +416,72 @@ test("Dizibal resolver follows embed → /dl → m3u8 and uses the embed host as
 
   axios.get = (async (url: string, config: any) => {
     calls.push({ url, config });
-    if (url.endsWith("/api/series")) {
-      return { data: { success: true, data: [{ id: 76479, slug: "the-boys" }] } };
+    if (url.endsWith("/ara/oneri")) {
+      return { data: dizibalSuggest([], [{ title: "Criminal Minds", url: "https://dizibal.org/series/criminal-minds", meta: "Dizi · 2005" }]) };
     }
-    if (url.endsWith("/api/series/the-boys/seasons/1")) {
-      return { data: { success: true, data: { episodes: [{ episode_number: 4, src: "2ibfbt9ftb6d" }] } } };
-    }
-    if (url.endsWith("/api/stream/embed")) {
-      return { data: { success: true, embedUrl: "https://x.ag2m4.cfd/embed-2ibfbt9ftb6d.html?autoplay=1" } };
-    }
-    if (url.includes("/embed-2ibfbt9ftb6d.html")) {
-      return { data: `fetch('/dl?op=get_stream&view_id=1&hash=abc').then(function(r){return r.json();})` };
-    }
-    if (url.includes("/dl?op=get_stream")) {
-      return { data: { url: "https://cdn.example/master.m3u8" } };
+    if (url === "https://dizibal.org/series/criminal-minds/season/1/episode/1") return { data: dizibalEmbedPage("qYgBz2") };
+    if (url === "https://pilavyerplay.top/assets/js/s.php?s=qYgBz2") {
+      return { data: dizibalPlayerPage("https://pilavyerplay.top/api/stream.php?v=b0ef&token=t", [
+        { lang: "tr", label: "Türkçe Altyazı", src: "https://pilavyerplay.top/api/sub.php?sid=a" },
+      ]) };
     }
     throw new Error(`Unexpected URL: ${url}`);
   }) as typeof axios.get;
 
   try {
     const result = await resolveDirectWebPlayerFallback({
-      mediaType: "tv",
-      title: "The Boys",
-      tmdbId: "76479",
-      seasonNumber: 1,
-      episodeNumber: 4,
+      mediaType: "tv", title: "Criminal Minds", year: "2005", seasonNumber: 1, episodeNumber: 1,
     });
-
     assert.equal(result.source, "direct");
-    assert.equal(result.streamUrl, "https://cdn.example/master.m3u8");
-    assert.equal(result.referer, "https://x.ag2m4.cfd/");
-    // The retired /api/stream/m3u8 endpoint must never be called again.
-    assert.equal(calls.some((call) => call.url.endsWith("/api/stream/m3u8")), false);
-    // The /dl call must carry an Origin header or the endpoint 401s.
-    const dlCall = calls.find((call) => call.url.includes("/dl?op=get_stream"));
-    assert.equal(dlCall?.config.headers.Origin, "https://x.ag2m4.cfd");
-    assert.equal(
-      calls.find((call) => call.url.endsWith("/api/stream/embed"))?.config.params.autoplay,
-      1,
-    );
+    assert.equal(result.streamType, "m3u8");
+    assert.equal(result.streamUrl, "https://pilavyerplay.top/api/stream.php?v=b0ef&token=t");
+    assert.equal(result.referer, "https://pilavyerplay.top/");
+    assert.deepEqual(result.subtitles, [{ url: "https://pilavyerplay.top/api/sub.php?sid=a", label: "Türkçe Altyazı", lang: "tr" }]);
+    // s.php answers 403 "Erişim engellendi" unless the Referer is the Dizibal origin.
+    const player = calls.find((call) => call.url.includes("/s.php"));
+    assert.equal(player?.config.headers.Referer, "https://dizibal.org/");
+    assert.equal(calls.find((call) => call.url.endsWith("/ara/oneri"))?.config.params.q, "Criminal Minds");
+    // The retired JSON API must never be called again.
+    assert.equal(calls.some((call) => call.url.includes("/api/")), false);
+  } finally {
+    axios.get = originalGet;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizibal resolver confirms a Turkish-titled film by its page's English name", async () => {
+  const originalGet = axios.get;
+  const originalDev = (globalThis as any).__DEV__;
+  const pages: string[] = [];
+  (globalThis as any).__DEV__ = false;
+
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/ara/oneri")) {
+      return { data: dizibalSuggest([
+        { title: "Siyah Kuğu 2", url: "https://dizibal.org/movie/siyah-kugu-2", meta: "Film · 2025" },
+        { title: "Siyah Telefon 2", url: "https://dizibal.org/movie/siyah-telefon-2", meta: "Film · 2025" },
+        { title: "Siyah Telefon", url: "https://dizibal.org/movie/siyah-telefon", meta: "Film · 2021" },
+      ]) };
+    }
+    if (url === "https://dizibal.org/movie/siyah-kugu-2") {
+      pages.push(url);
+      return { data: dizibalTitlePage("Movie", "Siyah Kuğu 2", "Black Swan 2") + dizibalEmbedPage("wrong") };
+    }
+    if (url === "https://dizibal.org/movie/siyah-telefon-2") {
+      pages.push(url);
+      return { data: dizibalTitlePage("Movie", "Siyah Telefon 2", "Black Phone 2") + dizibalEmbedPage("MKM4") };
+    }
+    if (url.endsWith("/s.php?s=MKM4")) return { data: dizibalPlayerPage("https://pilavyerplay.top/api/stream.php?v=bp2") };
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await resolveDirectWebPlayerFallback({ mediaType: "movie", title: "Black Phone 2", year: "2025" });
+    assert.equal(result.streamUrl, "https://pilavyerplay.top/api/stream.php?v=bp2");
+    // The decoy page is opened and rejected by its English name; the 2021 film
+    // is out of year tolerance and never opened; the matched page is reused as
+    // the watch page instead of being fetched twice.
+    assert.deepEqual(pages, ["https://dizibal.org/movie/siyah-kugu-2", "https://dizibal.org/movie/siyah-telefon-2"]);
   } finally {
     axios.get = originalGet;
     (globalThis as any).__DEV__ = originalDev;
@@ -473,18 +501,66 @@ test("a title no provider has is answered after ONE pass, not two", async () => 
   const requested: string[] = [];
 
   // Key by URL *and* params: one pass legitimately hits /ajax-search twice
-  // with different queries, and that is not a repeat.
+  // with different queries, and that is not a repeat. "Not there" means every
+  // provider ANSWERED: empty searches, 404 pages. A request that got no answer
+  // is a different case — see the next test.
+  const notFound = () => Object.assign(new Error("Request failed with status code 404"), { response: { status: 404 } });
   axios.get = (async (url: string, config?: any) => {
     requested.push(`${url} ${JSON.stringify(config?.params ?? {})}`);
-    throw new Error("offline");
+    if (url.includes("/search/")) return { data: { results: [] } };
+    if (url.endsWith("/ajax-search")) return { data: { success: true, results: [] } };
+    throw notFound();
   }) as typeof axios.get;
-  axios.post = (async () => { throw new Error("offline"); }) as typeof axios.post;
+  axios.post = (async () => { throw notFound(); }) as typeof axios.post;
 
   try {
     const result = await resolveWebPlayerUrl({ mediaType: "movie", title: "Nothing Anywhere 9471", year: "2031" });
     assert.equal(result.source, "not_found");
     const duplicates = requested.filter((url, index) => requested.indexOf(url) !== index);
     assert.deepEqual(duplicates, [], "no request may be made twice — that is a second pass");
+  } finally {
+    axios.get = originalGet;
+    axios.post = originalPost;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("a miss caused by a request that got no answer is retried before 'Not available'", async () => {
+  // Every fetcher reads a timeout as "no results", so a pass in which one
+  // request dropped looked exactly like a title no provider has: "Not
+  // available", and the viewer's second tap played it. That pass proved
+  // nothing, so the resolver takes the second tap itself.
+  const originalGet = axios.get;
+  const originalPost = axios.post;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+  const searches: string[] = [];
+  let dropped = false;
+
+  axios.get = (async (url: string) => {
+    if (url.includes("/search/")) {
+      searches.push(url);
+      if (!dropped) {
+        dropped = true;
+        throw Object.assign(new Error("timeout of 6000ms exceeded"), { code: "ECONNABORTED" });
+      }
+      return { data: { results: [] } };
+    }
+    if (url.endsWith("/ajax-search")) return { data: { success: true, results: [] } };
+    throw Object.assign(new Error("Request failed with status code 404"), { response: { status: 404 } });
+  }) as typeof axios.get;
+  axios.post = (async () => {
+    throw Object.assign(new Error("Request failed with status code 404"), { response: { status: 404 } });
+  }) as typeof axios.post;
+
+  try {
+    const result = await resolveWebPlayerUrl({ mediaType: "movie", title: "Dropped Request 5521", year: "2031" });
+    assert.equal(result.source, "not_found");
+    const firstQuery = searches[0];
+    assert.ok(
+      searches.filter((url) => url === firstQuery).length >= 2,
+      "the pass that lost a request must be run again"
+    );
   } finally {
     axios.get = originalGet;
     axios.post = originalPost;
@@ -502,8 +578,9 @@ test("a slow pass is awaited, not abandoned and restarted", () => {
   // The same in-flight promise is waited on again for the rest of the budget.
   assert.match(resolve, /const pending = startResolvePass\(request\);/);
   assert.match(resolve, /await awaitResolveWithin\(pending, remainingForPass\)/);
-  // And a retry only happens when the published domains actually changed.
-  assert.match(resolve, /if \(summariseProviderBaseUrls\(\) === baseUrlsBefore\) return first;/);
+  // And a clean miss is retried only when the published domains changed; a
+  // pass that lost a request is always retried.
+  assert.match(resolve, /if \(!sawTransientFailure && summariseProviderBaseUrls\(\) === baseUrlsBefore\) return first;/);
 });
 
 test("a failed HDFilm stream is replaced by another provider's native stream, never a page", async () => {
@@ -515,17 +592,11 @@ test("a failed HDFilm stream is replaced by another provider's native stream, ne
   axios.post = (async () => { throw new Error("offline"); }) as typeof axios.post;
   axios.get = (async (url: string) => {
     if (url.includes("dizipal")) throw new Error("dizipal unreachable");
-    if (url.endsWith("/api/series")) return { data: { success: true, data: [{ id: 76479, slug: "the-boys" }] } };
-    if (url.endsWith("/api/series/the-boys/seasons/1")) {
-      return { data: { success: true, data: { episodes: [{ episode_number: 4, src: "2ibfbt9ftb6d" }] } } };
+    if (url.endsWith("/ara/oneri")) {
+      return { data: dizibalSuggest([], [{ title: "The Boys", url: "https://dizibal.org/series/the-boys", meta: "Dizi · 2019" }]) };
     }
-    if (url.endsWith("/api/stream/embed")) {
-      return { data: { success: true, embedUrl: "https://x.ag2m4.cfd/embed-2ibfbt9ftb6d.html?autoplay=1" } };
-    }
-    if (url.includes("/embed-2ibfbt9ftb6d.html")) {
-      return { data: `fetch('/dl?op=get_stream&view_id=1&hash=abc').then(function(r){return r.json();})` };
-    }
-    if (url.includes("/dl?op=get_stream")) return { data: { url: "https://cdn.example/master.m3u8" } };
+    if (url === "https://dizibal.org/series/the-boys/season/1/episode/4") return { data: dizibalEmbedPage("tb14") };
+    if (url.endsWith("/s.php?s=tb14")) return { data: dizibalPlayerPage("https://cdn.example/master.m3u8") };
     throw new Error(`Unexpected URL: ${url}`);
   }) as typeof axios.get;
 
@@ -545,52 +616,42 @@ test("a failed HDFilm stream is replaced by another provider's native stream, ne
   }
 });
 
-test("Dizibal resolver falls back to /api/anime for anime series", async () => {
+test("Dizibal anime plays its direct MP4 — only when the source answers", async () => {
   const originalGet = axios.get;
+  const originalHead = axios.head;
   const originalDev = (globalThis as any).__DEV__;
-  const calls: Array<{ url: string; config: any }> = [];
   (globalThis as any).__DEV__ = false;
 
-  axios.get = (async (url: string, config: any) => {
-    calls.push({ url, config });
-    // /api/series has no anime → empty; /api/anime carries it.
-    if (url.endsWith("/api/series")) {
-      return { data: { success: true, data: [] } };
+  axios.get = (async (url: string) => {
+    if (url.endsWith("/ara/oneri")) {
+      return { data: dizibalSuggest([], [{ title: "Naruto", url: "https://dizibal.org/anime/naruto", meta: "Anime · 2002" }]) };
     }
-    if (url.endsWith("/api/anime")) {
-      return { data: { success: true, data: [{ id: 46260, slug: "naruto" }] } };
-    }
-    if (url.endsWith("/api/anime/naruto/seasons/1")) {
-      return { data: { success: true, data: { episodes: [{ episode_number: 1, src: "jwizahail2ft" }] } } };
-    }
-    if (url.endsWith("/api/stream/embed")) {
-      return { data: { success: true, embedUrl: "https://x.ag2m4.cfd/embed-jwizahail2ft.html?autoplay=1" } };
-    }
-    if (url.includes("/embed-jwizahail2ft.html")) {
-      return { data: `fetch('/dl?op=get_stream&view_id=9&hash=xyz')` };
-    }
-    if (url.includes("/dl?op=get_stream")) {
-      return { data: { url: "https://cdn.example/naruto.m3u8" } };
+    if (url === "https://dizibal.org/anime/naruto/season/1/episode/1") {
+      return { data: `<div data-player data-player-type="direct"><video playsinline data-src="https://dizibal.org/video/bolum/230"></video></div>` };
     }
     throw new Error(`Unexpected URL: ${url}`);
   }) as typeof axios.get;
+  let sourceLive = true;
+  axios.head = (async (url: string) => {
+    assert.equal(url, "https://dizibal.org/video/bolum/230");
+    if (!sourceLive) throw Object.assign(new Error("Request failed with status code 502"), { response: { status: 502 } });
+    return { status: 200, data: "" };
+  }) as typeof axios.head;
 
+  const request = { mediaType: "tv" as const, title: "Naruto", year: "2002", seasonNumber: 1, episodeNumber: 1 };
   try {
-    const result = await resolveDirectWebPlayerFallback({
-      mediaType: "tv",
-      title: "Naruto",
-      tmdbId: "46260",
-      seasonNumber: 1,
-      episodeNumber: 1,
-    });
-
+    const result = await resolveDirectWebPlayerFallback(request);
     assert.equal(result.source, "direct");
-    assert.equal(result.streamUrl, "https://cdn.example/naruto.m3u8");
-    // It must have consulted /api/anime and its season endpoint.
-    assert.equal(calls.some((call) => call.url.endsWith("/api/anime")), true);
-    assert.equal(calls.some((call) => call.url.endsWith("/api/anime/naruto/seasons/1")), true);
+    assert.equal(result.streamType, "mp4");
+    assert.equal(result.streamUrl, "https://dizibal.org/video/bolum/230");
+    assert.equal(result.referer, "https://dizibal.org/");
+
+    // Some /video/bolum ids 502 upstream: no dead stream is handed to the player.
+    sourceLive = false;
+    assert.equal((await resolveDirectWebPlayerFallback(request)).source, "not_found");
   } finally {
     axios.get = originalGet;
+    axios.head = originalHead;
     (globalThis as any).__DEV__ = originalDev;
   }
 });
@@ -1421,4 +1482,22 @@ test("both Dizipal entry points go through the retrying fetch, not a bare axios.
   );
   assert.match(source, /const response = await dizipalGet<DizipalSearchResponse>\(/);
   assert.match(source, /async function fetchDizipalPageHtml[\s\S]{0,200}await dizipalGet<string>\(/);
+});
+
+test("FirePlayer root-relative subtitles resolve against the embed (Criminal Minds ',name=' CC bug)", () => {
+  // Live imagestoo embed, 2026-09-22. Dropping the root-relative entry left the
+  // CC menu with ExoPlayer's unloadable copy from the master playlist.
+  const html = 'var playerjsSubtitle = "[Turkish]/netflix/altyazi/CMS01E01.srt";\nvar playerjsDefaultSubtitle = "Turkish";';
+  assert.deepEqual(
+    __internal.extractSubtitlesFromPlayerJs(html, "https://imagestoo.com/video/feafb280b99f47d2e75d6008f73c15a3"),
+    [{ url: "https://imagestoo.com/netflix/altyazi/CMS01E01.srt", label: "Turkish", lang: "tur" }],
+  );
+  // Absolute entries still parse; mixed lists keep both; junk is dropped.
+  assert.deepEqual(
+    __internal.extractSubtitlesFromPlayerJs(
+      'var playerjsSubtitle = "[English]https://cdn.test/a_eng.vtt,[Turkish]/subs/b.srt,[Bad]javascript:x";',
+      "https://imagestoo.com/video/x",
+    ).map((s) => s.url),
+    ["https://cdn.test/a_eng.vtt", "https://imagestoo.com/subs/b.srt"],
+  );
 });
