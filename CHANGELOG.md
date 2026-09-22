@@ -4,6 +4,16 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-09-22
+
+- Fixed: nothing played from Dizibal after the site was rebuilt. Its movies, series and anime
+  (including anime films) play again, with their Turkish and English subtitles.
+- Fixed: Criminal Minds' CC menu showed a garbled ",name=" entry that did nothing; the Turkish
+  subtitle now appears and works.
+- Fixed: a title could load, then show "Not available", and play on the second try. A stream
+  that is slow to start now gets more time and is retried automatically; "Not available" is
+  kept for titles no provider has.
+
 ## 2026-09-20 (2)
 
 - Fixed: Stats "most watched actors" lost ensemble leads again (e.g. Cate Blanchett and the
