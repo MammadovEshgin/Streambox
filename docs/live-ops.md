@@ -132,6 +132,19 @@ group by 1, 2
 order by 1 desc, 3 desc;
 ```
 
+Found streams that would not start and were re-resolved silently (`reason`: `native_stall`,
+`dizipal_fallback_empty`, `hdfilm_no_alternative`, or the player error; `source` is what the
+retry got — `not_found` means the viewer saw the stream error):
+
+```sql
+select date_trunc('day', occurred_at) as day, metadata->>'reason' as reason,
+       metadata->>'source' as retry_source, count(*)
+from public.app_telemetry_events
+where event_name = 'player_silent_retry'
+group by 1, 2, 3
+order by 1 desc, 4 desc;
+```
+
 TMDB / proxy failures:
 
 ```sql

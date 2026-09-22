@@ -228,19 +228,26 @@ curl.exe -s https://dizipal2123.com/bolum/breaking-bad-1-sezon-1-bolum |
 The `dizipal_playback` check in `workers/provider-monitor` watches exactly this
 attribute, so a repeat should now page you instead of failing silently.
 
-### Dizibal's embed host is down
+### Dizibal finds the title but nothing plays
 
-Tier 3 only. `dizibal.org/api/*` can be perfectly healthy while the rotating
-Playerjs host it hands back (`https://x.<something>.cfd/embed-<code>.html`) is
-502 — that was the state on 2026-09-02, for every code, movies and series
-alike. Nothing to fix on our side; it is their origin. Confirm with:
+Tier 3 only. Since the Sept 2026 rebuild the chain is search → watch page →
+player (see `ENGINEERING.md` §4); the old `/api/*` routes are gone (404) — do
+not reintroduce them. Walk it by hand from a residential connection (the site
+IP-bans datacenters, so the Worker can't):
 
 ```powershell
-curl.exe -s "https://dizibal.org/api/stream/embed?code=<code>&autoplay=1"
-curl.exe -sI "<the embedUrl it returned>"
+curl.exe -s -H "Accept: application/json" "https://dizibal.org/ara/oneri?q=criminal%20minds"
+curl.exe -s "https://dizibal.org/series/criminal-minds/season/1/episode/1" |
+  Select-String -Pattern 'data-player-type="[a-z]+"|data-pv="[^"]+"|data-src="[^"]+"|https://[^"/]+/assets/js/core\.js'
+# embed: the player page must carry window.__PLAYER__ with a "stream" URL
+curl.exe -s -H "Referer: https://dizibal.org/" "https://<player host>/assets/js/s.php?s=<data-pv>"
+# direct: the MP4 must answer 200 (some ids 502 upstream — their origin, nothing to fix)
+curl.exe -sI "https://dizibal.org/video/bolum/<id>"
 ```
 
-If `/api/*` itself moved host, `/set_dizibal https://<new host>`.
+`s.php` answering "Video bulunamadı" (404) means Dizibal has no video for that
+title either. A 403 "Erişim engellendi" there means the Referer lock changed.
+If the site itself moved domain, `/set_dizibal https://<new host>`.
 
 ---
 
@@ -403,8 +410,8 @@ is what the page guarantees; the naming is not.
 **13. "Cannot be monitored" is a finding to write down, not a gap to paper
 over.** The instinct after this outage is "add an HDFilm check to the monitor".
 Both available runners are datacenter IPs and both are 403'd, so such a check
-would fail forever and train everyone to ignore the alerts — the same trap the
-Dizibal-homepage comment already documents. Verify egress with
+would fail forever and train everyone to ignore the alerts — the same trap as
+Dizibal's IP-banned pages (see the monitor README). Verify egress with
 `wrangler dev --remote` BEFORE adding a Worker check. Where no prober can
 reach, instrument the app instead: `player_resolve` telemetry carries the
 resolved `source`, and a sustained shift away from hdfilm/`direct` is the

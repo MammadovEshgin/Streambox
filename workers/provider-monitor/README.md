@@ -57,13 +57,13 @@ Two things cover it instead, both from residential IPs:
 - `npm run check:hdfilm` on the user's PC — resolves live titles through the shipped decoder and asserts each produces a real `#EXTM3U` manifest.
 - The app's own `player_resolve` telemetry event, which records the provider that served each play. A sustained shift away from `hdfilm`/`direct`, or a jump in `not_found`, is the tier-1 outage signal.
 
-Do not add an HDFilm check here unless it stops challenging Worker egress — and verify that with `wrangler dev --remote` first. Re-verified 2026-09-10: still 403. There is no CI workflow for `check:hdfilm` and there must not be; one existed briefly and was deleted after it produced nothing but false alarms.
+Do not add an HDFilm check here unless it stops challenging Worker egress — and verify that with `wrangler dev --remote` first. Re-verified 2026-09-22: still 403. There is no CI workflow for `check:hdfilm` and there must not be; one existed briefly and was deleted after it produced nothing but false alarms.
 
 ### Why `dizipal_playback` exists
 
 Search being healthy says nothing about whether a title can actually PLAY. In Sept 2026 Dizipal renamed `/ajax-player-config` to `/ajax/player-config`: search kept answering 200, every title silently failed to produce a stream, and this monitor stayed green for the entire outage. The app reads the player config out of the episode page's `data-cfg` attribute, so the check asserts that attribute still has a known shape — base64 JSON `{v, t}` (until 2026-09-18) or the encrypted `{ciphertext, iv, salt}` JSON written with `&quot;` entities (since) — one request covering the real playback path. While DDoS-Guard walls the Worker off, this check is `blocked` and the app's `player_resolve` telemetry is the playback signal.
 
-The canary is a long-running catalog title at a stable slug. `data-cfg` sits ~44 KiB into a ~95 KiB page, which is why `readLimitedText` reads up to 128 KiB. Verified reachable from Worker egress (`wrangler dev --remote`, 2026-09-02) — all five checks return 200 and the attribute decodes.
+The canary is a long-running catalog title at a stable slug. `data-cfg` sits ~44 KiB into a ~95 KiB page, which is why `readLimitedText` reads up to 128 KiB. Verified reachable from Worker egress (`wrangler dev --remote`, 2026-09-02) — the attribute decoded. Since 2026-09-18 DDoS-Guard answers the Worker 403, so all Dizipal page checks read `blocked`; only `dizipal_domain` (DNS) is observable.
 
 An endpoint is marked down after `FAILURE_THRESHOLD` consecutive failures, default `3`.
 

@@ -16,7 +16,8 @@ doubt, **stop and ask** rather than guess.
 - Playback: streams are resolved **on device** by scraping providers in
   `src/services/WebPlayerService.ts` (HDFilm → Dizipal → Dizibal) and played in the native
   expo-video player. A provider's own web player is never shown — no native stream means
-  "Not available" with a Retry that re-resolves.
+  "Not available" with a Retry that re-resolves; a found stream that won't start is re-resolved
+  once silently, then shows the retryable stream error (never "Not available").
 - Backend: Supabase (Auth, Postgres + RLS, RPCs, Storage, Realtime, Edge Functions) and
   three Cloudflare Workers.
 - Watch Together: private two-person rooms with synced playback, WebRTC face-cam/voice and
@@ -25,7 +26,7 @@ doubt, **stop and ask** rather than guess.
 ### Key files
 | Area | File |
 |------|------|
-| Provider search / stream resolution | `src/services/WebPlayerService.ts` (`scoreMatch`, `scoreHdFilmResult`, `scoreDizipalResult`, `probeDizipalDirectSlug`, `pickDizibalHit`) |
+| Provider search / stream resolution | `src/services/WebPlayerService.ts` (`scoreMatch`, `scoreHdFilmResult`, `scoreDizipalResult`, `probeDizipalDirectSlug`, `rankDizibalSuggestions`) |
 | HDFilm decoder interpreter | `src/services/rapidrameScript.ts` (runbook: `decoder-recovery.md`) |
 | Provider base URLs (Supabase + shipped floor) | `src/services/providerConfigService.ts` |
 | Player | `src/screens/PlayerScreen.tsx`; WebView policy `src/screens/player/playerWebViewPolicy.ts` |
