@@ -26,7 +26,7 @@ doubt, **stop and ask** rather than guess.
 ### Key files
 | Area | File |
 |------|------|
-| Provider search / stream resolution | `src/services/WebPlayerService.ts` (`scoreMatch`, `scoreHdFilmResult`, `scoreDizipalResult`, `probeDizipalDirectSlug`, `rankDizibalSuggestions`) |
+| Provider search / stream resolution | `src/services/WebPlayerService.ts` (`scoreMatch`, `scoreHdFilmResult`, `scoreDizipalResult`, `probeDizipalDirectSlug`, `rankDizibalSuggestions`, `noteProviderSilence`) |
 | HDFilm decoder interpreter | `src/services/rapidrameScript.ts` (runbook: `decoder-recovery.md`) |
 | Provider base URLs (Supabase + shipped floor) | `src/services/providerConfigService.ts` |
 | Player | `src/screens/PlayerScreen.tsx`; WebView policy `src/screens/player/playerWebViewPolicy.ts` |
@@ -94,7 +94,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
 | `streambox-provider-monitor` | `f3694f15` (hourly cron) |
 | `streambox-turn-credentials` | `dcfe4675` |
-| Latest migration | `20260920200000_watch_history_cast_depth_20` |
+| Latest migration | `20260923210451_franchise_catalogue_audit_2026_09` |
 | Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
 
 ### OTA history (runtime 1.2.0)
@@ -151,6 +151,21 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   under **Turkish** titles.
 - Dizipal and HDFilm serve intermittent Cloudflare challenges; both go through `providerGet`
   / `hdFilmGet` retries.
+- **A provider that is DOWN must not cost the others their budget.** On 2026-09-24 Dizipal's
+  origin went 502 behind DDoS-Guard: the domain still resolves, but every path hangs ~6s and
+  then answers "502 - Bad Gateway". Four dead calls ate 24s of the resolver's 20s ceiling, so
+  Dizibal — which had the film — was never asked and *Star Wars* (1977) reported "Not
+  available" although it was watchable. Every provider fetch now goes through `providerGet`
+  (Dizibal included, via `dizibalGet`), which counts requests that got **no answer at all**:
+  two in a row and that provider is skipped instantly for a minute, doubling per further
+  outage up to 15 minutes. Any HTTP reply — 404, 403, 500 — proves the host is alive and
+  clears the record, so a provider is never skipped for saying "no". A skip must never count
+  as a transient failure; that would send `resolveWebPlayerUrl` into a second pass for nothing.
+- Dizipal's rotation is announced by the **old domains**: 2120 … 2132 all 301 to the configured
+  2133. "Some higher `dizipalN.com` answers" is not the signal — `dizipal2200`–`dizipal2221.com`
+  are a different operator's clone (Cloudflare, not DDoS-Guard) with its own scheme
+  (`/bg/searchcontent`, `/dizi/{slug}/{n}-sezon/{n}-bolum`, player config in a
+  `div[data-rm-k]`), and the app's scraper does not fit it. Do not point `/set_dizipal` there.
 - **Dizibal** rebuilt its site in Sept 2026 (Laravel); the old `/api/*` JSON routes all 404.
   The resolver now follows the browser: `/ara/oneri?q=` (JSON search; Turkish titles, but it
   matches English names too; no TMDB ids, so the year from `meta` must fit) → the movie page or

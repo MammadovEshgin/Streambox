@@ -139,6 +139,10 @@ fresh database.
 > `user_watch_history`'s CHECK constraint calls `cast_gender_array_is_valid()`. That is the
 > bug this exercise existed to catch. Re-verify after any change to the baseline.
 
+The catalogue has grown since: the 2026-09 audit
+(`20260923210451_franchise_catalogue_audit_2026_09`) left **275** franchise entries, which is
+what `seed.sql` now loads.
+
 Since 2026-09-17 `object_counts.sql` has an eleventh row, `policies realtime.messages`
 (expected 2): the Watch Together channel policies, which the baseline never emitted and which
 now come from the `restore_watch_room_realtime_policies` migration.

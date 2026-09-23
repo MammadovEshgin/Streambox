@@ -4,6 +4,21 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-09-24
+
+- Fixed: while one provider was down, titles the other providers *do* carry reported "Not
+  available" — the first Star Wars film among them. A provider that stops answering is now
+  set aside after two dead requests instead of spending the whole search on it.
+- Added to Cinematic Journeys: the Harry Potter series, The Mandalorian and Grogu, The
+  Fantastic 4: First Steps, Marvel Zombies, Wonder Man, Eyes of Wakanda, Your Friendly
+  Neighborhood Spider-Man, The Hunger Games: The Ballad of Songbirds & Snakes and Sunrise on
+  the Reaping, The War of the Rohirrim and The Hunt for Gollum, Transformers One, Supergirl,
+  Clayface, The Batman: Part II, Insidious: Out of the Further and Fast Forever.
+- Fixed: 55 journey titles were missing their punctuation ("Mission Impossible - Fallout",
+  "Fast  Furious 6"), Jurassic World Dominion and Spider-Man: Brand New Day had no poster and
+  could not be opened at all, and Ahsoka, What If…?, Daredevil: Born Again, Legion, The Gifted
+  and The Rings of Power were stuck on their first season's episode count.
+
 ## 2026-09-22
 
 - Fixed: nothing played from Dizibal after the site was rebuilt. Its movies, series and anime
