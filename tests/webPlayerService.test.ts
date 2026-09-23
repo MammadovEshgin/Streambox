@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { beforeEach } from "node:test";
 import axios from "axios";
 
 import {
@@ -15,6 +15,11 @@ import {
 } from "../src/services/WebPlayerService";
 
 const dizipalBase = "https://dizipal2078.com";
+
+// The resolver remembers which providers answered nothing and skips them for a
+// cooldown (see "unreachable provider" below). That memory is module state, so
+// one test's dead provider would silently skip the next test's requests.
+beforeEach(() => __internal.resetProviderSilence());
 
 test("Dizipal direct-slug builds the page slug the way Dizipal does", () => {
   // "From" (2022) exists at /dizi/from but Dizipal's ajax-search never surfaces
@@ -1446,6 +1451,104 @@ test("provider fetches give up after the retry budget instead of hanging", async
     assert.equal(calls, 3, "one initial attempt plus two retries");
   } finally {
     axios.get = originalGet;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Unreachable provider — 2026-09-24.
+//
+// Dizipal's origin went 502 behind its WAF and stopped answering altogether.
+// Every call to it then cost the full 6s timeout, and the four it makes ate
+// 24s of the resolver's 20s budget: Dizibal, which HAD the film, was never
+// reached and "Star Wars" reported "Not available" while being watchable.
+// ---------------------------------------------------------------------------
+
+/** A request that got no answer at all: no `response`, only a timeout. */
+const silent = () => Object.assign(new Error("timeout of 6000ms exceeded"), { code: "ECONNABORTED" });
+
+test("a provider that answers nothing twice is skipped, not asked a third time", async () => {
+  const originalGet = axios.get;
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    throw silent();
+  }) as typeof axios.get;
+
+  try {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await assert.rejects(() => __internal.providerGet("Dizipal", "https://dizipal2133.com/ajax-search", {}));
+    }
+    assert.equal(calls, 2, "two dead calls are enough to conclude the host is down");
+    assert.equal(__internal.isProviderSkipped("Dizipal"), true);
+    assert.equal(__internal.isProviderSkipped("HDFilm"), false, "one provider's outage never skips another");
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("an HTTP answer — even a 404 — keeps a provider in play", async () => {
+  const originalGet = axios.get;
+  let calls = 0;
+  axios.get = (async () => {
+    calls += 1;
+    if (calls === 2) {
+      throw Object.assign(new Error("Request failed with status code 404"), { response: { status: 404 } });
+    }
+    throw silent();
+  }) as typeof axios.get;
+
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await assert.rejects(() => __internal.providerGet("Dizibal", "https://dizibal.org/ara/oneri", {}));
+    }
+    assert.equal(calls, 3, "the 404 proves the host is alive, so the strike before it is forgotten");
+    assert.equal(__internal.isProviderSkipped("Dizibal"), false);
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("a dead provider no longer eats the budget of the one carrying the title", async () => {
+  // The Star Wars (1977) case exactly: HDFilm's search does not surface it
+  // under that name, Dizipal answers nothing at all, Dizibal has it under its
+  // Turkish title. Before the breaker this returned "Not available".
+  const originalGet = axios.get;
+  const originalPost = axios.post;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+  let dizipalCalls = 0;
+
+  axios.post = (async () => { throw silent(); }) as typeof axios.post;
+  axios.get = (async (url: string) => {
+    if (url.includes("dizipal")) {
+      dizipalCalls += 1;
+      throw silent();
+    }
+    if (url.includes("hdfilmcehennemi")) return { data: { results: [] } };
+    if (url.endsWith("/ara/oneri")) {
+      return {
+        data: dizibalSuggest([
+          { title: "Yıldız Savaşları: Yeni Umut", url: "https://dizibal.org/movie/yildiz-savaslari-yeni-umut", meta: "Film · 1977" },
+        ]),
+      };
+    }
+    if (url === "https://dizibal.org/movie/yildiz-savaslari-yeni-umut") {
+      return { data: dizibalTitlePage("Movie", "Yıldız Savaşları: Yeni Umut", "Star Wars") + dizibalEmbedPage("sw4") };
+    }
+    if (url.endsWith("/s.php?s=sw4")) {
+      return { data: dizibalPlayerPage("https://pilavyerplay.top/api/stream.php?v=sw4") };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+
+  try {
+    const result = await resolveWebPlayerUrl({ mediaType: "movie", title: "Star Wars", year: "1977", tmdbId: "11" });
+    assert.equal(result.streamUrl, "https://pilavyerplay.top/api/stream.php?v=sw4");
+    assert.ok(dizipalCalls <= 2, `a silent provider is asked twice, not ${dizipalCalls} times`);
+  } finally {
+    axios.get = originalGet;
+    axios.post = originalPost;
+    (globalThis as any).__DEV__ = originalDev;
   }
 });
 

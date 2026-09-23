@@ -214,6 +214,91 @@ function noteProviderFailure(error: unknown): void {
 }
 
 /**
+ * A provider whose origin is down answers nothing at all, so every call to it
+ * costs the full request timeout before the chain can move on. On 2026-09-24
+ * Dizipal's origin went 502 behind its WAF and its four calls ate 24s of the
+ * resolver's 20s budget: Dizibal, which had the film, was never reached, and
+ * "Star Wars" reported "Not available" while being perfectly watchable.
+ *
+ * Two dead calls in a row are enough to conclude the host is unreachable. The
+ * rest of that pass — and every resolve for the next minute — skips it
+ * instantly and spends the budget on the providers that are answering.
+ *
+ * Only a request that got NO answer counts. Any HTTP reply, including 404,
+ * 403 and 500, proves the host is alive and clears the record: a provider is
+ * never skipped for saying "no".
+ */
+const PROVIDER_UNREACHABLE_STRIKES = 2;
+const PROVIDER_UNREACHABLE_COOLDOWN_MS = 60_000;
+/**
+ * A provider that is still silent when its cooldown ends is in an outage, not
+ * a blip, so each further opening waits longer — 1, 2, 4, … minutes up to a
+ * quarter of an hour. A one-off glitch still costs a single minute.
+ */
+const PROVIDER_UNREACHABLE_MAX_COOLDOWN_MS = 900_000;
+/** Strikes older than this are a different incident and start the count over. */
+const PROVIDER_STRIKE_WINDOW_MS = 120_000;
+/** Nothing heard from a provider for this long: forget the outage entirely. */
+const PROVIDER_SILENCE_FORGET_MS = 1_800_000;
+
+type ProviderSilence = { strikes: number; lastStrikeAt: number; skipUntil: number; outages: number };
+const providerSilence = new Map<string, ProviderSilence>();
+
+/** Thrown instead of making a request the breaker says will not be answered. */
+class ProviderSkippedError extends Error {
+  constructor(provider: string) {
+    super(`${provider} answered nothing recently — skipped`);
+    this.name = "ProviderSkippedError";
+  }
+}
+
+function isProviderSkipped(provider: string): boolean {
+  const state = providerSilence.get(provider);
+  if (!state) return false;
+  const now = Date.now();
+  if (state.skipUntil > now) return true;
+  // The cooldown is over: let the next call through as a probe. The outage
+  // count survives it, so a provider that is still dead waits longer next
+  // time — unless nothing has been heard from it in so long that this is a
+  // new story.
+  if (now - state.lastStrikeAt > PROVIDER_SILENCE_FORGET_MS) providerSilence.delete(provider);
+  else if (state.skipUntil > 0) providerSilence.set(provider, { ...state, strikes: 0, skipUntil: 0 });
+  return false;
+}
+
+/** The host replied, so it is up — forget everything held against it. */
+function noteProviderAnswered(provider: string): void {
+  providerSilence.delete(provider);
+}
+
+function noteProviderSilence(provider: string, error: unknown): void {
+  if ((error as { response?: unknown } | null)?.response !== undefined) {
+    noteProviderAnswered(provider);
+    return;
+  }
+
+  const now = Date.now();
+  const previous = providerSilence.get(provider);
+  const fresh = previous && now - previous.lastStrikeAt < PROVIDER_STRIKE_WINDOW_MS;
+  const strikes = (fresh ? previous.strikes : 0) + 1;
+  const opening = strikes >= PROVIDER_UNREACHABLE_STRIKES;
+  const outages = (previous?.outages ?? 0) + (opening ? 1 : 0);
+  const cooldown = Math.min(
+    PROVIDER_UNREACHABLE_COOLDOWN_MS * 2 ** Math.max(0, outages - 1),
+    PROVIDER_UNREACHABLE_MAX_COOLDOWN_MS
+  );
+  providerSilence.set(provider, {
+    strikes,
+    lastStrikeAt: now,
+    skipUntil: opening ? now + cooldown : 0,
+    outages,
+  });
+  if (opening) {
+    debugLog(`[WebPlayer] ${provider} answered nothing ${strikes}x — skipping it for ${cooldown / 1000}s`);
+  }
+}
+
+/**
  * GET a provider URL, retrying past the Cloudflare interstitial. Rejects on a
  * non-challenge error exactly like a bare `axios.get`, so callers keep their
  * existing try/catch shape.
@@ -223,14 +308,23 @@ async function providerGet<T = string>(
   url: string,
   config: Parameters<typeof axios.get>[1]
 ): Promise<import("axios").AxiosResponse<T>> {
+  if (isProviderSkipped(provider)) {
+    // Not a failure: the breaker already knows this host is not answering, and
+    // counting it would send the resolver into a pointless second pass.
+    throw new ProviderSkippedError(provider);
+  }
+
   let lastError: unknown;
   for (let attempt = 0; attempt <= PROVIDER_CHALLENGE_RETRIES; attempt++) {
     try {
-      return await axios.get<T>(url, config);
+      const response = await axios.get<T>(url, config);
+      noteProviderAnswered(provider);
+      return response;
     } catch (error: any) {
       lastError = error;
       if (!isCloudflareChallengeStatus(error?.response?.status)) {
         noteProviderFailure(error);
+        noteProviderSilence(provider, error);
         throw error;
       }
       if (attempt === PROVIDER_CHALLENGE_RETRIES) break;
@@ -238,6 +332,7 @@ async function providerGet<T = string>(
     }
   }
   noteProviderFailure(lastError);
+  noteProviderSilence(provider, lastError);
   throw lastError;
 }
 
@@ -255,6 +350,14 @@ function dizipalGet<T = string>(
   config: Parameters<typeof axios.get>[1]
 ): Promise<import("axios").AxiosResponse<T>> {
   return providerGet<T>("Dizipal", url, config);
+}
+
+/** Dizibal-flavoured `providerGet`, so the breaker covers the third tier too. */
+function dizibalGet<T = string>(
+  url: string,
+  config: Parameters<typeof axios.get>[1]
+): Promise<import("axios").AxiosResponse<T>> {
+  return providerGet<T>("Dizibal", url, config);
 }
 
 function extractHref(html: string): string | null {
@@ -1178,7 +1281,7 @@ async function probeDizipalDirectSlug(
   for (const slug of slugs) {
     const url = `${base}/${kind}/${slug}`;
     try {
-      const response = await axios.get<string>(url, {
+      const response = await dizipalGet<string>(url, {
         timeout: 6000,
         // No explicit maxRedirects: Dizipal's rotation means a base that has
         // fallen a few days behind is a 10-20 hop 301 chain, and a cap of 5
@@ -2433,7 +2536,7 @@ async function requestDizipalPlayerConfig(
   };
 
   const mintToken = async (): Promise<string> => {
-    const tokenResp = await axios.get(`${baseUrl}/ajax-token`, {
+    const tokenResp = await dizipalGet(`${baseUrl}/ajax-token`, {
       timeout: 6000,
       withCredentials: true,
       headers: {
@@ -3025,7 +3128,7 @@ function extractPilavyerPlayerConfig(html: string): { stream: string; subtitles:
 
 async function fetchDizibalPage(url: string): Promise<string | null> {
   try {
-    const response = await axios.get<string>(url, {
+    const response = await dizibalGet<string>(url, {
       timeout: DIZIBAL_REQUEST_TIMEOUT_MS,
       responseType: "text",
       headers: { ...DIZIBAL_HEADERS, Accept: "text/html,*/*", Referer: dizibalReferer() },
@@ -3033,7 +3136,6 @@ async function fetchDizibalPage(url: string): Promise<string | null> {
     recordObservedBaseUrl("dizibal", getResponseFinalOrigin(response));
     return typeof response.data === "string" ? response.data : null;
   } catch (error: any) {
-    noteProviderFailure(error);
     debugLog(`[WebPlayer:dizibal] page ${url} failed: ${error?.response?.status ?? error?.code ?? "?"}`);
     return null;
   }
@@ -3049,7 +3151,7 @@ async function findDizibalTitle(request: WebPlayerRequest): Promise<{ url: strin
   for (const q of queries) {
     let response: DizibalSuggestResponse | null = null;
     try {
-      const reply = await axios.get<DizibalSuggestResponse>(`${dizibalBaseUrl()}/ara/oneri`, {
+      const reply = await dizibalGet<DizibalSuggestResponse>(`${dizibalBaseUrl()}/ara/oneri`, {
         timeout: DIZIBAL_REQUEST_TIMEOUT_MS,
         headers: { ...DIZIBAL_HEADERS, Accept: "application/json", Referer: dizibalReferer() },
         params: { q },
@@ -3057,7 +3159,6 @@ async function findDizibalTitle(request: WebPlayerRequest): Promise<{ url: strin
       recordObservedBaseUrl("dizibal", getResponseFinalOrigin(reply));
       response = reply.data;
     } catch (error: any) {
-      noteProviderFailure(error);
       debugLog(`[WebPlayer:dizibal] search "${q}" failed: ${error?.response?.status ?? error?.code ?? "?"}`);
       continue;
     }
@@ -3130,7 +3231,7 @@ async function resolveDizibalStream(
   }
 
   try {
-    const response = await axios.get<string>(
+    const response = await dizibalGet<string>(
       `${box.playerOrigin}/assets/js/s.php?s=${encodeURIComponent(box.slug)}`,
       {
         timeout: DIZIBAL_REQUEST_TIMEOUT_MS,
@@ -3151,7 +3252,6 @@ async function resolveDizibalStream(
       subtitles: player.subtitles,
     };
   } catch (error: any) {
-    noteProviderFailure(error);
     debugLog(`[WebPlayer:dizibal] player ${box.slug} failed: ${error?.response?.status ?? error?.code ?? "?"}`);
     return null;
   }
@@ -3178,6 +3278,8 @@ export async function resolveDirectWebPlayerFallback(
 export const __internal = {
   buildHdFilmResult,
   providerGet,
+  isProviderSkipped,
+  resetProviderSilence: () => providerSilence.clear(),
   isCloudflareChallengeStatus,
   checkVideoAvailability,
   decodeDizipalCfg,
