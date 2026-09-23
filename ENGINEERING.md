@@ -90,10 +90,10 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `25d0007` → group `6725b6a2-bf14-484a-86b1-7831ba09e22f` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `23c63b5` → group `deb84267-3e6c-4600-b805-317bd015f69a` |
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
-| `streambox-provider-monitor` | `f3694f15` (hourly cron) |
-| `streambox-dizipal-resolver` | not deployed yet — `dizipal.streamboxapp.stream` |
+| `streambox-provider-monitor` | `070d958b` (hourly cron) |
+| `streambox-dizipal-resolver` | `0b12e385` (also on `dizipal.streamboxapp.stream`) |
 | `streambox-turn-credentials` | `dcfe4675` |
 | Latest migration | `20260923210451_franchise_catalogue_audit_2026_09` |
 | Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
@@ -103,6 +103,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-09-24 (2) | `23c63b5` | `deb84267-3e6c-4600-b805-317bd015f69a` | Dizipal follows its rebuilt site (POST `/bg/searchcontent`, `/film/{slug}-film-izle`, `div[data-rm-k]`) and resolves the stream through `streambox-dizipal-resolver`, because its player host 403s our users for every dynamic path while serving the media fine |
 | 2026-09-24 | `25d0007` | `6725b6a2-bf14-484a-86b1-7831ba09e22f` | A provider that answers nothing is set aside after two dead calls (Dizipal's origin went 502 and starved Dizibal of the budget — *Star Wars* reported "Not available"); franchise catalogue audit: 55 titles re-punctuated, two entries given their missing tmdb_id, six series' episode counts, 17 titles added |
 | 2026-09-22 | `d5a3bad` | `3d87c34d-8f3e-4aae-8d2d-febd113dcbb2` | Dizibal follows its rebuilt site (search → page → pilavyer HLS / direct MP4; movies, series, anime); FirePlayer root-relative subtitles (Criminal Minds CC); a found title that won't start re-resolves silently instead of "Not available", 15s stall watchdog, transient-miss retry |
 | 2026-09-20 | `4dd1670` | `8c96926e-594b-4974-8f3b-c7eb12957da6` | Full cast (20) survives the cloud round-trip so Stats keeps ensemble leads; resolver awaits its in-flight pass and skips the pointless retry ("Not available" 3.3 s → 1.2 s); player error/Not-available copy localised |
