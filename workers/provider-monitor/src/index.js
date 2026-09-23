@@ -781,24 +781,13 @@ async function checkDizipalResolver(providers, env) {
   });
 
   try {
-    const page = await fetchWithTimeout(canary, {
-      method: "GET",
-      redirect: "follow",
-      headers: { ...baseHeaders(`${base}/`), accept: "text/html,*/*" },
-    }, getTimeoutMs(env));
-    const html = await page.text();
-    if (!page.ok) return finish({ ok: false, status: page.status, reason: `canary page HTTP ${page.status}` });
-    const wall = blockingWall(page.status, html);
-    if (wall) return finish({ ok: false, blocked: true, status: page.status, reason: wall });
-    const blob = extractDizipalPlayerBlob(html);
-    if (!blob) {
-      return finish({ ok: false, status: page.status, reason: "canary page has no player blob — push OTA" });
-    }
-
+    // The page is NOT read here: the player host binds the token inside it to
+    // whoever fetched it, so reading it first would make the resolver's own
+    // request 403 and this check would fail on every healthy day.
     const response = await fetchWithTimeout(`${resolver}/player`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ cfg: JSON.stringify(blob), base }),
+      body: JSON.stringify({ url: canary, base }),
     }, getTimeoutMs(env));
     const text = await response.text();
     if (!response.ok) {

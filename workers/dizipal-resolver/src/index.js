@@ -17,7 +17,8 @@
  * viewer turns subtitles on, a WebVTT file.
  *
  * THE CHAIN
- *   1. The app reads the watch page and posts its `div[data-rm-k]` blob here.
+ *   1. The app posts the watch page's URL. The page is fetched HERE, because the
+ *      player host binds the token inside it to whoever asked for the page.
  *   2. `{ciphertext,iv,salt}` → PBKDF2-SHA512(passphrase, salt, 999) → AES-256-CBC
  *      → the player iframe URL. The passphrase is a literal in the site's own
  *      `pageload.js`; it is re-read hourly rather than pinned, because it
@@ -34,6 +35,35 @@
  */
 
 const PASSPHRASE_TTL_MS = 60 * 60 * 1000;
+/**
+ * How long a resolved stream is reused for the same watch page.
+ *
+ * The player host rate-limits `iframe.php` per client IP in bursts, and every
+ * one of our users arrives from the same handful of Cloudflare addresses: three
+ * resolves back to back are enough to start getting 403s, while the same calls
+ * spaced 20s apart all pass (measured 2026-09-24). Serving repeat views of a
+ * title from cache keeps us far below that, and makes the second viewer's
+ * resolve instant.
+ *
+ * Kept well inside the stream token's own life: a freshly minted playlist was
+ * still served six minutes later, while one handed out from a ten-minute-old
+ * cache entry answered 403 (measured 2026-09-24). A stale stream is worse than
+ * resolving again — the viewer sees it as a dead player.
+ */
+const RESOLVE_CACHE_SECONDS = 240;
+/**
+ * The page → player-token step is the expensive half (two upstream calls, and
+ * the one the limiter refuses first) and the token is stable per title, so it
+ * is kept much longer than the stream itself. If it does go stale, `source2`
+ * says `expired` and the entry is dropped and re-read.
+ */
+const PLAYER_TOKEN_CACHE_SECONDS = 6 * 60 * 60;
+/**
+ * One retry when the burst limiter does trip, rather than failing the play.
+ * Measured 2026-09-24: eight distinct resolves two seconds apart all pass, so
+ * only a true back-to-back burst trips it and a pause of this length clears.
+ */
+const RATE_LIMIT_RETRY_MS = 2_500;
 const UPSTREAM_TIMEOUT_MS = 12_000;
 const PLAYLIST_CACHE_SECONDS = 300;
 
@@ -65,7 +95,14 @@ async function fetchWithTimeout(url, init = {}, timeoutMs = UPSTREAM_TIMEOUT_MS)
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      // Every token in this chain is minted per page view, so a cached answer
+      // is always the wrong one — and a cached 403 from a single blocked
+      // attempt would pin every later resolve to that failure.
+      cf: { cacheTtlByStatus: { "200-299": -1, "300-399": -1, "400-499": -1, "500-599": -1 }, ...(init.cf ?? {}) },
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -151,6 +188,24 @@ async function decryptPlayerUrl(passphrase, config) {
     base64ToBytes(config.ciphertext)
   );
   return new TextDecoder().decode(plain);
+}
+
+/** Only a page on the caller's own dizipal origin may be fetched. */
+function normalisePageUrl(value, base) {
+  let url;
+  try {
+    url = new URL(value, base);
+  } catch {
+    return null;
+  }
+  if (url.origin !== base) return null;
+  if (!/^\/(?:film|dizi)\//i.test(url.pathname)) return null;
+  return url.toString();
+}
+
+/** The encrypted player config the watch page carries. */
+function extractPlayerBlob(html) {
+  return html.match(/data-rm-k=["']true["'][^>]*>([\s\S]*?)<\/div>/i)?.[1]?.trim() ?? null;
 }
 
 function parsePlayerConfig(raw) {
@@ -241,7 +296,127 @@ function proxiedUrl(request, path, target, referer) {
   return `${base.origin}${path}?u=${encodeURIComponent(target)}&r=${encodeURIComponent(referer)}`;
 }
 
-async function handlePlayer(request, env) {
+function resolveCacheKey(pageUrl) {
+  return new Request(`https://dizipal-resolver.invalid/resolved?u=${encodeURIComponent(pageUrl)}`);
+}
+
+function tokenCacheKey(pageUrl) {
+  return new Request(`https://dizipal-resolver.invalid/token?u=${encodeURIComponent(pageUrl)}`);
+}
+
+/**
+ * The watch page and its player page, which together yield the stream token
+ * and the subtitle list. Cached per watch page.
+ */
+async function readPlayerToken(pageUrl, base, { fresh = false } = {}) {
+  const key = tokenCacheKey(pageUrl);
+  if (!fresh) {
+    const cached = await caches.default.match(key);
+    if (cached) return { ...(await cached.json()), cached: true };
+  }
+
+  // The page is read HERE, not on the device, and that is not an optimisation.
+  // The player host binds the `v` token inside the page to whoever fetched it:
+  // a token minted for a phone's IP answers the Worker 403 for the next few
+  // minutes, which is exactly what happened when the device posted the blob
+  // instead of the URL (2026-09-24). Whoever asks for the stream must be the
+  // one who asked for the page.
+  const pageResponse = await fetchPastRateLimit(pageUrl, {
+    headers: { "user-agent": UA, referer: `${base}/`, accept: "text/html,*/*" },
+  });
+  if (!pageResponse.ok) {
+    logMetric("page_failed", { status: pageResponse.status });
+    return { error: `watch page HTTP ${pageResponse.status}` };
+  }
+  const config = parsePlayerConfig(extractPlayerBlob(await pageResponse.text()));
+  if (!config) {
+    logMetric("page_has_no_blob");
+    return { error: "watch page carries no player config" };
+  }
+
+  let iframeUrl;
+  try {
+    iframeUrl = absolutise(await decryptPlayerUrl(await readPassphrase(base), config));
+  } catch (error) {
+    logMetric("player_config_undecryptable", { message: String(error?.message ?? error) });
+    return { error: "player config could not be decrypted" };
+  }
+  if (!iframeUrl || !PLAYER_HOST.test(safeHostname(iframeUrl))) {
+    return { error: "player config did not decrypt to a player URL" };
+  }
+
+  const iframeResponse = await fetchPastRateLimit(iframeUrl, {
+    headers: { "user-agent": UA, referer: `${base}/`, accept: "text/html,*/*" },
+  });
+  if (!iframeResponse.ok) {
+    logMetric("iframe_failed", { status: iframeResponse.status });
+    return { error: `player page HTTP ${iframeResponse.status}` };
+  }
+  const iframeHtml = await iframeResponse.text();
+  const token = extractPlayerToken(iframeHtml);
+  if (!token) {
+    logMetric("iframe_shape_changed");
+    return { error: "player page no longer calls openPlayer" };
+  }
+
+  const value = { token, iframeUrl, subtitles: extractSubtitles(iframeHtml) };
+  await caches.default.put(
+    key,
+    new Response(JSON.stringify(value), {
+      headers: {
+        "content-type": "application/json",
+        "cache-control": `public, max-age=${PLAYER_TOKEN_CACHE_SECONDS}`,
+      },
+    })
+  );
+  return value;
+}
+
+/** Refetch once after a pause when the player host's burst limiter says 403. */
+async function fetchPastRateLimit(url, init) {
+  const first = await fetchWithTimeout(url, init);
+  if (first.status !== 403) return first;
+  await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_RETRY_MS));
+  return fetchWithTimeout(url, init);
+}
+
+/** `source2.php` → the master playlist → the variant we want to serve. */
+async function readSource(player) {
+  const playerOrigin = new URL(player.iframeUrl).origin;
+  const sourceResponse = await fetchPastRateLimit(
+    `${playerOrigin}/source2.php?v=${encodeURIComponent(player.token)}`,
+    { headers: { "user-agent": UA, referer: player.iframeUrl, accept: "application/json, */*" } }
+  );
+  if (!sourceResponse.ok) {
+    logMetric("source_failed", { status: sourceResponse.status });
+    return { error: `source HTTP ${sourceResponse.status}` };
+  }
+  let source;
+  try {
+    source = await sourceResponse.json();
+  } catch {
+    return { error: "source did not return JSON" };
+  }
+  if (source?.expired) return { expired: true, error: "source token expired", status: 409 };
+
+  const file = source?.playlist?.[0]?.sources?.[0]?.file;
+  if (typeof file !== "string" || !file.includes("m.php")) {
+    logMetric("source_shape_changed");
+    return { error: "source carries no m.php playlist" };
+  }
+  const masterUrl = file.replace("m.php", "master.m3u8");
+
+  const masterResponse = await fetchPastRateLimit(masterUrl, {
+    headers: { "user-agent": UA, referer: `${playerOrigin}/`, accept: "*/*" },
+  });
+  if (!masterResponse.ok) return { error: `master HTTP ${masterResponse.status}` };
+  const variantUrl = pickBestVariant(await masterResponse.text(), masterUrl);
+  if (!variantUrl) return { error: "master lists no variant" };
+
+  return { masterUrl, variantUrl };
+}
+
+async function handlePlayer(request, env, ctx) {
   let payload;
   try {
     payload = await request.json();
@@ -252,79 +427,52 @@ async function handlePlayer(request, env) {
   const base = normaliseBase(payload?.base ?? env.DIZIPAL_BASE_URL ?? "");
   if (!base) return jsonResponse({ error: "base must be a dizipalN origin" }, { status: 400 });
 
-  const config = parsePlayerConfig(payload?.cfg);
-  if (!config) return jsonResponse({ error: "cfg is not a {ciphertext,iv,salt} blob" }, { status: 400 });
+  const pageUrl = normalisePageUrl(payload?.url, base);
+  if (!pageUrl) return jsonResponse({ error: "url must be a page on that dizipal origin" }, { status: 400 });
 
   const started = Date.now();
-  let iframeUrl;
-  try {
-    iframeUrl = absolutise(await decryptPlayerUrl(await readPassphrase(base), config));
-  } catch (error) {
-    logMetric("player_config_undecryptable", { message: String(error?.message ?? error) });
-    return jsonResponse({ error: "player config could not be decrypted" }, { status: 502 });
-  }
-  if (!iframeUrl || !PLAYER_HOST.test(new URL(iframeUrl).hostname)) {
-    return jsonResponse({ error: "player config did not decrypt to a player URL" }, { status: 502 });
+  const cacheKey = resolveCacheKey(pageUrl);
+  const cached = await caches.default.match(cacheKey);
+  if (cached) {
+    logMetric("resolved_from_cache", { page: pageUrl });
+    return cached;
   }
 
-  const iframeResponse = await fetchWithTimeout(iframeUrl, {
-    headers: { "user-agent": UA, referer: `${base}/`, accept: "text/html,*/*" },
-  });
-  if (!iframeResponse.ok) {
-    logMetric("iframe_failed", { status: iframeResponse.status });
-    return jsonResponse({ error: `player page HTTP ${iframeResponse.status}` }, { status: 502 });
+  let player = await readPlayerToken(pageUrl, base);
+  if (player.error) return jsonResponse({ error: player.error }, { status: 502 });
+
+  let source = await readSource(player);
+  // A cached token that has expired looks exactly like a healthy one until the
+  // source says so; read the page again and try once more.
+  if (source.expired && player.cached) {
+    player = await readPlayerToken(pageUrl, base, { fresh: true });
+    if (player.error) return jsonResponse({ error: player.error }, { status: 502 });
+    source = await readSource(player);
   }
-  const iframeHtml = await iframeResponse.text();
-  const token = extractPlayerToken(iframeHtml);
-  if (!token) {
-    logMetric("iframe_shape_changed");
-    return jsonResponse({ error: "player page no longer calls openPlayer" }, { status: 502 });
-  }
+  if (source.error) return jsonResponse({ error: source.error }, { status: source.status ?? 502 });
+
+  const { iframeUrl, subtitles } = player;
+  const { masterUrl } = source;
 
   const playerOrigin = new URL(iframeUrl).origin;
-  const sourceResponse = await fetchWithTimeout(
-    `${playerOrigin}/source2.php?v=${encodeURIComponent(token)}`,
-    { headers: { "user-agent": UA, referer: iframeUrl, accept: "application/json, */*" } }
-  );
-  if (!sourceResponse.ok) {
-    logMetric("source_failed", { status: sourceResponse.status });
-    return jsonResponse({ error: `source HTTP ${sourceResponse.status}` }, { status: 502 });
-  }
-  let source;
-  try {
-    source = await sourceResponse.json();
-  } catch {
-    return jsonResponse({ error: "source did not return JSON" }, { status: 502 });
-  }
-  if (source?.expired) return jsonResponse({ error: "source token expired" }, { status: 409 });
-
-  const file = source?.playlist?.[0]?.sources?.[0]?.file;
-  if (typeof file !== "string" || !file.includes("m.php")) {
-    logMetric("source_shape_changed");
-    return jsonResponse({ error: "source carries no m.php playlist" }, { status: 502 });
-  }
-  const masterUrl = file.replace("m.php", "master.m3u8");
-
-  const masterResponse = await fetchWithTimeout(masterUrl, {
-    headers: { "user-agent": UA, referer: `${playerOrigin}/`, accept: "*/*" },
-  });
-  if (!masterResponse.ok) {
-    return jsonResponse({ error: `master HTTP ${masterResponse.status}` }, { status: 502 });
-  }
-  const variantUrl = pickBestVariant(await masterResponse.text(), masterUrl);
-  if (!variantUrl) return jsonResponse({ error: "master lists no variant" }, { status: 502 });
+  const variantUrl = source.variantUrl;
 
   logMetric("resolved", { ms: Date.now() - started, host: new URL(masterUrl).hostname });
-  return jsonResponse({
+  const answer = jsonResponse({
     stream: proxiedUrl(request, "/playlist", variantUrl, `${playerOrigin}/`),
     streamType: "m3u8",
     // Every segment is refused without it.
     referer: `${playerOrigin}/`,
-    subtitles: extractSubtitles(iframeHtml).map((item) => ({
+    subtitles: subtitles.map((item) => ({
       ...item,
       url: proxiedUrl(request, "/subtitle", item.url, `${playerOrigin}/`),
     })),
-  });
+  }, { headers: { "cache-control": `public, max-age=${RESOLVE_CACHE_SECONDS}` } });
+
+  const stored = answer.clone();
+  if (ctx?.waitUntil) ctx.waitUntil(caches.default.put(cacheKey, stored));
+  else await caches.default.put(cacheKey, stored);
+  return answer;
 }
 
 async function handleProxy(request, kind) {
@@ -337,8 +485,12 @@ async function handleProxy(request, kind) {
   // origin is not good enough, which is why the referer travels with the URL.
   const claimed = params.get("r");
   const referer = claimed && PLAYER_HOST.test(safeHostname(claimed)) ? claimed : `${new URL(target).origin}/`;
-  const upstream = await fetchWithTimeout(target, {
+  const upstream = await fetchPastRateLimit(target, {
     headers: { "user-agent": UA, referer, accept: "*/*" },
+    // A playlist is identical for everyone holding the same token, so this is
+    // the one upstream call worth caching — it keeps repeat viewers off the
+    // player host's rate limiter entirely.
+    cf: { cacheTtl: PLAYLIST_CACHE_SECONDS, cacheEverything: true },
   });
   if (!upstream.ok) {
     logMetric("proxy_failed", { kind, status: upstream.status });
@@ -356,7 +508,7 @@ async function handleProxy(request, kind) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
@@ -373,7 +525,7 @@ export default {
 
     if (url.pathname === "/player" && request.method === "POST") {
       try {
-        return await handlePlayer(request, env);
+        return await handlePlayer(request, env, ctx);
       } catch (error) {
         logMetric("player_error", { message: String(error?.message ?? error) });
         return jsonResponse({ error: "resolver failed" }, { status: 502 });
@@ -393,6 +545,8 @@ export default {
 
 export const __internal = {
   absolutise,
+  extractPlayerBlob,
+  normalisePageUrl,
   safeHostname,
   extractPlayerToken,
   extractSubtitles,

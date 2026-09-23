@@ -1535,20 +1535,6 @@ function decodeHtmlAttribute(value: string): string {
     .replace(/&amp;/gi, "&"); // last, so "&amp;quot;" does not double-decode
 }
 
-/**
- * The encrypted player config the rebuilt watch page carries.
- *
- * It moved from `#videoContainer[data-cfg]` (base64, then an encrypted blob
- * POSTed back to the site) into a hidden `div[data-rm-k]` that the page's own
- * `oyunculistdc()` decrypts in the browser. The blob is `{ciphertext,iv,salt}`
- * with the quotes HTML-escaped; the resolver Worker turns it into a stream.
- */
-export function extractDizipalPlayerBlob(html: string): string | null {
-  const raw = html.match(/data-rm-k=["']true["'][^>]*>([\s\S]*?)<\/div>/i)?.[1]?.trim();
-  if (!raw) return null;
-  return raw.includes("ciphertext") ? raw : null;
-}
-
 function extractDizipalTitleFromUrl(url: string): string {
   try {
     const parsed = new URL(url, getDizipalBaseUrl());
@@ -2588,8 +2574,8 @@ type DizipalResolverResponse = {
   subtitles?: Array<{ url?: string; label?: string; lang?: string }>;
 };
 
-async function resolveDizipalStreamViaWorker(cfg: string, pageUrl: string): Promise<DizipalStreamInfo | null> {
-  const payload = JSON.stringify({ cfg, base: getDizipalBaseUrl() });
+async function resolveDizipalStreamViaWorker(pageUrl: string): Promise<DizipalStreamInfo | null> {
+  const payload = JSON.stringify({ url: pageUrl, base: getDizipalBaseUrl() });
 
   for (let attempt = 0; attempt < DIZIPAL_RESOLVER_BASE_URLS.length; attempt++) {
     const index = (activeDizipalResolverIndex + attempt) % DIZIPAL_RESOLVER_BASE_URLS.length;
@@ -2635,16 +2621,10 @@ async function resolveDizipalStreamViaWorker(cfg: string, pageUrl: string): Prom
 }
 
 async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResult | null> {
-  const html = await fetchDizipalPageHtml(pageUrl);
-  if (!html) return null;
-
-  const cfg = extractDizipalPlayerBlob(html);
-  if (!cfg) {
-    debugLog("[WebPlayer] Dizipal page has no player blob:", pageUrl);
-    return null;
-  }
-
-  const stream = await resolveDizipalStreamViaWorker(cfg, pageUrl);
+  // The page is deliberately NOT read here. The player host binds the token
+  // inside it to whoever fetched the page, so a page read on the device makes
+  // the Worker's request 403 — the resolver has to do both halves itself.
+  const stream = await resolveDizipalStreamViaWorker(pageUrl);
   return stream ? { stream, embedUrl: null } : null;
 }
 
@@ -3312,7 +3292,6 @@ export const __internal = {
   extractDizibalPlayerBox,
   extractPilavyerPlayerConfig,
   extractSubtitlesFromPlayerJs,
-  extractDizipalPlayerBlob,
   extractDizipalPageYear,
   extractHdFilmEmbedUrl,
   extractRapidrameParts,

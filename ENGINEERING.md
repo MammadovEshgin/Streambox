@@ -145,6 +145,16 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   network — where the same requests are 200. **Video never passes through the Worker**, only
   the ~40 KB playlist and any WebVTT the viewer turns on. Nothing about the encryption lives
   on the device; `tests/dizipalResolverWorker.test.ts` pins PBKDF2-SHA512/999 + AES-256-CBC.
+- **Whoever asks for the stream must be the one who asked for the page.** The player host
+  binds the token inside the watch page to the IP that fetched it, so the resolver Worker reads
+  the page itself and the device sends only the URL. A page read on the device makes the
+  Worker's own request 403 for minutes, with byte-identical headers — the single most expensive
+  thing to diagnose in this provider.
+- **The player host throttles server-side callers**, and all our traffic leaves from one
+  Cloudflare colo. Eight resolves two seconds apart pass; bursts put the egress into 403 for
+  minutes. The Worker caches a resolved stream for 4 minutes and the page → token step for 6
+  hours, and retries once after 2.5s. When it is throttled anyway the app just treats Dizipal
+  as having nothing, and HDFilm and Dizibal play — that is the intended failure mode.
 - **A "Dizipal is down" alert now means one of two different things.** `dizipal_home` /
   `dizipal_search` failing is the site; `dizipal_resolver` failing is the player chain, and it
   is end-to-end (canary page → blob → resolver → stream), so it is the one that says whether

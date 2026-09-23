@@ -61,8 +61,7 @@ test("the resolver never returns HDFilm's page player — native or Not Availabl
 // carries one encrypted blob, and only the resolver Worker can open it.
 // ---------------------------------------------------------------------------
 
-test("the encrypted player blob is handed to the resolver, not opened on device", () => {
-  assert.ok(source.includes("function extractDizipalPlayerBlob"), "the blob must be read from the page");
+test("the encrypted player blob is opened by the resolver, never on device", () => {
   assert.ok(
     source.includes("async function resolveDizipalStreamViaWorker"),
     "and resolved through the Worker that Dizipal's firewall lets through"
@@ -79,6 +78,6 @@ test("a Dizipal stream is only ever a stream the Worker returned", () => {
     source.indexOf("async function fetchDizipalStreamUrl"),
     source.indexOf("function matchesDizipalEpisodeUrl")
   );
-  assert.match(fn, /const stream = await resolveDizipalStreamViaWorker\(cfg, pageUrl\);/);
+  assert.match(fn, /const stream = await resolveDizipalStreamViaWorker\(pageUrl\);/);
   assert.match(fn, /return stream \? \{ stream, embedUrl: null \} : null;/);
 });

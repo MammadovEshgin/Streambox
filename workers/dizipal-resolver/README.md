@@ -28,8 +28,12 @@ if the viewer turns subtitles on, a WebVTT file.
 
 ## The chain
 
-1. The app reads the watch page (`dizipalN.com` itself is *not* walled) and
-   posts its `div[data-rm-k]` blob to `POST /player`.
+1. The app posts the watch page's URL to `POST /player`. **The page is read
+   here, not on the device.** The player host binds the `v` token inside the
+   page to whoever fetched the page: a token minted for a phone's IP answers
+   the Worker 403 for the next few minutes, so the same party has to ask for
+   both. (That cost a long afternoon to find — the request headers and URL were
+   byte-identical either way.)
 2. `{ciphertext,iv,salt}` → PBKDF2-SHA512(passphrase, salt, 999 iterations,
    32 bytes) → AES-256-CBC → the player iframe URL. This is the site's own
    `oyunculistdc()`; the passphrase is a literal in its `pageload.js` and is
@@ -41,6 +45,30 @@ if the viewer turns subtitles on, a WebVTT file.
    and served back through `/playlist`. Its segments are absolute `.cfd` URLs
    the device fetches itself — with `Referer: https://<player host>/`, without
    which the CDN answers 403.
+
+## Rate limiting — read this before trusting a failure
+
+The player host also **throttles server-side callers hard**, and all of our
+traffic leaves from the handful of Cloudflare addresses in one colo. Measured
+2026-09-24: eight distinct resolves two seconds apart all passed, but a few
+back-to-back bursts put the egress into 403 for minutes at a time, and a heavy
+afternoon of testing kept it there for longer stretches. A phone's own requests
+for the *media* are never affected — only the metadata calls this Worker makes.
+
+Three things keep us under it:
+
+- **A resolved stream is reused for 4 minutes** per watch page, so repeat views
+  cost nothing upstream. The ceiling is the token's own life: a fresh playlist
+  still played six minutes later, one from a ten-minute-old cache answered 403.
+- **The page → token step is cached for 6 hours** (the `v` is stable per title),
+  which removes the two calls the limiter refuses first. An expired token comes
+  back from `source2` as `expired`, and the entry is then re-read once.
+- **Playlists are cached at the edge** for 5 minutes and every upstream call
+  retries once after 2.5s, which clears an isolated burst.
+
+When it is throttled anyway, `/player` answers 502 and the app treats Dizipal
+like any provider that has nothing — HDFilm and Dizibal still play. That is the
+intended failure mode, not an outage.
 
 ## Endpoints
 

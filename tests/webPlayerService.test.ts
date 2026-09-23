@@ -1275,21 +1275,18 @@ test("Dizipal search survives a dropdown with nothing in it", () => {
   assert.deepEqual(__internal.parseDizipalSearchResults("<div>no results</div>", "tv"), []);
 });
 
-test("Dizipal's player blob is taken from the page, never decrypted on device", () => {
-  const page = `<div class="dp-video-stage" id="cstk">
-    <div style="display: none;" data-rm-k="true">{&quot;ciphertext&quot;:&quot;J7cLaz+i0U28=&quot;,&quot;iv&quot;:&quot;3a82d22be10d0170af46eca73fe1bcd8&quot;,&quot;salt&quot;:&quot;a3adb34be7cb&quot;}</div>
-    <iframe></iframe></div>`;
-  const blob = __internal.extractDizipalPlayerBlob(page);
-  assert.ok(blob, "the blob must be found");
-  // Handed on exactly as the page wrote it — entity decoding belongs to the
-  // Worker, which is the only place that knows the passphrase.
-  assert.match(blob!, /&quot;ciphertext&quot;/);
-  assert.equal(__internal.extractDizipalPlayerBlob("<div id=\"cstk\"><iframe></iframe></div>"), null);
-  assert.equal(
-    __internal.extractDizipalPlayerBlob('<div data-rm-k="true">{"nothing":"useful"}</div>'),
-    null,
-    "a blob without a ciphertext is not a player config"
+test("the device never reads a Dizipal watch page for playback", () => {
+  // The player host binds the token inside the page to whoever fetched it, so
+  // a page read here makes the Worker's own request 403 — which is exactly the
+  // bug this shape prevents. The resolver does both halves.
+  const source = fs.readFileSync(path.join(process.cwd(), "src", "services", "WebPlayerService.ts"), "utf8");
+  const fn = source.slice(
+    source.indexOf("async function fetchDizipalStreamUrl"),
+    source.indexOf("function matchesDizipalEpisodeUrl")
   );
+  assert.doesNotMatch(fn, /fetchDizipalPageHtml/);
+  assert.match(fn, /resolveDizipalStreamViaWorker\(pageUrl\)/);
+  assert.match(source, /JSON\.stringify\(\{ url: pageUrl, base: getDizipalBaseUrl\(\) \}\)/);
 });
 
 test("a rebuilt episode URL is recognised, and its title comes from the series slug", () => {
