@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "streambox-dizipal-resolver",
+  "main": "src/index.js",
+  "compatibility_date": "2026-05-14",
+  // Served on workers.dev AND our own zone: Bakcell's mobile network cannot
+  // reach *.workers.dev, and the app fails over to this host exactly as it
+  // does for the TMDB proxy.
+  "routes": [
+    { "pattern": "dizipal.streamboxapp.stream", "custom_domain": true }
+  ],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "vars": {
+    // Only a fallback for a caller that sends no `base`; the app always sends
+    // the domain from provider_configs, so a rotation needs no redeploy.
+    "DIZIPAL_BASE_URL": "https://dizipal2221.com"
+  }
+}

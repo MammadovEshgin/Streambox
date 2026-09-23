@@ -352,6 +352,49 @@ function dizipalGet<T = string>(
   return providerGet<T>("Dizipal", url, config);
 }
 
+/**
+ * POST a provider URL. Same breaker and challenge handling as `providerGet` —
+ * Dizipal's search became a POST when the site was rebuilt, and a form post
+ * that silently bypassed both would have re-opened the hole they close.
+ */
+async function providerPost<T = string>(
+  provider: string,
+  url: string,
+  body: string,
+  config: Parameters<typeof axios.post>[2]
+): Promise<import("axios").AxiosResponse<T>> {
+  if (isProviderSkipped(provider)) throw new ProviderSkippedError(provider);
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= PROVIDER_CHALLENGE_RETRIES; attempt++) {
+    try {
+      const response = await axios.post<T>(url, body, config);
+      noteProviderAnswered(provider);
+      return response;
+    } catch (error: any) {
+      lastError = error;
+      if (!isCloudflareChallengeStatus(error?.response?.status)) {
+        noteProviderFailure(error);
+        noteProviderSilence(provider, error);
+        throw error;
+      }
+      if (attempt === PROVIDER_CHALLENGE_RETRIES) break;
+      debugLog(`[WebPlayer] ${provider} challenge on ${url} — retry ${attempt + 1}`);
+    }
+  }
+  noteProviderFailure(lastError);
+  noteProviderSilence(provider, lastError);
+  throw lastError;
+}
+
+function dizipalPost<T = string>(
+  url: string,
+  body: string,
+  config: Parameters<typeof axios.post>[2]
+): Promise<import("axios").AxiosResponse<T>> {
+  return providerPost<T>("Dizipal", url, body, config);
+}
+
 /** Dizibal-flavoured `providerGet`, so the breaker covers the third tier too. */
 function dizibalGet<T = string>(
   url: string,
@@ -1152,42 +1195,122 @@ async function resolvePlayableSeriesEpisodeUrl(
   }
 }
 
-async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<SearchResult[]> {
-  try {
-    const response = await dizipalGet<DizipalSearchResponse>(`${getDizipalBaseUrl()}/ajax-search`, {
-      timeout: 6000,
-      params: { q: query },
-      headers: {
-        "User-Agent": UA,
-        Accept: "application/json, text/plain, */*",
-        "X-Requested-With": "XMLHttpRequest",
-        Referer: getDizipalReferer()
-      }
-    });
+/**
+ * Dizipal's search, as the site's own header box calls it.
+ *
+ * The rebuilt site replaced `/ajax-search` (a GET returning JSON rows) with a
+ * POST to `/bg/searchcontent` that answers `{data:{result,html}}` — the html
+ * being the dropdown's markup. The form carries a `cKey`/`cValue` pair minted
+ * per page render; without them the endpoint answers an empty result set
+ * rather than an error, which is exactly what "Dizipal has nothing" looks
+ * like, so a stale pair must expire rather than linger.
+ */
+const DIZIPAL_SEARCH_CREDENTIAL_TTL_MS = 10 * 60 * 1000;
+/** How long a home page that would not answer is left alone. */
+const DIZIPAL_SEARCH_CREDENTIAL_RETRY_MS = 30 * 1000;
 
-    // Self-heal: if Dizipal redirected us to a new domain, pin it so the
-    // rest of this session (and the next cold start, via AsyncStorage) skip
-    // the 1s-per-hop chain. Costs nothing on the happy path.
+type DizipalSearchCredentials = { base: string; cKey: string; cValue: string; expiresAt: number };
+let dizipalSearchCredentials: DizipalSearchCredentials | null = null;
+
+async function getDizipalSearchCredentials(): Promise<DizipalSearchCredentials | null> {
+  const base = getDizipalBaseUrl();
+  const cached = dizipalSearchCredentials;
+  if (cached && cached.base === base && cached.expiresAt > Date.now()) {
+    // An empty pair is a remembered failure: the home page did not answer, and
+    // asking it again inside the same resolve only spends the budget twice.
+    return cached.cKey ? cached : null;
+  }
+
+  try {
+    const response = await dizipalGet<string>(`${base}/`, {
+      timeout: 6000,
+      headers: { "User-Agent": UA, Accept: "text/html", Referer: getDizipalReferer() },
+    });
+    recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
+    const html = typeof response.data === "string" ? response.data : "";
+    const cKey = html.match(/name=["']cKey["']\s+value=["']([^"']+)["']/i)?.[1];
+    const cValue = html.match(/name=["']cValue["']\s+value=["']([^"']+)["']/i)?.[1];
+    if (!cKey || !cValue) {
+      debugLog("[WebPlayer] Dizipal home page carries no search credentials");
+      dizipalSearchCredentials = { base, cKey: "", cValue: "", expiresAt: Date.now() + DIZIPAL_SEARCH_CREDENTIAL_RETRY_MS };
+      return null;
+    }
+    dizipalSearchCredentials = {
+      base,
+      cKey,
+      cValue,
+      expiresAt: Date.now() + DIZIPAL_SEARCH_CREDENTIAL_TTL_MS,
+    };
+    return dizipalSearchCredentials;
+  } catch (error: any) {
+    debugLog("[WebPlayer] Dizipal search credentials failed:", error?.message ?? error);
+    dizipalSearchCredentials = { base, cKey: "", cValue: "", expiresAt: Date.now() + DIZIPAL_SEARCH_CREDENTIAL_RETRY_MS };
+    return null;
+  }
+}
+
+/** Rows out of the search dropdown's markup. */
+export function parseDizipalSearchResults(html: string, mediaType: "movie" | "tv"): SearchResult[] {
+  const wanted = mediaType === "movie" ? "/film/" : "/dizi/";
+  const results: SearchResult[] = [];
+
+  for (const match of html.matchAll(
+    /<a\b[^>]*class=["'][^"']*dp-search-result[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
+  )) {
+    const href = match[1];
+    if (!href.includes(wanted)) continue;
+    const inner = match[2];
+    const title = decodeHtmlAttribute(inner.match(/<strong[^>]*>([\s\S]*?)<\/strong>/i)?.[1] ?? "")
+      .replace(/<[^>]+>/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!title) continue;
+    const year = inner.match(/<em[^>]*>\s*((?:19|20)\d{2})\s*<\/em>/i)?.[1] ?? "";
+    results.push({
+      href,
+      text: `${title} ${year}`.trim().toLowerCase(),
+      title,
+      resultYear: year,
+    });
+  }
+
+  return results;
+}
+
+async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<SearchResult[]> {
+  const credentials = await getDizipalSearchCredentials();
+  if (!credentials) return [];
+
+  try {
+    const response = await dizipalPost<{ data?: { html?: string } }>(
+      `${getDizipalBaseUrl()}/bg/searchcontent`,
+      new URLSearchParams({
+        cKey: credentials.cKey,
+        cValue: credentials.cValue,
+        type: "hepsi",
+        searchterm: query,
+      }).toString(),
+      {
+        timeout: 6000,
+        headers: {
+          "User-Agent": UA,
+          Accept: "application/json, text/javascript, */*; q=0.01",
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "X-Requested-With": "XMLHttpRequest",
+          Referer: getDizipalReferer(),
+        },
+      }
+    );
     recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
 
-    const rawResults = Array.isArray(response.data?.results) ? response.data.results : [];
-    if (!response.data?.success || rawResults.length === 0) {
-      return [];
-    }
-
-    return rawResults
-      .filter((result) => {
-        const type = (result.type ?? "").toLowerCase();
-        return mediaType === "movie" ? type.includes("film") : type.includes("dizi");
-      })
-      .map((result) => ({
-        href: result.url ?? "",
-        text: `${result.title ?? ""} ${result.year ?? ""}`.trim().toLowerCase(),
-        title: result.title ?? "",
-        resultYear: result.year ? String(result.year) : ""
-      }))
-      .filter((result) => result.href.length > 0);
-  } catch {
+    const html = response.data?.data?.html;
+    if (typeof html !== "string" || html.length === 0) return [];
+    return parseDizipalSearchResults(html, mediaType);
+  } catch (error: any) {
+    debugLog(`[WebPlayer] Dizipal search error for "${query}":`, error?.message ?? error);
+    // A pair that the site has rotated answers 200 with nothing; drop ours so
+    // the next attempt mints a fresh one rather than repeating the miss.
+    dizipalSearchCredentials = null;
     return [];
   }
 }
@@ -1279,7 +1402,9 @@ async function probeDizipalDirectSlug(
   );
 
   for (const slug of slugs) {
-    const url = `${base}/${kind}/${slug}`;
+    // Every page slug on the rebuilt site ends in its own section:
+    // /film/oppenheimer-film-izle, /dizi/breaking-bad-dizi-izle.
+    const url = `${base}/${kind}/${slug}-${kind}-izle`;
     try {
       const response = await dizipalGet<string>(url, {
         timeout: 6000,
@@ -1410,30 +1535,32 @@ function decodeHtmlAttribute(value: string): string {
     .replace(/&amp;/gi, "&"); // last, so "&amp;quot;" does not double-decode
 }
 
-function extractDizipalCfg(html: string): string | null {
-  const match = html.match(/id=["']videoContainer["'][^>]*data-cfg=["']([^"']+)["']/i);
-  const raw = match?.[1] ?? html.match(/data-cfg=["']([^"']+)["']/i)?.[1] ?? null;
-  return raw ? decodeHtmlAttribute(raw) : null;
-}
-
-function normalizeDizipalEmbedUrl(embedUrl: string, pageUrl: string, baseUrl: string): string | null {
-  const trimmed = (embedUrl ?? "").trim();
-  if (!trimmed) return null;
-
-  return (
-    toAbsoluteUrl(pageUrl, trimmed) ??
-    toAbsoluteUrl(baseUrl, trimmed) ??
-    toAbsoluteUrl(getDizipalBaseUrl(), trimmed)
-  );
+/**
+ * The encrypted player config the rebuilt watch page carries.
+ *
+ * It moved from `#videoContainer[data-cfg]` (base64, then an encrypted blob
+ * POSTed back to the site) into a hidden `div[data-rm-k]` that the page's own
+ * `oyunculistdc()` decrypts in the browser. The blob is `{ciphertext,iv,salt}`
+ * with the quotes HTML-escaped; the resolver Worker turns it into a stream.
+ */
+export function extractDizipalPlayerBlob(html: string): string | null {
+  const raw = html.match(/data-rm-k=["']true["'][^>]*>([\s\S]*?)<\/div>/i)?.[1]?.trim();
+  if (!raw) return null;
+  return raw.includes("ciphertext") ? raw : null;
 }
 
 function extractDizipalTitleFromUrl(url: string): string {
   try {
     const parsed = new URL(url, getDizipalBaseUrl());
     const segments = parsed.pathname.split("/").filter(Boolean);
-    const rawSlug = segments[segments.length - 1] ?? "";
+    // An episode lives at /dizi/{slug}/{n}-sezon/{n}-bolum, so the last segment
+    // is the episode number — the title is the segment after the section.
+    const isEpisode = /^\d+-bolum$/i.test(segments[segments.length - 1] ?? "");
+    const rawSlug = (isEpisode ? segments[1] : segments[segments.length - 1]) ?? "";
     const cleanedSlug = decodeURIComponent(rawSlug)
       .replace(/-\d+-sezon-\d+-bolum$/i, "")
+      // The rebuilt site suffixes every page slug: "oppenheimer-film-izle".
+      .replace(/-(?:film|dizi)-izle$/i, "")
       .replace(/-\d{4}$/i, "")
       .replace(/-(?:turkce-dublaj|turkce-altyazili|altyazili|dublaj|izle)$/i, "")
       .replace(/-/g, " ")
@@ -2388,41 +2515,6 @@ type DizipalStreamResult = {
   embedUrl: string | null;
 };
 
-type DizipalPlayerConfigResponse = {
-  success?: boolean;
-  config?: { v?: string; t?: string; p?: string };
-};
-
-/**
- * Read the CSRF token out of `/ajax-token`.
- *
- * The endpoint used to answer with the bare token string; it now answers with
- * `{"t":"<hex>"}`. The old code did `String(data).trim()` on the parsed object,
- * which yields the literal "[object Object]" — 15 characters of nonsense that
- * every player-config POST then rejected with "Invalid token", so no Dizipal
- * title could produce a native stream and all of them fell back to the
- * provider's own WebView player. Handle both shapes.
- */
-function parseDizipalToken(data: unknown): string {
-  if (typeof data === "string") {
-    const trimmed = data.trim();
-    if (!trimmed.startsWith("{")) return trimmed;
-    try {
-      const parsed = JSON.parse(trimmed) as { t?: unknown };
-      return typeof parsed.t === "string" ? parsed.t.trim() : "";
-    } catch {
-      return trimmed;
-    }
-  }
-
-  if (data && typeof data === "object") {
-    const token = (data as { t?: unknown }).t;
-    return typeof token === "string" ? token.trim() : "";
-  }
-
-  return "";
-}
-
 /**
  * Mint a fresh token and exchange the page's `cfg` for the player config.
  *
@@ -2449,38 +2541,6 @@ function parseDizipalToken(data: unknown): string {
  * Returns null on anything that isn't the expected shape so the caller falls
  * back to the network path rather than playing something wrong.
  */
-function decodeDizipalCfg(cfg: string): DizipalPlayerConfigResponse | null {
-  const normalized = cfg.trim().replace(/-/g, "+").replace(/_/g, "/");
-  if (!normalized || !/^[A-Za-z0-9+/=]+$/.test(normalized)) return null;
-
-  let json: string;
-  try {
-    json = decodeBase64Binary(normalized);
-  } catch {
-    return null;
-  }
-  if (!json.trim().startsWith("{")) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return null;
-  }
-
-  const config = parsed as { v?: unknown; t?: unknown; p?: unknown };
-  if (typeof config?.v !== "string" || !/^https?:\/\//i.test(config.v)) return null;
-  if (typeof config?.t !== "string" || !config.t) return null;
-
-  return {
-    success: true,
-    config: {
-      v: config.v,
-      t: config.t,
-      p: typeof config.p === "string" ? config.p : "",
-    },
-  };
-}
 
 /**
  * Paths the player-config endpoint has lived at, newest first. Dizipal renamed
@@ -2491,144 +2551,106 @@ function decodeDizipalCfg(cfg: string): DizipalPlayerConfigResponse | null {
  * `main.js` posts to since 2026-09-18; `/ajax/player-config` still answers as
  * of 2026-09-20.
  */
-const DIZIPAL_PLAYER_CONFIG_PATHS = ["/ajax", "/ajax/player-config", "/ajax-player-config"];
 
-async function requestDizipalPlayerConfig(
-  baseUrl: string,
-  pageUrl: string,
-  cfg: string
-): Promise<DizipalPlayerConfigResponse | null> {
-  const postConfigTo = (path: string, cookieHeader?: string) =>
-    axios.post<DizipalPlayerConfigResponse>(
-      `${baseUrl}${path}`,
-      `cfg=${encodeURIComponent(cfg)}`,
-      {
-        timeout: 6000,
-        withCredentials: true,
-        validateStatus: (status) => status >= 200 && status < 500,
-        headers: {
-          "User-Agent": UA,
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-Requested-With": "XMLHttpRequest",
-          Referer: pageUrl,
-          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-        },
-      }
-    );
+/**
+ * Turn a watch page into a stream through the resolver Worker.
+ *
+ * WHY A WORKER. Dizipal's player host answers 403 "Attention Required" to our
+ * users' networks for every dynamic path — `iframe.php`, `source2.php`, the
+ * variant playlist `l.php` — while serving the static ones (the master
+ * playlist, and the `.jpg`-disguised MPEG-TS segments on its CDN) perfectly.
+ * The device can therefore stream Dizipal but cannot ASK for the stream, so
+ * that one question is asked from Cloudflare's network, which the rule lets
+ * through. The Worker hands back a playlist URL; the segments, which are all
+ * of the bytes, still go straight from the CDN to the device.
+ *
+ * Nothing here is decrypted on-device: the blob, its passphrase and the whole
+ * `openPlayer` chain live in `workers/dizipal-resolver`.
+ */
+const DIZIPAL_RESOLVER_TIMEOUT_MS = 10_000;
 
-  // Remember which path answered so the retry doesn't re-probe the dead one.
-  let livePath = DIZIPAL_PLAYER_CONFIG_PATHS[0];
-  const postConfig = async (cookieHeader?: string) => {
-    let last = await postConfigTo(livePath, cookieHeader);
-    if (last.status === 404) {
-      for (const path of DIZIPAL_PLAYER_CONFIG_PATHS) {
-        if (path === livePath) continue;
-        const attempt = await postConfigTo(path, cookieHeader);
-        if (attempt.status !== 404) {
-          livePath = path;
-          last = attempt;
-          break;
-        }
+/**
+ * Both hosts the resolver answers on, custom domain first: Bakcell's mobile
+ * network cannot reach `*.workers.dev` at all (see `tmdb.ts`), so the zone
+ * host has to be the one tried first, with workers.dev as the safety net for
+ * a DNS or certificate problem on our own zone.
+ */
+const DIZIPAL_RESOLVER_BASE_URLS = [
+  "https://dizipal.streamboxapp.stream",
+  "https://streambox-dizipal-resolver.polyana-eam.workers.dev",
+];
+let activeDizipalResolverIndex = 0;
+
+type DizipalResolverResponse = {
+  stream?: string;
+  streamType?: string;
+  referer?: string;
+  subtitles?: Array<{ url?: string; label?: string; lang?: string }>;
+};
+
+async function resolveDizipalStreamViaWorker(cfg: string, pageUrl: string): Promise<DizipalStreamInfo | null> {
+  const payload = JSON.stringify({ cfg, base: getDizipalBaseUrl() });
+
+  for (let attempt = 0; attempt < DIZIPAL_RESOLVER_BASE_URLS.length; attempt++) {
+    const index = (activeDizipalResolverIndex + attempt) % DIZIPAL_RESOLVER_BASE_URLS.length;
+    const host = DIZIPAL_RESOLVER_BASE_URLS[index];
+    try {
+      const response = await axios.post<DizipalResolverResponse>(`${host}/player`, payload, {
+        timeout: DIZIPAL_RESOLVER_TIMEOUT_MS,
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+      });
+      // Remember the host that answered: the other one costs a full timeout.
+      activeDizipalResolverIndex = index;
+
+      const data = response.data;
+      if (!data?.stream || !/^https:\/\//i.test(data.stream)) {
+        debugLog("[WebPlayer] Dizipal resolver returned no stream for", pageUrl);
+        return null;
       }
+      return {
+        streamUrl: data.stream,
+        streamType: data.streamType === "mp4" ? "mp4" : "m3u8",
+        poster: "",
+        referer: typeof data.referer === "string" ? data.referer : "",
+        subtitles: (data.subtitles ?? [])
+          .filter((track): track is { url: string; label?: string; lang?: string } =>
+            typeof track?.url === "string" && /^https:\/\//i.test(track.url)
+          )
+          .map((track) => ({
+            url: track.url,
+            label: track.label?.trim() || "Altyazı",
+            lang: track.lang && /^[a-z]{2,3}$/i.test(track.lang) ? track.lang.toLowerCase() : "und",
+          })),
+      };
+    } catch (error: any) {
+      // A 4xx is the resolver's answer — the page carried nothing playable —
+      // and trying the other host would only repeat it.
+      const status = error?.response?.status;
+      debugLog(`[WebPlayer] Dizipal resolver ${host} failed:`, status ?? error?.message ?? error);
+      if (typeof status === "number" && status >= 400 && status < 500) return null;
     }
-    return last;
-  };
-
-  const mintToken = async (): Promise<string> => {
-    const tokenResp = await dizipalGet(`${baseUrl}/ajax-token`, {
-      timeout: 6000,
-      withCredentials: true,
-      headers: {
-        "User-Agent": UA,
-        Accept: "application/json, text/plain, */*",
-        "X-Requested-With": "XMLHttpRequest",
-        Referer: pageUrl,
-      },
-    });
-    return parseDizipalToken(tokenResp.data);
-  };
-
-  try {
-    await mintToken();
-    const response = await postConfig();
-    if (response.data?.success) return response.data;
-
-    // Rejected — the token is now spent, so the retry needs a new one.
-    debugLog("[WebPlayer] Dizipal player-config rejected; retrying with an explicit cookie");
-    const retryToken = await mintToken();
-    if (!retryToken) return response.data ?? null;
-
-    const retry = await postConfig(`_ct=${retryToken}`);
-    return retry.data ?? null;
-  } catch (error: any) {
-    noteProviderFailure(error);
-    debugLog("[WebPlayer] Dizipal player-config failed:", error?.message ?? error);
-    return null;
   }
+
+  return null;
 }
 
 async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResult | null> {
-  try {
-    const html = await fetchDizipalPageHtml(pageUrl);
-    if (!html) return null;
+  const html = await fetchDizipalPageHtml(pageUrl);
+  if (!html) return null;
 
-    const cfg = extractDizipalCfg(html);
-    if (!cfg) return null;
-
-    const pageOrigin = new URL(pageUrl).origin;
-    const baseUrl = pageOrigin.includes("dizipal") ? pageOrigin : getDizipalBaseUrl();
-
-    // The page already carries the player config; only ask the server when the
-    // attribute isn't the shape we know.
-    const configResp =
-      decodeDizipalCfg(cfg) ?? (await requestDizipalPlayerConfig(baseUrl, pageUrl, cfg));
-
-    const config = configResp?.config;
-    if (!configResp?.success || !config?.v) return null;
-
-    const streamType = (config.t ?? "").toLowerCase();
-
-    if (streamType === "m3u8" || streamType === "mp4") {
-      return {
-        stream: {
-          streamUrl: config.v,
-          streamType,
-          poster: config.p ?? "",
-          referer: pageUrl,
-          subtitles: []
-        },
-        embedUrl: null
-      };
-    }
-
-    if (streamType === "embed" || streamType === "iframe") {
-      const normalizedEmbedUrl = normalizeDizipalEmbedUrl(config.v, pageUrl, baseUrl);
-      if (!normalizedEmbedUrl) return null;
-
-      const embedStream = await resolveEmbedToM3u8(normalizedEmbedUrl, pageUrl);
-      if (embedStream) {
-        return {
-          stream: embedStream,
-          embedUrl: normalizedEmbedUrl
-        };
-      }
-
-      return {
-        stream: null,
-        embedUrl: normalizedEmbedUrl
-      };
-    }
-
-    return null;
-  } catch (e) {
+  const cfg = extractDizipalPlayerBlob(html);
+  if (!cfg) {
+    debugLog("[WebPlayer] Dizipal page has no player blob:", pageUrl);
     return null;
   }
+
+  const stream = await resolveDizipalStreamViaWorker(cfg, pageUrl);
+  return stream ? { stream, embedUrl: null } : null;
 }
 
 function matchesDizipalEpisodeUrl(url: string, seasonNumber: number, episodeNumber: number): boolean {
-  const normalized = url.toLowerCase();
-  return normalized.includes(`/bolum/`) && normalized.includes(`${seasonNumber}-sezon-${episodeNumber}-bolum`);
+  // /dizi/{slug}/{season}-sezon/{episode}-bolum — the rebuilt site's shape.
+  return new RegExp(`/dizi/[^/]+/${seasonNumber}-sezon/${episodeNumber}-bolum/?$`, "i").test(url);
 }
 
 async function findDizipalEpisodeUrl(
@@ -2647,7 +2669,7 @@ async function findDizipalEpisodeUrl(
     new Set(
       extractHrefs(html)
         .map((href) => toAbsoluteUrl(seriesPageUrl, href))
-        .filter((href): href is string => Boolean(href && href.includes("/bolum/")))
+        .filter((href): href is string => Boolean(href && /-bolum\/?$/i.test(href)))
     )
   );
 
@@ -3280,15 +3302,17 @@ export const __internal = {
   providerGet,
   isProviderSkipped,
   resetProviderSilence: () => providerSilence.clear(),
+  resetDizipalSearchCredentials: () => {
+    dizipalSearchCredentials = null;
+  },
   isCloudflareChallengeStatus,
   checkVideoAvailability,
-  decodeDizipalCfg,
   decodeRapidrameByInterpretingDcBody,
   decodeRapidrameValueCandidates,
   extractDizibalPlayerBox,
   extractPilavyerPlayerConfig,
   extractSubtitlesFromPlayerJs,
-  extractDizipalCfg,
+  extractDizipalPlayerBlob,
   extractDizipalPageYear,
   extractHdFilmEmbedUrl,
   extractRapidrameParts,
@@ -3302,6 +3326,7 @@ export const __internal = {
   isAlternateTitleSafeForDizipal,
   isDizipalUrlTitleCompatible,
   probeDizipalDirectSlug,
+  parseDizipalSearchResults,
   rankDizibalSuggestions,
   readDizibalPageNames,
   scoreDizipalResult,

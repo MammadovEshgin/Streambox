@@ -455,8 +455,9 @@ function buildProviderChecks(providers) {
   // datacenter IPs and are challenged exactly like Worker egress; that
   // workflow existed once and was deleted after it did nothing but send false
   // alarms. The in-app `player_resolve` telemetry is the passive tier-1
-  // outage signal. Re-verified from Worker egress 2026-09-22: HDFilm 403,
-  // Dizipal 403 (DDoS-Guard), Dizibal site 403 (IP ban), Dizibal player 200.
+  // outage signal. Re-verified from Worker egress 2026-09-24: HDFilm 403,
+  // Dizipal 200 (the rebuilt site is on Cloudflare, not DDoS-Guard, so it is
+  // visible from here again), Dizibal site 403 (IP ban), Dizibal player 200.
   return [
     {
       id: "dizipal_home",
@@ -471,34 +472,35 @@ function buildProviderChecks(providers) {
     {
       id: "dizipal_search",
       label: "Dizipal search",
-      url: `${dizipalBaseUrl}/ajax-search?q=breaking%20bad`,
+      // The rebuilt site's search is a POST to /bg/searchcontent carrying a
+      // cKey/cValue pair minted per page render. Without them the endpoint
+      // answers 200 with an empty result set — indistinguishable from "Dizipal
+      // does not have it" — so what has to be watched is that the home page
+      // still hands the pair out, which is the half that can silently change.
+      url: `${dizipalBaseUrl}/`,
       referer: dizipalReferer,
       validator: (response, body) => {
-        try {
-          const parsed = JSON.parse(body);
-          const ok = parsed?.success === true && Array.isArray(parsed.results);
-          return { ok, reason: ok ? "ok" : "Dizipal search JSON has no results" };
-        } catch {
-          return { ok: false, reason: "Dizipal search did not return JSON" };
-        }
+        if (response.status !== 200) return { ok: false, reason: `HTTP ${response.status}` };
+        if (looksLikeChallengePage(body)) return { ok: false, reason: "Cloudflare/challenge page" };
+        const action = /data-action="\/bg\/searchcontent"/.test(body);
+        const cKey = /name="cKey"\s+value="[^"]+"/.test(body);
+        const cValue = /name="cValue"\s+value="[^"]+"/.test(body);
+        const ok = action && cKey && cValue;
+        return { ok, reason: ok ? "ok" : "home page no longer mints the search cKey/cValue — push OTA" };
       },
     },
     {
       id: "dizipal_playback",
       label: "Dizipal playback config",
       // Search being healthy says nothing about whether a title can actually
-      // PLAY. In Sept 2026 Dizipal renamed /ajax-player-config to
-      // /ajax/player-config; search kept answering 200 while every title
-      // silently failed to produce a stream, and this monitor stayed green
-      // for the whole outage. The app reads the player config out of the
-      // page's `data-cfg` attribute, so probing that one attribute covers the
-      // real playback path in a single request. Two shapes are live-valid:
-      // base64 JSON {v,t} (until 2026-09-18) and the encrypted
-      // {ciphertext,iv,salt} JSON written with &quot; entities that the app
-      // entity-decodes and POSTs to /ajax.
+      // PLAY: in Sept 2026 Dizipal renamed its player-config endpoint and
+      // search kept answering 200 for the whole outage. Since the rebuild the
+      // watch page carries one encrypted `div[data-rm-k]` blob, so checking
+      // that the canary episode still ships one covers the device half of the
+      // playback path in a single request. `dizipal_resolver` covers the rest.
       //
       // Canary is a long-running catalog title at a stable slug.
-      url: `${dizipalBaseUrl}/bolum/breaking-bad-1-sezon-1-bolum`,
+      url: `${dizipalBaseUrl}/dizi/breaking-bad/1-sezon/1-bolum`,
       referer: dizipalReferer,
       validator: (response, body) => {
         if (response.status !== 200) {
@@ -507,29 +509,10 @@ function buildProviderChecks(providers) {
         if (looksLikeChallengePage(body)) {
           return { ok: false, reason: "Cloudflare/challenge page" };
         }
-        const rawCfg = body.match(/id=["']videoContainer["'][^>]*data-cfg=["']([^"']+)["']/i)?.[1];
-        if (!rawCfg) {
-          return { ok: false, reason: "episode page has no data-cfg — push OTA" };
-        }
-        const cfg = rawCfg.replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-        if (cfg.trim().startsWith("{")) {
-          try {
-            const encrypted = JSON.parse(cfg);
-            const ok = typeof encrypted?.ciphertext === "string"
-              && typeof encrypted?.iv === "string"
-              && typeof encrypted?.salt === "string";
-            return { ok, reason: ok ? "ok" : "data-cfg JSON lacks {ciphertext,iv,salt} — push OTA" };
-          } catch {
-            return { ok: false, reason: "data-cfg is neither base64 nor JSON — push OTA" };
-          }
-        }
-        try {
-          const decoded = JSON.parse(atob(cfg.replace(/-/g, "+").replace(/_/g, "/")));
-          const ok = typeof decoded?.v === "string" && /^https?:\/\//i.test(decoded.v) && typeof decoded?.t === "string";
-          return { ok, reason: ok ? "ok" : "data-cfg no longer carries {v,t} — push OTA" };
-        } catch {
-          return { ok: false, reason: "data-cfg is no longer base64 JSON — push OTA" };
-        }
+        const blob = extractDizipalPlayerBlob(body);
+        if (!blob) return { ok: false, reason: "episode page has no div[data-rm-k] — push OTA" };
+        const ok = typeof blob.ciphertext === "string" && typeof blob.iv === "string" && typeof blob.salt === "string";
+        return { ok, reason: ok ? "ok" : "player blob lacks {ciphertext,iv,salt} — push OTA" };
       },
     },
     // ─── Dizibal ─────────────────────────────────────────────────
@@ -756,12 +739,95 @@ async function runProviderChecks(env, providers) {
 // HTTP checks plus the DNS rotation watch. The DNS check is deliberately NOT
 // part of `runProviderChecks`: that set also validates a /set_ candidate, and
 // "a newer domain exists" says nothing about whether the candidate is healthy.
+/** The encrypted player config a rebuilt Dizipal watch page carries. */
+function extractDizipalPlayerBlob(html) {
+  const raw = html.match(/data-rm-k="true"[^>]*>([\s\S]*?)<\/div>/i)?.[1];
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw.replace(/&quot;/g, '"').replace(/&amp;/g, "&").trim());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The half of playback the device cannot do for itself.
+ *
+ * Dizipal's player host answers 403 to our users' networks for every dynamic
+ * path, so `workers/dizipal-resolver` asks on their behalf. That makes it part
+ * of the playback path: if it stops turning a live page blob into a stream,
+ * every Dizipal title is dead even though the site itself is fine. This check
+ * is therefore end-to-end — canary page → blob → resolver → stream URL.
+ */
+async function checkDizipalResolver(providers, env) {
+  const startedAt = Date.now();
+  const base = normalizeBaseUrl(providers.dizipal.baseUrl);
+  const resolver = (env.DIZIPAL_RESOLVER_URL || "https://dizipal.streamboxapp.stream").replace(/\/+$/, "");
+  const canary = `${base}/dizi/breaking-bad/1-sezon/1-bolum`;
+  const finish = (fields) => ({
+    id: "dizipal_resolver",
+    label: "Dizipal resolver",
+    url: `${resolver}/player`,
+    finalUrl: null,
+    status: null,
+    statusLabel: "post",
+    rotated: false,
+    latestBaseUrl: null,
+    blocked: false,
+    challengedAttempts: 0,
+    ...fields,
+    durationMs: Date.now() - startedAt,
+    checkedAt: new Date().toISOString(),
+  });
+
+  try {
+    const page = await fetchWithTimeout(canary, {
+      method: "GET",
+      redirect: "follow",
+      headers: { ...baseHeaders(`${base}/`), accept: "text/html,*/*" },
+    }, getTimeoutMs(env));
+    const html = await page.text();
+    if (!page.ok) return finish({ ok: false, status: page.status, reason: `canary page HTTP ${page.status}` });
+    const wall = blockingWall(page.status, html);
+    if (wall) return finish({ ok: false, blocked: true, status: page.status, reason: wall });
+    const blob = extractDizipalPlayerBlob(html);
+    if (!blob) {
+      return finish({ ok: false, status: page.status, reason: "canary page has no player blob — push OTA" });
+    }
+
+    const response = await fetchWithTimeout(`${resolver}/player`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ cfg: JSON.stringify(blob), base }),
+    }, getTimeoutMs(env));
+    const text = await response.text();
+    if (!response.ok) {
+      return finish({ ok: false, status: response.status, reason: `resolver HTTP ${response.status}: ${text.slice(0, 120)}` });
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return finish({ ok: false, status: response.status, reason: "resolver did not return JSON" });
+    }
+    const ok = typeof parsed?.stream === "string" && /^https:\/\//.test(parsed.stream);
+    return finish({
+      ok,
+      status: response.status,
+      reason: ok ? "ok" : "resolver returned no stream — Dizipal's player chain moved",
+    });
+  } catch (error) {
+    return finish({ ok: false, reason: error?.name === "AbortError" ? "timeout" : String(error?.message ?? error) });
+  }
+}
+
 async function runAllChecks(env, providers) {
-  const [httpResults, domainResult] = await Promise.all([
+  const [httpResults, domainResult, resolverResult] = await Promise.all([
     runProviderChecks(env, providers),
     checkDizipalDomain(providers),
+    checkDizipalResolver(providers, env),
   ]);
-  return [...httpResults, domainResult];
+  return [...httpResults, domainResult, resolverResult];
 }
 
 async function runMonitor(env) {

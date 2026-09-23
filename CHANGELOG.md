@@ -4,6 +4,14 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-09-24 (2)
+
+- Fixed: Dizipal, the provider with the best Turkish dubs and subtitles, played nothing at
+  all. It rebuilt its site and moved playback behind a player host that refuses requests from
+  Azerbaijani networks; StreamBox now follows the new site and asks for the stream through a
+  StreamBox server that the host does answer. Video still comes straight from the source, so
+  nothing gets slower.
+
 ## 2026-09-24
 
 - Fixed: while one provider was down, titles the other providers *do* carry reported "Not

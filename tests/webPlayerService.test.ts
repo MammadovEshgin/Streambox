@@ -19,7 +19,10 @@ const dizipalBase = "https://dizipal2078.com";
 // The resolver remembers which providers answered nothing and skips them for a
 // cooldown (see "unreachable provider" below). That memory is module state, so
 // one test's dead provider would silently skip the next test's requests.
-beforeEach(() => __internal.resetProviderSilence());
+beforeEach(() => {
+  __internal.resetProviderSilence();
+  __internal.resetDizipalSearchCredentials();
+});
 
 test("Dizipal direct-slug builds the page slug the way Dizipal does", () => {
   // "From" (2022) exists at /dizi/from but Dizipal's ajax-search never surfaces
@@ -31,7 +34,7 @@ test("Dizipal direct-slug builds the page slug the way Dizipal does", () => {
   assert.equal(__internal.slugifyForDizipal("  Notes from the Last Row  "), "notes-from-the-last-row");
   // The slug-built URL must still pass the title-compatibility guard for "From".
   assert.equal(
-    __internal.isDizipalUrlTitleCompatible("https://dizipal2083.com/dizi/from", "From"),
+    __internal.isDizipalUrlTitleCompatible("https://dizipal2083.com/dizi/from-dizi-izle", "From"),
     true
   );
 });
@@ -1110,10 +1113,10 @@ test("Dizipal direct-slug probe rejects the wrong-year movie behind the plain sl
   (globalThis as any).__DEV__ = false;
 
   axios.get = (async (url: string) => {
-    if (url.endsWith("/film/dune-2021")) {
+    if (url.endsWith("/film/dune-2021-film-izle")) {
       throw new Error("404"); // Dizipal has no year-suffixed page for 2021 here
     }
-    if (url.endsWith("/film/dune")) {
+    if (url.endsWith("/film/dune-film-izle")) {
       return { data: "<title>Dune izle (1984) - dizipal</title><h1>Dune</h1>" };
     }
     throw new Error(`Unexpected URL: ${url}`);
@@ -1136,7 +1139,7 @@ test("Dizipal direct-slug probe prefers the year-suffixed slug and reports the v
   (globalThis as any).__DEV__ = false;
 
   axios.get = (async (url: string) => {
-    if (url.endsWith("/film/dune-1984")) {
+    if (url.endsWith("/film/dune-1984-film-izle")) {
       return { data: "<title>Dune izle (1984)</title>" };
     }
     throw new Error(`Unexpected URL: ${url}`);
@@ -1145,7 +1148,7 @@ test("Dizipal direct-slug probe prefers the year-suffixed slug and reports the v
   try {
     const result = await __internal.probeDizipalDirectSlug("Dune", "movie", "1984");
     assert.ok(result, "year-suffixed slug hit must resolve");
-    assert.ok(result!.url.endsWith("/film/dune-1984"));
+    assert.ok(result!.url.endsWith("/film/dune-1984-film-izle"));
     assert.equal(result!.resultYear, "1984");
   } finally {
     axios.get = originalGet;
@@ -1159,10 +1162,10 @@ test("Dizipal direct-slug probe accepts the plain movie slug when the page year 
   (globalThis as any).__DEV__ = false;
 
   axios.get = (async (url: string) => {
-    if (url.endsWith("/film/dune-2021")) {
+    if (url.endsWith("/film/dune-2021-film-izle")) {
       throw new Error("404");
     }
-    if (url.endsWith("/film/dune")) {
+    if (url.endsWith("/film/dune-film-izle")) {
       return { data: '<span class="year">2021</span><h1>Dune</h1>' };
     }
     throw new Error(`Unexpected URL: ${url}`);
@@ -1171,7 +1174,7 @@ test("Dizipal direct-slug probe accepts the plain movie slug when the page year 
   try {
     const result = await __internal.probeDizipalDirectSlug("Dune", "movie", "2021");
     assert.ok(result, "correct-year plain slug must resolve");
-    assert.ok(result!.url.endsWith("/film/dune"));
+    assert.ok(result!.url.endsWith("/film/dune-film-izle"));
     assert.equal(result!.resultYear, "2021");
   } finally {
     axios.get = originalGet;
@@ -1188,10 +1191,10 @@ test("Dizipal direct-slug probe keeps TV fail-open on an unreadable page year (t
   (globalThis as any).__DEV__ = false;
 
   axios.get = (async (url: string) => {
-    if (url.endsWith("/dizi/from-2022")) {
+    if (url.endsWith("/dizi/from-2022-dizi-izle")) {
       throw new Error("404");
     }
-    if (url.endsWith("/dizi/from")) {
+    if (url.endsWith("/dizi/from-dizi-izle")) {
       return { data: "<h1>From</h1><div>1. Sezon</div>" };
     }
     throw new Error(`Unexpected URL: ${url}`);
@@ -1200,7 +1203,7 @@ test("Dizipal direct-slug probe keeps TV fail-open on an unreadable page year (t
   try {
     const result = await __internal.probeDizipalDirectSlug("From", "tv", "2022");
     assert.ok(result, "TV plain-slug hit without a readable year must still resolve");
-    assert.ok(result!.url.endsWith("/dizi/from"));
+    assert.ok(result!.url.endsWith("/dizi/from-dizi-izle"));
   } finally {
     axios.get = originalGet;
     (globalThis as any).__DEV__ = originalDev;
@@ -1215,10 +1218,10 @@ test("Dizipal direct-slug probe rejects a wrong-year movie page even when a movi
   (globalThis as any).__DEV__ = false;
 
   axios.get = (async (url: string) => {
-    if (url.endsWith("/film/dune-2021")) {
+    if (url.endsWith("/film/dune-2021-film-izle")) {
       throw new Error("404");
     }
-    if (url.endsWith("/film/dune")) {
+    if (url.endsWith("/film/dune-film-izle")) {
       return { data: "<h1>Dune</h1>" }; // no year anywhere
     }
     throw new Error(`Unexpected URL: ${url}`);
@@ -1231,6 +1234,78 @@ test("Dizipal direct-slug probe rejects a wrong-year movie page even when a movi
     axios.get = originalGet;
     (globalThis as any).__DEV__ = originalDev;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Dizipal's rebuilt site (Sept 2026).
+//
+// /ajax-search became a POST to /bg/searchcontent that answers the dropdown's
+// markup, pages moved to /film/{slug}-film-izle and /dizi/{slug}/{n}-sezon/
+// {n}-bolum, and the player config moved out of #videoContainer[data-cfg]
+// into a hidden div[data-rm-k] that only the resolver Worker can open.
+// ---------------------------------------------------------------------------
+
+const dizipalSearchRow = (href: string, title: string, year: string) => `
+  <a class="dp-search-result" data-plr="true" href="${href}">
+    <img src="x.jpg" alt="${title}">
+    <span class="dp-search-result-copy">
+      <strong>${title}</strong>
+      <span><em>${year}</em><em>Altyaz\u0131</em><em>\u2605 8.1</em></span>
+    </span>
+  </a>`;
+
+test("Dizipal search reads the rebuilt dropdown, and keeps films apart from series", () => {
+  const html = [
+    dizipalSearchRow("https://dizipal2221.com/dizi/breaking-bad-dizi-izle", "Breaking Bad", "2008"),
+    dizipalSearchRow("https://dizipal2221.com/film/el-camino-a-breaking-bad-movie-film-izle", "El Camino: Bir Breaking Bad Filmi", "2019"),
+  ].join("\n");
+
+  const series = __internal.parseDizipalSearchResults(html, "tv");
+  assert.deepEqual(series.map((row) => row.href), ["https://dizipal2221.com/dizi/breaking-bad-dizi-izle"]);
+  assert.equal(series[0].title, "Breaking Bad");
+  assert.equal(series[0].resultYear, "2008");
+
+  const movies = __internal.parseDizipalSearchResults(html, "movie");
+  assert.deepEqual(movies.map((row) => row.title), ["El Camino: Bir Breaking Bad Filmi"]);
+  assert.equal(movies[0].resultYear, "2019");
+});
+
+test("Dizipal search survives a dropdown with nothing in it", () => {
+  assert.deepEqual(__internal.parseDizipalSearchResults("", "movie"), []);
+  assert.deepEqual(__internal.parseDizipalSearchResults("<div>no results</div>", "tv"), []);
+});
+
+test("Dizipal's player blob is taken from the page, never decrypted on device", () => {
+  const page = `<div class="dp-video-stage" id="cstk">
+    <div style="display: none;" data-rm-k="true">{&quot;ciphertext&quot;:&quot;J7cLaz+i0U28=&quot;,&quot;iv&quot;:&quot;3a82d22be10d0170af46eca73fe1bcd8&quot;,&quot;salt&quot;:&quot;a3adb34be7cb&quot;}</div>
+    <iframe></iframe></div>`;
+  const blob = __internal.extractDizipalPlayerBlob(page);
+  assert.ok(blob, "the blob must be found");
+  // Handed on exactly as the page wrote it — entity decoding belongs to the
+  // Worker, which is the only place that knows the passphrase.
+  assert.match(blob!, /&quot;ciphertext&quot;/);
+  assert.equal(__internal.extractDizipalPlayerBlob("<div id=\"cstk\"><iframe></iframe></div>"), null);
+  assert.equal(
+    __internal.extractDizipalPlayerBlob('<div data-rm-k="true">{"nothing":"useful"}</div>'),
+    null,
+    "a blob without a ciphertext is not a player config"
+  );
+});
+
+test("a rebuilt episode URL is recognised, and its title comes from the series slug", () => {
+  const episode = "https://dizipal2221.com/dizi/breaking-bad/5-sezon/16-bolum";
+  // The compatibility guard reads the title out of the URL: with the episode
+  // number as the last segment it used to read "16 bolum" and reject every
+  // episode the site served.
+  assert.equal(__internal.isDizipalUrlTitleCompatible(episode, "Breaking Bad"), true);
+  assert.equal(
+    __internal.isDizipalUrlTitleCompatible("https://dizipal2221.com/dizi/the-wire/5-sezon/16-bolum", "Breaking Bad"),
+    false
+  );
+  assert.equal(
+    __internal.isDizipalUrlTitleCompatible("https://dizipal2221.com/film/oppenheimer-film-izle", "Oppenheimer"),
+    true
+  );
 });
 
 test("HDFilm Rapidrame inspection prefers native for disguised image media segments", () => {
@@ -1250,48 +1325,6 @@ test("HDFilm Rapidrame inspection prefers native for disguised image media segme
 
   assert.equal(result.preferNative, true);
   assert.deepEqual(result.childPlaylistUrls, []);
-});
-
-test("Dizipal's data-cfg decodes on device to the same config the endpoint returns", () => {
-  // Live shape (2026-09-02) from /bolum/mezarlik-1-sezon-1-bolum. Decoding it
-  // locally skips a token mint plus a POST on the critical path of every play,
-  // and survives the endpoint renames the provider does every few months.
-  const cfg =
-    "eyJ2IjoiaHR0cHM6Ly9pbWFnZXN0b28uY29tL3ZpZGVvLzBiNmEyN2UyYmZjYjAxMGU3NjIxMDlmMGQyZTA0MmRjIiwidCI6ImVtYmVkIiwicCI6Imh0dHBzOi8vY2RuLmltYWdzLm1lL3VwbG9hZHMvYmFja2Ryb3BzL21lemFybGlrLndlYnAifQ";
-
-  assert.deepEqual(__internal.decodeDizipalCfg(cfg), {
-    success: true,
-    config: {
-      v: "https://imagestoo.com/video/0b6a27e2bfcb010e762109f0d2e042dc",
-      t: "embed",
-      p: "https://cdn.imags.me/uploads/backdrops/mezarlik.webp",
-    },
-  });
-});
-
-test("Dizipal cfg decoding fails closed so the caller falls back to the endpoint", () => {
-  const b64 = (value: string) => Buffer.from(value, "utf8").toString("base64");
-
-  assert.equal(__internal.decodeDizipalCfg(""), null, "empty");
-  assert.equal(__internal.decodeDizipalCfg("not base64 at all!"), null, "not base64");
-  assert.equal(__internal.decodeDizipalCfg(b64("plain text")), null, "not JSON");
-  assert.equal(__internal.decodeDizipalCfg(b64('{"t":"embed"}')), null, "no media url");
-  assert.equal(
-    __internal.decodeDizipalCfg(b64('{"v":"javascript:alert(1)","t":"embed"}')),
-    null,
-    "non-http media url must be refused"
-  );
-  assert.equal(
-    __internal.decodeDizipalCfg(b64('{"v":"https://x.example/a.m3u8"}')),
-    null,
-    "missing stream type"
-  );
-
-  // A poster is optional — its absence must not sink an otherwise valid config.
-  assert.deepEqual(__internal.decodeDizipalCfg(b64('{"v":"https://x.example/a.m3u8","t":"m3u8"}')), {
-    success: true,
-    config: { v: "https://x.example/a.m3u8", t: "m3u8", p: "" },
-  });
 });
 
 test("HDFilm decoder parts come from either call form, and never from past the statement", () => {
@@ -1320,35 +1353,18 @@ test("HDFilm Sep-20-2026 embed: function-expression decoder over split('|') part
   assert.equal(__internal.extractRapidrameStreamUrl(embedHtml), url);
 });
 
-test("Dizipal's encrypted data-cfg (2026-09-18) is entity-decoded before it is POSTed", () => {
-  // Posting the markup as-is (`{&quot;ciphertext…`) gets "Invalid config"; the
-  // browser's dataset.cfg — what the site itself sends — has real quotes.
-  const html =
-    '<div class="video-player-container" id="videoContainer" ' +
-    'data-cfg="{&quot;ciphertext&quot;:&quot;abc+/=&quot;,&quot;iv&quot;:&quot;00ff&quot;,&quot;salt&quot;:&quot;aa&quot;}" ' +
-    'data-content-type="episode">';
-
-  const cfg = __internal.extractDizipalCfg(html);
-  assert.equal(cfg, '{"ciphertext":"abc+/=","iv":"00ff","salt":"aa"}');
-  assert.deepEqual(JSON.parse(cfg!), { ciphertext: "abc+/=", iv: "00ff", salt: "aa" });
-  // Not the legacy base64 shape, so the caller must go to the endpoint.
-  assert.equal(__internal.decodeDizipalCfg(cfg!), null);
-});
-
-test("Dizipal's legacy base64 data-cfg still extracts untouched and decodes on device", () => {
-  const legacy = "eyJ2IjoiaHR0cHM6Ly94LmV4YW1wbGUvYS5tM3U4IiwidCI6Im0zdTgifQ";
-  const cfg = __internal.extractDizipalCfg(`<div id="videoContainer" data-cfg="${legacy}">`);
-  assert.equal(cfg, legacy);
-  assert.notEqual(__internal.decodeDizipalCfg(cfg!), null);
-});
-
-test("Dizipal data-cfg entity decoding does not double-decode &amp;quot;", () => {
-  assert.equal(__internal.extractDizipalCfg('<div data-cfg="a&amp;quot;b">'), "a&quot;b");
-});
-
-test("Dizipal player-config posts to /ajax first — the path the site's own main.js uses", () => {
+test("the Dizipal player config is never opened on device", () => {
+  // The passphrase, the PBKDF2 round count and the openPlayer chain live in
+  // workers/dizipal-resolver. A copy here would be a second thing to rotate.
   const source = fs.readFileSync(path.join(process.cwd(), "src", "services", "WebPlayerService.ts"), "utf8");
-  assert.match(source, /DIZIPAL_PLAYER_CONFIG_PATHS = \["\/ajax",/);
+  assert.doesNotMatch(source, /crypto\.subtle|deriveBits|AES-CBC|PBKDF2\(/);
+  assert.match(source, /DIZIPAL_RESOLVER_BASE_URLS/);
+  // The zone host has to come first: Bakcell cannot reach workers.dev at all.
+  const hosts = source.slice(source.indexOf("const DIZIPAL_RESOLVER_BASE_URLS"), source.indexOf("let activeDizipalResolverIndex"));
+  assert.ok(
+    hosts.indexOf("dizipal.streamboxapp.stream") < hosts.indexOf("workers.dev"),
+    "the custom domain must be tried before workers.dev"
+  );
 });
 
 test("an HDFilm Cloudflare challenge is retried instead of read as 'not on HDFilm'", async () => {
@@ -1583,7 +1599,7 @@ test("both Dizipal entry points go through the retrying fetch, not a bare axios.
     path.join(process.cwd(), "src", "services", "WebPlayerService.ts"),
     "utf8"
   );
-  assert.match(source, /const response = await dizipalGet<DizipalSearchResponse>\(/);
+  assert.match(source, /const response = await dizipalPost<\{ data\?: \{ html\?: string \} \}>\(/);
   assert.match(source, /async function fetchDizipalPageHtml[\s\S]{0,200}await dizipalGet<string>\(/);
 });
 

@@ -93,6 +93,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 | App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `25d0007` → group `6725b6a2-bf14-484a-86b1-7831ba09e22f` |
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
 | `streambox-provider-monitor` | `f3694f15` (hourly cron) |
+| `streambox-dizipal-resolver` | not deployed yet — `dizipal.streamboxapp.stream` |
 | `streambox-turn-credentials` | `dcfe4675` |
 | Latest migration | `20260923210451_franchise_catalogue_audit_2026_09` |
 | Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
@@ -128,7 +129,32 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 - HDFilm `/dizi/` pages challenge the **first** request on a fresh connection and pass after;
   `hdFilmGet()` retries past it. `/rplayer/` embeds remain unreachable.
 - HDFilm does not tokenize apostrophes: search `Rosemarys Baby`, not `Rosemary's Baby`.
-- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2133). Hops are
+- **Dizipal rebuilt its site (Sept 2026), and its player host geo-walls our users.** The
+  chain is now: `POST /bg/searchcontent` (a `cKey`/`cValue` pair minted on every page render
+  goes with the query; without them it answers 200 and an empty list, which reads exactly like
+  "Dizipal does not have it") → `/film/{slug}-film-izle` or
+  `/dizi/{slug}/{season}-sezon/{episode}-bolum` → a hidden `div[data-rm-k]` holding
+  `{ciphertext,iv,salt}` → the player iframe. The old `/ajax-search`, `/bolum/…` and
+  `#videoContainer[data-cfg]` shapes are gone with the origin that served them.
+- That player host (`*.dplayer*.site`) answers **403 "Attention Required"** to an Azerbaijani
+  ISP for every dynamic path — `iframe.php`, `source2.php`, the variant playlist `l.php` —
+  while serving `master.m3u8` and the `.jpg`-disguised segments on its `*.cfd` CDN normally
+  (Referer required). The device can therefore stream Dizipal but cannot ASK for the stream,
+  so that one question goes through `workers/dizipal-resolver`, which asks from Cloudflare's
+  network — where the same requests are 200. **Video never passes through the Worker**, only
+  the ~40 KB playlist and any WebVTT the viewer turns on. Nothing about the encryption lives
+  on the device; `tests/dizipalResolverWorker.test.ts` pins PBKDF2-SHA512/999 + AES-256-CBC.
+- **A "Dizipal is down" alert now means one of two different things.** `dizipal_home` /
+  `dizipal_search` failing is the site; `dizipal_resolver` failing is the player chain, and it
+  is end-to-end (canary page → blob → resolver → stream), so it is the one that says whether
+  anything can actually play. See `workers/dizipal-resolver/README.md`.
+- 2026-09-23: the origin behind `dizipal2133.com` went **502 at DDoS-Guard** and stayed there;
+  2120 … 2132 all still 301 to it. The live site is `dizipal2221.com` (Cloudflare, not
+  DDoS-Guard) with 2206–2220 redirecting to it — a different chain from the numbered one the
+  app had been following, which is why the DNS rotation watch never saw it. **Check the old
+  domains' redirect target before trusting a higher `dizipalN.com`**: that band also contains
+  SEO squatters (2200, 2203-2205, 2207, 2300 serve "güncel adres" landing pages).
+- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2221). Hops are
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal
   rotates, and update the Supabase row with the Telegram bot (`/set_dizipal <url>`).
@@ -144,12 +170,8 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   (`checkDizipalDomain`, hourly cron, 12-suffix lookahead). `/set_dizipal` accepts a walled
   candidate when it resolves in DNS and is not behind the configured domain; `… force`
   overrides. The app picks the new row up without an OTA (remote wins when ahead of the floor).
-- Dizipal's player config: the episode page's `data-cfg` attribute. Until 2026-09-18 it was
-  base64 JSON `{v,t,p}` (decoded on device); since then it is an encrypted
-  `{ciphertext,iv,salt}` JSON written with `&quot;` entities, which must be entity-decoded and
-  POSTed as `cfg=` to `/ajax` (older `/ajax/player-config` still answers). No token or cookie
-  is required. The endpoint has been renamed twice — keep the path list. Dizipal lists films
-  under **Turkish** titles.
+- Dizipal lists films under **Turkish** titles, and its search results carry the year in an
+  `<em>` next to the name, which is what disambiguates remakes.
 - Dizipal and HDFilm serve intermittent Cloudflare challenges; both go through `providerGet`
   / `hdFilmGet` retries.
 - **A provider that is DOWN must not cost the others their budget.** On 2026-09-24 Dizipal's

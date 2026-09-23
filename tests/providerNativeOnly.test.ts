@@ -54,39 +54,31 @@ test("the resolver never returns HDFilm's page player — native or Not Availabl
 });
 
 // ---------------------------------------------------------------------------
-// Dizipal's /ajax-token contract. It answers with {"t":"<hex>"} — the old code
-// did String(data) on the parsed object and sent the literal "[object Object]",
-// so every player-config POST returned "Invalid token" and no Dizipal title
-// could produce a native stream.
+// Dizipal's player chain, after the Sept-2026 rebuild.
+//
+// The site's CSRF token, its /ajax player-config POST and the cookie handling
+// around them all belonged to a site that no longer exists: the watch page now
+// carries one encrypted blob, and only the resolver Worker can open it.
 // ---------------------------------------------------------------------------
 
-test("the Dizipal CSRF token is parsed from JSON, not stringified", () => {
-  assert.ok(source.includes("function parseDizipalToken"), "token parsing must be explicit");
+test("the encrypted player blob is handed to the resolver, not opened on device", () => {
+  assert.ok(source.includes("function extractDizipalPlayerBlob"), "the blob must be read from the page");
+  assert.ok(
+    source.includes("async function resolveDizipalStreamViaWorker"),
+    "and resolved through the Worker that Dizipal's firewall lets through"
+  );
   assert.equal(
-    source.includes('typeof tokenResp.data === "string" ? tokenResp.data.trim() : String(tokenResp.data).trim()'),
+    /await mintToken\(\)|ajax-token|DIZIPAL_PLAYER_CONFIG_PATHS/.test(source),
     false,
-    "String(object) yields '[object Object]' and is rejected as an invalid token"
+    "the retired /ajax token dance must not come back"
   );
 });
 
-test("the player-config POST leaves cookies to the platform jar", () => {
-  // Validation covers _ct + PHPSESSID + the DDoS-Guard __ddg* cookies. Setting
-  // a Cookie header REPLACES the native jar for that request and drops the
-  // rest, so the primary attempt must not set one.
-  assert.equal(
-    source.includes("Cookie: `_ct=${csrfToken}`"),
-    false,
-    "hand-setting the cookie header drops PHPSESSID and the DDoS-Guard cookies"
+test("a Dizipal stream is only ever a stream the Worker returned", () => {
+  const fn = source.slice(
+    source.indexOf("async function fetchDizipalStreamUrl"),
+    source.indexOf("function matchesDizipalEpisodeUrl")
   );
-  assert.ok(source.includes("withCredentials: true"), "the native cookie jar must be used");
-});
-
-test("a fresh token is minted for every player-config attempt", () => {
-  // The token is single-use: replaying one always fails.
-  const configFn = source.slice(
-    source.indexOf("async function requestDizipalPlayerConfig"),
-    source.indexOf("async function fetchDizipalStreamUrl")
-  );
-  const mintCalls = configFn.match(/await mintToken\(\)/g) ?? [];
-  assert.equal(mintCalls.length, 2, "both the first attempt and the retry need their own token");
+  assert.match(fn, /const stream = await resolveDizipalStreamViaWorker\(cfg, pageUrl\);/);
+  assert.match(fn, /return stream \? \{ stream, embedUrl: null \} : null;/);
 });
