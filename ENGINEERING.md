@@ -90,7 +90,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `d5a3bad` → group `3d87c34d-8f3e-4aae-8d2d-febd113dcbb2` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `25d0007` → group `6725b6a2-bf14-484a-86b1-7831ba09e22f` |
 | `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
 | `streambox-provider-monitor` | `f3694f15` (hourly cron) |
 | `streambox-turn-credentials` | `dcfe4675` |
@@ -102,6 +102,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-09-24 | `25d0007` | `6725b6a2-bf14-484a-86b1-7831ba09e22f` | A provider that answers nothing is set aside after two dead calls (Dizipal's origin went 502 and starved Dizibal of the budget — *Star Wars* reported "Not available"); franchise catalogue audit: 55 titles re-punctuated, two entries given their missing tmdb_id, six series' episode counts, 17 titles added |
 | 2026-09-22 | `d5a3bad` | `3d87c34d-8f3e-4aae-8d2d-febd113dcbb2` | Dizibal follows its rebuilt site (search → page → pilavyer HLS / direct MP4; movies, series, anime); FirePlayer root-relative subtitles (Criminal Minds CC); a found title that won't start re-resolves silently instead of "Not available", 15s stall watchdog, transient-miss retry |
 | 2026-09-20 | `4dd1670` | `8c96926e-594b-4974-8f3b-c7eb12957da6` | Full cast (20) survives the cloud round-trip so Stats keeps ensemble leads; resolver awaits its in-flight pass and skips the pointless retry ("Not available" 3.3 s → 1.2 s); player error/Not-available copy localised |
 | 2026-09-20 | `aeb3510` | `9b4e6424-b175-49a4-bede-e04f841762c2` | Dizipal encrypted `data-cfg` + HDFilm Sep-20 decoder (both tiers native again); provider player never shown, failed HDFilm tries others natively, real Retry; announcements older than the install hidden |
