@@ -32,14 +32,6 @@ export type ImdbTop250Item = {
   imdbRating: number;
 };
 
-type ImdbApiTitleResponse = {
-  id: string;
-  rating?: {
-    aggregateRating: number;
-    voteCount: number;
-  };
-};
-
 type PersistedTop250Cache = {
   savedAt: number;
   items: ImdbTop250Item[];
@@ -57,11 +49,8 @@ const GITHUB_TOP250_MOVIES_URL =
 const GITHUB_TOP250_SHOWS_URL =
   "https://raw.githubusercontent.com/crazyuploader/IMDb_Top_50/main/data/top250/shows.json";
 
-const IMDBAPI_BASE_URL = "https://api.imdbapi.dev";
-
 const TOP250_FETCH_TIMEOUT = 12_000;
 const GITHUB_FETCH_TIMEOUT = 15_000;
-const IMDBAPI_FETCH_TIMEOUT = 8_000;
 const MIN_ACCEPTABLE_OFFICIAL_ITEMS = 20;
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -86,16 +75,14 @@ let moviesLastFetch = 0;
 let showsLastFetch = 0;
 let popularMoviesLastFetch = 0;
 
-// Bounded: individual IMDb ratings accumulate as the user browses. Persisted so
-// a cold start doesn't refetch the same ratings; ratings drift slowly, so a 24h
-// snapshot TTL keeps them honest. has()/get() negative-caching is preserved.
+// IMDb ratings the chart lists carried, persisted across cold starts. This is
+// the only source now: api.imdbapi.dev stopped resolving in Sept 2026, and the
+// detail screen used to wait on it before rendering anything.
 const imdbRatingCache = new PersistedLruMap<number | null>({
   storageKey: "@streambox/api-cache-imdb-ratings-v1",
   maxEntries: 2000,
   ttlMs: 24 * 60 * 60 * 1000,
 });
-// Bounded by concurrency: each entry is removed in its own finally block.
-const inFlightImdbRatingRequests = new Map<string, Promise<number | null>>();
 
 function extractImdbId(link: string): string | null {
   const match = link.match(/(tt\d+)/);
@@ -557,36 +544,10 @@ export function getImdbTop250Shows(): Promise<ImdbTop250Item[]> {
   return getTop250("shows");
 }
 
+/** A rating the IMDb chart lists seeded, or null. Never touches the network. */
 export async function getImdbRating(imdbId: string): Promise<number | null> {
   if (!imdbId || !imdbId.startsWith("tt")) return null;
-
-  if (imdbRatingCache.has(imdbId)) {
-    return imdbRatingCache.get(imdbId) ?? null;
-  }
-
-  const existing = inFlightImdbRatingRequests.get(imdbId);
-  if (existing) return existing;
-
-  const request = (async (): Promise<number | null> => {
-    try {
-      const { data } = await axios.get<ImdbApiTitleResponse>(
-        `${IMDBAPI_BASE_URL}/titles/${imdbId}`,
-        { timeout: IMDBAPI_FETCH_TIMEOUT },
-      );
-
-      const rating = data.rating?.aggregateRating ?? null;
-      imdbRatingCache.set(imdbId, rating);
-      return rating;
-    } catch {
-      imdbRatingCache.set(imdbId, null);
-      return null;
-    } finally {
-      inFlightImdbRatingRequests.delete(imdbId);
-    }
-  })();
-
-  inFlightImdbRatingRequests.set(imdbId, request);
-  return request;
+  return imdbRatingCache.get(imdbId) ?? null;
 }
 
 export function seedImdbRatingCache(imdbId: string, rating: number): void {

@@ -373,13 +373,18 @@ const usesTmdbProxy = Boolean(tmdbProxyBaseUrl);
  * own zone, which a `workers.dev` block doesn't reach; a request that fails at
  * the network level is retried there, and whichever host answered is
  * remembered for later requests and launches.
+ *
+ * The custom domain goes first. It is reachable from every carrier and just as
+ * fast, while a blocked workers.dev cost Bakcell users a failed connection per
+ * request until the remembered preference loaded — and the two hostnames keep
+ * separate edge caches, so splitting traffic between them halved the hit rate.
  */
 const TMDB_PROXY_CUSTOM_DOMAIN_ORIGIN = "https://tmdb.streamboxapp.stream";
-const TMDB_PROXY_BASE_PREFERENCE_KEY = "@streambox/tmdb-proxy-base-v1";
+const TMDB_PROXY_BASE_PREFERENCE_KEY = "@streambox/tmdb-proxy-base-v2";
 const tmdbProxyBaseUrls = tmdbProxyBaseUrl
   ? Array.from(new Set([
-      tmdbProxyBaseUrl,
       tmdbProxyBaseUrl.replace(/^https?:\/\/[^/]+/i, TMDB_PROXY_CUSTOM_DOMAIN_ORIGIN),
+      tmdbProxyBaseUrl,
     ]))
   : [];
 let activeTmdbProxyBaseIndex = 0;
@@ -465,7 +470,14 @@ const tmdbEpisodeImageCache = new LruMap<string, string | null>(CACHE_MAX.medium
 const trailerUrlCache = new LruMap<string, string | null>(CACHE_MAX.id);
 const movieSummaryCache = new LruMap<string, MediaItem>(CACHE_MAX.detail);
 const seriesSummaryCache = new LruMap<string, MediaItem>(CACHE_MAX.detail);
-const movieDetailsCache = new LruMap<string, MovieDetails>(CACHE_MAX.detail);
+// Persisted so a detail screen opened after a cold start paints at once instead
+// of waiting ~1s on a proxy miss. Movies only: a film's details do not change,
+// but a series gains episodes weekly. Small, because each write is a snapshot.
+const movieDetailsCache = new PersistedLruMap<MovieDetails>({
+  storageKey: "@streambox/api-cache-movie-details-v1",
+  maxEntries: 80,
+  ttlMs: 3 * 24 * 60 * 60 * 1000,
+});
 const seriesDetailsCache = new LruMap<string, SeriesDetails>(CACHE_MAX.detail);
 const movieExternalRatingsCache = new LruMap<string, ExternalRatings>(CACHE_MAX.rating);
 const seriesExternalRatingsCache = new LruMap<string, SeriesExternalRatings>(CACHE_MAX.rating);

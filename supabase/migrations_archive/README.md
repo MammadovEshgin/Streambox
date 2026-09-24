@@ -20,7 +20,7 @@ They could not rebuild the database. Specifically:
 - The `p_internal_id` RPC overloads were added by hand in the SQL editor without dropping the
   older ones, which is what produced the PGRST203 outage fixed on 2026-07-28.
 
-Full analysis: `docs/DB_AUDIT_2026-07-28.md`.
+Full analysis: `docs/DB_AUDIT_2026-07-28.md` in git history (removed from the tree once closed).
 
 ## Do not run these
 

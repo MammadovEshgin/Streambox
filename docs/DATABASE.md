@@ -18,7 +18,7 @@ Project ref `zbeexmqmcwtlsbbuuqor` · Postgres 17 · linked via `supabase/.temp/
 | `supabase/migrations_archive/` | The 39 pre-baseline migrations. Reference only, never replayed. See its README. |
 | `supabase/functions/` | Edge functions. |
 | `supabase/verify/` | Read-only checks: `object_counts.sql` (rebuild fidelity), `write_amplification.sql`. |
-| `docs/DB_AUDIT_2026-07-28.md` | The audit that produced this structure (closed). |
+| git history (`docs/DB_AUDIT_2026-07-28.md`, removed 2026-09-25) | The closed audit that produced this structure. |
 
 ## Tables at a glance
 

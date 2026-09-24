@@ -35,22 +35,15 @@ function withUrl(response: Response, url: string): Response {
 const redirect = (to: string) => new Response(null, { status: 301, headers: { location: to } });
 const forbidden = () => new Response("<html><title>403 Forbidden</title></html>", { status: 403 });
 
-const dizipalPlayerBlob =
-  '{&quot;ciphertext&quot;:&quot;abc+/=&quot;,&quot;iv&quot;:&quot;00&quot;,&quot;salt&quot;:&quot;aa&quot;}';
-
 function healthyDizipal(url: URL): Response {
-  // Since the Sept-2026 rebuild the search is a POST whose credentials come
-  // off the home page, and the watch page carries one encrypted blob.
-  if (/^\/dizi\/[^/]+\/\d+-sezon\/\d+-bolum$/.test(url.pathname)) {
-    return new Response(`<div id="cstk"><div data-rm-k="true">${dizipalPlayerBlob}</div></div>`, { status: 200 });
+  if (url.pathname === "/ajax-search") {
+    return new Response(JSON.stringify({ success: true, results: [] }), { status: 200 });
   }
-  return new Response(
-    `<html><form data-action="/bg/searchcontent" data-method="POST">
-       <input type="hidden" name="cKey" value="ca1d4a53d0f4761a949b85e51e18f096">
-       <input type="hidden" name="cValue" value="MTc5MDE5NDIwMDFmOWYyYzc2">
-     </form></html>`,
-    { status: 200 }
-  );
+  if (url.pathname.startsWith("/bolum/")) {
+    const cfg = "808f8efbd4a5820a3d3fde3fb7f9edd8";
+    return new Response(`<div id="videoContainer" data-cfg="${cfg}"></div>`, { status: 200 });
+  }
+  return new Response("<html>home</html>", { status: 200 });
 }
 
 /**
@@ -59,14 +52,6 @@ function healthyDizipal(url: URL): Response {
  * the Location (as a real fetch would), while `redirect: "manual"` sees the
  * 3xx itself.
  */
-/** The resolver Worker's answer for the canary episode. */
-function dizipalResolver(): Response {
-  return new Response(
-    JSON.stringify({ stream: "https://dizipal.test/playlist?u=x", streamType: "m3u8", referer: "https://player.test/", subtitles: [] }),
-    { status: 200, headers: { "content-type": "application/json" } }
-  );
-}
-
 /** DNS-over-HTTPS answer for a host: resolves, or the placeholder SERVFAIL. */
 function dohAnswer(url: URL, resolving: string[] | null): Response {
   if (resolving === null) throw new TypeError("fetch failed");
@@ -337,26 +322,26 @@ test("force saves a candidate the checks cannot confirm", async () => {
   assert.match(telegram[0], /forced/);
 });
 
-test("the rebuilt site's encrypted player blob passes the playback check", async () => {
-  const { telegram, patches } = await sendCommand(
-    "/set_dizipal https://dizipal2221.com",
-    "https://dizipal2221.com",
+test("Dizipal's playback check wants the hex data-cfg token the app posts", async () => {
+  // dizipal2134 (2026-09-25): data-cfg is a 32-hex single-use token.
+  const healthy = await sendCommand(
+    "/set_dizipal https://dizipal2134.com",
+    "https://dizipal2133.com",
     healthyDizipal,
   );
-  assert.equal(patches.length, 1);
-  assert.match(telegram[0], /dizipal updated successfully/);
-});
+  assert.equal(healthy.patches.length, 1);
+  assert.match(healthy.telegram[0], /dizipal updated successfully/);
 
-test("an episode page with no player blob fails the playback check", async () => {
-  const { telegram, patches } = await sendCommand(
-    "/set_dizipal https://dizipal2221.com",
-    "https://dizipal2221.com",
-    (url) => /-bolum$/.test(url.pathname)
-      ? new Response("<div id=\"cstk\"><iframe></iframe></div>", { status: 200 })
+  // Any other shape means the app's player-config exchange no longer fits.
+  const cfg = '{&quot;ciphertext&quot;:&quot;abc+/=&quot;,&quot;iv&quot;:&quot;00&quot;,&quot;salt&quot;:&quot;aa&quot;}';
+  const changed = await sendCommand(
+    "/set_dizipal https://dizipal2134.com",
+    "https://dizipal2133.com",
+    (url) => url.pathname.startsWith("/bolum/")
+      ? new Response(`<div id="videoContainer" data-cfg="${cfg}"></div>`, { status: 200 })
       : healthyDizipal(url),
   );
-  assert.equal(patches.length, 0, "a page that cannot play must not be saved");
-  assert.match(telegram[0], /data-rm-k/);
+  assert.match(changed.telegram[0], /data-cfg is no longer a hex token/);
 });
 
 test("a run detects the rotation through DNS while the pages are walled, and never pages 'down'", async () => {

@@ -4,6 +4,21 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-09-25
+
+- Fixed: Dizipal showed nothing. It moved back to its own site (dizipal2134.com), and
+  StreamBox follows it there again. Its series and films play natively, with no StreamBox
+  server in between.
+- Faster "Watch": all three providers are now asked at the same time instead of one after
+  another. Most titles start resolving in about a second; before, a title only the last
+  provider had could take 10–15 seconds.
+- Fixed: series that only Dizibal carries could show "Not available" because its series
+  player answers slowly. StreamBox now waits for it, and one slow answer no longer rules
+  Dizibal out for the titles after it.
+- Faster detail pages: they no longer wait for an IMDb service that has shut down. Films you
+  have opened before load instantly after a restart. TMDB requests go to the host that every
+  carrier can reach first.
+
 ## 2026-09-24 (2)
 
 - Fixed: Dizipal, the provider with the best Turkish dubs and subtitles, played nothing at

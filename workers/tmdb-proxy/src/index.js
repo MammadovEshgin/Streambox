@@ -1,5 +1,11 @@
 const TMDB_API_BASE_URL = "https://api.themoviedb.org/3";
 const DEFAULT_CACHE_TTL_SECONDS = 60 * 60 * 6;
+// A film's own record (details, credits, images) barely changes, and
+// the edge cache is per-colo: at 6h the Baku colo missed on most detail opens,
+// each miss ~0.8s of TMDB upstream time. Lists, and series (new episodes),
+// keep the default.
+const TITLE_RECORD_CACHE_TTL_SECONDS = 60 * 60 * 24;
+const TITLE_RECORD_PATH = /\/(?:movie|collection|person)\/\d+(?:\/|$)/;
 const SEARCH_CACHE_TTL_SECONDS = 60 * 5;
 const NOT_FOUND_CACHE_TTL_SECONDS = 60 * 5;
 const ERROR_CACHE_TTL_SECONDS = 30;
@@ -155,6 +161,10 @@ function getCacheTtlSeconds(targetUrl, responseStatus) {
 
   if (targetUrl.pathname.includes("/search/")) {
     return SEARCH_CACHE_TTL_SECONDS;
+  }
+
+  if (TITLE_RECORD_PATH.test(targetUrl.pathname)) {
+    return TITLE_RECORD_CACHE_TTL_SECONDS;
   }
 
   return DEFAULT_CACHE_TTL_SECONDS;

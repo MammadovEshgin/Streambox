@@ -30,7 +30,7 @@ test("Dizipal page and embed shells are never returned as playable results", () 
 
 test("Dizipal only resolves when a real stream was extracted", () => {
   assert.ok(
-    source.includes("if (dizipalResult?.stream)"),
+    source.includes("if (!dizipalResult?.stream) return null;"),
     "the resolver must require an extracted stream, not just a reachable page"
   );
   assert.equal(
@@ -54,30 +54,29 @@ test("the resolver never returns HDFilm's page player — native or Not Availabl
 });
 
 // ---------------------------------------------------------------------------
-// Dizipal's player chain, after the Sept-2026 rebuild.
-//
-// The site's CSRF token, its /ajax player-config POST and the cookie handling
-// around them all belonged to a site that no longer exists: the watch page now
-// carries one encrypted blob, and only the resolver Worker can open it.
+// Dizipal's player config. The page's data-cfg is a single-use token bound to
+// the PHP session that rendered the page (dizipal2134, 2026-09-25); the POST
+// rides that session, and /ajax-token is not needed.
 // ---------------------------------------------------------------------------
 
-test("the encrypted player blob is opened by the resolver, never on device", () => {
-  assert.ok(
-    source.includes("async function resolveDizipalStreamViaWorker"),
-    "and resolved through the Worker that Dizipal's firewall lets through"
-  );
+test("the player-config POST leaves cookies to the platform jar", () => {
+  // The token is bound to the page's PHPSESSID. Setting a Cookie header
+  // REPLACES the native jar for that request, so the primary attempt must not
+  // set one; only the retry names the session explicitly.
   assert.equal(
-    /await mintToken\(\)|ajax-token|DIZIPAL_PLAYER_CONFIG_PATHS/.test(source),
+    source.includes("Cookie: `_ct=${csrfToken}`"),
     false,
-    "the retired /ajax token dance must not come back"
+    "hand-setting the cookie header drops PHPSESSID and the DDoS-Guard cookies"
   );
+  assert.ok(source.includes("withCredentials: true"), "the native cookie jar must be used");
 });
 
-test("a Dizipal stream is only ever a stream the Worker returned", () => {
-  const fn = source.slice(
+test("a rejected data-cfg is never replayed: the retry re-reads the page", () => {
+  // The token is single-use; replaying one always answers "Invalid token".
+  const streamFn = source.slice(
     source.indexOf("async function fetchDizipalStreamUrl"),
     source.indexOf("function matchesDizipalEpisodeUrl")
   );
-  assert.match(fn, /const stream = await resolveDizipalStreamViaWorker\(pageUrl\);/);
-  assert.match(fn, /return stream \? \{ stream, embedUrl: null \} : null;/);
+  assert.match(streamFn, /for \(let attempt = 0; attempt < 2 && !configResp\?\.success; attempt\+\+\) \{\s*const page = await fetchDizipalPlayerPage\(pageUrl\);/);
+  assert.equal(source.includes("${baseUrl}/ajax-token"), false, "no token mint on the critical path");
 });

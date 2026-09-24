@@ -12,10 +12,13 @@ doubt, **stop and ask** rather than guess.
   TypeScript strict, styled-components, React Navigation v6, Reanimated 4,
   react-native-svg, expo-video.
 - Data: TMDB (through a Cloudflare Worker proxy), OMDb ratings (through a Supabase Edge
-  Function), imdbapi.dev, Letterboxd import.
+  Function), IMDb chart lists, Letterboxd import. (`api.imdbapi.dev` stopped resolving in
+  Sept 2026; per-title IMDb ratings now come only from the chart-seeded cache.)
 - Playback: streams are resolved **on device** by scraping providers in
-  `src/services/WebPlayerService.ts` (HDFilm → Dizipal → Dizibal) and played in the native
-  expo-video player. A provider's own web player is never shown — no native stream means
+  `src/services/WebPlayerService.ts` and played in the native expo-video player. All three
+  providers are asked at once and the answer follows priority HDFilm → Dizipal → Dizibal
+  (`firstNativeByPriority`: a lower tier's stream waits at most 2.5s for a higher tier still
+  running). A provider's own web player is never shown — no native stream means
   "Not available" with a Retry that re-resolves; a found stream that won't start is re-resolved
   once silently, then shows the retryable stream error (never "Not available").
 - Backend: Supabase (Auth, Postgres + RLS, RPCs, Storage, Realtime, Edge Functions) and
@@ -131,50 +134,43 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 - HDFilm `/dizi/` pages challenge the **first** request on a fresh connection and pass after;
   `hdFilmGet()` retries past it. `/rplayer/` embeds remain unreachable.
 - HDFilm does not tokenize apostrophes: search `Rosemarys Baby`, not `Rosemary's Baby`.
-- **Dizipal rebuilt its site (Sept 2026), and its player host geo-walls our users.** The
-  chain is now: `POST /bg/searchcontent` (a `cKey`/`cValue` pair minted on every page render
-  goes with the query; without them it answers 200 and an empty list, which reads exactly like
-  "Dizipal does not have it") → `/film/{slug}-film-izle` or
-  `/dizi/{slug}/{season}-sezon/{episode}-bolum` → a hidden `div[data-rm-k]` holding
-  `{ciphertext,iv,salt}` → the player iframe. The old `/ajax-search`, `/bolum/…` and
-  `#videoContainer[data-cfg]` shapes are gone with the origin that served them.
-- That player host (`*.dplayer*.site`) answers **403 "Attention Required"** to an Azerbaijani
-  ISP for every dynamic path — `iframe.php`, `source2.php`, the variant playlist `l.php` —
-  while serving `master.m3u8` and the `.jpg`-disguised segments on its `*.cfd` CDN normally
-  (Referer required). The device can therefore stream Dizipal but cannot ASK for the stream,
-  so that one question goes through `workers/dizipal-resolver`, which asks from Cloudflare's
-  network — where the same requests are 200. **Video never passes through the Worker**, only
-  the ~40 KB playlist and any WebVTT the viewer turns on. Nothing about the encryption lives
-  on the device; `tests/dizipalResolverWorker.test.ts` pins PBKDF2-SHA512/999 + AES-256-CBC.
-- **Whoever asks for the stream must be the one who asked for the page.** The player host
-  binds the token inside the watch page to the IP that fetched it, so the resolver Worker reads
-  the page itself and the device sends only the URL. A page read on the device makes the
-  Worker's own request 403 for minutes, with byte-identical headers — the single most expensive
-  thing to diagnose in this provider.
-- **The player host throttles server-side callers**, and all our traffic leaves from one
-  Cloudflare colo. Eight resolves two seconds apart pass; bursts put the egress into 403 for
-  minutes. The Worker caches a resolved stream for 4 minutes and the page → token step for 6
-  hours, and retries once after 2.5s. When it is throttled anyway the app just treats Dizipal
-  as having nothing, and HDFilm and Dizibal play — that is the intended failure mode.
-- **A "Dizipal is down" alert now means one of two different things.** `dizipal_home` /
-  `dizipal_search` failing is the site; `dizipal_resolver` failing is the player chain, and it
-  is end-to-end (canary page → blob → resolver → stream), so it is the one that says whether
-  anything can actually play. See `workers/dizipal-resolver/README.md`.
-- 2026-09-23: the origin behind `dizipal2133.com` went **502 at DDoS-Guard** and stayed there;
-  2120 … 2132 all still 301 to it. The live site is `dizipal2221.com` (Cloudflare, not
-  DDoS-Guard) with 2206–2220 redirecting to it — a different chain from the numbered one the
-  app had been following, which is why the DNS rotation watch never saw it. **Check the old
-  domains' redirect target before trusting a higher `dizipalN.com`**: that band also contains
-  SEO squatters (2200, 2203-2205, 2207, 2300 serve "güncel adres" landing pages).
-- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2221). Hops are
+- **Dizipal (2026-09-25 onward) is the numbered chain again: `dizipal2134.com`**, on
+  Cloudflare, reached by 2133's 301, with the classic site. The chain is `/ajax-search?q=`
+  (JSON rows `{title, year, type: Film|Dizi, url}`; Turkish titles, but it matches English
+  names too) → `/film/{slug}` or `/dizi/{slug}` → `/bolum/{slug}-{S}-sezon-{E}-bolum` →
+  `#videoContainer[data-cfg]` → `POST /ajax-player-config` → `{v, t: "embed"}` → the embed
+  page's jwplayer `sources[0].file` m3u8 (Referer: the embed URL). Everything runs on device;
+  no Worker is involved.
+- **`data-cfg` is a single-use token bound to the PHP session that rendered the page.** Posted
+  from another session, or a second time, it answers `{"success":false,"message":"Invalid
+  token"}`. The POST therefore rides the page read's session (the native cookie jar carries
+  `PHPSESSID`; no `/ajax-token` mint is needed), and a rejected attempt re-reads the page and
+  retries once with the session named explicitly (`fetchDizipalStreamUrl`). Never cache the
+  page HTML for playback.
+- Embeds come from several hosts. `formationfeed.net` serves the m3u8 inline;
+  `imagestoo.com` (`/player/index.php?do=getVideo`) was **down for everyone** on 2026-09-25
+  (522 from Cloudflare, TLS stalls from Azerbaijani ISPs), so the titles on it have no Dizipal
+  stream. Each embed host has its own `providerGet` breaker (`Dizipal embed <host>`), so a dead
+  one costs two timeouts, not one per title.
+- 2026-09-23 → 24 the numbered origin was 502 at DDoS-Guard and the app briefly followed
+  `dizipal2200`–`2222.com`, **a different operator's clone** (`/bg/searchcontent`,
+  `div[data-rm-k]`, a player host that 403s Azerbaijani ISPs, reached through a
+  `streambox-dizipal-resolver` Worker). That code and Worker were removed on 2026-09-25 when
+  the real site came back. **Check the old domains' redirect target before trusting a higher
+  `dizipalN.com`**: the 22xx band is the clone, and 2200, 2203-2205, 2207 and 2300 are SEO
+  squatters serving "güncel adres" landing pages.
+- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2134). Hops are
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal
-  rotates, and update the Supabase row with the Telegram bot (`/set_dizipal <url>`).
+  rotates, and update the Supabase row with the Telegram bot (`/set_dizipal <url>`). The floor
+  compares suffixes numerically, so a row pointing into the 22xx clone band would win over
+  it: never `/set_dizipal` there.
 - `/set_dizipal` saves a failing candidate when the configured URL 301s to it (2026-09-18: the
   bot rejected the very command its own rotation alert suggested). Failure reasons carry the
   page title; the Worker logs only 10% of invocations, so the Telegram reply and KV state are
   the record.
-- Since 2133 (2026-09-18) Dizipal sits behind **DDoS-Guard**, which answers the monitor's
+- From 2133 (2026-09-18) to 2134 (2026-09-25, back on Cloudflare) Dizipal sat behind
+  **DDoS-Guard**, which answers the monitor's
   Cloudflare IPs 403 ("Error 403") while residential users get 200. The monitor marks those
   checks `blocked` (never "down") and watches rotations through **DNS** instead: Dizipal
   bulk-registers future `dizipalN.com` domains on placeholder nameservers that SERVFAIL until
@@ -182,8 +178,9 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   (`checkDizipalDomain`, hourly cron, 12-suffix lookahead). `/set_dizipal` accepts a walled
   candidate when it resolves in DNS and is not behind the configured domain; `… force`
   overrides. The app picks the new row up without an OTA (remote wins when ahead of the floor).
-- Dizipal lists films under **Turkish** titles, and its search results carry the year in an
-  `<em>` next to the name, which is what disambiguates remakes.
+- Dizipal lists films under **Turkish** titles, and its search rows carry the year, which is
+  what disambiguates remakes. A film found only under its Turkish name is reached by the
+  retry with TMDB's Turkish title (`getTurkishAlternativeTitle`).
 - Dizipal and HDFilm serve intermittent Cloudflare challenges; both go through `providerGet`
   / `hdFilmGet` retries.
 - **A provider that is DOWN must not cost the others their budget.** On 2026-09-24 Dizipal's
@@ -196,11 +193,20 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   outage up to 15 minutes. Any HTTP reply — 404, 403, 500 — proves the host is alive and
   clears the record, so a provider is never skipped for saying "no". A skip must never count
   as a transient failure; that would send `resolveWebPlayerUrl` into a second pass for nothing.
-- Dizipal's rotation is announced by the **old domains**: 2120 … 2132 all 301 to the configured
-  2133. "Some higher `dizipalN.com` answers" is not the signal — `dizipal2200`–`dizipal2221.com`
-  are a different operator's clone (Cloudflare, not DDoS-Guard) with its own scheme
-  (`/bg/searchcontent`, `/dizi/{slug}/{n}-sezon/{n}-bolum`, player config in a
-  `div[data-rm-k]`), and the app's scraper does not fit it. Do not point `/set_dizipal` there.
+  A host a provider hands out has its **own** breaker (`Dizipal embed <host>`,
+  `Dizibal player`), so a dead embed or player host never gets the provider's site skipped.
+- **The tiers run in parallel (2026-09-25).** They used to run one after another — HDFilm,
+  Dizipal, then both again with the Turkish title, then Dizibal — so a title only Dizibal had
+  paid for every step before it (10-15s on "Watch"). `resolveWebPlayerUrlInner` now starts all
+  three at once, fetches the Turkish title once up front, and `firstNativeByPriority` answers
+  with the highest tier's stream (a lower tier waits ≤2.5s for a higher one still running).
+  Measured from Baku: 0.9-1.5s for titles on HDFilm/Dizipal.
+- **Dizibal's series player host is slow**: `pilavyerplay.top/assets/js/s.php` takes 4-10s
+  (the movie host `play2.` 0.2s). It gets `DIZIBAL_PLAYER_TIMEOUT_MS` (10s); at the shared 5s
+  it timed out, tripped its breaker and every later title lost Dizibal. A series only Dizibal
+  carries therefore still takes ~7s — that is the host, not the app.
+- Dizipal's rotation is announced by the **old domains**: 2120 … 2133 all 301 to the configured
+  2134. "Some higher `dizipalN.com` answers" is not the signal (see the clone band above).
 - **Dizibal** rebuilt its site in Sept 2026 (Laravel); the old `/api/*` JSON routes all 404.
   The resolver now follows the browser: `/ara/oneri?q=` (JSON search; Turkish titles, but it
   matches English names too; no TMDB ids, so the year from `meta` must fit) → the movie page or
@@ -221,8 +227,16 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   independent evidence (search person-index noise, rating floors on cross-language matches).
 
 ### Infrastructure
-- **Bakcell** mobile data cannot reach `*.workers.dev`. `tmdb.ts` fails over to
-  `tmdb.streamboxapp.stream` (same Worker). Keep both hostnames attached.
+- **Bakcell** mobile data cannot reach `*.workers.dev`. Since 2026-09-25 `tmdb.ts` asks
+  `tmdb.streamboxapp.stream` (same Worker) **first** and fails over to workers.dev; the two
+  hostnames keep separate edge caches, so one primary also doubles the hit rate. Keep both
+  attached.
+- TMDB proxy edge TTLs: film/collection/person records 24h, everything else 6h (series gain
+  episodes), search 5 min. The Cache API is per-colo, so a short TTL misses often in the
+  low-traffic Baku colo (miss ≈ 0.8s, hit ≈ 0.05s).
+- Detail-screen speed: movie details persist across cold starts (`PersistedLruMap`, 80
+  entries); provider config serves the local cache at launch and swaps in Supabase's answer
+  when it lands, so a Watch tap never waits on it.
 - The Supabase project signs user JWTs with **ES256**. The TURN Worker verifies them against
   the project JWKS; it only mints for `role: authenticated` tokens with a `sub`.
 - Worker secrets are required; each Worker fails closed (401/503) without them. CORS allows

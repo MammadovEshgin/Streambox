@@ -352,49 +352,6 @@ function dizipalGet<T = string>(
   return providerGet<T>("Dizipal", url, config);
 }
 
-/**
- * POST a provider URL. Same breaker and challenge handling as `providerGet` —
- * Dizipal's search became a POST when the site was rebuilt, and a form post
- * that silently bypassed both would have re-opened the hole they close.
- */
-async function providerPost<T = string>(
-  provider: string,
-  url: string,
-  body: string,
-  config: Parameters<typeof axios.post>[2]
-): Promise<import("axios").AxiosResponse<T>> {
-  if (isProviderSkipped(provider)) throw new ProviderSkippedError(provider);
-
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= PROVIDER_CHALLENGE_RETRIES; attempt++) {
-    try {
-      const response = await axios.post<T>(url, body, config);
-      noteProviderAnswered(provider);
-      return response;
-    } catch (error: any) {
-      lastError = error;
-      if (!isCloudflareChallengeStatus(error?.response?.status)) {
-        noteProviderFailure(error);
-        noteProviderSilence(provider, error);
-        throw error;
-      }
-      if (attempt === PROVIDER_CHALLENGE_RETRIES) break;
-      debugLog(`[WebPlayer] ${provider} challenge on ${url} — retry ${attempt + 1}`);
-    }
-  }
-  noteProviderFailure(lastError);
-  noteProviderSilence(provider, lastError);
-  throw lastError;
-}
-
-function dizipalPost<T = string>(
-  url: string,
-  body: string,
-  config: Parameters<typeof axios.post>[2]
-): Promise<import("axios").AxiosResponse<T>> {
-  return providerPost<T>("Dizipal", url, body, config);
-}
-
 /** Dizibal-flavoured `providerGet`, so the breaker covers the third tier too. */
 function dizibalGet<T = string>(
   url: string,
@@ -1195,122 +1152,42 @@ async function resolvePlayableSeriesEpisodeUrl(
   }
 }
 
-/**
- * Dizipal's search, as the site's own header box calls it.
- *
- * The rebuilt site replaced `/ajax-search` (a GET returning JSON rows) with a
- * POST to `/bg/searchcontent` that answers `{data:{result,html}}` — the html
- * being the dropdown's markup. The form carries a `cKey`/`cValue` pair minted
- * per page render; without them the endpoint answers an empty result set
- * rather than an error, which is exactly what "Dizipal has nothing" looks
- * like, so a stale pair must expire rather than linger.
- */
-const DIZIPAL_SEARCH_CREDENTIAL_TTL_MS = 10 * 60 * 1000;
-/** How long a home page that would not answer is left alone. */
-const DIZIPAL_SEARCH_CREDENTIAL_RETRY_MS = 30 * 1000;
-
-type DizipalSearchCredentials = { base: string; cKey: string; cValue: string; expiresAt: number };
-let dizipalSearchCredentials: DizipalSearchCredentials | null = null;
-
-async function getDizipalSearchCredentials(): Promise<DizipalSearchCredentials | null> {
-  const base = getDizipalBaseUrl();
-  const cached = dizipalSearchCredentials;
-  if (cached && cached.base === base && cached.expiresAt > Date.now()) {
-    // An empty pair is a remembered failure: the home page did not answer, and
-    // asking it again inside the same resolve only spends the budget twice.
-    return cached.cKey ? cached : null;
-  }
-
-  try {
-    const response = await dizipalGet<string>(`${base}/`, {
-      timeout: 6000,
-      headers: { "User-Agent": UA, Accept: "text/html", Referer: getDizipalReferer() },
-    });
-    recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
-    const html = typeof response.data === "string" ? response.data : "";
-    const cKey = html.match(/name=["']cKey["']\s+value=["']([^"']+)["']/i)?.[1];
-    const cValue = html.match(/name=["']cValue["']\s+value=["']([^"']+)["']/i)?.[1];
-    if (!cKey || !cValue) {
-      debugLog("[WebPlayer] Dizipal home page carries no search credentials");
-      dizipalSearchCredentials = { base, cKey: "", cValue: "", expiresAt: Date.now() + DIZIPAL_SEARCH_CREDENTIAL_RETRY_MS };
-      return null;
-    }
-    dizipalSearchCredentials = {
-      base,
-      cKey,
-      cValue,
-      expiresAt: Date.now() + DIZIPAL_SEARCH_CREDENTIAL_TTL_MS,
-    };
-    return dizipalSearchCredentials;
-  } catch (error: any) {
-    debugLog("[WebPlayer] Dizipal search credentials failed:", error?.message ?? error);
-    dizipalSearchCredentials = { base, cKey: "", cValue: "", expiresAt: Date.now() + DIZIPAL_SEARCH_CREDENTIAL_RETRY_MS };
-    return null;
-  }
-}
-
-/** Rows out of the search dropdown's markup. */
-export function parseDizipalSearchResults(html: string, mediaType: "movie" | "tv"): SearchResult[] {
-  const wanted = mediaType === "movie" ? "/film/" : "/dizi/";
-  const results: SearchResult[] = [];
-
-  for (const match of html.matchAll(
-    /<a\b[^>]*class=["'][^"']*dp-search-result[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
-  )) {
-    const href = match[1];
-    if (!href.includes(wanted)) continue;
-    const inner = match[2];
-    const title = decodeHtmlAttribute(inner.match(/<strong[^>]*>([\s\S]*?)<\/strong>/i)?.[1] ?? "")
-      .replace(/<[^>]+>/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!title) continue;
-    const year = inner.match(/<em[^>]*>\s*((?:19|20)\d{2})\s*<\/em>/i)?.[1] ?? "";
-    results.push({
-      href,
-      text: `${title} ${year}`.trim().toLowerCase(),
-      title,
-      resultYear: year,
-    });
-  }
-
-  return results;
-}
-
 async function queryDizipal(query: string, mediaType: "movie" | "tv"): Promise<SearchResult[]> {
-  const credentials = await getDizipalSearchCredentials();
-  if (!credentials) return [];
-
   try {
-    const response = await dizipalPost<{ data?: { html?: string } }>(
-      `${getDizipalBaseUrl()}/bg/searchcontent`,
-      new URLSearchParams({
-        cKey: credentials.cKey,
-        cValue: credentials.cValue,
-        type: "hepsi",
-        searchterm: query,
-      }).toString(),
-      {
-        timeout: 6000,
-        headers: {
-          "User-Agent": UA,
-          Accept: "application/json, text/javascript, */*; q=0.01",
-          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-          "X-Requested-With": "XMLHttpRequest",
-          Referer: getDizipalReferer(),
-        },
+    const response = await dizipalGet<DizipalSearchResponse>(`${getDizipalBaseUrl()}/ajax-search`, {
+      timeout: 6000,
+      params: { q: query },
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
+        Referer: getDizipalReferer()
       }
-    );
+    });
+
+    // Self-heal: if Dizipal redirected us to a new domain, pin it so the
+    // rest of this session (and the next cold start, via AsyncStorage) skip
+    // the 1s-per-hop chain. Costs nothing on the happy path.
     recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
 
-    const html = response.data?.data?.html;
-    if (typeof html !== "string" || html.length === 0) return [];
-    return parseDizipalSearchResults(html, mediaType);
-  } catch (error: any) {
-    debugLog(`[WebPlayer] Dizipal search error for "${query}":`, error?.message ?? error);
-    // A pair that the site has rotated answers 200 with nothing; drop ours so
-    // the next attempt mints a fresh one rather than repeating the miss.
-    dizipalSearchCredentials = null;
+    const rawResults = Array.isArray(response.data?.results) ? response.data.results : [];
+    if (!response.data?.success || rawResults.length === 0) {
+      return [];
+    }
+
+    return rawResults
+      .filter((result) => {
+        const type = (result.type ?? "").toLowerCase();
+        return mediaType === "movie" ? type.includes("film") : type.includes("dizi");
+      })
+      .map((result) => ({
+        href: result.url ?? "",
+        text: `${result.title ?? ""} ${result.year ?? ""}`.trim().toLowerCase(),
+        title: result.title ?? "",
+        resultYear: result.year ? String(result.year) : ""
+      }))
+      .filter((result) => result.href.length > 0);
+  } catch {
     return [];
   }
 }
@@ -1402,9 +1279,7 @@ async function probeDizipalDirectSlug(
   );
 
   for (const slug of slugs) {
-    // Every page slug on the rebuilt site ends in its own section:
-    // /film/oppenheimer-film-izle, /dizi/breaking-bad-dizi-izle.
-    const url = `${base}/${kind}/${slug}-${kind}-izle`;
+    const url = `${base}/${kind}/${slug}`;
     try {
       const response = await dizipalGet<string>(url, {
         timeout: 6000,
@@ -1535,18 +1410,30 @@ function decodeHtmlAttribute(value: string): string {
     .replace(/&amp;/gi, "&"); // last, so "&amp;quot;" does not double-decode
 }
 
+function extractDizipalCfg(html: string): string | null {
+  const match = html.match(/id=["']videoContainer["'][^>]*data-cfg=["']([^"']+)["']/i);
+  const raw = match?.[1] ?? html.match(/data-cfg=["']([^"']+)["']/i)?.[1] ?? null;
+  return raw ? decodeHtmlAttribute(raw) : null;
+}
+
+function normalizeDizipalEmbedUrl(embedUrl: string, pageUrl: string, baseUrl: string): string | null {
+  const trimmed = (embedUrl ?? "").trim();
+  if (!trimmed) return null;
+
+  return (
+    toAbsoluteUrl(pageUrl, trimmed) ??
+    toAbsoluteUrl(baseUrl, trimmed) ??
+    toAbsoluteUrl(getDizipalBaseUrl(), trimmed)
+  );
+}
+
 function extractDizipalTitleFromUrl(url: string): string {
   try {
     const parsed = new URL(url, getDizipalBaseUrl());
     const segments = parsed.pathname.split("/").filter(Boolean);
-    // An episode lives at /dizi/{slug}/{n}-sezon/{n}-bolum, so the last segment
-    // is the episode number — the title is the segment after the section.
-    const isEpisode = /^\d+-bolum$/i.test(segments[segments.length - 1] ?? "");
-    const rawSlug = (isEpisode ? segments[1] : segments[segments.length - 1]) ?? "";
+    const rawSlug = segments[segments.length - 1] ?? "";
     const cleanedSlug = decodeURIComponent(rawSlug)
       .replace(/-\d+-sezon-\d+-bolum$/i, "")
-      // The rebuilt site suffixes every page slug: "oppenheimer-film-izle".
-      .replace(/-(?:film|dizi)-izle$/i, "")
       .replace(/-\d{4}$/i, "")
       .replace(/-(?:turkce-dublaj|turkce-altyazili|altyazili|dublaj|izle)$/i, "")
       .replace(/-/g, " ")
@@ -2461,10 +2348,24 @@ async function resolveViaGetVideoApi(embedUrl: string, html: string): Promise<Di
   }
 }
 
+/**
+ * Dizipal hands out embeds on several hosts, and one going dark (imagestoo.com
+ * answered 522 on 2026-09-25) used to cost every title on it a full timeout.
+ * Each host gets its own breaker, so after two silent failures it is skipped
+ * and the other tiers answer at once.
+ */
+function embedHostBreakerName(embedUrl: string): string {
+  try {
+    return `Dizipal embed ${new URL(embedUrl).hostname}`;
+  } catch {
+    return "Dizipal embed";
+  }
+}
+
 async function resolveEmbedToM3u8(embedUrl: string, referer: string): Promise<DizipalStreamInfo | null> {
   try {
-    const resp = await axios.get<string>(embedUrl, {
-      timeout: 8000,
+    const resp = await providerGet<string>(embedHostBreakerName(embedUrl), embedUrl, {
+      timeout: 6000,
       headers: {
         "User-Agent": UA,
         Accept: "text/html",
@@ -2501,136 +2402,200 @@ type DizipalStreamResult = {
   embedUrl: string | null;
 };
 
+type DizipalPlayerConfigResponse = {
+  success?: boolean;
+  config?: { v?: string; t?: string; p?: string };
+};
+
 /**
- * Mint a fresh token and exchange the page's `cfg` for the player config.
- *
- * Two properties of the live endpoint drive this shape:
- *  - the token is SINGLE-USE, so it must be fetched immediately before each
- *    POST and can never be cached or replayed; and
- *  - validation covers the whole cookie set (`_ct`, `PHPSESSID` and the
- *    DDoS-Guard `__ddg*` cookies), not just `_ct`. Hand-setting a `Cookie`
- *    header REPLACES the platform cookie jar for that request, dropping the
- *    others and failing validation — verified against the live endpoint. So we
- *    let the native cookie store (OkHttp / NSURLSession) carry them and only
- *    fall back to an explicit header if the jar-based attempt is rejected,
- *    which covers runtimes without a cookie jar.
- */
-/**
- * Dizipal's `data-cfg` attribute is base64(url) of the exact JSON the
- * player-config endpoint hands back: `{"v":…,"t":…,"p":…}`. Decoding it on
- * device skips a token mint plus a POST (two round-trips on the critical path
- * of every play) and, more importantly, keeps playback working across the
- * endpoint renames the provider does every few months — 2026-09's
- * `/ajax-player-config` → `/ajax/player-config` move broke every Dizipal
- * title until this landed.
+ * Dizipal's `data-cfg` attribute was, for a while, base64(url) of the exact
+ * JSON the player-config endpoint hands back: `{"v":…,"t":…,"p":…}`. Decoding
+ * it on device skips the POST entirely. Since dizipal2134 (2026-09-25) the
+ * attribute is a 32-hex token instead, which this rejects in one regex, so the
+ * caller falls through to the network path.
  *
  * Returns null on anything that isn't the expected shape so the caller falls
  * back to the network path rather than playing something wrong.
  */
+function decodeDizipalCfg(cfg: string): DizipalPlayerConfigResponse | null {
+  const normalized = cfg.trim().replace(/-/g, "+").replace(/_/g, "/");
+  if (!normalized || !/^[A-Za-z0-9+/=]+$/.test(normalized)) return null;
 
-/**
- * Paths the player-config endpoint has lived at, newest first. Dizipal renamed
- * `/ajax-player-config` to `/ajax/player-config` in Sept 2026; the old path now
- * answers 404, which the caller treated as "no stream" and silently dropped
- * every Dizipal title. Both are tried so a rename in either direction is a
- * one-request penalty rather than an outage. `/ajax` is what the site's
- * `main.js` posts to since 2026-09-18; `/ajax/player-config` still answers as
- * of 2026-09-20.
- */
+  let json: string;
+  try {
+    json = decodeBase64Binary(normalized);
+  } catch {
+    return null;
+  }
+  if (!json.trim().startsWith("{")) return null;
 
-/**
- * Turn a watch page into a stream through the resolver Worker.
- *
- * WHY A WORKER. Dizipal's player host answers 403 "Attention Required" to our
- * users' networks for every dynamic path — `iframe.php`, `source2.php`, the
- * variant playlist `l.php` — while serving the static ones (the master
- * playlist, and the `.jpg`-disguised MPEG-TS segments on its CDN) perfectly.
- * The device can therefore stream Dizipal but cannot ASK for the stream, so
- * that one question is asked from Cloudflare's network, which the rule lets
- * through. The Worker hands back a playlist URL; the segments, which are all
- * of the bytes, still go straight from the CDN to the device.
- *
- * Nothing here is decrypted on-device: the blob, its passphrase and the whole
- * `openPlayer` chain live in `workers/dizipal-resolver`.
- */
-const DIZIPAL_RESOLVER_TIMEOUT_MS = 10_000;
-
-/**
- * Both hosts the resolver answers on, custom domain first: Bakcell's mobile
- * network cannot reach `*.workers.dev` at all (see `tmdb.ts`), so the zone
- * host has to be the one tried first, with workers.dev as the safety net for
- * a DNS or certificate problem on our own zone.
- */
-const DIZIPAL_RESOLVER_BASE_URLS = [
-  "https://dizipal.streamboxapp.stream",
-  "https://streambox-dizipal-resolver.polyana-eam.workers.dev",
-];
-let activeDizipalResolverIndex = 0;
-
-type DizipalResolverResponse = {
-  stream?: string;
-  streamType?: string;
-  referer?: string;
-  subtitles?: Array<{ url?: string; label?: string; lang?: string }>;
-};
-
-async function resolveDizipalStreamViaWorker(pageUrl: string): Promise<DizipalStreamInfo | null> {
-  const payload = JSON.stringify({ url: pageUrl, base: getDizipalBaseUrl() });
-
-  for (let attempt = 0; attempt < DIZIPAL_RESOLVER_BASE_URLS.length; attempt++) {
-    const index = (activeDizipalResolverIndex + attempt) % DIZIPAL_RESOLVER_BASE_URLS.length;
-    const host = DIZIPAL_RESOLVER_BASE_URLS[index];
-    try {
-      const response = await axios.post<DizipalResolverResponse>(`${host}/player`, payload, {
-        timeout: DIZIPAL_RESOLVER_TIMEOUT_MS,
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-      });
-      // Remember the host that answered: the other one costs a full timeout.
-      activeDizipalResolverIndex = index;
-
-      const data = response.data;
-      if (!data?.stream || !/^https:\/\//i.test(data.stream)) {
-        debugLog("[WebPlayer] Dizipal resolver returned no stream for", pageUrl);
-        return null;
-      }
-      return {
-        streamUrl: data.stream,
-        streamType: data.streamType === "mp4" ? "mp4" : "m3u8",
-        poster: "",
-        referer: typeof data.referer === "string" ? data.referer : "",
-        subtitles: (data.subtitles ?? [])
-          .filter((track): track is { url: string; label?: string; lang?: string } =>
-            typeof track?.url === "string" && /^https:\/\//i.test(track.url)
-          )
-          .map((track) => ({
-            url: track.url,
-            label: track.label?.trim() || "Altyazı",
-            lang: track.lang && /^[a-z]{2,3}$/i.test(track.lang) ? track.lang.toLowerCase() : "und",
-          })),
-      };
-    } catch (error: any) {
-      // A 4xx is the resolver's answer — the page carried nothing playable —
-      // and trying the other host would only repeat it.
-      const status = error?.response?.status;
-      debugLog(`[WebPlayer] Dizipal resolver ${host} failed:`, status ?? error?.message ?? error);
-      if (typeof status === "number" && status >= 400 && status < 500) return null;
-    }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
   }
 
+  const config = parsed as { v?: unknown; t?: unknown; p?: unknown };
+  if (typeof config?.v !== "string" || !/^https?:\/\//i.test(config.v)) return null;
+  if (typeof config?.t !== "string" || !config.t) return null;
+
+  return {
+    success: true,
+    config: {
+      v: config.v,
+      t: config.t,
+      p: typeof config.p === "string" ? config.p : "",
+    },
+  };
+}
+
+/**
+ * Paths the player-config endpoint has lived at, the live one first. The site
+ * has moved it between these three; dizipal2134 answers only
+ * `/ajax-player-config` and 404s the others. A 404 moves on to the next path,
+ * so a rename is a one-request penalty rather than an outage.
+ */
+const DIZIPAL_PLAYER_CONFIG_PATHS = ["/ajax-player-config", "/ajax", "/ajax/player-config"];
+let liveDizipalPlayerConfigPath = DIZIPAL_PLAYER_CONFIG_PATHS[0];
+
+/** `PHPSESSID=…` out of a page response's Set-Cookie, for the explicit retry. */
+function readDizipalSessionCookie(headers: unknown): string | null {
+  const raw = (headers as Record<string, unknown> | undefined)?.["set-cookie"];
+  const values = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  for (const value of values) {
+    const match = String(value).match(/(?:^|[\s,;])PHPSESSID=([^;,\s]+)/);
+    if (match) return `PHPSESSID=${match[1]}`;
+  }
   return null;
 }
 
+type DizipalPlayerPage = { html: string; sessionCookie: string | null };
+
+async function fetchDizipalPlayerPage(pageUrl: string): Promise<DizipalPlayerPage | null> {
+  try {
+    const response = await dizipalGet<string>(pageUrl, {
+      timeout: 7000,
+      withCredentials: true,
+      headers: { "User-Agent": UA, Accept: "text/html", Referer: getDizipalReferer() },
+    });
+    recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
+    if (typeof response.data !== "string") return null;
+    return { html: response.data, sessionCookie: readDizipalSessionCookie(response.headers) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Exchange a page's `cfg` for its player config.
+ *
+ * The cfg is a SINGLE-USE token minted by the page render and bound to that
+ * render's PHP session: posted from another session, or a second time, it
+ * answers `{"success":false,"message":"Invalid token"}`. So the POST rides the
+ * session the page read opened — the native cookie jar (OkHttp /
+ * NSURLSession) carries PHPSESSID — and no `/ajax-token` round-trip is needed.
+ * A caller that is rejected must re-render the page, never replay the cfg.
+ */
+async function postDizipalPlayerConfig(
+  baseUrl: string,
+  pageUrl: string,
+  cfg: string,
+  cookieHeader: string | null
+): Promise<DizipalPlayerConfigResponse | null> {
+  const postTo = (path: string) =>
+    axios.post<DizipalPlayerConfigResponse>(`${baseUrl}${path}`, `cfg=${encodeURIComponent(cfg)}`, {
+      timeout: 6000,
+      withCredentials: true,
+      validateStatus: (status) => status >= 200 && status < 500,
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        Referer: pageUrl,
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+      },
+    });
+
+  try {
+    let response = await postTo(liveDizipalPlayerConfigPath);
+    if (response.status === 404) {
+      for (const path of DIZIPAL_PLAYER_CONFIG_PATHS) {
+        if (path === liveDizipalPlayerConfigPath) continue;
+        const attempt = await postTo(path);
+        if (attempt.status !== 404) {
+          liveDizipalPlayerConfigPath = path;
+          response = attempt;
+          break;
+        }
+      }
+    }
+    return response.data && typeof response.data === "object" ? response.data : null;
+  } catch (error: any) {
+    noteProviderFailure(error);
+    debugLog("[WebPlayer] Dizipal player-config failed:", error?.message ?? error);
+    return null;
+  }
+}
+
 async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResult | null> {
-  // The page is deliberately NOT read here. The player host binds the token
-  // inside it to whoever fetched the page, so a page read on the device makes
-  // the Worker's request 403 — the resolver has to do both halves itself.
-  const stream = await resolveDizipalStreamViaWorker(pageUrl);
-  return stream ? { stream, embedUrl: null } : null;
+  try {
+    const pageOrigin = new URL(pageUrl).origin;
+    const baseUrl = pageOrigin.includes("dizipal") ? pageOrigin : getDizipalBaseUrl();
+
+    // Two renders at most: a rejected cfg is spent, so the retry needs a fresh
+    // page — and it names the session explicitly, for a runtime whose cookie
+    // jar did not keep the first one.
+    let configResp: DizipalPlayerConfigResponse | null = null;
+    for (let attempt = 0; attempt < 2 && !configResp?.success; attempt++) {
+      const page = await fetchDizipalPlayerPage(pageUrl);
+      const cfg = page ? extractDizipalCfg(page.html) : null;
+      if (!page || !cfg) return null;
+
+      configResp =
+        decodeDizipalCfg(cfg) ??
+        (await postDizipalPlayerConfig(baseUrl, pageUrl, cfg, attempt === 0 ? null : page.sessionCookie));
+      if (!configResp?.success) {
+        debugLog("[WebPlayer] Dizipal player-config rejected:", (configResp as any)?.message ?? "no answer");
+      }
+    }
+
+    const config = configResp?.config;
+    if (!configResp?.success || !config?.v) return null;
+
+    const streamType = (config.t ?? "").toLowerCase();
+
+    if (streamType === "m3u8" || streamType === "mp4") {
+      return {
+        stream: {
+          streamUrl: config.v,
+          streamType,
+          poster: config.p ?? "",
+          referer: pageUrl,
+          subtitles: []
+        },
+        embedUrl: null
+      };
+    }
+
+    if (streamType === "embed" || streamType === "iframe") {
+      const normalizedEmbedUrl = normalizeDizipalEmbedUrl(config.v, pageUrl, baseUrl);
+      if (!normalizedEmbedUrl) return null;
+
+      const embedStream = await resolveEmbedToM3u8(normalizedEmbedUrl, pageUrl);
+      return { stream: embedStream, embedUrl: normalizedEmbedUrl };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function matchesDizipalEpisodeUrl(url: string, seasonNumber: number, episodeNumber: number): boolean {
-  // /dizi/{slug}/{season}-sezon/{episode}-bolum — the rebuilt site's shape.
-  return new RegExp(`/dizi/[^/]+/${seasonNumber}-sezon/${episodeNumber}-bolum/?$`, "i").test(url);
+  const normalized = url.toLowerCase();
+  return normalized.includes(`/bolum/`) && normalized.includes(`${seasonNumber}-sezon-${episodeNumber}-bolum`);
 }
 
 async function findDizipalEpisodeUrl(
@@ -2649,7 +2614,7 @@ async function findDizipalEpisodeUrl(
     new Set(
       extractHrefs(html)
         .map((href) => toAbsoluteUrl(seriesPageUrl, href))
-        .filter((href): href is string => Boolean(href && /-bolum\/?$/i.test(href)))
+        .filter((href): href is string => Boolean(href && href.includes("/bolum/")))
     )
   );
 
@@ -2808,169 +2773,166 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   return retry ? preferResolution(first, retry) : first;
 }
 
-async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebPlayerResult> {
-  // 1. HDFilm — only a real extracted stream counts. An HDFilm page whose
-  //    decoder yields nothing used to be kept as a last-resort WebView result,
-  //    which put the user inside hdfilmcehennemi's own player (pre-rolls, its
-  //    controls) whenever no other provider had the title. Playback is native
-  //    or it is "Not available"; the page is never a result.
-  const isSeries = request.mediaType !== "movie";
-  const hdfilmMatch = await findBestHdFilmMatch(request.title, request.castNames ?? [], request.year, request.originalTitle);
+/**
+ * How long a lower tier's native stream waits for a higher tier still running.
+ * HDFilm answers in 1-3s when it has a title; past that, a Dizipal or Dizibal
+ * stream already in hand is worth more than the chance of an HDFilm one.
+ */
+const PROVIDER_PRIORITY_GRACE_MS = 2_500;
 
+/**
+ * Answer with the highest-priority native stream among tiers that all run at
+ * once. `tasks` is in priority order. A tier's hit wins as soon as every tier
+ * above it has missed; a lower tier's hit waits at most `graceMs` for the ones
+ * above it. Resolves null when every tier misses. Never rejects.
+ */
+function firstNativeByPriority(
+  tasks: Array<Promise<WebPlayerResult | null>>,
+  graceMs: number
+): Promise<WebPlayerResult | null> {
+  const outcomes: Array<{ done: boolean; value: WebPlayerResult | null }> = tasks.map(() => ({
+    done: false,
+    value: null,
+  }));
+  const bestFinishedHit = () => outcomes.find((outcome) => outcome.done && outcome.value)?.value ?? null;
+
+  return new Promise((resolve) => {
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    let answered = false;
+    const answer = (value: WebPlayerResult | null) => {
+      if (answered) return;
+      answered = true;
+      if (graceTimer) clearTimeout(graceTimer);
+      resolve(value);
+    };
+
+    const evaluate = () => {
+      for (const outcome of outcomes) {
+        if (!outcome.done) break;
+        if (outcome.value) return answer(outcome.value);
+      }
+      if (outcomes.every((outcome) => outcome.done)) return answer(null);
+      if (!graceTimer && bestFinishedHit()) {
+        graceTimer = setTimeout(() => answer(bestFinishedHit()), graceMs);
+      }
+    };
+
+    tasks.forEach((task, index) => {
+      void task
+        .catch(() => null)
+        .then((value) => {
+          outcomes[index] = { done: true, value: value?.streamUrl ? value : null };
+          evaluate();
+        });
+    });
+  });
+}
+
+function toDizipalWebPlayerResult(dizipalResult: DizipalResolveResult | null): WebPlayerResult | null {
+  // ONLY a real extracted stream counts. Dizipal's page and embed shells used
+  // to be returned as playable results too, but those render the provider's
+  // own Playerjs in a WebView — pre-roll ads and its own controls.
+  if (!dizipalResult?.stream) return null;
+  const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
+  return {
+    url: pageUrl,
+    source: "dizipal_direct",
+    streamUrl: stream.streamUrl,
+    streamType: stream.streamType,
+    poster: stream.poster,
+    referer: stream.referer || "",
+    embedUrl: embedUrl ?? undefined,
+    subtitles: stream.subtitles,
+    qualityWarning,
+  };
+}
+
+async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebPlayerResult> {
+  // Every tier starts at once and the answer follows tier priority (HDFilm →
+  // Dizipal → Dizibal). They used to run one after another, so a title only
+  // Dizibal had paid for HDFilm's search, both Turkish-title retries and
+  // Dizipal's sweep first — the 10-15s "Watch" waits of Sept 2026.
+  const isSeries = request.mediaType !== "movie";
+
+  // Only a real extracted stream counts. An HDFilm page whose decoder yields
+  // nothing used to be kept as a last-resort WebView result, which put the
+  // user inside hdfilmcehennemi's own player. Playback is native or it is
+  // "Not available"; the page is never a result.
   const considerHdFilmResult = (result: WebPlayerResult): WebPlayerResult | null =>
     result.streamUrl ? result : null;
 
-  if (hdfilmMatch) {
+  // Cross-language titles ("Harry Potter and the Deathly Hallows" vs "Harry
+  // Potter ve Ölüm Yadigârları") score too low against a Turkish-only listing,
+  // so each Turkish tier retries with TMDB's Turkish title. Fetched once, and
+  // early, so neither retry waits for it.
+  const turkishTitle: Promise<string | null> = request.tmdbId
+    ? getTurkishAlternativeTitle(request.tmdbId, request.mediaType)
+        .then((alt) => (alt && alt !== request.title && alt !== request.originalTitle ? alt : null))
+        .catch(() => null)
+    : Promise.resolve(null);
+
+  const hdfilmStream = async (title: string, originalTitle?: string): Promise<WebPlayerResult | null> => {
+    const match = await findBestHdFilmMatch(title, request.castNames ?? [], request.year, originalTitle);
+    if (!match) return null;
     if (isSeries) {
-      if (request.seasonNumber && request.episodeNumber) {
-        const episodeResult = await resolvePlayableSeriesEpisodeUrl(
-          hdfilmMatch.url,
-          request.seasonNumber,
-          request.episodeNumber
-        );
-        if (episodeResult) {
-          const built = buildHdFilmResult(
-            episodeResult.url,
-            episodeResult.qualityWarning,
-            episodeResult.nativeFallback
-          );
-          const ret = considerHdFilmResult(built);
-          if (ret) return ret;
-        }
-      }
-    } else {
-      const videoCheck = await checkVideoAvailability(hdfilmMatch.url);
-      if (videoCheck.available) {
-        const built = buildHdFilmResult(hdfilmMatch.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
-        const ret = considerHdFilmResult(built);
-        if (ret) return ret;
-      }
+      if (!request.seasonNumber || !request.episodeNumber) return null;
+      const episodeResult = await resolvePlayableSeriesEpisodeUrl(match.url, request.seasonNumber, request.episodeNumber);
+      if (!episodeResult) return null;
+      return considerHdFilmResult(
+        buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback)
+      );
     }
-  }
+    const videoCheck = await checkVideoAvailability(match.url);
+    if (!videoCheck.available) return null;
+    return considerHdFilmResult(buildHdFilmResult(match.url, videoCheck.qualityWarning, videoCheck.nativeFallback));
+  };
 
-  // 2. Dizipal — primary fallback when HDFilm produced no native stream.
-  //
-  //    ONLY a real extracted stream counts. Dizipal's page and embed shells
-  //    used to be returned as playable results too, but those render the
-  //    provider's own Playerjs in a WebView — the user ended up inside a
-  //    third-party player complete with its pre-roll ads and its own controls.
-  //    When the extraction fails we fall through to the next provider instead.
-  {
-    const dizipalResult = await resolvePlayableDizipalUrl(request);
-    if (dizipalResult?.stream) {
-      const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
-      return {
-        url: pageUrl,
-        source: "dizipal_direct",
-        streamUrl: stream.streamUrl,
-        streamType: stream.streamType,
-        poster: stream.poster,
-        referer: stream.referer || "",
-        embedUrl: embedUrl ?? undefined,
-        subtitles: stream.subtitles,
-        qualityWarning,
-      };
-    }
-  }
+  const hdfilmTier = async () => {
+    const direct = await hdfilmStream(request.title, request.originalTitle);
+    if (direct) return direct;
+    const alt = await turkishTitle;
+    return alt ? hdfilmStream(alt) : null;
+  };
 
-  // 2b. Retry Turkish sources with the localized title from TMDB.
-  //
-  //    For most cross-language titles ("Harry Potter and the Deathly
-  //    Hallows" vs "Harry Potter ve Ölüm Yadigârları") the English search
-  //    in step 2 scores too low against the Turkish-only Dizipal entry to
-  //    pass the strict 80-point cutoff. Asking TMDB for the canonical
-  //    Turkish translation and retrying matches with score ≥ 100.
-  if (request.tmdbId) {
-    try {
-      const altTitle = await getTurkishAlternativeTitle(request.tmdbId, request.mediaType);
-      if (altTitle && altTitle !== request.title && altTitle !== request.originalTitle) {
-        const hdRetry = await findBestHdFilmMatch(altTitle, request.castNames ?? [], request.year);
-        if (hdRetry) {
-          if (isSeries) {
-            if (request.seasonNumber && request.episodeNumber) {
-              const episodeResult = await resolvePlayableSeriesEpisodeUrl(
-                hdRetry.url, request.seasonNumber, request.episodeNumber
-              );
-              if (episodeResult) {
-                const built = buildHdFilmResult(
-                  episodeResult.url,
-                  episodeResult.qualityWarning,
-                  episodeResult.nativeFallback
-                );
-                const ret = considerHdFilmResult(built);
-                if (ret) return ret;
-              }
-            }
-          } else {
-            const videoCheck = await checkVideoAvailability(hdRetry.url);
-            if (videoCheck.available) {
-              const built = buildHdFilmResult(hdRetry.url, videoCheck.qualityWarning, videoCheck.nativeFallback);
-              const ret = considerHdFilmResult(built);
-              if (ret) return ret;
-            }
-          }
-        }
+  const dizipalTier = async () => {
+    const direct = toDizipalWebPlayerResult(await resolvePlayableDizipalUrl(request));
+    if (direct) return direct;
+    const alt = await turkishTitle;
+    if (!alt) return null;
+    return toDizipalWebPlayerResult(
+      await resolvePlayableDizipalUrl({ ...request, title: alt, originalTitle: undefined })
+    );
+  };
 
-        // resolvePlayableDizipalUrl runs the search itself, so probing with a
-        // separate searchDizipal call first only duplicated the whole query
-        // sweep (up to five HTTP round-trips) and threw the result away.
-        const retryRequest: WebPlayerRequest = { ...request, title: altTitle, originalTitle: undefined };
-        const dizipalResult = await resolvePlayableDizipalUrl(retryRequest);
-        // Same rule as step 2: a Dizipal page/embed shell is not a playable
-        // result, only an extracted stream is.
-        if (dizipalResult?.stream) {
-          const { pageUrl, stream, embedUrl, qualityWarning } = dizipalResult;
-          return {
-            url: pageUrl, source: "dizipal_direct",
-            streamUrl: stream.streamUrl, streamType: stream.streamType,
-            poster: stream.poster, referer: stream.referer || "",
-            embedUrl: embedUrl ?? undefined, subtitles: stream.subtitles, qualityWarning,
-          };
-        }
-      }
-    } catch { /* silent */ }
-  }
+  // Dizibal serves HLS from its own player CDN (pilavyer*.top).
+  const dizibalTier = async () => {
+    const result = await resolveDirectWebPlayerFallback(request);
+    return result.source === "not_found" ? null : result;
+  };
 
-  // 3. Dizibal scraper — third source of native streams, used when both
-  //    HDFilm and Dizipal couldn't yield a playable URL (typical case:
-  //    Dizipal resolved an imagestoo m3u8 whose underlying media was
-  //    deleted). Dizibal serves HLS from its own player CDN (pilavyer*.top).
-  const directFallback = await resolveDirectWebPlayerFallback(request);
-  if (directFallback.source !== "not_found") return directFallback;
-
-  return { url: "", source: "not_found" };
+  const result = await firstNativeByPriority(
+    [hdfilmTier(), dizipalTier(), dizibalTier()],
+    PROVIDER_PRIORITY_GRACE_MS
+  );
+  return result ?? { url: "", source: "not_found" };
 }
 
 /**
  * A native stream of the same title from a provider OTHER than HDFilm — for
- * when an HDFilm stream resolved but will not play on this device. Dizipal
- * first (same catalog depth, native), then Dizibal. Never throws; answers
+ * when an HDFilm stream resolved but will not play on this device. Dizipal and
+ * Dizibal are asked at once, Dizipal preferred. Never throws; answers
  * `not_found` when neither has it within the budget.
  */
 export async function resolveNativeAlternativeToHdFilm(request: WebPlayerRequest): Promise<WebPlayerResult> {
-  try {
-    const dizipal = await Promise.race([
-      resolvePlayableDizipalUrl(request),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), DIRECT_FALLBACK_TIMEOUT_MS)),
-    ]);
-    if (dizipal?.stream) {
-      const { pageUrl, stream, embedUrl, qualityWarning } = dizipal;
-      return {
-        url: pageUrl,
-        source: "dizipal_direct",
-        streamUrl: stream.streamUrl,
-        streamType: stream.streamType,
-        poster: stream.poster,
-        referer: stream.referer || "",
-        embedUrl: embedUrl ?? undefined,
-        subtitles: stream.subtitles,
-        qualityWarning,
-      };
-    }
-  } catch {
-    /* fall through to Dizibal */
-  }
-  return resolveDirectWebPlayerFallback(request);
+  const dizipal = Promise.race([
+    resolvePlayableDizipalUrl(request).then(toDizipalWebPlayerResult),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), DIRECT_FALLBACK_TIMEOUT_MS)),
+  ]);
+  const result = await firstNativeByPriority(
+    [dizipal, resolveDirectWebPlayerFallback(request)],
+    PROVIDER_PRIORITY_GRACE_MS
+  );
+  return result ?? { url: "", source: "not_found" };
 }
 
 // ===========================================================================
@@ -3013,6 +2975,10 @@ const DIZIBAL_HEADERS = {
 };
 
 const DIZIBAL_REQUEST_TIMEOUT_MS = 5_000;
+// The series player host (pilavyerplay.top) takes 4-10s to answer s.php
+// (measured 2026-09-25); at 5s it timed out, and two timeouts had the breaker
+// skip it for every title after. The movie host (play2.) answers in 0.2s.
+const DIZIBAL_PLAYER_TIMEOUT_MS = 10_000;
 // A title the listing names in Turkish can only be confirmed on its own page;
 // cap how many such pages one search may open.
 const DIZIBAL_MAX_PAGE_CHECKS = 3;
@@ -3233,10 +3199,13 @@ async function resolveDizibalStream(
   }
 
   try {
-    const response = await dizibalGet<string>(
+    // Its own breaker: a slow player host (pilavyer*) must not get the whole
+    // Dizibal site skipped, which it did when it shared the site's.
+    const response = await providerGet<string>(
+      "Dizibal player",
       `${box.playerOrigin}/assets/js/s.php?s=${encodeURIComponent(box.slug)}`,
       {
-        timeout: DIZIBAL_REQUEST_TIMEOUT_MS,
+        timeout: DIZIBAL_PLAYER_TIMEOUT_MS,
         responseType: "text",
         // Origin-locked: the embed iframe sends only the site origin as Referer.
         headers: { ...DIZIBAL_HEADERS, Accept: "text/html,*/*", Referer: `${dizibalBaseUrl()}/` },
@@ -3278,20 +3247,20 @@ export async function resolveDirectWebPlayerFallback(
 }
 
 export const __internal = {
+  fetchDizipalStreamUrl,
   buildHdFilmResult,
   providerGet,
   isProviderSkipped,
   resetProviderSilence: () => providerSilence.clear(),
-  resetDizipalSearchCredentials: () => {
-    dizipalSearchCredentials = null;
-  },
   isCloudflareChallengeStatus,
   checkVideoAvailability,
+  decodeDizipalCfg,
   decodeRapidrameByInterpretingDcBody,
   decodeRapidrameValueCandidates,
   extractDizibalPlayerBox,
   extractPilavyerPlayerConfig,
   extractSubtitlesFromPlayerJs,
+  extractDizipalCfg,
   extractDizipalPageYear,
   extractHdFilmEmbedUrl,
   extractRapidrameParts,
@@ -3305,7 +3274,6 @@ export const __internal = {
   isAlternateTitleSafeForDizipal,
   isDizipalUrlTitleCompatible,
   probeDizipalDirectSlug,
-  parseDizipalSearchResults,
   rankDizibalSuggestions,
   readDizibalPageNames,
   scoreDizipalResult,

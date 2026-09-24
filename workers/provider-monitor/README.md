@@ -5,12 +5,8 @@ Cloudflare Worker Cron monitor for streaming provider domains. It reads the curr
 ## What It Checks
 
 - Dizipal home: `base_url/`
-- Dizipal search: `base_url/` must still mint the `cKey`/`cValue` pair the `POST
-  /bg/searchcontent` search needs — without them the endpoint answers 200 and an empty list
-- Dizipal playback config: `base_url/dizi/breaking-bad/1-sezon/1-bolum` must carry the
-  encrypted `div[data-rm-k]` blob
-- Dizipal resolver: that same blob, posted to `streambox-dizipal-resolver`, must come back as
-  a stream URL — end-to-end, because the resolver is half of Dizipal playback
+- Dizipal search: `base_url/ajax-search?q=breaking%20bad`
+- Dizipal playback config: `base_url/bolum/breaking-bad-1-sezon-1-bolum`
 - Dizipal domain (DNS): does a newer `dizipalN` resolve? (DNS-over-HTTPS, 12 suffixes ahead)
 - Dizibal search: `base_url/ara/oneri?q=breaking%20bad` (JSON, lists `/series/breaking-bad`)
 - Dizibal player: `https://pilavyerplay.top/assets/js/s.php?s=yEILM0ysEtqZE5fmdNHeeg` with the
@@ -19,7 +15,7 @@ Cloudflare Worker Cron monitor for streaming provider domains. It reads the curr
 
 ### DDoS-Guard and the DNS rotation watch
 
-Since 2026-09-18 (`dizipal2133.com`) Dizipal sits behind DDoS-Guard, which answers every
+From 2026-09-18 (`dizipal2133.com`) until 2134 moved back to Cloudflare on 2026-09-25, Dizipal sat behind DDoS-Guard, which answers every
 request from Cloudflare's network `403` ("Error 403", `server: ddos-guard`) while residential
 users get `200`. The Worker can then see neither Dizipal's pages nor the old domain's `301` to
 the next one — so the bot reported a permanent outage and could not detect a rotation.
@@ -63,20 +59,11 @@ Two things cover it instead, both from residential IPs:
 
 Do not add an HDFilm check here unless it stops challenging Worker egress — and verify that with `wrangler dev --remote` first. Re-verified 2026-09-22: still 403. There is no CI workflow for `check:hdfilm` and there must not be; one existed briefly and was deleted after it produced nothing but false alarms.
 
-### Why `dizipal_resolver` exists
-
-Dizipal's player host answers 403 to our users' networks for every dynamic path, so the app
-asks `workers/dizipal-resolver` for the stream instead (full story in that Worker's README).
-That puts the Worker inside the playback path: if it stops turning a live page blob into a
-stream, every Dizipal title is dead while `dizipal_home` and `dizipal_playback` stay green.
-The check is therefore end-to-end — canary page → blob → resolver → stream URL — and an alert
-naming it means "nothing on Dizipal plays", not "the site is slow".
-
 ### Why `dizipal_playback` exists
 
-Search being healthy says nothing about whether a title can actually PLAY. In Sept 2026 Dizipal renamed `/ajax-player-config` to `/ajax/player-config`: search kept answering 200, every title silently failed to produce a stream, and this monitor stayed green for the entire outage. Since the rebuild the watch page carries one encrypted `div[data-rm-k]` blob — `{ciphertext, iv, salt}` written with `&quot;` entities — so the check asserts the canary episode still ships one, covering the device's half of playback in a single request.
+Search being healthy says nothing about whether a title can actually PLAY. In Sept 2026 Dizipal renamed its player-config endpoint: search kept answering 200, every title silently failed to produce a stream, and this monitor stayed green for the entire outage. The app reads the episode page's `data-cfg` attribute and POSTs it to `/ajax-player-config` in the same session, so the check asserts that attribute still has the known shape — since `dizipal2134.com` (2026-09-25) a 32-hex single-use token. It does not post it: that would spend a token per run for no extra signal. While a wall (DDoS-Guard, 2026-09-18 → 25) refuses the Worker, this check is `blocked` and the app's `player_resolve` telemetry is the playback signal.
 
-The canary is a long-running catalog title at a stable slug. The blob sits deep in a ~160 KiB page, which is why `readLimitedText` reads up to 128 KiB. Dizipal's pages were invisible to the Worker while the site sat behind DDoS-Guard (2026-09-18 → 23, all page checks `blocked`, only `dizipal_domain` observable); the rebuilt site is on Cloudflare and answers Worker egress 200 again — re-verified 2026-09-24.
+The canary is a long-running catalog title at a stable slug. `data-cfg` sits ~44 KiB into a ~95 KiB page, which is why `readLimitedText` reads up to 128 KiB. Verified reachable from Worker egress (`wrangler dev --remote`, 2026-09-02) — the attribute decoded. Since 2026-09-18 DDoS-Guard answers the Worker 403, so all Dizipal page checks read `blocked`; only `dizipal_domain` (DNS) is observable.
 
 An endpoint is marked down after `FAILURE_THRESHOLD` consecutive failures, default `3`.
 
@@ -160,9 +147,9 @@ The bot supports three admin-only commands:
 ```
 
 `/status` re-runs every check and reports rotations and scraper-shape changes. A `/set_` command
-runs that provider's checks against the new domain (for Dizipal: home, the search
-credentials and the `div[data-rm-k]` playback probe) and updates the Supabase
-`provider_configs` row when all of them pass. Installed apps pick the new URL up on their next provider-config refresh.
+runs that provider's checks against the new domain (for Dizipal: home, search and the
+`data-cfg` playback probe) and updates the Supabase `provider_configs` row when all of them
+pass. Installed apps pick the new URL up on their next provider-config refresh.
 
 If the checks fail, the command still saves when the **currently configured** URL redirects to
 the new domain, and replies "updated — but it is failing right now" with the failing checks.

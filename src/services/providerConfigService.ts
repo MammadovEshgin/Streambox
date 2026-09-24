@@ -80,8 +80,9 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     // (Supabase was still pinned at 2127, i.e. three dead hops per request).
     // 2026-09-14: 2130 → 2131 (the 301 alone measured ~1s from a residential
     // connection). 2026-09-15: 2131 → 2132, one day later. 2026-09-18: 2132 → 2133.
-    baseUrl: "https://dizipal2133.com",
-    referer: "https://dizipal2133.com/",
+    // 2026-09-25: 2133 → 2134 (the numbered chain came back with the classic site).
+    baseUrl: "https://dizipal2134.com",
+    referer: "https://dizipal2134.com/",
   },
   dizibal: {
     // dizibal.org (was .com until 2026-09; .com still 301s here) — Turkish
@@ -164,12 +165,22 @@ let _observedLoaded = false;
 
 /**
  * Call once at app startup (e.g. in App.tsx or a boot effect).
- * Tries remote first, falls back to local cache, then hardcoded.
+ * Serves the local cache at once, then replaces it with remote when that
+ * answers; hardcoded only when neither exists.
  */
 export async function initialiseProviderConfigs(): Promise<void> {
   await loadObservedFromStorage();
 
-  // 1. Try remote
+  // 1. The last published config, straight away. Waiting on Supabase first
+  //    made a Watch tap during launch sit up to 3s in ensureProviderConfigReady.
+  const cached = await loadFromStorage();
+  if (cached) {
+    adoptBaseline(cached);
+    _initialised = true;
+    debugLog("[ProviderConfig] Loaded from local cache", summarise(_configs));
+  }
+
+  // 2. Remote replaces it when it answers.
   const remote = await fetchRemoteConfigs();
   if (remote) {
     adoptBaseline(remote);
@@ -178,15 +189,7 @@ export async function initialiseProviderConfigs(): Promise<void> {
     debugLog("[ProviderConfig] Loaded from remote", summarise(_configs));
     return;
   }
-
-  // 2. Try local cache
-  const cached = await loadFromStorage();
-  if (cached) {
-    adoptBaseline(cached);
-    _initialised = true;
-    debugLog("[ProviderConfig] Loaded from local cache", summarise(_configs));
-    return;
-  }
+  if (cached) return;
 
   // 3. Hardcoded fallback
   adoptBaseline({ ...HARDCODED_FALLBACK });
