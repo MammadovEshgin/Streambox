@@ -94,9 +94,9 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 | Piece | Version |
 |-------|---------|
 | App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `a74377d` → group `645e40af-2006-4d59-a993-8f4a1575692c` |
-| `streambox-tmdb-proxy` | `56f844af` (also on `tmdb.streamboxapp.stream`) |
-| `streambox-provider-monitor` | `126cd357` (hourly cron) |
-| `streambox-dizipal-resolver` | `aeae363e` — retired 2026-09-25 (no app build calls it; code removed from the repo), still deployed until deleted |
+| `streambox-tmdb-proxy` | `060246a3` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records) |
+| `streambox-provider-monitor` | `23d5dfaf` (hourly cron; classic Dizipal checks, hex `data-cfg`) |
+| `streambox-dizipal-resolver` | deleted 2026-09-25 (`dizipal.streamboxapp.stream` gone with it) |
 | `streambox-turn-credentials` | `dcfe4675` |
 | Latest migration | `20260923210451_franchise_catalogue_audit_2026_09` |
 | Edge Functions | `external-ratings` v1, `user-feedback` v5, `provider-configs` v4, `refresh-hot-ratings` v3 |
