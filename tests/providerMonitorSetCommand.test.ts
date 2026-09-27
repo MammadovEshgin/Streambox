@@ -35,13 +35,40 @@ function withUrl(response: Response, url: string): Response {
 const redirect = (to: string) => new Response(null, { status: 301, headers: { location: to } });
 const forbidden = () => new Response("<html><title>403 Forbidden</title></html>", { status: 403 });
 
-function healthyDizipal(url: URL): Response {
+// Captured live from dizipal2134 on 2026-09-27: the embed URL AES-256-CBC
+// encrypted under k1 XOR k2; decrypts to a formationfeed.net embed.
+const LIVE_DIZIPAL_ENC = {
+  c: "o5irVx5+DwZCGGsM2PNbCsB0y4akHXfR2VfKykP4JjQ0/w/tb6ae+s9TdUbTixr0tlrHXteInorq/mM/oqtn5w==",
+  iv: "s8qim3i9nTgiiChU89Mavg==",
+  k1: "ZV4WZlCa1O3ApwvEZgGcd5TrXAgfDdaJAqyJjDw2oZc=",
+  k2: "H8RXmPx0JzZo4AyKInxzMeIigcVeL0p6bXevC5oyu4w=",
+};
+const DIZIPAL_CFG = "808f8efbd4a5820a3d3fde3fb7f9edd8";
+
+/** /ajax-player-config as dizipal2134 answers it: the cfg only on its own session. */
+let dizipalPlayerConfig: (init: RequestInit) => Response = (init) => {
+  const headers = new Headers(init.headers);
+  const valid = String(init.body) === `cfg=${DIZIPAL_CFG}` && headers.get("cookie") === "PHPSESSID=sess1";
+  return new Response(
+    JSON.stringify(valid
+      ? { success: true, config: { v: "", t: "embed", p: "" }, enc: LIVE_DIZIPAL_ENC }
+      : { success: false, message: "Invalid token" }),
+    { status: 200 },
+  );
+};
+
+function healthyDizipal(url: URL, init: RequestInit = {}): Response {
   if (url.pathname === "/ajax-search") {
     return new Response(JSON.stringify({ success: true, results: [] }), { status: 200 });
   }
+  if (url.pathname === "/ajax-player-config" && init.method === "POST") {
+    return dizipalPlayerConfig(init);
+  }
   if (url.pathname.startsWith("/bolum/")) {
-    const cfg = "808f8efbd4a5820a3d3fde3fb7f9edd8";
-    return new Response(`<div id="videoContainer" data-cfg="${cfg}"></div>`, { status: 200 });
+    return new Response(`<div id="videoContainer" data-cfg="${DIZIPAL_CFG}"></div>`, {
+      status: 200,
+      headers: { "set-cookie": "PHPSESSID=sess1; path=/; secure; HttpOnly" },
+    });
   }
   return new Response("<html>home</html>", { status: 200 });
 }
@@ -228,7 +255,7 @@ test("a healthy candidate is saved without a warning", async () => {
   const { telegram, patches } = await sendCommand(
     "/set_dizipal https://dizipal2133.com",
     "https://dizipal2132.com",
-    (url) => (url.hostname === "dizipal2132.com" ? redirect(`https://dizipal2133.com${url.pathname}`) : healthyDizipal(url)),
+    (url, init) => (url.hostname === "dizipal2132.com" ? redirect(`https://dizipal2133.com${url.pathname}`) : healthyDizipal(url, init)),
   );
   assert.equal(patches.length, 1);
   assert.match(telegram[0], /dizipal updated successfully/);
@@ -240,12 +267,12 @@ test("a Cloudflare challenge is recognised by its header, not only by English pa
   const { patches } = await sendCommand(
     "/set_dizipal https://dizipal2133.com",
     "https://dizipal2133.com",
-    (url) => {
+    (url, init) => {
       // First home request gets a localised interstitial; the retry is clean.
       if (url.pathname === "/" && calls++ === 0) {
         return new Response("<title>Bir dakika lütfen...</title>", { status: 403, headers: { "cf-mitigated": "challenge" } });
       }
-      return healthyDizipal(url);
+      return healthyDizipal(url, init);
     },
   );
   assert.equal(patches.length, 1, "one challenged request must not fail validation");
@@ -337,11 +364,55 @@ test("Dizipal's playback check wants the hex data-cfg token the app posts", asyn
   const changed = await sendCommand(
     "/set_dizipal https://dizipal2134.com",
     "https://dizipal2133.com",
-    (url) => url.pathname.startsWith("/bolum/")
+    (url, init) => url.pathname.startsWith("/bolum/")
       ? new Response(`<div id="videoContainer" data-cfg="${cfg}"></div>`, { status: 200 })
-      : healthyDizipal(url),
+      : healthyDizipal(url, init),
   );
   assert.match(changed.telegram[0], /data-cfg is no longer a hex token/);
+});
+
+test("Dizipal's playback check posts the cfg on the page's session and decrypts the embed URL", async () => {
+  // 2026-09-27: data-cfg kept its hex shape while the player-config answer
+  // moved the embed URL into `enc`, and every Dizipal title stopped playing
+  // with the monitor green. The check now does the app's exchange.
+  const playback = async () => {
+    const { body } = await runOnce("https://dizipal2134.com", healthyDizipal, ["dizipal2134.com"], new Map());
+    return body.results.find((r: { id: string }) => r.id === "dizipal_playback");
+  };
+  const healthy = dizipalPlayerConfig;
+  try {
+    const encrypted = await playback();
+    assert.equal(encrypted.ok, true, encrypted.reason);
+
+    dizipalPlayerConfig = () =>
+      new Response(JSON.stringify({ success: true, config: { v: "https://formationfeed.net/embed-x.html", t: "embed" } }), { status: 200 });
+    assert.equal((await playback()).ok, true, "a clear config.v still counts");
+
+    dizipalPlayerConfig = () =>
+      new Response(JSON.stringify({ success: true, config: { v: "", t: "embed" }, enc: { ...LIVE_DIZIPAL_ENC, k2: LIVE_DIZIPAL_ENC.k1 } }), { status: 200 });
+    let result = await playback();
+    assert.equal(result.ok, false);
+    assert.equal(result.blocked, false);
+    assert.match(result.reason, /enc no longer decrypts .* push OTA/);
+
+    dizipalPlayerConfig = () => new Response(JSON.stringify({ success: true, config: { v: "", t: "embed" } }), { status: 200 });
+    assert.match((await playback()).reason, /answers no embed URL — push OTA/);
+
+    dizipalPlayerConfig = () => new Response(JSON.stringify({ success: false, message: "Invalid token" }), { status: 200 });
+    assert.match((await playback()).reason, /refused the page's cfg: "Invalid token" — push OTA/);
+
+    dizipalPlayerConfig = () => new Response("Not Found", { status: 404 });
+    assert.match((await playback()).reason, /endpoint moved \(HTTP 404\) — push OTA/);
+
+    // A wall on the POST alone is `blocked`, never "down".
+    dizipalPlayerConfig = () => ddosGuardWall();
+    result = await playback();
+    assert.equal(result.ok, false);
+    assert.equal(result.blocked, true);
+    assert.match(result.reason, /blocked by DDoS-Guard — player-config HTTP 403/);
+  } finally {
+    dizipalPlayerConfig = healthy;
+  }
 });
 
 test("a run detects the rotation through DNS while the pages are walled, and never pages 'down'", async () => {

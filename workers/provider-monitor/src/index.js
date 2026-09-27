@@ -307,6 +307,99 @@ async function checkDizipalDomain(providers) {
   return finish({ ok: true, reason: `ok (${configuredHost} resolves; no newer dizipalN in DNS)` });
 }
 
+// ─── Dizipal player-config ───────────────────────────────────────────
+// The half of the playback chain the page shape cannot vouch for: POST the
+// page's single-use `data-cfg` to /ajax-player-config on the session that
+// rendered it (the app's `fetchDizipalStreamUrl`) and require an embed URL
+// back — in the clear as `config.v`, or, since 2026-09-27, AES-256-CBC in
+// `enc: {c, iv, k1, k2}` under the key k1 XOR k2 (the app's `decryptDizipalEnc`).
+
+function base64ToBytes(value) {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+async function decryptDizipalEnc(enc) {
+  const k1 = base64ToBytes(enc?.k1);
+  const k2 = base64ToBytes(enc?.k2);
+  const iv = base64ToBytes(enc?.iv);
+  const ciphertext = base64ToBytes(enc?.c);
+  if (!k1 || !k2 || !iv || !ciphertext) return null;
+
+  try {
+    const rawKey = Uint8Array.from(k1.subarray(0, Math.min(k1.length, k2.length)), (byte, i) => byte ^ k2[i]);
+    const key = await crypto.subtle.importKey("raw", rawKey, "AES-CBC", false, ["decrypt"]);
+    const plain = await crypto.subtle.decrypt({ name: "AES-CBC", iv }, key, ciphertext);
+    return new TextDecoder().decode(plain) || null;
+  } catch {
+    return null;
+  }
+}
+
+function readSessionCookie(response) {
+  const values = response.headers.getSetCookie?.() ?? [response.headers.get("set-cookie") ?? ""];
+  for (const value of values) {
+    const match = value.match(/(?:^|[\s,;])PHPSESSID=([^;,\s]+)/);
+    if (match) return `PHPSESSID=${match[1]}`;
+  }
+  return null;
+}
+
+async function checkDizipalPlayerConfig(pageResponse, cfg, { url, timeoutMs }) {
+  // The page after redirects: the cfg belongs to the host that rendered it.
+  const pageUrl = pageResponse.url || url;
+  let response;
+  let body;
+  try {
+    const cookie = readSessionCookie(pageResponse);
+    response = await fetchWithTimeout(`${new URL(pageUrl).origin}/ajax-player-config`, {
+      method: "POST",
+      redirect: "follow",
+      headers: {
+        ...baseHeaders(pageUrl),
+        "content-type": "application/x-www-form-urlencoded",
+        ...(cookie ? { cookie } : {}),
+      },
+      body: `cfg=${encodeURIComponent(cfg)}`,
+    }, timeoutMs);
+    body = await readLimitedText(response);
+  } catch (error) {
+    return { ok: false, reason: `player-config POST failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
+
+  const wall = blockingWall(response, body);
+  if (wall) return { ok: false, wall, reason: `player-config HTTP ${response.status}` };
+  if (response.status === 404) return { ok: false, reason: "player-config endpoint moved (HTTP 404) — push OTA" };
+  if (!response.ok) return { ok: false, reason: `player-config HTTP ${response.status}` };
+
+  let answer;
+  try {
+    answer = JSON.parse(body);
+  } catch {
+    return { ok: false, reason: "player-config did not answer JSON — push OTA" };
+  }
+  if (answer?.success !== true) {
+    const message = typeof answer?.message === "string" ? `: "${answer.message.slice(0, 80)}"` : "";
+    return { ok: false, reason: `player-config refused the page's cfg${message} — push OTA` };
+  }
+
+  const embedUrl = answer.config?.v || (answer.enc ? await decryptDizipalEnc(answer.enc) : null);
+  if (!embedUrl) {
+    return {
+      ok: false,
+      reason: answer.enc
+        ? "player-config's enc no longer decrypts as AES-256-CBC under k1 XOR k2 — push OTA"
+        : "player-config answers no embed URL — push OTA",
+    };
+  }
+  const ok = /^https?:\/\/[^/\s]+/i.test(embedUrl);
+  return { ok, reason: ok ? "ok" : "player-config's embed URL is not a URL — push OTA" };
+}
+
 async function checkHttpEndpoint({ id, label, url, referer, validator, watchRotation = true }, env) {
   const startedAt = Date.now();
   const timeoutMs = getTimeoutMs(env);
@@ -331,8 +424,10 @@ async function checkHttpEndpoint({ id, label, url, referer, validator, watchRota
       await new Promise((resolve) => setTimeout(resolve, CHALLENGE_RETRY_DELAY_MS));
     }
 
+    // A validator may make follow-up requests of its own (the Dizipal
+    // player-config POST), so it may be async and gets the request budget.
     const validatorResult = validator
-      ? validator(response, body)
+      ? await validator(response, body, { url, timeoutMs })
       : { ok: response.ok, reason: response.ok ? "ok" : `HTTP ${response.status}` };
     const transport = Boolean(response.ok && validatorResult.ok);
     // A third-party host (Dizibal's player) moving is not the provider rotating.
@@ -349,7 +444,8 @@ async function checkHttpEndpoint({ id, label, url, referer, validator, watchRota
       ? `URL rotated: ${rotation.requestedOrigin} → ${rotation.finalOrigin}`
       : "";
     const title = response.ok ? null : pageTitle(body);
-    const wall = transport ? null : blockingWall(response, body);
+    // A follow-up request can be walled even when the page was not.
+    const wall = transport ? null : (validatorResult.wall ?? blockingWall(response, body));
     const failureReason = (wall ? `blocked by ${wall} — ` : "")
       + (validatorResult.reason || `HTTP ${response.status}`)
       + (title ? ` (page: "${title}")` : "");
@@ -492,13 +588,15 @@ function buildProviderChecks(providers) {
       // search kept answering 200 for the whole outage. The app reads
       // `data-cfg` off the watch page and POSTs it to /ajax-player-config in
       // the same session; since dizipal2134 (2026-09-25) it is a 32-hex
-      // single-use token. Only the shape is checked: posting it would spend a
-      // token per run for no extra signal.
+      // single-use token. On 2026-09-27 the answer started hiding the embed
+      // URL in `enc` while the token kept its shape, and every Dizipal title
+      // fell to Dizibal with this check green — so it now does the exchange
+      // the app does (`checkDizipalPlayerConfig`).
       //
       // Canary is a long-running catalog title at a stable slug.
       url: `${dizipalBaseUrl}/bolum/breaking-bad-1-sezon-1-bolum`,
       referer: dizipalReferer,
-      validator: (response, body) => {
+      validator: async (response, body, context) => {
         if (response.status !== 200) {
           return { ok: false, reason: `HTTP ${response.status}` };
         }
@@ -509,8 +607,10 @@ function buildProviderChecks(providers) {
         if (!cfg) {
           return { ok: false, reason: "episode page has no data-cfg — push OTA" };
         }
-        const ok = /^[a-f0-9]{16,128}$/i.test(cfg.trim());
-        return { ok, reason: ok ? "ok" : "data-cfg is no longer a hex token — push OTA" };
+        if (!/^[a-f0-9]{16,128}$/i.test(cfg.trim())) {
+          return { ok: false, reason: "data-cfg is no longer a hex token — push OTA" };
+        }
+        return checkDizipalPlayerConfig(response, cfg.trim(), context);
       },
     },
     // ─── Dizibal ─────────────────────────────────────────────────

@@ -6,7 +6,9 @@ Cloudflare Worker Cron monitor for streaming provider domains. It reads the curr
 
 - Dizipal home: `base_url/`
 - Dizipal search: `base_url/ajax-search?q=breaking%20bad`
-- Dizipal playback config: `base_url/bolum/breaking-bad-1-sezon-1-bolum`
+- Dizipal playback config: `base_url/bolum/breaking-bad-1-sezon-1-bolum`, then its `data-cfg`
+  POSTed to `base_url/ajax-player-config` on the page's session — the answer must yield an embed
+  URL (clear `config.v`, or `enc` decrypted as AES-256-CBC under `k1 XOR k2`)
 - Dizipal domain (DNS): does a newer `dizipalN` resolve? (DNS-over-HTTPS, 12 suffixes ahead)
 - Dizibal search: `base_url/ara/oneri?q=breaking%20bad` (JSON, lists `/series/breaking-bad`)
 - Dizibal player: `https://pilavyerplay.top/assets/js/s.php?s=yEILM0ysEtqZE5fmdNHeeg` with the
@@ -61,9 +63,9 @@ Do not add an HDFilm check here unless it stops challenging Worker egress — an
 
 ### Why `dizipal_playback` exists
 
-Search being healthy says nothing about whether a title can actually PLAY. In Sept 2026 Dizipal renamed its player-config endpoint: search kept answering 200, every title silently failed to produce a stream, and this monitor stayed green for the entire outage. The app reads the episode page's `data-cfg` attribute and POSTs it to `/ajax-player-config` in the same session, so the check asserts that attribute still has the known shape — since `dizipal2134.com` (2026-09-25) a 32-hex single-use token. It does not post it: that would spend a token per run for no extra signal. While a wall (DDoS-Guard, 2026-09-18 → 25) refuses the Worker, this check is `blocked` and the app's `player_resolve` telemetry is the playback signal.
+Search being healthy says nothing about whether a title can actually PLAY. In Sept 2026 Dizipal renamed its player-config endpoint: search kept answering 200, every title silently failed to produce a stream, and this monitor stayed green for the entire outage. The app reads the episode page's `data-cfg` attribute and POSTs it to `/ajax-player-config` in the same session, so the check asserts that attribute still has the known shape — since `dizipal2134.com` (2026-09-25) a 32-hex single-use token — and then does the same exchange (`checkDizipalPlayerConfig`): it POSTs the cfg with the page's `PHPSESSID` and requires an embed URL back. That POST used to be skipped as "no extra signal"; on 2026-09-27 the answer moved the embed URL into an encrypted `enc` block while `data-cfg` kept its shape, every Dizipal title stopped playing, and this check stayed green. The POST spends only the token its own page read minted. Failures name the broken step (endpoint 404, cfg refused, no embed URL, `enc` no longer decrypts) and say "push OTA"; a wall on the POST alone reads `blocked`. While a wall (DDoS-Guard, 2026-09-18 → 25) refuses the Worker, this check is `blocked` and the app's `player_resolve` telemetry is the playback signal.
 
-The canary is a long-running catalog title at a stable slug. `data-cfg` sits ~44 KiB into a ~95 KiB page, which is why `readLimitedText` reads up to 128 KiB. Verified reachable from Worker egress (`wrangler dev --remote`, 2026-09-02) — the attribute decoded. Since 2026-09-18 DDoS-Guard answers the Worker 403, so all Dizipal page checks read `blocked`; only `dizipal_domain` (DNS) is observable.
+The canary is a long-running catalog title at a stable slug. `data-cfg` sits ~44 KiB into a ~95 KiB page, which is why `readLimitedText` reads up to 128 KiB. Verified reachable from Worker egress (`wrangler dev --remote`, 2026-09-02) — the attribute decoded. From 2026-09-18 to 25 DDoS-Guard answered the Worker 403, so all Dizipal page checks read `blocked`. Re-verified on 2134 (`wrangler dev --remote`, 2026-09-27): page and POST both answer the Worker and the encrypted embed URL decrypts.
 
 An endpoint is marked down after `FAILURE_THRESHOLD` consecutive failures, default `3`.
 

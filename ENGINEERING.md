@@ -149,9 +149,10 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   same on device with the pure-TS `src/services/aesCbc.ts` (no native crypto, so OTA-safe).
   Until it shipped, every Dizipal title fell through to Dizibal — whose pilavyer streams carry
   a single audio track — so series like *Succession* lost the English audio Dizipal's
-  multi-audio HLS masters (`EXT-X-MEDIA TYPE=AUDIO`, Türkçe + English) offer. The monitor only
-  checks the `data-cfg` shape and cannot see this; a Dizipal outage with a healthy search is
-  worth a player-config POST by hand.
+  multi-audio HLS masters (`EXT-X-MEDIA TYPE=AUDIO`, Türkçe + English) offer. The monitor's
+  `dizipal_playback` check now does the same POST on the page's session and requires an embed
+  URL back (clear, or `enc` that decrypts), so a change here alerts "push OTA" instead of
+  staying green.
 - **`data-cfg` is a single-use token bound to the PHP session that rendered the page.** Posted
   from another session, or a second time, it answers `{"success":false,"message":"Invalid
   token"}`. The POST therefore rides the page read's session (the native cookie jar carries
