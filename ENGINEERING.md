@@ -89,11 +89,11 @@ Deploys happen **only when the owner approves them**. Typical sequence:
      Slugs match the directory names under `supabase/functions/`.
    - Database: `npx supabase db push` after `--dry-run` (see `docs/DATABASE.md`).
 
-### Current deployed state (2026-09-25)
+### Current deployed state (2026-09-27)
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `a74377d` → group `645e40af-2006-4d59-a993-8f4a1575692c` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `3c5199e` → group `ce7ffcde-8541-455f-a54a-3978f0cce3a8` |
 | `streambox-tmdb-proxy` | `060246a3` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records) |
 | `streambox-provider-monitor` | `23d5dfaf` (hourly cron; classic Dizipal checks, hex `data-cfg`) |
 | `streambox-dizipal-resolver` | deleted 2026-09-25 (`dizipal.streamboxapp.stream` gone with it) |
@@ -106,6 +106,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-09-27 | `3c5199e` | `ce7ffcde-8541-455f-a54a-3978f0cce3a8` | Dizipal's player-config now AES-encrypts the embed URL (`enc`, key k1 XOR k2); decrypted on device in pure TS, so Dizipal titles play again instead of falling to Dizibal's single-audio streams (*Succession* regains English audio) |
 | 2026-09-25 | `a74377d` | `645e40af-2006-4d59-a993-8f4a1575692c` | Dizipal back on the numbered chain (2134, classic site, single-use session-bound `data-cfg` → `/ajax-player-config`; clone path and resolver Worker removed); providers resolved in parallel by priority; Dizibal series player 10s timeout; per-host breakers; detail screen no longer awaits dead imdbapi.dev, movie details persisted, TMDB custom domain first, provider config cache-first |
 | 2026-09-24 (3) | `3de33f0` | `3a55ef0f-814a-4db6-9cb0-39f64f331a58` | Dizipal's resolver reads the watch page itself (the player host binds the token to whoever fetched it) and caches under the host's throttle |
 | 2026-09-24 (2) | `23c63b5` | `deb84267-3e6c-4600-b805-317bd015f69a` | Dizipal follows its rebuilt site (POST `/bg/searchcontent`, `/film/{slug}-film-izle`, `div[data-rm-k]`) and resolves the stream through `streambox-dizipal-resolver`, because its player host 403s our users for every dynamic path while serving the media fine |
