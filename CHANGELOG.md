@@ -4,6 +4,13 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-09-27
+
+- Fixed: Dizipal stopped playing anything, so titles it carries fell back to Dizibal — and
+  *Succession*, among many series, played only in Turkish. Dizipal now encrypts the address
+  of its player; StreamBox decrypts it on the phone, and Dizipal's streams (Turkish **and**
+  original English audio, switchable in the audio picker) play again.
+
 ## 2026-09-25
 
 - Fixed: Dizipal showed nothing. It moved back to its own site (dizipal2134.com), and

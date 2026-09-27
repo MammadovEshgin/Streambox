@@ -12,6 +12,7 @@
 
 import axios from "axios";
 import { getAllProviderConfigs, getProviderConfig, isProviderConfigReady, recordObservedBaseUrl, refreshProviderConfigs } from "./providerConfigService";
+import { aesCbcDecrypt } from "./aesCbc";
 import { caesarShift, decodeBase64Binary, reverseString, runRapidrameDecoder } from "./rapidrameScript";
 import { foldNonDecomposingLetters } from "../utils/textFolding";
 
@@ -2402,10 +2403,44 @@ type DizipalStreamResult = {
   embedUrl: string | null;
 };
 
+type DizipalEncryptedValue = { c?: unknown; iv?: unknown; k1?: unknown; k2?: unknown };
+
 type DizipalPlayerConfigResponse = {
   success?: boolean;
   config?: { v?: string; t?: string; p?: string };
+  enc?: DizipalEncryptedValue;
 };
+
+function base64ToBytes(value: unknown): Uint8Array | null {
+  if (typeof value !== "string" || !value) return null;
+  const binary = decodeBase64Binary(value);
+  return binary ? Uint8Array.from(binary, (char) => char.charCodeAt(0)) : null;
+}
+
+/**
+ * Since 2026-09-27 the player-config answer hides the embed URL: `config.v` is
+ * "" and `enc` carries it AES-256-CBC encrypted under the key k1 XOR k2 (the
+ * page's main.js decrypts it with CryptoJS and writes it back into
+ * `config.v`). Returns the plaintext, or null when `enc` is absent or does not
+ * decrypt.
+ */
+function decryptDizipalEnc(enc: DizipalEncryptedValue | undefined): string | null {
+  if (!enc || typeof enc !== "object") return null;
+  const k1 = base64ToBytes(enc.k1);
+  const k2 = base64ToBytes(enc.k2);
+  const iv = base64ToBytes(enc.iv);
+  const ciphertext = base64ToBytes(enc.c);
+  if (!k1 || !k2 || !iv || !ciphertext) return null;
+
+  const key = Uint8Array.from(k1.subarray(0, Math.min(k1.length, k2.length)), (byte, i) => byte ^ k2[i]);
+  const plain = aesCbcDecrypt(ciphertext, key, iv);
+  if (!plain?.length) return null;
+  try {
+    return decodeURIComponent(Array.from(plain, (byte) => `%${byte.toString(16).padStart(2, "0")}`).join(""));
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Dizipal's `data-cfg` attribute was, for a while, base64(url) of the exact
@@ -2562,6 +2597,7 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
     }
 
     const config = configResp?.config;
+    if (config && !config.v) config.v = decryptDizipalEnc(configResp?.enc) ?? undefined;
     if (!configResp?.success || !config?.v) return null;
 
     const streamType = (config.t ?? "").toLowerCase();
@@ -3255,6 +3291,7 @@ export const __internal = {
   isCloudflareChallengeStatus,
   checkVideoAvailability,
   decodeDizipalCfg,
+  decryptDizipalEnc,
   decodeRapidrameByInterpretingDcBody,
   decodeRapidrameValueCandidates,
   extractDizibalPlayerBox,

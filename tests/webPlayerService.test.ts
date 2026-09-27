@@ -1397,6 +1397,57 @@ test("Dizipal's single-use data-cfg: a rejected POST re-reads the page and names
   }
 });
 
+// Captured live from dizipal2134 on 2026-09-27 (Succession 1×1): `config.v`
+// is empty and the embed URL rides in `enc`, AES-256-CBC under k1 XOR k2.
+const LIVE_DIZIPAL_ENC = {
+  c: "o5irVx5+DwZCGGsM2PNbCsB0y4akHXfR2VfKykP4JjQ0/w/tb6ae+s9TdUbTixr0tlrHXteInorq/mM/oqtn5w==",
+  iv: "s8qim3i9nTgiiChU89Mavg==",
+  k1: "ZV4WZlCa1O3ApwvEZgGcd5TrXAgfDdaJAqyJjDw2oZc=",
+  k2: "H8RXmPx0JzZo4AyKInxzMeIigcVeL0p6bXevC5oyu4w=",
+};
+
+test("Dizipal's encrypted player-config value decrypts to the embed URL", () => {
+  assert.equal(__internal.decryptDizipalEnc(LIVE_DIZIPAL_ENC), "https://formationfeed.net/embed-zw4n95n4xu1q.html");
+  assert.equal(__internal.decryptDizipalEnc(undefined), null);
+  assert.equal(__internal.decryptDizipalEnc({ ...LIVE_DIZIPAL_ENC, k2: LIVE_DIZIPAL_ENC.k1 }), null);
+  assert.equal(__internal.decryptDizipalEnc({ c: 42, iv: "", k1: null, k2: {} } as any), null);
+});
+
+test("Dizipal plays a title whose player-config hides the embed URL in `enc`", async () => {
+  // Every Dizipal title answered this way from 2026-09-27, so the app dropped
+  // Dizipal entirely and *Succession* fell to Dizibal's single (Turkish) audio
+  // track — Dizipal's stream carries Turkish and English.
+  const originalGet = axios.get;
+  const originalPost = axios.post;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  const pageUrl = `${dizipalBase}/bolum/succession-1-sezon-1-bolum`;
+  axios.get = (async (url: string) => {
+    if (url === pageUrl) {
+      return { status: 200, data: `<div id="videoContainer" data-cfg="f4525d82bbbb3b46bf0931e2ca8e51de"></div>`, headers: {} };
+    }
+    if (url === "https://formationfeed.net/embed-zw4n95n4xu1q.html") {
+      return { status: 200, data: `jwplayer("vplayer").setup({ sources: [{file:"https://cdn.test/hls2/zw4n95n4xu1q_n/master.m3u8"}] });` };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+  axios.post = (async () => ({
+    status: 200,
+    data: { success: true, config: { v: "", t: "embed", p: "" }, enc: LIVE_DIZIPAL_ENC },
+  })) as typeof axios.post;
+
+  try {
+    const result = await __internal.fetchDizipalStreamUrl(pageUrl);
+    assert.equal(result?.embedUrl, "https://formationfeed.net/embed-zw4n95n4xu1q.html");
+    assert.equal(result?.stream?.streamUrl, "https://cdn.test/hls2/zw4n95n4xu1q_n/master.m3u8");
+  } finally {
+    axios.get = originalGet;
+    axios.post = originalPost;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
 test("an HDFilm Cloudflare challenge is retried instead of read as 'not on HDFilm'", async () => {
   // Live behaviour (2026-09-02): a /dizi/ URL answers 403 `cf-mitigated:
   // challenge` on the first request over a fresh connection and 200 on every
