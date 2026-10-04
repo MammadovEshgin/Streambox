@@ -8,6 +8,24 @@ const LAST_UPDATE_CHECK_KEY = "@streambox/live-ops/last-update-check-v1";
 // within minutes of being published, instead of waiting on a cold launch.
 export const APP_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
+export type RunningAppVersion = {
+  runtimeVersion: string;
+  /** First 8 characters of the EAS update id — what telemetry's updateId starts with. */
+  updateId: string | null;
+  /** When that update was published; null for the version built into the APK. */
+  publishedAt: Date | null;
+};
+
+/** What this launch is running, for the Settings footer. */
+export function getRunningAppVersion(): RunningAppVersion {
+  const isUpdate = Updates.isEnabled && !Updates.isEmbeddedLaunch && Boolean(Updates.updateId);
+  return {
+    runtimeVersion: Updates.runtimeVersion ?? "dev",
+    updateId: isUpdate ? Updates.updateId!.slice(0, 8) : null,
+    publishedAt: isUpdate ? Updates.createdAt ?? null : null,
+  };
+}
+
 export type PendingAppUpdate = {
   fetchedAt: number;
 };

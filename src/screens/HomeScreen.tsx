@@ -39,7 +39,7 @@ import {
 } from "../services/runtimeCache";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
-const HOME_DISCOVERY_CACHE_KEY = "home-discovery-v1";
+const HOME_DISCOVERY_CACHE_KEY = "home-discovery-v2";
 const HOME_DISCOVERY_CACHE_TTL_MS = 1000 * 60 * 10;
 const HOME_DISCOVERY_FIRST_LOAD_RETRY_DELAYS_MS = [1_500, 4_000, 8_000];
 

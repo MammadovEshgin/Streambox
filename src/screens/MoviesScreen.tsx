@@ -41,7 +41,7 @@ import {
 } from "../services/runtimeCache";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
-const MOVIES_HUB_CACHE_KEY = "movies-hub-v2";
+const MOVIES_HUB_CACHE_KEY = "movies-hub-v3";
 const MOVIES_HUB_CACHE_TTL_MS = 1000 * 60 * 20;
 const HUB_FIRST_LOAD_RETRY_DELAYS_MS = [1_500, 4_000, 8_000];
 

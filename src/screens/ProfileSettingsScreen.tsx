@@ -11,6 +11,7 @@ import styled, { useTheme } from "styled-components/native";
 import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { useAuth } from "../context/AuthContext";
+import { getRunningAppVersion } from "../services/appUpdateService";
 import { sendUserFeedback } from "../services/feedbackService";
 import {
   importLetterboxdArchive,
@@ -19,7 +20,7 @@ import {
 import type { ProfileStackParamList } from "../navigation/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
 import { THEME_OPTIONS, withAlpha } from "../theme/Theme";
-import type { AppLanguage } from "../localization/types";
+import { getLanguageLocale, type AppLanguage } from "../localization/types";
 
 type Props = NativeStackScreenProps<ProfileStackParamList, "ProfileSettings">;
 
@@ -297,6 +298,13 @@ const LogoutLabel = styled.Text`
   letter-spacing: 0.2px;
 `;
 
+const VersionFooter = styled.Text`
+  margin-top: 4px;
+  text-align: center;
+  font-size: 11px;
+  color: ${({ theme }) => theme.colors.textTertiary};
+`;
+
 const BottomSpacer = styled.View`
   height: 12px;
 `;
@@ -461,6 +469,20 @@ export function ProfileSettingsScreen({ navigation }: Props) {
       setImportProgress(null);
     }
   }, [notifyStorageChanged, t]);
+
+  const runningVersion = getRunningAppVersion();
+  const versionLabel = runningVersion.updateId
+    ? t("settings.versionUpdate", {
+        runtime: runningVersion.runtimeVersion,
+        id: runningVersion.updateId,
+        date: runningVersion.publishedAt?.toLocaleString(getLanguageLocale(language), {
+          day: "numeric",
+          month: "short",
+          hour: "2-digit",
+          minute: "2-digit",
+        }) ?? "",
+      })
+    : t("settings.versionEmbedded", { runtime: runningVersion.runtimeVersion });
 
   const languageOptions: Array<{ id: AppLanguage; labelKey: string; descriptionKey: string }> = [
     { id: "en", labelKey: "settings.enLabel", descriptionKey: "settings.enDescription" },
@@ -671,6 +693,7 @@ export function ProfileSettingsScreen({ navigation }: Props) {
           </Card>
         </Section>
 
+        <VersionFooter selectable>{versionLabel}</VersionFooter>
         <BottomSpacer />
       </Content>
 

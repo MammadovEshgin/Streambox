@@ -11,6 +11,14 @@ runtime **1.2.0**; update IDs and technical detail for each release are in
   of its player; StreamBox decrypts it on the phone, and Dizipal's streams (Turkish **and**
   original English audio, switchable in the audio picker) play again.
 
+## 2026-10-05 (2)
+
+- Fixed: after the previous update, the home screen and the Movies tab could still show films
+  that are only in cinemas, from lists saved before the update. Those saved lists are now
+  discarded.
+- Added: the bottom of Settings shows which app update you are running and when it was
+  published.
+
 ## 2026-10-05
 
 - Changed: Trending Movies, the hero slider, Top New Movies and Movie of the Day no longer

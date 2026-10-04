@@ -15,9 +15,18 @@ Use OTA for JavaScript, UI/UX, translations, non-native logic and bundled assets
 EAS build (and a `runtimeVersion` bump) for native libraries, Android permissions, icons,
 splash or any other native config.
 
-On device, `src/services/appUpdateService.ts` checks every 5 minutes and
-`src/components/common/LiveOpsHost.tsx` reloads silently on the next background → foreground
-transition, never during playback.
+On device, `src/services/appUpdateService.ts` checks on every cold start and then at most every
+5 minutes on foreground. A downloaded update shows a "Restart now / Later" card from
+`src/components/common/LiveOpsHost.tsx` (never during playback or over an announcement); if the
+user picks Later, the update loads on the next cold start.
+
+To see what a device runs, Settings shows `StreamBox <runtime> · update <first 8 of the update
+id> · <published>` at the bottom ("built-in version" for the APK's own bundle). The same id is
+`metadata->>'updateId'` on that device's `app_session_started` telemetry events.
+
+A list a screen saved under an older update is shown on the next cold start until its
+background refresh lands. When a change alters what a list may contain, bump that screen's
+cache key (`home-discovery-v*`, `movies-hub-v*`, `series-hub-v*`) so old lists are discarded.
 
 ## Announcements
 
