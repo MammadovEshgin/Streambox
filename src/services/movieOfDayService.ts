@@ -12,6 +12,7 @@ import {
   getSeriesSummary,
   getTopNewSeriesPage,
   getTrendingPage,
+  keepMoviesOnProviders,
   resolveTmdbMovieIdFromImdbId,
   resolveTmdbTvIdFromImdbId,
 } from "../api/tmdb";
@@ -490,12 +491,12 @@ async function pickPersonalizedMovie(
     candidates = mergeUniqueMedia(candidates, response.items);
   }
 
-  const filteredCandidates = candidates.filter(
+  const filteredCandidates = await keepMoviesOnProviders(candidates.filter(
     (candidate) =>
       typeof candidate.id === "number"
       && !excludedIds.has(candidate.id)
       && isDailyMediaItemEligible(candidate)
-  );
+  ));
 
   if (filteredCandidates.length === 0) {
     return null;

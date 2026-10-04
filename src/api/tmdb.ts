@@ -19,6 +19,12 @@ import {
 } from "../utils/searchRanking";
 import { PersistedLruMap } from "../services/persistedLruMap";
 import {
+  isPastCinemaWindow,
+  readReleaseWindow,
+  type ReleaseWindow,
+  type TmdbReleaseDatesResponse,
+} from "./releaseWindow";
+import {
   getImdbPopularMovies,
   getImdbTop250Movies,
   getImdbTop250Shows,
@@ -477,6 +483,14 @@ const movieDetailsCache = new PersistedLruMap<MovieDetails>({
   storageKey: "@streambox/api-cache-movie-details-v1",
   maxEntries: 80,
   ttlMs: 3 * 24 * 60 * 60 * 1000,
+});
+// Release dates change as TMDB learns a film's digital date, so each entry
+// carries its own fetch time and is refetched after a day.
+const RELEASE_WINDOW_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const releaseWindowCache = new PersistedLruMap<ReleaseWindow & { fetchedAt: number }>({
+  storageKey: "@streambox/api-cache-release-windows-v1",
+  maxEntries: CACHE_MAX.medium,
+  ttlMs: WEEK_MS,
 });
 const seriesDetailsCache = new LruMap<string, SeriesDetails>(CACHE_MAX.detail);
 const movieExternalRatingsCache = new LruMap<string, ExternalRatings>(CACHE_MAX.rating);
@@ -1276,9 +1290,55 @@ async function enrichItemsWithImdbRatings(items: MediaItem[]): Promise<MediaItem
   });
 }
 
+async function getReleaseWindow(movieId: number | string): Promise<ReleaseWindow | null> {
+  const key = String(movieId);
+  const cached = releaseWindowCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < RELEASE_WINDOW_MAX_AGE_MS) return cached;
+
+  try {
+    const { data } = await tmdbClient.get<TmdbReleaseDatesResponse>(`/movie/${key}/release_dates`);
+    const window = readReleaseWindow(data);
+    releaseWindowCache.set(key, { ...window, fetchedAt: Date.now() });
+    return window;
+  } catch {
+    return cached ?? null;
+  }
+}
+
+/**
+ * Drops films still in their cinema-only window (see releaseWindow.ts), which
+ * no provider carries yet — showing them on a discovery rail only led to "Not
+ * available". Films older than last year skip the lookup, and a failed lookup
+ * keeps the film rather than emptying a rail.
+ */
+export async function keepMoviesOnProviders<T extends MediaItem>(items: T[]): Promise<T[]> {
+  const oldestCheckedYear = new Date().getFullYear() - 1;
+  const verdicts = await mapWithConcurrency(items, LIST_ENRICHMENT_CONCURRENCY, async (item) => {
+    if (item.mediaType !== "movie") return true;
+    const year = Number.parseInt(item.year, 10);
+    if (Number.isFinite(year) && year < oldestCheckedYear) return true;
+    const window = await getReleaseWindow(item.id);
+    return window === null || isPastCinemaWindow(window);
+  });
+  return items.filter((_, index) => verdicts[index]);
+}
+
+// Hiding films still in cinemas can halve the first trending page; the home
+// rail tops itself up from page 2 rather than looking empty.
+const MIN_TRENDING_RAIL_ITEMS = 12;
+
 export async function getTrending(type: MediaType): Promise<MediaItem[]> {
   const response = await getTrendingPage(type, 1);
-  return response.items;
+  if (response.items.length >= MIN_TRENDING_RAIL_ITEMS || response.totalPages < 2) {
+    return response.items;
+  }
+  try {
+    const next = await getTrendingPage(type, 2);
+    const seen = new Set(response.items.map((item) => item.id));
+    return [...response.items, ...next.items.filter((item) => !seen.has(item.id))];
+  } catch {
+    return response.items;
+  }
 }
 
 export async function getTrendingPage(type: MediaType, page: number): Promise<PaginatedMediaResponse> {
@@ -1288,11 +1348,12 @@ export async function getTrendingPage(type: MediaType, page: number): Promise<Pa
       page
     }
   });
+  const candidates = data.results
+    .filter((record) => isAllowedForTrendingFeedRecord(record, type))
+    .map((record) => normalizeMedia(record, type))
+    .filter(isQualityItem);
   const items = await enrichItemsWithImdbRatings(
-    data.results
-      .filter((record) => isAllowedForTrendingFeedRecord(record, type))
-      .map((record) => normalizeMedia(record, type))
-      .filter(isQualityItem)
+    type === "movie" ? await keepMoviesOnProviders(candidates) : candidates
   );
   return {
     items,
@@ -1454,7 +1515,7 @@ export async function getTopNewMoviesPage(page: number): Promise<PaginatedMediaR
   );
 
   const filtered = verdicts.filter((item): item is MediaItem => item !== null);
-  const items = await enrichItemsWithImdbRatings(filtered);
+  const items = await enrichItemsWithImdbRatings(await keepMoviesOnProviders(filtered));
   return {
     items,
     page: data.page,
@@ -1648,8 +1709,9 @@ export async function getPopular(): Promise<MediaItem[]> {
       .filter(isQualityItem)
       .filter((item) => item.backdropPath);
 
-    if (imdbItems.length >= MIN_IMDB_POPULAR_SPOTLIGHT_ITEMS) {
-      return imdbItems;
+    const onProviders = await keepMoviesOnProviders(imdbItems);
+    if (onProviders.length >= MIN_IMDB_POPULAR_SPOTLIGHT_ITEMS) {
+      return onProviders;
     }
   } catch {
     // Keep the hero resilient if IMDb blocks or changes its chart markup.
@@ -1660,7 +1722,7 @@ export async function getPopular(): Promise<MediaItem[]> {
     .filter((record) => isAllowedForTrendingFeedRecord(record, "movie"))
     .map((record) => normalizeMedia(record, "movie"))
     .filter(isQualityItem);
-  return enrichItemsWithImdbRatings(fallbackItems);
+  return enrichItemsWithImdbRatings(await keepMoviesOnProviders(fallbackItems));
 }
 
 export async function getMovieDetails(id: string): Promise<MovieDetails> {

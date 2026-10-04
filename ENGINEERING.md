@@ -233,6 +233,14 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   stall watchdog is 15s (`minBufferForPlayback: 4` + imagestoo's per-segment hostnames made cold
   starts outrun 8s). A resolve pass in which a request got no answer (timeout, 5xx, 403/429 —
   never 404) is retried; a clean miss still answers after one pass.
+- **Discovery rails hide films still in cinemas** (`src/api/releaseWindow.ts`). No provider
+  carries a film until it is released online: TMDB `release_dates` type 4/5/6 (digital,
+  physical, TV). A film shows once its earliest home release in any country is past, or 90
+  days after its earliest cinema release if TMDB has no home date. Applied to Trending
+  Movies, the hero, Top New Movies and Movie of the Day; search, detail pages and journeys are
+  unfiltered. Verified 2026-10-05: every trending film with a past home date played, every
+  cinema-only one was missing. Films older than last year skip the lookup; a failed lookup
+  keeps the film.
 - **A provider alert that names a symptom the site does not have is a monitor bug until
   proven otherwise.** Re-probe from Worker egress (`npx wrangler dev --remote`) first.
 - **A scoring heuristic must never outrank the literal thing the user typed** unless it has

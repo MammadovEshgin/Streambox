@@ -11,6 +11,16 @@ runtime **1.2.0**; update IDs and technical detail for each release are in
   of its player; StreamBox decrypts it on the phone, and Dizipal's streams (Turkish **and**
   original English audio, switchable in the audio picker) play again.
 
+## 2026-10-05
+
+- Changed: Trending Movies, the hero slider, Top New Movies and Movie of the Day no longer
+  show films that are still only in cinemas, since they can't be played yet. A film appears
+  once it is released online (on a streaming service, or for digital purchase), or three
+  months after its cinema release. Films that premiere on Netflix, Apple TV and similar
+  services appear right away.
+- Fixed: Dizipal's new address (dizipal2135.com) is now built in, so a fresh install reaches
+  it directly.
+
 ## 2026-09-25
 
 - Fixed: Dizipal showed nothing. It moved back to its own site (dizipal2134.com), and
