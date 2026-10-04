@@ -93,7 +93,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `129aa20` → group `5b285890-94f2-4874-9497-ce872cbc6ef7` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `83e0f44` → group `27c0d390-1afb-4e61-b579-53828f1a4de1` |
 | `streambox-tmdb-proxy` | `060246a3` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records) |
 | `streambox-provider-monitor` | `3e26ffd4` (hourly cron; classic Dizipal checks, hex `data-cfg` + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `streambox-dizipal-resolver` | deleted 2026-09-25 (`dizipal.streamboxapp.stream` gone with it) |
@@ -106,6 +106,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-10-05 (2) | `83e0f44` | `27c0d390-1afb-4e61-b579-53828f1a4de1` | Home / Movies hub cache keys bumped so lists saved before the cinema filter are discarded; Settings footer shows the running update id and publish time |
 | 2026-10-05 | `129aa20` | `5b285890-94f2-4874-9497-ce872cbc6ef7` | Discovery rails hide films still in cinemas (TMDB `release_dates`: shown once a digital/physical/TV release is past, or 90 days after cinema release); Trending rail tops up from page 2; Dizipal floor 2135 |
 | 2026-09-27 | `3c5199e` | `ce7ffcde-8541-455f-a54a-3978f0cce3a8` | Dizipal's player-config now AES-encrypts the embed URL (`enc`, key k1 XOR k2); decrypted on device in pure TS, so Dizipal titles play again instead of falling to Dizibal's single-audio streams (*Succession* regains English audio) |
 | 2026-09-25 | `a74377d` | `645e40af-2006-4d59-a993-8f4a1575692c` | Dizipal back on the numbered chain (2134, classic site, single-use session-bound `data-cfg` → `/ajax-player-config`; clone path and resolver Worker removed); providers resolved in parallel by priority; Dizibal series player 10s timeout; per-host breakers; detail screen no longer awaits dead imdbapi.dev, movie details persisted, TMDB custom domain first, provider config cache-first |
