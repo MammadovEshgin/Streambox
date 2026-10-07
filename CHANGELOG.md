@@ -4,6 +4,11 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-10-08
+
+- Fixed: Dizipal moved twice in three days (now dizipal2137.com). Its new address is built in,
+  so titles start without detouring through the old ones.
+
 ## 2026-09-27
 
 - Fixed: Dizipal stopped playing anything, so titles it carries fell back to Dizibal — and

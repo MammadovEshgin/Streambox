@@ -118,5 +118,5 @@ test("the shipped Dizipal fallback is not behind the last observed live domain",
   assert.notEqual(floor, null);
   const shipped = parseDizipalSuffix(floor!.baseUrl);
   assert.notEqual(shipped, null);
-  assert.equal(shipped! >= 2135, true, `shipped Dizipal fallback is ${shipped}, last verified live was 2135`);
+  assert.equal(shipped! >= 2137, true, `shipped Dizipal fallback is ${shipped}, last verified live was 2137`);
 });
