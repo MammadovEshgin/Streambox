@@ -93,7 +93,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `30bca9b` → group `47ebebd2-a0af-423c-8823-d9ac978f2cdf` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `a67b739` → group `2e7cddff-f3f8-4fc8-bfce-fd5c99a83643` |
 | `streambox-tmdb-proxy` | `060246a3` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records) |
 | `streambox-provider-monitor` | `3e26ffd4` (hourly cron; classic Dizipal checks, hex `data-cfg` + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `streambox-dizipal-resolver` | deleted 2026-09-25 (`dizipal.streamboxapp.stream` gone with it) |
@@ -106,6 +106,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-10-16 | `a67b739` | `2e7cddff-f3f8-4fc8-bfce-fd5c99a83643` | Dizipal watch pages fetched past the 429 Turnstile gate (`//bolum/…`, crawler-agent fallback); `CachedRemoteImage` retries failed loads (2s/5s/12s) and reports `image_load_failed`; Dizipal floor 2137 → 2140 |
 | 2026-10-08 | `30bca9b` | `47ebebd2-a0af-423c-8823-d9ac978f2cdf` | Dizipal floor 2135 → 2137 |
 | 2026-10-05 (2) | `83e0f44` | `27c0d390-1afb-4e61-b579-53828f1a4de1` | Home / Movies hub cache keys bumped so lists saved before the cinema filter are discarded; Settings footer shows the running update id and publish time |
 | 2026-10-05 | `129aa20` | `5b285890-94f2-4874-9497-ce872cbc6ef7` | Discovery rails hide films still in cinemas (TMDB `release_dates`: shown once a digital/physical/TV release is past, or 90 days after cinema release); Trending rail tops up from page 2; Dizipal floor 2135 |
