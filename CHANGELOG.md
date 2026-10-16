@@ -4,6 +4,15 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-10-16
+
+- Fixed: nothing played from Dizipal since 13 October, after it put a verification page in
+  front of every film and episode. Titles only Dizipal carries (e.g. *Attack on Titan*) showed
+  "Not available", and *Succession* fell back to Turkish-only audio. Dizipal plays again, from
+  its new address (dizipal2140.com).
+- Fixed: a poster that failed to load on a weak connection stayed blank until the screen was
+  reopened or the network changed. It is now retried automatically a few seconds later.
+
 ## 2026-10-08
 
 - Fixed: Dizipal moved twice in three days (now dizipal2137.com). Its new address is built in,

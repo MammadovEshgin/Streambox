@@ -2507,19 +2507,56 @@ function readDizipalSessionCookie(headers: unknown): string | null {
 
 type DizipalPlayerPage = { html: string; sessionCookie: string | null };
 
+/**
+ * Since 2026-10-13 Dizipal answers every `/film/` and `/bolum/` page with a 429
+ * Turnstile gate ("Doğrulama gerekiyor", posting to `/_ts_verify`), so no cfg
+ * and no playback: devices fell through to Dizibal or "Not available". The
+ * series pages, search and the player-config POST are not gated.
+ *
+ * Two doors stay open, checked 2026-10-16. The gate matches the path
+ * literally, so the same page asked for as `//bolum/…` renders normally. And
+ * search-engine crawlers are let through for SEO. Either render's cfg is
+ * accepted by the POST from the app's own user agent. The doubled slash goes
+ * first; the crawler agent covers the day the site closes that one.
+ */
+const DIZIPAL_CRAWLER_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
+
+function isDizipalGatePage(status: number, html: string): boolean {
+  return status === 429 || html.includes("/_ts_verify");
+}
+
+function withDoubledLeadingSlash(pageUrl: string): string {
+  const url = new URL(pageUrl);
+  return `${url.origin}/${url.pathname}${url.search}`;
+}
+
 async function fetchDizipalPlayerPage(pageUrl: string): Promise<DizipalPlayerPage | null> {
-  try {
-    const response = await dizipalGet<string>(pageUrl, {
-      timeout: 7000,
-      withCredentials: true,
-      headers: { "User-Agent": UA, Accept: "text/html", Referer: getDizipalReferer() },
-    });
-    recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
-    if (typeof response.data !== "string") return null;
-    return { html: response.data, sessionCookie: readDizipalSessionCookie(response.headers) };
-  } catch {
-    return null;
+  const attempts = [
+    { url: withDoubledLeadingSlash(pageUrl), userAgent: UA },
+    { url: pageUrl, userAgent: DIZIPAL_CRAWLER_UA },
+  ];
+  for (const { url, userAgent } of attempts) {
+    try {
+      const response = await dizipalGet<string>(url, {
+        timeout: 7000,
+        withCredentials: true,
+        // The gate is an answer, not a failure: let it through to be recognised.
+        validateStatus: (status) => (status >= 200 && status < 300) || status === 429,
+        headers: { "User-Agent": userAgent, Accept: "text/html", Referer: getDizipalReferer() },
+      });
+      if (typeof response.data !== "string") return null;
+      if (isDizipalGatePage(response.status, response.data)) {
+        debugLog(`[WebPlayer] Dizipal verification gate on ${url}`);
+        continue;
+      }
+      recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
+      return { html: response.data, sessionCookie: readDizipalSessionCookie(response.headers) };
+    } catch {
+      // A 404 for the doubled slash, say; the breaker stops a dead host.
+      continue;
+    }
   }
+  return null;
 }
 
 /**

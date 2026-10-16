@@ -1,6 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image as ExpoImage } from "expo-image";
 
+import { trackEvent } from "./telemetryService";
+
+export { getRemoteImageRetryDelay } from "./remoteImageRetry";
+
 const LEGACY_IMAGE_CACHE_MIGRATION_KEY = "@streambox/legacy-image-cache-migration-v1";
 const PREFETCH_BATCH_SIZE = 4;
 
@@ -22,6 +26,22 @@ export function createRemoteImageSource(uri: string) {
     uri,
     cacheKey: isHttpUri(uri) ? normalizeRemoteImageCacheKey(uri) : uri,
   };
+}
+
+/** Image failures reported per app session, so a dead network can't flood telemetry. */
+const MAX_IMAGE_FAILURE_REPORTS = 12;
+let imageFailureReports = 0;
+
+export function reportRemoteImageFailure(uri: string, attempt: number, error: string, final: boolean) {
+  if (imageFailureReports >= MAX_IMAGE_FAILURE_REPORTS) return;
+  imageFailureReports += 1;
+  let host = "invalid";
+  try {
+    host = new URL(uri).host;
+  } catch {
+    // keep "invalid"
+  }
+  trackEvent("image_load_failed", "network", { host, attempt, final, error }, final ? "warning" : "info");
 }
 
 export async function prefetchRemoteImages(

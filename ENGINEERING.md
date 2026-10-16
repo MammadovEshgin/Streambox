@@ -162,6 +162,14 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   `PHPSESSID`; no `/ajax-token` mint is needed), and a rejected attempt re-reads the page and
   retries once with the session named explicitly (`fetchDizipalStreamUrl`). Never cache the
   page HTML for playback.
+- **Watch pages sit behind a verification gate (2026-10-13 onward).** Every `/film/` and
+  `/bolum/` page answers 429 with a Turnstile form posting to `/_ts_verify`; series pages,
+  search and `/ajax-player-config` are not gated. The gate matches the path literally, so
+  `fetchDizipalPlayerPage` asks for `//bolum/…` first, and falls back to a search-engine
+  crawler user agent (allowlisted for SEO). Either render's cfg is accepted by the POST from
+  the app's own user agent. A gated reply is treated as an answer, not an outage. If both
+  doors close, Dizipal titles fall through to Dizibal again: `player_resolve` shows no
+  `dizipal` rows.
 - Embeds come from several hosts. `formationfeed.net` serves the m3u8 inline;
   `imagestoo.com` (`/player/index.php?do=getVideo`) was **down for everyone** on 2026-09-25
   (522 from Cloudflare, TLS stalls from Azerbaijani ISPs), so the titles on it have no Dizipal
@@ -174,7 +182,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   the real site came back. **Check the old domains' redirect target before trusting a higher
   `dizipalN.com`**: the 22xx band is the clone, and 2200, 2203-2205, 2207 and 2300 are SEO
   squatters serving "güncel adres" landing pages.
-- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2137). Hops are
+- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2140). Hops are
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal
   rotates, and update the Supabase row with the Telegram bot (`/set_dizipal <url>`). The floor

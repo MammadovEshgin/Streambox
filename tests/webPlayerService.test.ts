@@ -1357,7 +1357,7 @@ test("Dizipal's single-use data-cfg: a rejected POST re-reads the page and names
   const pageUrl = `${dizipalBase}/film/the-dark-knight`;
   let renders = 0;
   axios.get = (async (url: string) => {
-    if (url === pageUrl) {
+    if (url === `${dizipalBase}//film/the-dark-knight`) {
       renders += 1;
       return {
         status: 200,
@@ -1424,7 +1424,7 @@ test("Dizipal plays a title whose player-config hides the embed URL in `enc`", a
 
   const pageUrl = `${dizipalBase}/bolum/succession-1-sezon-1-bolum`;
   axios.get = (async (url: string) => {
-    if (url === pageUrl) {
+    if (url === `${dizipalBase}//bolum/succession-1-sezon-1-bolum`) {
       return { status: 200, data: `<div id="videoContainer" data-cfg="f4525d82bbbb3b46bf0931e2ca8e51de"></div>`, headers: {} };
     }
     if (url === "https://formationfeed.net/embed-zw4n95n4xu1q.html") {
@@ -1441,6 +1441,52 @@ test("Dizipal plays a title whose player-config hides the embed URL in `enc`", a
     const result = await __internal.fetchDizipalStreamUrl(pageUrl);
     assert.equal(result?.embedUrl, "https://formationfeed.net/embed-zw4n95n4xu1q.html");
     assert.equal(result?.stream?.streamUrl, "https://cdn.test/hls2/zw4n95n4xu1q_n/master.m3u8");
+  } finally {
+    axios.get = originalGet;
+    axios.post = originalPost;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Dizipal's verification gate: the doubled slash first, then the crawler agent", async () => {
+  // From 2026-10-13 every /film/ and /bolum/ page answered 429 with a
+  // Turnstile form posting to /_ts_verify, and nothing from Dizipal played.
+  const originalGet = axios.get;
+  const originalPost = axios.post;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+
+  const pageUrl = `${dizipalBase}/bolum/attack-on-titan-1-sezon-1-bolum`;
+  const gate = '<form id="ts-form" method="post" action="/_ts_verify"></form>';
+  const requests: Array<[string, string]> = [];
+  axios.get = (async (url: string, config: any) => {
+    const userAgent = String(config?.headers?.["User-Agent"] ?? "");
+    requests.push([url, /Googlebot/.test(userAgent) ? "crawler" : "app"]);
+    if (url === pageUrl && /Googlebot/.test(userAgent)) {
+      return { status: 200, data: '<div id="videoContainer" data-cfg="0123abcd"></div>', headers: {} };
+    }
+    if (url.startsWith(dizipalBase)) {
+      if (config?.validateStatus?.(429)) return { status: 429, data: gate, headers: {} };
+      throw Object.assign(new Error("429"), { response: { status: 429 } });
+    }
+    if (url === "https://embed.test/embed-aot.html") {
+      return { status: 200, data: `jwplayer("vplayer").setup({ sources: [{file:"https://cdn.test/hls/aot/master.m3u8"}] });` };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  }) as typeof axios.get;
+  axios.post = (async () => ({
+    status: 200,
+    data: { success: true, config: { v: "https://embed.test/embed-aot.html", t: "embed", p: "" } },
+  })) as typeof axios.post;
+
+  try {
+    const result = await __internal.fetchDizipalStreamUrl(pageUrl);
+    assert.equal(result?.stream?.streamUrl, "https://cdn.test/hls/aot/master.m3u8");
+    assert.deepEqual(requests.slice(0, 2), [
+      [`${dizipalBase}//bolum/attack-on-titan-1-sezon-1-bolum`, "app"],
+      [pageUrl, "crawler"],
+    ]);
+    assert.equal(__internal.isProviderSkipped("Dizipal"), false, "the gate is an answer, not an outage");
   } finally {
     axios.get = originalGet;
     axios.post = originalPost;

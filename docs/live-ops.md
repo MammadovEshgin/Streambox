@@ -174,4 +174,17 @@ order by occurred_at desc
 limit 50;
 ```
 
+Remote images (posters, backdrops) that failed to load, with the host and the platform's
+error. `CachedRemoteImage` retries a failed load three times (2s, 5s, 12s); `final` marks the
+last attempt. At most 12 reports per app session:
+
+```sql
+select occurred_at::date as day, metadata->>'host' as host, metadata->>'final' as final,
+       metadata->>'error' as error, count(*)
+from public.app_telemetry_events
+where event_name = 'image_load_failed' and occurred_at > now() - interval '7 days'
+group by 1, 2, 3, 4
+order by 1 desc, 5 desc;
+```
+
 Telemetry and audit logs are pruned after 90 days by the `streambox-event-log-cleanup` cron.
