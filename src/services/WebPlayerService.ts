@@ -1282,24 +1282,18 @@ async function probeDizipalDirectSlug(
   for (const slug of slugs) {
     const url = `${base}/${kind}/${slug}`;
     try {
-      const response = await dizipalGet<string>(url, {
-        timeout: 6000,
-        // No explicit maxRedirects: Dizipal's rotation means a base that has
-        // fallen a few days behind is a 10-20 hop 301 chain, and a cap of 5
-        // turned that into a hard ERR_FR_TOO_MANY_REDIRECTS — this probe was
-        // the one Dizipal call that failed outright on a stale base while the
-        // others merely got slow. Axios' default 21 matches them.
-        headers: { "User-Agent": UA, Referer: getDizipalReferer() },
-        validateStatus: (status) => status === 200,
-      });
-      recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
+      // A film page is a watch page, behind the verification gate since
+      // 2026-10-13, so it is read the way playback reads it. A missing page is
+      // a 404 there, which reads as null.
+      const page = await fetchDizipalPlayerPage(url);
+      if (!page) continue;
 
       if (!isDizipalUrlTitleCompatible(url, title, originalTitle)) continue;
 
       const isYearVerifiedSlug = Boolean(year) && slug.endsWith(`-${year}`);
       const pageYear = isYearVerifiedSlug
         ? year ?? null
-        : extractDizipalPageYear(typeof response.data === "string" ? response.data : "");
+        : extractDizipalPageYear(page.html);
       if (isYearIncompatible(pageYear, year)) {
         debugLog(
           `[WebPlayer] Dizipal direct-slug ${url} is year ${pageYear}, wanted ${year} — rejected`
@@ -1326,9 +1320,42 @@ async function probeDizipalDirectSlug(
   return null;
 }
 
+/**
+ * Dizipal's `/ajax-search` answers an EMPTY body to any query with a letter
+ * outside ASCII (checked 2026-10-16: "Çöl Gezegeni" → nothing, "Gezegeni" →
+ * Dune: Çöl Gezegeni Bölüm İki), so every Turkish-title search came back
+ * empty, and Dune: Part Two, listed only under its Turkish title, could not
+ * be found. Its matching is a substring match on the listed title, so
+ * folding "Çöl" to "Col" does not help. Ask for the longest run of words the
+ * query already spells in ASCII instead; scoring then ranks the results
+ * against the full title. Null when no run is worth asking for.
+ */
+const NOT_PRINTABLE_ASCII = /[^ -~]/;
+
+function toDizipalSearchQuery(query: string): string | null {
+  if (!NOT_PRINTABLE_ASCII.test(query)) return query;
+  let best = "";
+  let run: string[] = [];
+  const flush = () => {
+    const phrase = run.join(" ").replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, "");
+    if (phrase.replace(/[^a-z0-9]/gi, "").length > best.replace(/[^a-z0-9]/gi, "").length) best = phrase;
+    run = [];
+  };
+  for (const word of query.split(/\s+/)) {
+    if (word && !NOT_PRINTABLE_ASCII.test(word)) run.push(word);
+    else flush();
+  }
+  flush();
+  return best.replace(/[^a-z]/gi, "").length >= 3 ? best : null;
+}
+
 async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: string | null, originalTitle?: string): Promise<MatchResult | null> {
   const safeOriginalTitle = isAlternateTitleSafeForDizipal(title, originalTitle) ? originalTitle : undefined;
-  const { queries, bareTitleCount } = generateSearchQueries(title, year, safeOriginalTitle);
+  const generated = generateSearchQueries(title, year, safeOriginalTitle);
+  const queries = Array.from(
+    new Set(generated.queries.map(toDizipalSearchQuery).filter((query): query is string => Boolean(query)))
+  );
+  const { bareTitleCount } = generated;
   const allResults = new Map<string, SearchResult>();
 
   for (let qi = 0; qi < queries.length; qi++) {
@@ -3347,6 +3374,7 @@ export const __internal = {
   inspectRapidramePlaylist,
   isAlternateTitleSafeForDizipal,
   isDizipalUrlTitleCompatible,
+  toDizipalSearchQuery,
   probeDizipalDirectSlug,
   rankDizibalSuggestions,
   readDizibalPageNames,

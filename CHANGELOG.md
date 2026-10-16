@@ -4,6 +4,12 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-10-16 (2)
+
+- Fixed: films Dizipal lists only under their Turkish title (e.g. *Dune: Part Two*, listed as
+  "Dune: Çöl Gezegeni Bölüm İki") were not found, because Dizipal's search fails on Turkish
+  letters. They play again.
+
 ## 2026-10-16
 
 - Fixed: nothing played from Dizipal since 13 October, after it put a verification page in

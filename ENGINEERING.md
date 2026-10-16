@@ -170,7 +170,11 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   crawler user agent (allowlisted for SEO). Either render's cfg is accepted by the POST from
   the app's own user agent. A gated reply is treated as an answer, not an outage. If both
   doors close, Dizipal titles fall through to Dizibal again: `player_resolve` shows no
-  `dizipal` rows.
+  `dizipal` rows. The direct-slug probe (`/film/{slug}`) reads through the same fetch.
+- **Dizipal's search answers an empty body to any non-ASCII query** (2026-10-16: "Çöl
+  Gezegeni" → nothing). It matches by substring on the listed (often Turkish) title, so
+  `toDizipalSearchQuery` sends the longest run of words the query already spells in ASCII
+  ("Dune: Çöl Gezegeni - Bölüm İki" → "Gezegeni"); scoring ranks against the full title.
 - Embeds come from several hosts. `formationfeed.net` serves the m3u8 inline;
   `imagestoo.com` (`/player/index.php?do=getVideo`) was **down for everyone** on 2026-09-25
   (522 from Cloudflare, TLS stalls from Azerbaijani ISPs), so the titles on it have no Dizipal

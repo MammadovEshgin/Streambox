@@ -1111,7 +1111,7 @@ test("Dizipal direct-slug probe rejects the wrong-year movie behind the plain sl
 
   axios.get = (async (url: string) => {
     if (url.endsWith("/film/dune-2021")) {
-      throw new Error("404"); // Dizipal has no year-suffixed page for 2021 here
+      throw Object.assign(new Error("404"), { response: { status: 404 } }); // Dizipal has no year-suffixed page for 2021 here
     }
     if (url.endsWith("/film/dune")) {
       return { data: "<title>Dune izle (1984) - dizipal</title><h1>Dune</h1>" };
@@ -1160,7 +1160,7 @@ test("Dizipal direct-slug probe accepts the plain movie slug when the page year 
 
   axios.get = (async (url: string) => {
     if (url.endsWith("/film/dune-2021")) {
-      throw new Error("404");
+      throw Object.assign(new Error("404"), { response: { status: 404 } });
     }
     if (url.endsWith("/film/dune")) {
       return { data: '<span class="year">2021</span><h1>Dune</h1>' };
@@ -1189,7 +1189,7 @@ test("Dizipal direct-slug probe keeps TV fail-open on an unreadable page year (t
 
   axios.get = (async (url: string) => {
     if (url.endsWith("/dizi/from-2022")) {
-      throw new Error("404");
+      throw Object.assign(new Error("404"), { response: { status: 404 } });
     }
     if (url.endsWith("/dizi/from")) {
       return { data: "<h1>From</h1><div>1. Sezon</div>" };
@@ -1216,7 +1216,7 @@ test("Dizipal direct-slug probe rejects a wrong-year movie page even when a movi
 
   axios.get = (async (url: string) => {
     if (url.endsWith("/film/dune-2021")) {
-      throw new Error("404");
+      throw Object.assign(new Error("404"), { response: { status: 404 } });
     }
     if (url.endsWith("/film/dune")) {
       return { data: "<h1>Dune</h1>" }; // no year anywhere
@@ -1446,6 +1446,16 @@ test("Dizipal plays a title whose player-config hides the embed URL in `enc`", a
     axios.post = originalPost;
     (globalThis as any).__DEV__ = originalDev;
   }
+});
+
+test("Dizipal is searched only in ASCII, which its search can answer", () => {
+  // 2026-10-16: /ajax-search answers an empty body to "Çöl Gezegeni" and the
+  // film to "Gezegeni", so Dune: Part Two (listed only as "Dune: Çöl Gezegeni
+  // Bölüm İki") was never found.
+  assert.equal(__internal.toDizipalSearchQuery("Dune: Part Two 2024"), "Dune: Part Two 2024");
+  assert.equal(__internal.toDizipalSearchQuery("Dune: Çöl Gezegeni - Bölüm İki"), "Gezegeni");
+  assert.equal(__internal.toDizipalSearchQuery("Harry Potter ve Ölüm Yadigârları: Bölüm 2"), "Harry Potter ve");
+  assert.equal(__internal.toDizipalSearchQuery("Çöl İki"), null);
 });
 
 test("Dizipal's verification gate: the doubled slash first, then the crawler agent", async () => {
