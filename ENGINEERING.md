@@ -93,7 +93,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `818e38f` → group `d95b3381-efba-4204-8b71-b727e3d280cc` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `e4d54a7` → group `fe986646-7367-428c-b85a-a3195001b143` |
 | `streambox-tmdb-proxy` | `9bb542c0` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records; `/t/p/…` image proxy, 30-day edge TTL) |
 | `streambox-provider-monitor` | `3e26ffd4` (hourly cron; classic Dizipal checks, hex `data-cfg` + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `streambox-dizipal-resolver` | deleted 2026-09-25 (`dizipal.streamboxapp.stream` gone with it) |
@@ -106,6 +106,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-10-18 | `e4d54a7` | `fe986646-7367-428c-b85a-a3195001b143` | TMDB images load from `tmdb.streamboxapp.stream/t/p/…` (image.tmdb.org's Azerbaijani BunnyCDN edges refuse connections); a failed image retries on the other host at once; one disk-cache key for both hosts |
 | 2026-10-16 (2) | `818e38f` | `d95b3381-efba-4204-8b71-b727e3d280cc` | Dizipal search sends ASCII-only queries (its search returns nothing for non-ASCII; Dune: Part Two is listed under its Turkish title); direct-slug probe reads through the gate-safe fetch |
 | 2026-10-16 | `a67b739` | `2e7cddff-f3f8-4fc8-bfce-fd5c99a83643` | Dizipal watch pages fetched past the 429 Turnstile gate (`//bolum/…`, crawler-agent fallback); `CachedRemoteImage` retries failed loads (2s/5s/12s) and reports `image_load_failed`; Dizipal floor 2137 → 2140 |
 | 2026-10-08 | `30bca9b` | `47ebebd2-a0af-423c-8823-d9ac978f2cdf` | Dizipal floor 2135 → 2137 |
