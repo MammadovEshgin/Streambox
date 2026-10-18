@@ -4,6 +4,13 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-10-18
+
+- Fixed: posters in search (and across the app) took up to ten seconds to appear. The image
+  servers your network was being sent to stopped accepting connections, so each poster
+  waited for a timeout before loading. Posters now come through StreamBox's own server
+  and appear right away; TMDB's servers are kept as a fallback.
+
 ## 2026-10-16 (2)
 
 - Fixed: films Dizipal lists only under their Turkish title (e.g. *Dune: Part Two*, listed as

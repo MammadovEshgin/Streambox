@@ -3,6 +3,7 @@ import { Image, Pressable } from "react-native";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components/native";
 
+import { TMDB_IMAGE_PROXY_ORIGIN } from "../../api/tmdbImageHost";
 import type { WatchHistoryEntry } from "../../hooks/useWatchHistory";
 import { withAlpha } from "../../theme/Theme";
 import {
@@ -154,7 +155,7 @@ export function TopActors({ history, itemLabelSingular, itemLabelPlural, onActor
                     <RankText style={{ opacity: index === 0 ? 1 : 0.5 }}>{index + 1}</RankText>
                   </RankPill>
                   {actor.profilePath ? (
-                    <Avatar source={{ uri: `https://image.tmdb.org/t/p/w185${actor.profilePath}` }} />
+                    <Avatar source={{ uri: `${TMDB_IMAGE_PROXY_ORIGIN}/t/p/w185${actor.profilePath}` }} />
                   ) : (
                     <AvatarPlaceholder>
                       <AvatarLetter>{actor.name[0]}</AvatarLetter>

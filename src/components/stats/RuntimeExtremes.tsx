@@ -2,6 +2,7 @@ import { Image, Pressable } from "react-native";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components/native";
 
+import { TMDB_IMAGE_PROXY_ORIGIN } from "../../api/tmdbImageHost";
 import type { WatchHistoryEntry } from "../../hooks/useWatchHistory";
 import { withAlpha } from "../../theme/Theme";
 import { SectionGrid, StatsSection } from "./StatsSection";
@@ -84,7 +85,7 @@ export function RuntimeExtremes({ history, onItemPress }: Props) {
         <ItemCard onPress={() => onItemPress?.(longest)}>
           <TagLabel>{t("stats.longest")}</TagLabel>
           {longest.posterPath ? (
-            <Poster source={{ uri: `https://image.tmdb.org/t/p/w185${longest.posterPath}` }} />
+            <Poster source={{ uri: `${TMDB_IMAGE_PROXY_ORIGIN}/t/p/w185${longest.posterPath}` }} />
           ) : (
             <PosterPlaceholder />
           )}
@@ -94,7 +95,7 @@ export function RuntimeExtremes({ history, onItemPress }: Props) {
         <ItemCard onPress={() => onItemPress?.(shortest)}>
           <TagLabel>{t("stats.shortest")}</TagLabel>
           {shortest.posterPath ? (
-            <Poster source={{ uri: `https://image.tmdb.org/t/p/w185${shortest.posterPath}` }} />
+            <Poster source={{ uri: `${TMDB_IMAGE_PROXY_ORIGIN}/t/p/w185${shortest.posterPath}` }} />
           ) : (
             <PosterPlaceholder />
           )}

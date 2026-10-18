@@ -94,7 +94,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 | Piece | Version |
 |-------|---------|
 | App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `818e38f` → group `d95b3381-efba-4204-8b71-b727e3d280cc` |
-| `streambox-tmdb-proxy` | `060246a3` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records) |
+| `streambox-tmdb-proxy` | `9bb542c0` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records; `/t/p/…` image proxy, 30-day edge TTL) |
 | `streambox-provider-monitor` | `3e26ffd4` (hourly cron; classic Dizipal checks, hex `data-cfg` + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `streambox-dizipal-resolver` | deleted 2026-09-25 (`dizipal.streamboxapp.stream` gone with it) |
 | `streambox-turn-credentials` | `dcfe4675` |

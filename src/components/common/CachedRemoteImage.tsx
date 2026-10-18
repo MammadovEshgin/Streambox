@@ -2,6 +2,7 @@ import { Image as ExpoImage, type ImageErrorEventData, type ImageProps } from "e
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ImageStyle, StyleProp } from "react-native";
 
+import { alternateTmdbImageUrl, toProxiedTmdbImageUrl } from "../../api/tmdbImageHost";
 import {
   createRemoteImageSource,
   getRemoteImageRetryDelay,
@@ -48,16 +49,24 @@ export const CachedRemoteImage = forwardRef<ExpoImage, CachedRemoteImageProps>(f
     retryTimer.current = null;
   }, [uri]);
 
+  // A TMDB image is served by our proxy and by TMDB's own CDN; each retry asks
+  // the other one, and the first switch happens at once, since a host that
+  // refused one connection (see tmdbImageHost) is unlikely to take the next.
+  const primaryUri = toProxiedTmdbImageUrl(uri);
+  const alternateUri = alternateTmdbImageUrl(primaryUri);
+  const sourceUri = attempt % 2 === 1 && alternateUri ? alternateUri : primaryUri;
+
   const handleError = useCallback(
     (event: ImageErrorEventData) => {
       onError?.(event);
-      const delay = getRemoteImageRetryDelay(uri, attempt, event.error);
-      reportRemoteImageFailure(uri, attempt, event.error, delay === null);
-      if (delay === null) return;
+      const backoff = getRemoteImageRetryDelay(sourceUri, attempt, event.error);
+      reportRemoteImageFailure(sourceUri, attempt, event.error, backoff === null);
+      if (backoff === null) return;
+      const delay = attempt === 0 && alternateUri ? 0 : backoff;
       if (retryTimer.current) clearTimeout(retryTimer.current);
       retryTimer.current = setTimeout(() => setRetry({ uri, attempt: attempt + 1 }), delay);
     },
-    [attempt, onError, uri]
+    [alternateUri, attempt, onError, sourceUri, uri]
   );
 
   return (
@@ -65,7 +74,7 @@ export const CachedRemoteImage = forwardRef<ExpoImage, CachedRemoteImageProps>(f
       key={attempt}
       ref={ref}
       style={style}
-      source={createRemoteImageSource(uri)}
+      source={createRemoteImageSource(sourceUri)}
       transition={transition}
       cachePolicy={cachePolicy}
       allowDownscaling={allowDownscaling}

@@ -175,8 +175,9 @@ limit 50;
 ```
 
 Remote images (posters, backdrops) that failed to load, with the host and the platform's
-error. `CachedRemoteImage` retries a failed load three times (2s, 5s, 12s); `final` marks the
-last attempt. At most 12 reports per app session:
+error. `CachedRemoteImage` retries a failed load three times, alternating between the
+`tmdb.streamboxapp.stream` image proxy and `image.tmdb.org` (the first switch is immediate,
+then 5s and 12s); `final` marks the last attempt. At most 12 reports per app session:
 
 ```sql
 select occurred_at::date as day, metadata->>'host' as host, metadata->>'final' as final,

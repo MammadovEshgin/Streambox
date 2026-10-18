@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image as ExpoImage } from "expo-image";
 
+import { toProxiedTmdbImageUrl, toTmdbImageCacheUrl } from "../api/tmdbImageHost";
 import { trackEvent } from "./telemetryService";
 
 export { getRemoteImageRetryDelay } from "./remoteImageRetry";
@@ -14,7 +15,8 @@ function isHttpUri(uri: string) {
 
 export function normalizeRemoteImageCacheKey(uri: string) {
   try {
-    const parsed = new URL(uri);
+    // Either image host, one cache entry: see tmdbImageHost.
+    const parsed = new URL(toTmdbImageCacheUrl(uri));
     return `${parsed.origin}${parsed.pathname}`;
   } catch {
     return uri.split("#")[0]?.split("?")[0] ?? uri;
@@ -53,7 +55,7 @@ export async function prefetchRemoteImages(
 
   urls.forEach((url) => {
     if (typeof url === "string" && isHttpUri(url)) {
-      deduped.set(normalizeRemoteImageCacheKey(url), url);
+      deduped.set(normalizeRemoteImageCacheKey(url), toProxiedTmdbImageUrl(url));
     }
   });
 

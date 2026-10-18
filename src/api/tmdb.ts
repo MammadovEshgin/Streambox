@@ -24,6 +24,7 @@ import {
   type ReleaseWindow,
   type TmdbReleaseDatesResponse,
 } from "./releaseWindow";
+import { TMDB_IMAGE_ORIGIN, toProxiedTmdbImageUrl } from "./tmdbImageHost";
 import {
   getImdbPopularMovies,
   getImdbTop250Movies,
@@ -363,7 +364,7 @@ type TmdbPersonSearchResponse = {
 type TmdbImageSize = "w185" | "w300" | "w342" | "w500" | "w780" | "original";
 
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
-const TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p";
+const TMDB_IMAGE_BASE_URL = `${TMDB_IMAGE_ORIGIN}/t/p`;
 
 const tmdbProxyBaseUrl = process.env.EXPO_PUBLIC_TMDB_PROXY_BASE_URL?.trim() || null;
 const usesTmdbProxy = Boolean(tmdbProxyBaseUrl);
@@ -1223,10 +1224,10 @@ export function getTmdbImageUrl(path: string | null, size: TmdbImageSize = "w500
   }
 
   if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(path) || path.startsWith("data:")) {
-    return path;
+    return toProxiedTmdbImageUrl(path);
   }
 
-  return `${TMDB_IMAGE_BASE_URL}/${size}${path}`;
+  return toProxiedTmdbImageUrl(`${TMDB_IMAGE_BASE_URL}/${size}${path}`);
 }
 
 export const GENRE_ID_MAP: Record<number, string> = {

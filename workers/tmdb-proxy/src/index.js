@@ -10,6 +10,14 @@ const SEARCH_CACHE_TTL_SECONDS = 60 * 5;
 const NOT_FOUND_CACHE_TTL_SECONDS = 60 * 5;
 const ERROR_CACHE_TTL_SECONDS = 30;
 const STALE_WHILE_REVALIDATE_SECONDS = 60 * 60 * 24;
+// Posters and backdrops. image.tmdb.org is BunnyCDN, and the edges DNS hands
+// Azerbaijani phones (79.127.134.x, 2026-10-16 on) refuse connections: every
+// poster waited out a 10s connect timeout. Cloudflare reaches TMDB's CDN fine,
+// so the app asks for images here. Only TMDB's own image paths are proxied;
+// an image file never changes, so it is cached for a month.
+const TMDB_IMAGE_BASE_URL = "https://image.tmdb.org";
+const TMDB_IMAGE_PATH = /^\/t\/p\/(?:w\d{2,4}|h\d{2,4}|original)\/[A-Za-z0-9_-]+\.(?:jpg|jpeg|png|webp|svg)$/;
+const IMAGE_CACHE_TTL_SECONDS = 60 * 60 * 24 * 30;
 const DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60;
 // This is an abuse ceiling, not a throttle. The app legitimately bursts dozens
 // of requests on a cold start, and mobile carriers put MANY users behind one
@@ -225,6 +233,44 @@ function withResponseHeaders(response, request, env, targetUrl, rateLimitResult)
   });
 }
 
+async function handleImage(request, requestUrl, ctx, startedAt) {
+  const targetUrl = `${TMDB_IMAGE_BASE_URL}${requestUrl.pathname}`;
+  const cache = caches.default;
+  const cacheKey = new Request(targetUrl, { method: "GET" });
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    logMetric("tmdb_image_response", { status: cached.status, cacheStatus: "hit", durationMs: Date.now() - startedAt });
+    return request.method === "HEAD" ? new Response(null, cached) : cached;
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(targetUrl, { headers: { "user-agent": "StreamBox-TMDB-Proxy/1.0" } });
+  } catch (error) {
+    logMetric("tmdb_image_error", {
+      message: error instanceof Error ? error.message : String(error),
+      durationMs: Date.now() - startedAt,
+    });
+    return new Response(null, { status: 502 });
+  }
+
+  const headers = new Headers();
+  for (const name of ["content-type", "content-length", "etag", "last-modified"]) {
+    const value = upstream.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  headers.set(
+    "cache-control",
+    upstream.ok ? `public, max-age=${IMAGE_CACHE_TTL_SECONDS}, immutable` : `public, max-age=${NOT_FOUND_CACHE_TTL_SECONDS}`
+  );
+  const response = new Response(upstream.body, { status: upstream.status, headers });
+  logMetric("tmdb_image_response", { status: upstream.status, cacheStatus: "miss", durationMs: Date.now() - startedAt });
+  if (upstream.ok || upstream.status === 404) {
+    ctx.waitUntil(cache.put(cacheKey, response.clone()));
+  }
+  return request.method === "HEAD" ? new Response(null, response) : response;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const startedAt = Date.now();
@@ -238,6 +284,13 @@ export default {
         { error: "Method not allowed" },
         { status: 405, headers: { ...buildCorsHeaders(request, env), allow: "GET, HEAD, OPTIONS" } }
       );
+    }
+
+    // Images skip the API key check and the rate limiter: they spend no TMDB
+    // API quota, and a cold home screen loads dozens at once.
+    const imageUrl = new URL(request.url);
+    if (TMDB_IMAGE_PATH.test(imageUrl.pathname)) {
+      return handleImage(request, imageUrl, ctx, startedAt);
     }
 
     if (!env.TMDB_ACCESS_TOKEN && !env.TMDB_API_KEY) {
