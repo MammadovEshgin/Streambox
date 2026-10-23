@@ -94,7 +94,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `7be516a` → group `0cfe3425-18a4-4579-91b1-c9d150cfd4fa` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `7ff117f` → group `6f0f5049-49a2-4af5-b35d-1e079c60cd72` |
 | `streambox-tmdb-proxy` | `9bb542c0` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records; `/t/p/…` image proxy, 30-day edge TTL) |
 | `streambox-provider-monitor` | `338e4a0f` (hourly cron; classic Dizipal checks, hex `data-cfg` + `/_pb` beacon + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `provider_configs` | rows `hdfilm`, `dizipal`, `dizibal`, `kultfilmler` (added 2026-10-23, priority 3) |
@@ -108,6 +108,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-10-23 (2) | `7ff117f` | `6f0f5049-49a2-4af5-b35d-1e079c60cd72` | Kült Filmler session WebView drawn (360×640, opacity 0.01, beneath the navigator; opacity 0 stalled the challenge on phones), warmed from detail screens, 20s challenge budget, timeout telemetry carries page state |
 | 2026-10-23 | `7be516a` | `0cfe3425-18a4-4579-91b1-c9d150cfd4fa` | Kült Filmler as tier 4 (hidden WebView session past its Cloudflare challenge; ok.ru + FirePlayer players); HDFilm decoder keyed by the embed's hostname (interpreter page globals); Dizipal `/_pb` player beacon before player-config; Dizipal floor 2141 → 2142 |
 | 2026-10-18 | `e4d54a7` | `fe986646-7367-428c-b85a-a3195001b143` | TMDB images load from `tmdb.streamboxapp.stream/t/p/…` (image.tmdb.org's Azerbaijani BunnyCDN edges refuse connections); a failed image retries on the other host at once; one disk-cache key for both hosts |
 | 2026-10-16 (2) | `818e38f` | `d95b3381-efba-4204-8b71-b727e3d280cc` | Dizipal search sends ASCII-only queries (its search returns nothing for non-ASCII; Dune: Part Two is listed under its Turkish title); direct-slug probe reads through the gate-safe fetch |
