@@ -4,6 +4,12 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-10-23 (2)
+
+- Fixed: Kült Filmler titles (e.g. *Vivre Sa Vie*) showed "Not available" on phones. The app
+  never got past the site's security check. It does now, and starts the check as soon as you
+  open a film or series, so it is usually done by the time you tap Watch.
+
 ## 2026-10-23
 
 - Added: a fourth source, Kült Filmler, a library of classic and arthouse films the other

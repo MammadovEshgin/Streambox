@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test, { mock } from "node:test";
 
 import {
@@ -7,9 +9,11 @@ import {
   fetchKultfilmlerText,
   handleKultfilmlerMessage,
   isKultfilmlerNavigationAllowed,
+  isKultfilmlerSessionOpening,
   kultfilmlerSessionUrl,
   setKultfilmlerOrigin,
   subscribeKultfilmlerSession,
+  warmKultfilmlerSession,
 } from "../src/services/kultfilmlerSession";
 import { __internal } from "../src/services/WebPlayerService";
 
@@ -92,7 +96,10 @@ test("a challenge the device can't pass fails the queue and is not retried for a
   try {
     const { opened } = openFakeBridge();
     const pending = fetchKultfilmlerText("https://kultfilmler.net/a/");
-    mock.timers.tick(10_000);
+    handleKultfilmlerMessage(JSON.stringify({ kf: "page", ready: false, title: "Just a moment...", visibility: "visible", challengeFrame: true }));
+    mock.timers.tick(19_999);
+    assert.equal(isKultfilmlerSessionOpening(), true, "a phone gets 20s for the challenge");
+    mock.timers.tick(1);
     assert.deepEqual(await pending, { ok: false, reason: "unavailable" }, "not worth a second resolver pass");
     assert.equal(opened.at(-1), false, "the WebView is let go");
 
@@ -100,6 +107,39 @@ test("a challenge the device can't pass fails the queue and is not retried for a
     mock.timers.tick(10 * 60_000);
     void fetchKultfilmlerText("https://kultfilmler.net/c/");
     assert.equal(opened.at(-1), true, "after the cooldown it tries again");
+  } finally {
+    mock.timers.reset();
+    __resetKultfilmlerSessionForTests();
+  }
+});
+
+test("a detail page warms the session, so Watch finds it open", async () => {
+  __resetKultfilmlerSessionForTests();
+  mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  try {
+    warmKultfilmlerSession();
+    const { host, opened } = openFakeBridge();
+    assert.deepEqual(opened, [false], "no bridge mounted yet: nothing to warm");
+
+    warmKultfilmlerSession();
+    assert.equal(opened.at(-1), true);
+    assert.equal(isKultfilmlerSessionOpening(), true);
+    handleKultfilmlerMessage(JSON.stringify({ kf: "page", ready: true }));
+    assert.equal(isKultfilmlerSessionOpening(), false);
+    assert.equal(host.scripts.length, 0, "nothing is fetched until asked");
+
+    const pending = fetchKultfilmlerText("https://kultfilmler.net/a/");
+    assert.equal(host.scripts.length, 1, "the request goes straight in");
+    answer(requestIdOf(host.scripts[0]), 200, "ok");
+    assert.deepEqual(await pending, { ok: true, body: "ok" });
+
+    // Warmed and never used: it still closes when idle.
+    __resetKultfilmlerSessionForTests();
+    const second = openFakeBridge();
+    warmKultfilmlerSession();
+    handleKultfilmlerMessage(JSON.stringify({ kf: "page", ready: true }));
+    mock.timers.tick(10 * 60_000);
+    assert.equal(second.opened.at(-1), false);
   } finally {
     mock.timers.reset();
     __resetKultfilmlerSessionForTests();
@@ -153,6 +193,16 @@ test("the session WebView may load the site and Cloudflare's challenge, nothing 
   assert.equal(isKultfilmlerNavigationAllowed("about:blank"), true);
   assert.equal(isKultfilmlerNavigationAllowed("https://shorterwanderer.com/ad"), false);
   assert.equal(isKultfilmlerNavigationAllowed("intent://x#Intent;end"), false);
+});
+
+test("the session WebView is drawn: a real size and a non-zero opacity", () => {
+  // Android never draws a view at opacity 0, and an undrawn WebView gets no
+  // animation frames, so Cloudflare's challenge stalls (2026-10-23, every phone).
+  const source = readFileSync(join(process.cwd(), "src/components/common/KultfilmlerBridge.tsx"), "utf8");
+  const host = source.match(/host:\s*\{([^}]*)\}/)?.[1] ?? "";
+  const number = (key: string) => Number(host.match(new RegExp(`${key}:\\s*([\\d.]+)`))?.[1]);
+  assert.ok(number("opacity") > 0, "opacity must be above zero");
+  assert.ok(number("width") >= 300 && number("height") >= 300, "a phone-sized viewport");
 });
 
 // ---------------------------------------------------------------------------

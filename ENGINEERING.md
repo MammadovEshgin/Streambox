@@ -274,10 +274,18 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   nothing until asked): it loads the empty search URL, which is a tiny JSON document once
   cleared, and every request runs as a same-origin `fetch()` in that page, bodies coming back
   over `postMessage` (`kultfilmlerSession`). Nothing the site serves is rendered or executed;
-  navigation off the site is refused. The session stays open 10 min after its last request. A
-  challenge not passed in 10s puts the provider aside for 10 min (no second resolver pass for
-  it); a lapsed clearance mid-session reloads and retries once. Telemetry:
-  `kultfilmler_session` (`outcome: ready|challenge_timeout`, `ms`).
+  navigation off the site is refused. **The WebView must be drawn**: the first release made it
+  2×2 px at opacity 0, Android never drew it, an undrawn WebView gets no animation frames, and
+  every phone hit `challenge_timeout` (desktop Chromium, which renders regardless, passed). It
+  is now a 360×640 viewport at opacity 0.01, mounted beneath the navigator. Detail screens
+  warm the session (`warmKultfilmlerSession`) so the challenge is usually done before Watch.
+  The session stays open 10 min after its last use. A challenge not passed in 20s puts the
+  provider aside for 10 min (no second resolver pass for it); one still running when the tier's
+  14s budget ends counts as transient, so the second pass asks again; a lapsed clearance
+  mid-session reloads and retries once. Worker egress is challenged too (checked with
+  `wrangler dev --remote`), so a server-side proxy is no way round it. Telemetry:
+  `kultfilmler_session` (`outcome: ready|challenge_timeout`, `ms`, `loads`, and on a timeout
+  the page's last `title`, `visibility` and `challengeFrame`).
   Chain: `/wp-admin/admin-ajax.php?action=kf_live_search&q=` (JSON `{title: "English –
   Turkish", url, year, type: Film|Dizi}`; matches original titles and Turkish letters) → film
   page, or series page → `div.eps[data-season]` → episode → the watch page's JSON player list

@@ -20,7 +20,12 @@ import {
   type ProviderConfigMap,
 } from "./providerConfigService";
 import { aesCbcDecrypt } from "./aesCbc";
-import { fetchKultfilmlerText, setKultfilmlerOrigin, type KultfilmlerFetchResult } from "./kultfilmlerSession";
+import {
+  fetchKultfilmlerText,
+  isKultfilmlerSessionOpening,
+  setKultfilmlerOrigin,
+  type KultfilmlerFetchResult,
+} from "./kultfilmlerSession";
 import { caesarShift, decodeBase64Binary, reverseString, runRapidrameDecoder } from "./rapidrameScript";
 import { foldNonDecomposingLetters } from "../utils/textFolding";
 
@@ -3095,7 +3100,14 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
   const kultfilmlerTier = () =>
     Promise.race<WebPlayerResult | null>([
       resolveKultfilmlerStream(request, turkishTitle),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), KULTFILMLER_TIER_TIMEOUT_MS)),
+      new Promise<null>((resolve) =>
+        setTimeout(() => {
+          // Still passing the challenge: the title is unknown, not missing, so
+          // the resolver's second pass asks again on the opened session.
+          if (isKultfilmlerSessionOpening()) noteProviderFailure({});
+          resolve(null);
+        }, KULTFILMLER_TIER_TIMEOUT_MS)
+      ),
     ]);
 
   const result = await firstNativeByPriority(
@@ -3469,10 +3481,10 @@ export async function resolveDirectWebPlayerFallback(
 //      vidmoly is skipped: it does not answer from Azerbaijan.
 
 /**
- * The first play of a session pays for the challenge (2-6s) on top of search,
- * page and player. Past this the pass answers without Kült Filmler, and the
- * timeout counts as a transient failure, so the resolver's second pass, with
- * the session open by then, asks again.
+ * A session not yet warmed from a detail page pays for the challenge on top of
+ * search, page and player. Past this the pass answers without Kült Filmler;
+ * if the challenge is still running that counts as a transient failure, so
+ * the resolver's second pass asks again.
  */
 const KULTFILMLER_TIER_TIMEOUT_MS = 14_000;
 const KULTFILMLER_PLAYER_TIMEOUT_MS = 8_000;

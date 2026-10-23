@@ -639,13 +639,14 @@ function AppShell() {
           onSignOut={signOut}
           onError={handleStartupError}
         >
+          {/* Before the navigator, so the app's screens draw over it. */}
+          <KultfilmlerBridge />
           <NavigationContainer ref={navigationRef} theme={navigationTheme} linking={watchTogetherLinking}>
             <Navigation />
           </NavigationContainer>
           {/* Popups wait for the splash: a LiveOps modal is a native layer that
               would otherwise appear ABOVE the splash overlay mid-reveal. */}
           <LiveOpsHost enabled={isUserDataReady && splashComplete} />
-          <KultfilmlerBridge />
         </StartupErrorBoundary>
       ) : null}
       {/* Top-most opaque overlay — content mounts and paints beneath it. */}

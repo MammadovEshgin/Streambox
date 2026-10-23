@@ -53,6 +53,11 @@ export function KultfilmlerBridge() {
 }
 
 const styles = StyleSheet.create({
-  // Laid out (a WebView with no size may never run its page) but invisible.
-  host: { position: "absolute", left: 0, bottom: 0, width: 2, height: 2, opacity: 0 },
+  // It must be DRAWN, not just mounted. Android skips drawing a view at zero
+  // opacity, and a WebView that is never drawn gets no animation frames, so
+  // Cloudflare's challenge script stalls: the 2026-10-23 release (2×2 px,
+  // opacity 0) timed out on phones while desktop Chromium passed in 5s. A
+  // phone-sized viewport, mounted beneath the app's screens and all but
+  // transparent in case one of them is not opaque.
+  host: { position: "absolute", left: 0, top: 0, width: 360, height: 640, opacity: 0.01 },
 });

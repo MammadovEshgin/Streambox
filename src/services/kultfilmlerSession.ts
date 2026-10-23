@@ -40,8 +40,12 @@ export type KultfilmlerFetchResult =
    */
   | { ok: false; reason: "unavailable" | "timeout" | "http"; status?: number };
 
-/** A real browser clears the challenge in 2-6s; past this the device cannot. */
-const CHALLENGE_TIMEOUT_MS = 10_000;
+/**
+ * A desktop browser clears the challenge in ~5s; a phone's WebView, on mobile
+ * data, can take several times that. The session is usually opened from a
+ * detail page (`warmKultfilmlerSession`), well before Watch is tapped.
+ */
+const CHALLENGE_TIMEOUT_MS = 20_000;
 /** One request inside a cleared session (search JSON, a 50-150 KB page). */
 const REQUEST_TIMEOUT_MS = 8_000;
 /** Keep the WebView alive between plays; a fresh one pays the challenge again. */
@@ -71,6 +75,9 @@ const pending = new Map<number, Pending>();
 let challengeTimer: ReturnType<typeof setTimeout> | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<(open: boolean) => void>();
+/** What the page last reported, for the telemetry of a challenge that never clears. */
+let pageLoads = 0;
+let lastPage: { title: string; visibility: string; challengeFrame: boolean } | null = null;
 
 let origin = "https://kultfilmler.net";
 
@@ -105,7 +112,13 @@ export const KULTFILMLER_PAGE_PROBE = `(function () {
   var text = document.body ? document.body.innerText : "";
   var ready = false;
   try { ready = JSON.parse(text).success === true; } catch (e) {}
-  window.ReactNativeWebView.postMessage(JSON.stringify({ kf: "page", ready: ready }));
+  window.ReactNativeWebView.postMessage(JSON.stringify({
+    kf: "page",
+    ready: ready,
+    title: String(document.title || "").slice(0, 60),
+    visibility: String(document.visibilityState || ""),
+    challengeFrame: !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+  }));
 })();
 true;`;
 
@@ -141,6 +154,20 @@ export function attachKultfilmlerHost(next: KultfilmlerHost | null): void {
   if (!next && phase !== "closed") close();
 }
 
+/**
+ * Start passing the challenge ahead of need — from a detail page, where the
+ * viewer usually spends longer than the challenge takes before tapping Watch.
+ */
+export function warmKultfilmlerSession(): void {
+  if (listeners.size === 0 || Date.now() < unavailableUntil) return;
+  if (phase === "closed") open();
+}
+
+/** Still passing the challenge: a request now would wait on it. */
+export function isKultfilmlerSessionOpening(): boolean {
+  return phase === "opening";
+}
+
 /** GET a same-origin URL on the site. Never rejects. */
 export function fetchKultfilmlerText(url: string): Promise<KultfilmlerFetchResult> {
   // No bridge mounted (outside the app shell) means no WebView will ever open.
@@ -169,7 +196,17 @@ export function fetchKultfilmlerText(url: string): Promise<KultfilmlerFetchResul
 
 /** Messages from the WebView. Anything not shaped like ours is ignored. */
 export function handleKultfilmlerMessage(raw: string): void {
-  let message: { kf?: unknown; ready?: unknown; id?: unknown; status?: unknown; challenged?: unknown; body?: unknown };
+  let message: {
+    kf?: unknown;
+    ready?: unknown;
+    id?: unknown;
+    status?: unknown;
+    challenged?: unknown;
+    body?: unknown;
+    title?: unknown;
+    visibility?: unknown;
+    challengeFrame?: unknown;
+  };
   try {
     message = JSON.parse(raw);
   } catch {
@@ -177,13 +214,22 @@ export function handleKultfilmlerMessage(raw: string): void {
   }
 
   if (message?.kf === "page") {
-    if (message.ready !== true || phase === "closed") return;
+    if (phase === "closed") return;
+    pageLoads += 1;
+    lastPage = {
+      title: typeof message.title === "string" ? message.title : "",
+      visibility: typeof message.visibility === "string" ? message.visibility : "",
+      challengeFrame: message.challengeFrame === true,
+    };
+    if (message.ready !== true) return;
     if (phase === "opening") {
-      trackEvent("kultfilmler_session", "network", { outcome: "ready", ms: Date.now() - openedAt });
+      trackEvent("kultfilmler_session", "network", { outcome: "ready", ms: Date.now() - openedAt, loads: pageLoads });
     }
     phase = "ready";
     clearChallengeTimer();
     for (const request of pending.values()) dispatch(request);
+    // Warmed ahead of need: nothing to send yet, so start the idle clock.
+    if (pending.size === 0) scheduleIdleClose();
     return;
   }
 
@@ -226,6 +272,8 @@ function open(): void {
   if (phase !== "closed") return;
   phase = "opening";
   openedAt = Date.now();
+  pageLoads = 0;
+  lastPage = null;
   startChallengeTimer();
   notify();
 }
@@ -243,7 +291,22 @@ function startChallengeTimer(): void {
   challengeTimer = setTimeout(() => {
     challengeTimer = null;
     if (phase !== "opening") return;
-    trackEvent("kultfilmler_session", "network", { outcome: "challenge_timeout", ms: Date.now() - openedAt }, "warning");
+    // What the page looked like when we gave up: no loads at all means the
+    // WebView never ran; "hidden" visibility or a challenge frame that never
+    // went away say which way the challenge stalled.
+    trackEvent(
+      "kultfilmler_session",
+      "network",
+      {
+        outcome: "challenge_timeout",
+        ms: Date.now() - openedAt,
+        loads: pageLoads,
+        title: lastPage?.title ?? null,
+        visibility: lastPage?.visibility ?? null,
+        challengeFrame: lastPage?.challengeFrame ?? null,
+      },
+      "warning"
+    );
     unavailableUntil = Date.now() + FAILURE_COOLDOWN_MS;
     // "unavailable", not "timeout": asking again within the cooldown can't help.
     close("unavailable");

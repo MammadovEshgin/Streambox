@@ -189,13 +189,17 @@ order by 1 desc, 5 desc;
 ```
 
 Kült Filmler sessions: whether devices' hidden WebView gets past the site's Cloudflare
-challenge (`ready`, with how long it took) or not (`challenge_timeout`, after which the provider
-is set aside for 10 minutes). Plays it served show as `provider = 'kultfilmler'` in
-`player_resolve`:
+challenge (`ready`, with how long it took) or not (`challenge_timeout` after 20s, after which the
+provider is set aside for 10 minutes). A timeout carries what the page last reported: `loads: 0`
+means the WebView never loaded anything, `visibility: hidden` that it isn't being drawn, and a
+`challengeFrame` that stayed means the challenge wants interaction. Plays it served show as
+`provider = 'kultfilmler'` in `player_resolve`:
 
 ```sql
 select occurred_at::date as day, metadata->>'outcome' as outcome, count(*),
-       round(avg((metadata->>'ms')::numeric)) as avg_ms
+       round(avg((metadata->>'ms')::numeric)) as avg_ms,
+       max(metadata->>'loads') as loads, max(metadata->>'title') as last_title,
+       max(metadata->>'visibility') as visibility, bool_or((metadata->>'challengeFrame')::boolean) as frame
 from public.app_telemetry_events
 where event_name = 'kultfilmler_session' and occurred_at > now() - interval '7 days'
 group by 1, 2
