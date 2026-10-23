@@ -90,13 +90,14 @@ Deploys happen **only when the owner approves them**. Typical sequence:
      Slugs match the directory names under `supabase/functions/`.
    - Database: `npx supabase db push` after `--dry-run` (see `docs/DATABASE.md`).
 
-### Current deployed state (2026-10-05)
+### Current deployed state (2026-10-23)
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `e4d54a7` → group `fe986646-7367-428c-b85a-a3195001b143` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `7be516a` → group `0cfe3425-18a4-4579-91b1-c9d150cfd4fa` |
 | `streambox-tmdb-proxy` | `9bb542c0` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records; `/t/p/…` image proxy, 30-day edge TTL) |
-| `streambox-provider-monitor` | `3e26ffd4` (hourly cron; classic Dizipal checks, hex `data-cfg` + player-config POST that must yield an embed URL, decrypting `enc`) |
+| `streambox-provider-monitor` | `338e4a0f` (hourly cron; classic Dizipal checks, hex `data-cfg` + `/_pb` beacon + player-config POST that must yield an embed URL, decrypting `enc`) |
+| `provider_configs` | rows `hdfilm`, `dizipal`, `dizibal`, `kultfilmler` (added 2026-10-23, priority 3) |
 | `streambox-dizipal-resolver` | deleted 2026-09-25 (`dizipal.streamboxapp.stream` gone with it) |
 | `streambox-turn-credentials` | `dcfe4675` |
 | Latest migration | `20260923210451_franchise_catalogue_audit_2026_09` |
@@ -107,6 +108,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-10-23 | `7be516a` | `0cfe3425-18a4-4579-91b1-c9d150cfd4fa` | Kült Filmler as tier 4 (hidden WebView session past its Cloudflare challenge; ok.ru + FirePlayer players); HDFilm decoder keyed by the embed's hostname (interpreter page globals); Dizipal `/_pb` player beacon before player-config; Dizipal floor 2141 → 2142 |
 | 2026-10-18 | `e4d54a7` | `fe986646-7367-428c-b85a-a3195001b143` | TMDB images load from `tmdb.streamboxapp.stream/t/p/…` (image.tmdb.org's Azerbaijani BunnyCDN edges refuse connections); a failed image retries on the other host at once; one disk-cache key for both hosts |
 | 2026-10-16 (2) | `818e38f` | `d95b3381-efba-4204-8b71-b727e3d280cc` | Dizipal search sends ASCII-only queries (its search returns nothing for non-ASCII; Dune: Part Two is listed under its Turkish title); direct-slug probe reads through the gate-safe fetch |
 | 2026-10-16 | `a67b739` | `2e7cddff-f3f8-4fc8-bfce-fd5c99a83643` | Dizipal watch pages fetched past the 429 Turnstile gate (`//bolum/…`, crawler-agent fallback); `CachedRemoteImage` retries failed loads (2s/5s/12s) and reports `image_load_failed`; Dizipal floor 2137 → 2140 |
