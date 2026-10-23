@@ -340,13 +340,39 @@ async function decryptDizipalEnc(enc) {
   }
 }
 
-function readSessionCookie(response) {
+function readCookie(response, name) {
   const values = response.headers.getSetCookie?.() ?? [response.headers.get("set-cookie") ?? ""];
   for (const value of values) {
-    const match = value.match(/(?:^|[\s,;])PHPSESSID=([^;,\s]+)/);
-    if (match) return `PHPSESSID=${match[1]}`;
+    const match = value.match(new RegExp(`(?:^|[\\s,;])${name}=([^;,\\s]+)`));
+    if (match) return `${name}=${match[1]}`;
   }
   return null;
+}
+
+// Since 2026-10-23 the config POST is refused (403/429) unless the session
+// first sent the watch page's player beacon: POST /_pb `s=f:{slug}` (film) or
+// `s=b:{slug}` (episode), whose `_ct` cookie the config POST is checked against
+// (the app's `postDizipalPlayerBeacon`).
+async function postDizipalPlayerBeacon(pageUrl, sessionCookie, timeoutMs) {
+  const match = new URL(pageUrl).pathname.match(/^\/+(film|bolum)\/([^/?#]+)/);
+  if (!match) return null;
+  try {
+    const response = await fetchWithTimeout(`${new URL(pageUrl).origin}/_pb`, {
+      method: "POST",
+      redirect: "follow",
+      headers: {
+        ...baseHeaders(pageUrl),
+        "content-type": "application/x-www-form-urlencoded",
+        "x-requested-with": "XMLHttpRequest",
+        ...(sessionCookie ? { cookie: sessionCookie } : {}),
+      },
+      body: `s=${encodeURIComponent(`${match[1] === "film" ? "f" : "b"}:${match[2]}`)}`,
+    }, timeoutMs);
+    await readLimitedText(response);
+    return readCookie(response, "_ct");
+  } catch {
+    return null;
+  }
 }
 
 async function checkDizipalPlayerConfig(pageResponse, cfg, { url, timeoutMs }) {
@@ -355,7 +381,9 @@ async function checkDizipalPlayerConfig(pageResponse, cfg, { url, timeoutMs }) {
   let response;
   let body;
   try {
-    const cookie = readSessionCookie(pageResponse);
+    const sessionCookie = readCookie(pageResponse, "PHPSESSID");
+    const beaconCookie = await postDizipalPlayerBeacon(pageUrl, sessionCookie, timeoutMs);
+    const cookie = [sessionCookie, beaconCookie].filter(Boolean).join("; ");
     response = await fetchWithTimeout(`${new URL(pageUrl).origin}/ajax-player-config`, {
       method: "POST",
       redirect: "follow",

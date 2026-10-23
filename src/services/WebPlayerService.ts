@@ -11,8 +11,16 @@
  */
 
 import axios from "axios";
-import { getAllProviderConfigs, getProviderConfig, isProviderConfigReady, recordObservedBaseUrl, refreshProviderConfigs } from "./providerConfigService";
+import {
+  getAllProviderConfigs,
+  getProviderConfig,
+  isProviderConfigReady,
+  recordObservedBaseUrl,
+  refreshProviderConfigs,
+  type ProviderConfigMap,
+} from "./providerConfigService";
 import { aesCbcDecrypt } from "./aesCbc";
+import { fetchKultfilmlerText, setKultfilmlerOrigin, type KultfilmlerFetchResult } from "./kultfilmlerSession";
 import { caesarShift, decodeBase64Binary, reverseString, runRapidrameDecoder } from "./rapidrameScript";
 import { foldNonDecomposingLetters } from "../utils/textFolding";
 
@@ -98,6 +106,11 @@ export type WebPlayerResult = {
    * The page itself is never shown — the provider's own player is off-limits.
    */
   webViewFallbackUrl?: string;
+  /**
+   * Which provider answered, where `source` can't tell (`direct` is shared).
+   * Set by Kült Filmler; telemetry reads it before falling back to `source`.
+   */
+  provider?: keyof ProviderConfigMap;
 };
 
 const UA =
@@ -1909,7 +1922,12 @@ function tryUnpackInlinePackerJs(html: string): string {
  * Returns null if the body steps outside that subset, so the caller can fall
  * back to the static schemes.
  */
-function decodeRapidrameByInterpretingDcBody(embedHtml: string, sourceVariable: string, valueParts: string[]): string | null {
+function decodeRapidrameByInterpretingDcBody(
+  embedHtml: string,
+  sourceVariable: string,
+  valueParts: string[],
+  embedUrl?: string
+): string | null {
   const assignmentIndex = findVariableDeclaration(embedHtml, sourceVariable);
   if (assignmentIndex === -1) return null;
 
@@ -1951,10 +1969,14 @@ function decodeRapidrameByInterpretingDcBody(embedHtml: string, sourceVariable: 
   }
   if (braceEnd === -1) return null;
 
-  return runRapidrameDecoder(declarationPrefix + embedHtml.slice(fnStart, braceEnd + 1), valueParts);
+  return runRapidrameDecoder(declarationPrefix + embedHtml.slice(fnStart, braceEnd + 1), valueParts, embedUrl);
 }
 
-function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
+/**
+ * `embedUrl` is the page the embed was served from. Since 2026-10-22 the
+ * decoder keys off `self.location.hostname`, so without it nothing decodes.
+ */
+function extractRapidrameStreamUrl(embedHtmlInput: string, embedUrl?: string): string | null {
   // Unpack any inline packer.js block first. For the older /video/embed/ flow
   // this is a no-op (no packed block). For the newer /rplayer/ flow it's what
   // makes the `s_* = dc_*(…)` assignment visible to the regex below.
@@ -1990,7 +2012,7 @@ function extractRapidrameStreamUrl(embedHtmlInput: string): string | null {
   try {
     // Primary path: interpret the live dc_*() body (handles the per-request
     // randomized schemes). Falls through to the static schemes on any mismatch.
-    const interpreted = decodeRapidrameByInterpretingDcBody(embedHtml, sourceVariable, parts);
+    const interpreted = decodeRapidrameByInterpretingDcBody(embedHtml, sourceVariable, parts, embedUrl);
     const normalizedInterpreted = interpreted ? normalizeExtractedMediaUrl(interpreted) : null;
     if (normalizedInterpreted) return normalizedInterpreted;
 
@@ -2158,6 +2180,12 @@ async function shouldPreferNativeForRapidrameStream(streamUrl: string, referer: 
   return false;
 }
 
+/** Where an embed actually loaded: its post-redirect URL when axios exposes one. */
+function embedPageUrl(response: unknown, requestedUrl: string): string {
+  const finalUrl = (response as { request?: { responseURL?: unknown } } | null)?.request?.responseURL;
+  return typeof finalUrl === "string" && /^https?:\/\//i.test(finalUrl) ? finalUrl : requestedUrl;
+}
+
 async function resolveHdFilmNativeFallback(pageUrl: string, pageHtml: string): Promise<DizipalStreamInfo | null> {
   const embedUrl = extractHdFilmEmbedUrl(pageHtml, pageUrl);
   if (!embedUrl) return null;
@@ -2172,7 +2200,7 @@ async function resolveHdFilmNativeFallback(pageUrl: string, pageHtml: string): P
       }
     });
 
-    const streamUrl = extractRapidrameStreamUrl(response.data);
+    const streamUrl = extractRapidrameStreamUrl(response.data, embedPageUrl(response, embedUrl));
     if (!streamUrl) return null;
     const preferNative = isRapidrameNativeSafeStream(streamUrl)
       ? true
@@ -2219,7 +2247,7 @@ export async function resolveHdFilmRuntimeStream(discoveredUrl: string, pageUrl:
       }
     });
 
-    const streamUrl = extractRapidrameStreamUrl(response.data);
+    const streamUrl = extractRapidrameStreamUrl(response.data, embedPageUrl(response, absoluteUrl));
     if (streamUrl) {
       return {
         url: streamUrl,
@@ -2321,7 +2349,12 @@ function extractSubtitlesFromPlayerJs(html: string, embedUrl: string): SubtitleT
   return subs;
 }
 
-async function resolveViaGetVideoApi(embedUrl: string, html: string): Promise<DizipalStreamInfo | null> {
+/** FirePlayer's `getVideo` call. `siteReferer` is the site that embedded the player. */
+async function resolveViaGetVideoApi(
+  embedUrl: string,
+  html: string,
+  siteReferer = getDizipalReferer()
+): Promise<DizipalStreamInfo | null> {
   const hash = extractVideoHash(embedUrl, html);
   if (!hash) return null;
 
@@ -2334,7 +2367,7 @@ async function resolveViaGetVideoApi(embedUrl: string, html: string): Promise<Di
       securedLink?: string;
     }>(
       `${embedOrigin}/player/index.php?data=${hash}&do=getVideo`,
-      `hash=${encodeURIComponent(hash)}&r=${encodeURIComponent(getDizipalReferer())}`,
+      `hash=${encodeURIComponent(hash)}&r=${encodeURIComponent(siteReferer)}`,
       {
         timeout: 8000,
         headers: {
@@ -2521,15 +2554,21 @@ function decodeDizipalCfg(cfg: string): DizipalPlayerConfigResponse | null {
 const DIZIPAL_PLAYER_CONFIG_PATHS = ["/ajax-player-config", "/ajax", "/ajax/player-config"];
 let liveDizipalPlayerConfigPath = DIZIPAL_PLAYER_CONFIG_PATHS[0];
 
-/** `PHPSESSID=…` out of a page response's Set-Cookie, for the explicit retry. */
-function readDizipalSessionCookie(headers: unknown): string | null {
+/** `name=…` out of a response's Set-Cookie, for the explicit retry. */
+function readDizipalCookie(headers: unknown, name: string): string | null {
   const raw = (headers as Record<string, unknown> | undefined)?.["set-cookie"];
   const values = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  const pattern = new RegExp(`(?:^|[\\s,;])${escapeRegExp(name)}=([^;,\\s]+)`);
   for (const value of values) {
-    const match = String(value).match(/(?:^|[\s,;])PHPSESSID=([^;,\s]+)/);
-    if (match) return `PHPSESSID=${match[1]}`;
+    const match = String(value).match(pattern);
+    if (match) return `${name}=${match[1]}`;
   }
   return null;
+}
+
+/** `PHPSESSID=…` out of a page response's Set-Cookie, for the explicit retry. */
+function readDizipalSessionCookie(headers: unknown): string | null {
+  return readDizipalCookie(headers, "PHPSESSID");
 }
 
 type DizipalPlayerPage = { html: string; sessionCookie: string | null };
@@ -2584,6 +2623,44 @@ async function fetchDizipalPlayerPage(pageUrl: string): Promise<DizipalPlayerPag
     }
   }
   return null;
+}
+
+/**
+ * Since 2026-10-23 the player-config POST answers 403/429 `{"success":false}`
+ * unless the session first sent the player beacon the watch page's script
+ * sends: `POST /_pb` with `s=f:{slug}` for a film or `s=b:{slug}` for an
+ * episode. Its answer sets the `_ct` cookie the config POST is checked
+ * against. (The browser check in front of the gated page, `/_bcs` →
+ * `/_bc_verify`, is not needed: the doubled-slash render skips it.)
+ */
+function dizipalPlayerBeaconValue(pageUrl: string): string | null {
+  const match = new URL(pageUrl).pathname.match(/^\/+(film|bolum)\/([^/?#]+)/);
+  if (!match) return null;
+  return `${match[1] === "film" ? "f" : "b"}:${match[2]}`;
+}
+
+async function postDizipalPlayerBeacon(baseUrl: string, pageUrl: string, cookieHeader: string | null): Promise<string | null> {
+  const value = dizipalPlayerBeaconValue(pageUrl);
+  if (!value) return null;
+  try {
+    const response = await axios.post(`${baseUrl}/_pb`, `s=${encodeURIComponent(value)}`, {
+      timeout: 5000,
+      withCredentials: true,
+      validateStatus: (status) => status >= 200 && status < 500,
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        Referer: pageUrl,
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+      },
+    });
+    return readDizipalCookie(response.headers, "_ct");
+  } catch (error: any) {
+    debugLog("[WebPlayer] Dizipal player beacon failed:", error?.message ?? error);
+    return null;
+  }
 }
 
 /**
@@ -2652,9 +2729,14 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
       const cfg = page ? extractDizipalCfg(page.html) : null;
       if (!page || !cfg) return null;
 
-      configResp =
-        decodeDizipalCfg(cfg) ??
-        (await postDizipalPlayerConfig(baseUrl, pageUrl, cfg, attempt === 0 ? null : page.sessionCookie));
+      configResp = decodeDizipalCfg(cfg);
+      if (!configResp) {
+        const sessionCookie = attempt === 0 ? null : page.sessionCookie;
+        const beaconCookie = await postDizipalPlayerBeacon(baseUrl, pageUrl, sessionCookie);
+        const cookieHeader =
+          attempt === 0 ? null : [sessionCookie, beaconCookie].filter(Boolean).join("; ") || null;
+        configResp = await postDizipalPlayerConfig(baseUrl, pageUrl, cfg, cookieHeader);
+      }
       if (!configResp?.success) {
         debugLog("[WebPlayer] Dizipal player-config rejected:", (configResp as any)?.message ?? "no answer");
       }
@@ -2814,7 +2896,7 @@ function startResolvePass(request: WebPlayerRequest): Promise<WebPlayerResult> {
 /** Published base URLs, to tell "the operator rotated a domain" from "nothing changed". */
 function summariseProviderBaseUrls(): string {
   const configs = getAllProviderConfigs();
-  return `${configs.hdfilm.baseUrl}|${configs.dizipal.baseUrl}|${configs.dizibal.baseUrl}`;
+  return `${configs.hdfilm.baseUrl}|${configs.dizipal.baseUrl}|${configs.dizibal.baseUrl}|${configs.kultfilmler.baseUrl}`;
 }
 
 export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<WebPlayerResult> {
@@ -2949,7 +3031,7 @@ function toDizipalWebPlayerResult(dizipalResult: DizipalResolveResult | null): W
 
 async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebPlayerResult> {
   // Every tier starts at once and the answer follows tier priority (HDFilm →
-  // Dizipal → Dizibal). They used to run one after another, so a title only
+  // Dizipal → Dizibal → Kült Filmler). They used to run one after another, so a title only
   // Dizibal had paid for HDFilm's search, both Turkish-title retries and
   // Dizipal's sweep first — the 10-15s "Watch" waits of Sept 2026.
   const isSeries = request.mediaType !== "movie";
@@ -3010,8 +3092,14 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
     return result.source === "not_found" ? null : result;
   };
 
+  const kultfilmlerTier = () =>
+    Promise.race<WebPlayerResult | null>([
+      resolveKultfilmlerStream(request, turkishTitle),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), KULTFILMLER_TIER_TIMEOUT_MS)),
+    ]);
+
   const result = await firstNativeByPriority(
-    [hdfilmTier(), dizipalTier(), dizibalTier()],
+    [hdfilmTier(), dizipalTier(), dizibalTier(), kultfilmlerTier()],
     PROVIDER_PRIORITY_GRACE_MS
   );
   return result ?? { url: "", source: "not_found" };
@@ -3346,6 +3434,309 @@ export async function resolveDirectWebPlayerFallback(
   }
 }
 
+// ===========================================================================
+// Tier 4 — Kült Filmler (kultfilmler.net, through kultfilmlerSession)
+// ===========================================================================
+//
+// A WordPress catalogue of classics and arthouse (~5,000 films, a few dozen
+// series) that the other three often lack. Every page sits behind a Cloudflare
+// challenge, so pages are read through the session WebView; the player and
+// the video are not challenged and are fetched natively.
+//
+//   1. GET /wp-admin/admin-ajax.php?action=kf_live_search&q={title}
+//        → { success, data: [{ title, url, year, type }] }. `title` is both
+//        names joined by an en dash, either way round ("İhtiyar Delikanlı –
+//        Oldboy", "The Godfather – Baba"); `type` is "Film" or "Dizi"; `year`
+//        "2003" or "2010–2017". Turkish letters and punctuation are fine, and
+//        the original title matches too ("Jagten" finds it, "The Hunt" doesn't).
+//   2. The film page, or for a series its page, whose episodes sit in
+//        <div class="eps" data-season="S"> <a class="ep" href> … <h4>S. Sezon E. Bölüm</h4>
+//      A watch page lists its players as a JSON array:
+//        [{"name":"KULT","langLabel":"Altyazılı","html":"<iframe src=…>"}, …]
+//      "Altyazılı" is the original audio with Turkish subtitles; "Türkçe
+//      Dublaj" is the dub.
+//   3. Two players carry nearly the whole catalogue (a 40-film sample on
+//      2026-10-23: 22 ok.ru, 17 FirePlayer, 1 vidmoly):
+//      - ok.ru / odnoklassniki.ru `/videoembed/{id}`: the embed's
+//        `data-options` JSON holds `flashvars.metadata`, whose
+//        `hlsManifestUrl` is signed for the requesting IP — the phone fetches
+//        the embed itself, so it matches — and plays with any user agent.
+//        Subtitles are burned in.
+//      - FirePlayer on vidpapi.xyz (`/video/{hash}`): the embed page carries
+//        the .srt subtitles (`playerjsSubtitle`) and the IMDb id; POST
+//        /player/index.php?data={hash}&do=getVideo answers the HLS
+//        `securedLink`. Segments are MPEG-TS named .html, and need no Referer.
+//      vidmoly is skipped: it does not answer from Azerbaijan.
+
+/**
+ * The first play of a session pays for the challenge (2-6s) on top of search,
+ * page and player. Past this the pass answers without Kült Filmler, and the
+ * timeout counts as a transient failure, so the resolver's second pass, with
+ * the session open by then, asks again.
+ */
+const KULTFILMLER_TIER_TIMEOUT_MS = 14_000;
+const KULTFILMLER_PLAYER_TIMEOUT_MS = 8_000;
+/** Listings opened per search; the search is loose. */
+const KULTFILMLER_MAX_CANDIDATES = 2;
+/** A listing must name the title this well (see scoreMatch) to be opened. */
+const KULTFILMLER_MIN_TITLE_SCORE = 80;
+const FIREPLAYER_EMBED_URL = /^https:\/\/[^/]+\/video\/[a-f0-9]{20,}\/?$/i;
+const OKRU_EMBED_URL = /^https:\/\/(?:www\.)?(?:ok\.ru|odnoklassniki\.ru)\/videoembed\/\d+/i;
+
+type KultfilmlerCandidate = { url: string; year: string | null; titleScore: number };
+type KultfilmlerSource = { label: string; embedUrl: string };
+
+function kultfilmlerBaseUrl(): string {
+  return getProviderConfig("kultfilmler").baseUrl.replace(/\/+$/, "");
+}
+
+function isKultfilmlerUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && parsed.hostname.includes("kultfilmler");
+  } catch {
+    return false;
+  }
+}
+
+/** How well one listed name matches the best of the requested titles. */
+function scoreKultfilmlerName(name: string, titles: string[], year: string | null): number {
+  let best = 0;
+  for (const title of titles) {
+    const score = isShortOrAcronymTitle(title)
+      ? (hasStrictTitleIdentity(name.replace(/\b(?:19|20)\d{2}\b/g, " "), title) ? 100 : 0)
+      : scoreMatch(name, title, year);
+    best = Math.max(best, score);
+  }
+  return best;
+}
+
+/**
+ * Candidates from one search answer, best first. A listing whose year is out
+ * of tolerance is never one: a namesake from another year is another film.
+ * Pure (no network) so it is unit-testable.
+ */
+function rankKultfilmlerResults(response: unknown, request: WebPlayerRequest, titles: string[]): KultfilmlerCandidate[] {
+  const items = (response as { data?: unknown } | null)?.data;
+  if (!Array.isArray(items)) return [];
+  const wantedType = request.mediaType === "movie" ? "film" : "dizi";
+  const candidates: KultfilmlerCandidate[] = [];
+  for (const item of items as Array<Record<string, unknown> | null>) {
+    if (typeof item?.title !== "string" || typeof item.url !== "string" || !isKultfilmlerUrl(item.url)) continue;
+    if (String(item.type ?? "").toLowerCase() !== wantedType) continue;
+    const year = String(item.year ?? "").match(/\b(?:19|20)\d{2}\b/)?.[0] ?? null;
+    if (isYearIncompatible(year, request.year ?? null)) continue;
+    const names = item.title.split(/\s+[–—-]\s+/).map((name) => name.trim()).filter(Boolean);
+    const titleScore = Math.max(0, ...names.map((name) => scoreKultfilmlerName(name, titles, year)));
+    if (titleScore >= KULTFILMLER_MIN_TITLE_SCORE) candidates.push({ url: item.url, year, titleScore });
+  }
+  return candidates.sort((a, b) => b.titleScore - a.titleScore);
+}
+
+/** An episode's page from its series page. Pure. */
+function readKultfilmlerEpisodeUrl(seriesHtml: string, seasonNumber: number, episodeNumber: number): string | null {
+  for (const block of seriesHtml.split(/<div class="eps"/).slice(1)) {
+    if (Number(block.match(/^[^>]*data-season="(\d+)"/)?.[1]) !== seasonNumber) continue;
+    for (const link of block.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)) {
+      if (!/class="ep"/.test(link[1])) continue;
+      const href = link[1].match(/href="([^"]+)"/)?.[1];
+      const number = Number(link[2].match(/(\d+)\.\s*B(?:ö|o)l(?:ü|u)m/i)?.[1]);
+      if (href && number === episodeNumber && isKultfilmlerUrl(href)) return href;
+    }
+  }
+  return null;
+}
+
+/** A watch page's players, the original audio before the dub. Pure. */
+function readKultfilmlerSources(pageHtml: string): KultfilmlerSource[] {
+  const start = pageHtml.indexOf('[{"name":');
+  const literal = start === -1 ? null : extractJsonArrayLiteral(pageHtml.slice(start));
+  if (!literal) return [];
+  let items: unknown;
+  try {
+    items = JSON.parse(literal);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(items)) return [];
+
+  const sources: KultfilmlerSource[] = [];
+  for (const item of items as Array<Record<string, unknown> | null>) {
+    if (typeof item?.html !== "string") continue;
+    const src = item.html.match(/<iframe[^>]+src=["']([^"']+)["']/i)?.[1];
+    if (!src) continue;
+    const embedUrl = src.startsWith("//") ? `https:${src}` : src;
+    sources.push({ label: typeof item.langLabel === "string" ? item.langLabel : "", embedUrl });
+  }
+  const isDub = (source: KultfilmlerSource) => /dublaj/i.test(source.label);
+  return [...sources.filter((source) => !isDub(source)), ...sources.filter(isDub)];
+}
+
+/** The IMDb id a FirePlayer embed names, if any. Pure. */
+function readFirePlayerImdbId(embedHtml: string): string | null {
+  return embedHtml.match(/\b(tt\d{7,9})\b/)?.[1] ?? null;
+}
+
+/** The HLS manifest an ok.ru embed plays, from its `data-options`. Pure. */
+function readOkRuHlsManifest(embedHtml: string): string | null {
+  const raw = embedHtml.match(/data-options="([^"]+)"/)?.[1];
+  if (!raw) return null;
+  try {
+    const options = JSON.parse(decodeHtmlAttribute(raw));
+    const metadata = typeof options?.flashvars?.metadata === "string"
+      ? JSON.parse(options.flashvars.metadata)
+      : options?.flashvars?.metadata;
+    const manifest = metadata?.hlsManifestUrl ?? metadata?.ondemandHls;
+    return typeof manifest === "string" && /^https:\/\//i.test(manifest) ? manifest : null;
+  } catch {
+    return null;
+  }
+}
+
+/** FirePlayer labels its subtitles by name ("Türkçe"). */
+function kultfilmlerSubtitleLang(label: string): string {
+  if (/t[üu]rk/i.test(label)) return "tr";
+  if (/ingilizce|english/i.test(label)) return "en";
+  return "und";
+}
+
+/**
+ * A page off the site, through the session. A request that got no answer is
+ * a transient failure, so a miss in this pass gets the resolver's second one.
+ */
+async function readKultfilmlerPage(url: string): Promise<KultfilmlerFetchResult> {
+  const result = await fetchKultfilmlerText(url);
+  if (!result.ok && result.reason === "timeout") noteProviderFailure({});
+  if (!result.ok) debugLog(`[WebPlayer:kultfilmler] ${url} failed: ${result.reason} ${result.status ?? ""}`);
+  return result;
+}
+
+/** A player's embed page, as the site's iframe would load it. */
+async function fetchKultfilmlerEmbed(embedUrl: string): Promise<string | null> {
+  try {
+    const response = await providerGet<string>(`Kultfilmler player ${new URL(embedUrl).hostname}`, embedUrl, {
+      timeout: KULTFILMLER_PLAYER_TIMEOUT_MS,
+      responseType: "text",
+      headers: { "User-Agent": UA, Accept: "text/html", Referer: `${kultfilmlerBaseUrl()}/` },
+    });
+    return typeof response.data === "string" ? response.data : null;
+  } catch (error: any) {
+    debugLog(`[WebPlayer:kultfilmler] player ${embedUrl} failed: ${error?.response?.status ?? error?.code ?? "?"}`);
+    return null;
+  }
+}
+
+async function resolveKultfilmlerOkRu(embedUrl: string): Promise<DizipalStreamInfo | null> {
+  const html = await fetchKultfilmlerEmbed(embedUrl);
+  const manifest = html ? readOkRuHlsManifest(html) : null;
+  if (!manifest) return null;
+  return { streamUrl: manifest, streamType: "m3u8", poster: "", referer: embedUrl, subtitles: [] };
+}
+
+async function resolveKultfilmlerFirePlayer(embedUrl: string, request: WebPlayerRequest): Promise<DizipalStreamInfo | null> {
+  const siteReferer = `${kultfilmlerBaseUrl()}/`;
+  const html = await fetchKultfilmlerEmbed(embedUrl);
+  if (!html) return null;
+
+  // A film under another IMDb id is another film (a remake, a namesake).
+  // Episodes name the series or the episode, so only films are held to it.
+  const imdbId = readFirePlayerImdbId(html);
+  if (request.mediaType === "movie" && imdbId && request.imdbId && imdbId !== request.imdbId) {
+    debugLog(`[WebPlayer:kultfilmler] ${embedUrl} is ${imdbId}, not ${request.imdbId}`);
+    return null;
+  }
+
+  const stream = await resolveViaGetVideoApi(embedUrl, html, siteReferer);
+  if (!stream) return null;
+  return {
+    ...stream,
+    subtitles: stream.subtitles.map((subtitle) => ({ ...subtitle, lang: kultfilmlerSubtitleLang(subtitle.label) })),
+  };
+}
+
+async function resolveKultfilmlerTitle(titleUrl: string, request: WebPlayerRequest): Promise<WebPlayerResult | null> {
+  let watchUrl = titleUrl;
+  if (request.mediaType !== "movie") {
+    const series = await readKultfilmlerPage(titleUrl);
+    if (!series.ok) return null;
+    const episodeUrl = readKultfilmlerEpisodeUrl(series.body, request.seasonNumber ?? 0, request.episodeNumber ?? 0);
+    if (!episodeUrl) return null;
+    watchUrl = episodeUrl;
+  }
+
+  const page = await readKultfilmlerPage(watchUrl);
+  if (!page.ok) return null;
+  for (const source of readKultfilmlerSources(page.body)) {
+    const stream = OKRU_EMBED_URL.test(source.embedUrl)
+      ? await resolveKultfilmlerOkRu(source.embedUrl)
+      : FIREPLAYER_EMBED_URL.test(source.embedUrl)
+        ? await resolveKultfilmlerFirePlayer(source.embedUrl, request)
+        : null;
+    if (!stream) continue;
+    debugLog(`[WebPlayer:kultfilmler] resolved ${request.title} via ${watchUrl} (${source.label})`);
+    return {
+      url: watchUrl,
+      source: "direct",
+      streamUrl: stream.streamUrl,
+      streamType: stream.streamType,
+      referer: stream.referer,
+      subtitles: stream.subtitles,
+      provider: "kultfilmler",
+    };
+  }
+  return null;
+}
+
+async function resolveKultfilmlerStream(
+  request: WebPlayerRequest,
+  turkishTitle: Promise<string | null>
+): Promise<WebPlayerResult | null> {
+  if (request.mediaType !== "movie" && (!request.seasonNumber || !request.episodeNumber)) return null;
+  const baseUrl = kultfilmlerBaseUrl();
+  setKultfilmlerOrigin(baseUrl);
+
+  // The search matches names as written, so a title with no Latin letters
+  // (올드보이, 羅生門) is never one to send; the English one finds it.
+  const searchable = (title: string | null | undefined): title is string => Boolean(title && /[A-Za-z]/.test(title));
+  const titles = [request.title, request.originalTitle].filter(searchable);
+  const asked = new Set<string>();
+  const opened = new Set<string>();
+
+  for (let index = 0; index <= titles.length; index++) {
+    // The Turkish title last, and only when the others found nothing.
+    if (index === titles.length) {
+      const alt = await turkishTitle;
+      if (!searchable(alt) || titles.includes(alt)) break;
+      titles.push(alt);
+    }
+    const query = titles[index];
+    if (asked.has(query.toLowerCase())) continue;
+    asked.add(query.toLowerCase());
+
+    const search = await readKultfilmlerPage(
+      `${baseUrl}/wp-admin/admin-ajax.php?action=kf_live_search&q=${encodeURIComponent(query)}`
+    );
+    // No session (challenge failed, or no answer): the next query won't fare better.
+    if (!search.ok) return null;
+    let response: unknown = null;
+    try {
+      response = JSON.parse(search.body);
+    } catch {
+      continue;
+    }
+
+    const candidates = rankKultfilmlerResults(response, request, titles)
+      .filter((candidate) => !opened.has(candidate.url))
+      .slice(0, KULTFILMLER_MAX_CANDIDATES);
+    for (const candidate of candidates) {
+      opened.add(candidate.url);
+      const result = await resolveKultfilmlerTitle(candidate.url, request);
+      if (result) return result;
+    }
+  }
+  return null;
+}
+
 export const __internal = {
   fetchDizipalStreamUrl,
   buildHdFilmResult,
@@ -3378,6 +3769,12 @@ export const __internal = {
   probeDizipalDirectSlug,
   rankDizibalSuggestions,
   readDizibalPageNames,
+  rankKultfilmlerResults,
+  readKultfilmlerEpisodeUrl,
+  readKultfilmlerSources,
+  readFirePlayerImdbId,
+  readOkRuHlsManifest,
+  resolveKultfilmlerStream,
   scoreDizipalResult,
   scoreHdFilmResult,
   scoreStrictDizipalTitle,

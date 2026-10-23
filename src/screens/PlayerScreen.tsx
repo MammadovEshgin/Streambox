@@ -887,12 +887,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         // or a jump in `not_found`, is the tier-1 outage signal.
         trackPerformance("player_resolve", Date.now() - resolveStartedAt, {
           source: result.source,
-          // `direct` is shared by HDFilm and Dizibal; only HDFilm carries its page.
-          provider: result.source === "dizipal_direct"
+          // `direct` is shared by HDFilm, Dizibal and Kült Filmler; HDFilm
+          // carries its page, Kült Filmler names itself.
+          provider: result.provider ?? (result.source === "dizipal_direct"
             ? "dizipal"
             : result.source === "direct"
               ? (result.webViewFallbackUrl ? "hdfilm" : "dizibal")
-              : null,
+              : null),
           mediaType: route.params.mediaType,
           isEpisode: route.params.episodeNumber != null,
           isRetry: resolveNonce > 0,

@@ -18,12 +18,14 @@ import {
 
 const HDFILM = { baseUrl: "https://www.hdfilmcehennemi.nl", referer: "https://www.hdfilmcehennemi.nl/" };
 const DIZIBAL = { baseUrl: "https://dizibal.org", referer: "https://dizibal.org/" };
+const KULTFILMLER = { baseUrl: "https://kultfilmler.net", referer: "https://kultfilmler.net/" };
 
 function baseline(dizipalBaseUrl: string): ProviderConfigMap {
   return {
     hdfilm: { ...HDFILM },
     dizipal: { baseUrl: dizipalBaseUrl, referer: `${dizipalBaseUrl}/` },
     dizibal: { ...DIZIBAL },
+    kultfilmler: { ...KULTFILMLER },
   };
 }
 
@@ -99,6 +101,7 @@ test("dizibal.com is mapped forward to the live .org host", () => {
     hdfilm: { ...HDFILM },
     dizipal: { baseUrl: "https://dizipal9995.com", referer: "https://dizipal9995.com/" },
     dizibal: { ...DIZIBAL },
+    kultfilmler: { ...KULTFILMLER },
   });
   // The self-heal path accepts .org for .com because both are the dizibal
   // family; the published-config path is covered by STALE_PROVIDER_BASE_URLS.
@@ -118,5 +121,5 @@ test("the shipped Dizipal fallback is not behind the last observed live domain",
   assert.notEqual(floor, null);
   const shipped = parseDizipalSuffix(floor!.baseUrl);
   assert.notEqual(shipped, null);
-  assert.equal(shipped! >= 2141, true, `shipped Dizipal fallback is ${shipped}, last verified live was 2141`);
+  assert.equal(shipped! >= 2142, true, `shipped Dizipal fallback is ${shipped}, last verified live was 2142`);
 });

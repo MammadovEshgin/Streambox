@@ -188,4 +188,18 @@ group by 1, 2, 3, 4
 order by 1 desc, 5 desc;
 ```
 
+Kült Filmler sessions: whether devices' hidden WebView gets past the site's Cloudflare
+challenge (`ready`, with how long it took) or not (`challenge_timeout`, after which the provider
+is set aside for 10 minutes). Plays it served show as `provider = 'kultfilmler'` in
+`player_resolve`:
+
+```sql
+select occurred_at::date as day, metadata->>'outcome' as outcome, count(*),
+       round(avg((metadata->>'ms')::numeric)) as avg_ms
+from public.app_telemetry_events
+where event_name = 'kultfilmler_session' and occurred_at > now() - interval '7 days'
+group by 1, 2
+order by 1 desc, 2;
+```
+
 Telemetry and audit logs are pruned after 90 days by the `streambox-event-log-cleanup` cron.

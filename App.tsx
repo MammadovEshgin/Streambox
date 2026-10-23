@@ -24,6 +24,7 @@ import {
   SplashBackdrop,
   SplashLoading,
 } from "./src/components/common/LaunchSplash";
+import { KultfilmlerBridge } from "./src/components/common/KultfilmlerBridge";
 import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
@@ -644,6 +645,7 @@ function AppShell() {
           {/* Popups wait for the splash: a LiveOps modal is a native layer that
               would otherwise appear ABOVE the splash overlay mid-reveal. */}
           <LiveOpsHost enabled={isUserDataReady && splashComplete} />
+          <KultfilmlerBridge />
         </StartupErrorBoundary>
       ) : null}
       {/* Top-most opaque overlay — content mounts and paints beneath it. */}

@@ -298,7 +298,7 @@ async function main() {
   //    the check reflects real playback rather than only the static schemes.
   let healthy = 0;
   for (const { embedHtml, embedUrl } of probes) {
-    const candidate = __internal.extractRapidrameStreamUrl(embedHtml);
+    const candidate = __internal.extractRapidrameStreamUrl(embedHtml, embedUrl);
     const ok = candidate ? await urlServesHlsManifest(candidate, embedUrl) : false;
     if (ok) healthy += 1;
   }

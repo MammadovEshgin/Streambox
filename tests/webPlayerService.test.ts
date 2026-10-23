@@ -1372,9 +1372,16 @@ test("Dizipal's single-use data-cfg: a rejected POST re-reads the page and names
   }) as typeof axios.get;
 
   const posts: Array<{ url: string; body: string; cookie?: string }> = [];
+  let beacons = 0;
+  let configs = 0;
   axios.post = (async (url: string, body: string, config: any) => {
     posts.push({ url, body, cookie: config?.headers?.Cookie });
-    return posts.length === 1
+    if (url === `${dizipalBase}/_pb`) {
+      beacons += 1;
+      return { status: 200, data: { ok: true }, headers: { "set-cookie": [`_ct=beacon${beacons}; path=/`] } };
+    }
+    configs += 1;
+    return configs === 1
       ? { status: 200, data: { success: false, message: "Invalid token" } }
       : { status: 200, data: { success: true, config: { v: "https://embed.test/embed-abc.html", t: "embed", p: "" } } };
   }) as typeof axios.post;
@@ -1383,11 +1390,14 @@ test("Dizipal's single-use data-cfg: a rejected POST re-reads the page and names
     const result = await __internal.fetchDizipalStreamUrl(pageUrl);
     assert.equal(result?.stream?.streamUrl, "https://cdn.test/hls/abc/master.m3u8");
     assert.equal(renders, 2, "a spent cfg is never replayed");
+    // Since 2026-10-23 every config POST follows the page's player beacon.
     assert.deepEqual(
       posts.map((post) => [post.url, post.body, post.cookie]),
       [
+        [`${dizipalBase}/_pb`, "s=f%3Athe-dark-knight", undefined],
         [`${dizipalBase}/ajax-player-config`, "cfg=cfg1", undefined],
-        [`${dizipalBase}/ajax-player-config`, "cfg=cfg2", "PHPSESSID=session2"],
+        [`${dizipalBase}/_pb`, "s=f%3Athe-dark-knight", "PHPSESSID=session2"],
+        [`${dizipalBase}/ajax-player-config`, "cfg=cfg2", "PHPSESSID=session2; _ct=beacon2"],
       ]
     );
   } finally {

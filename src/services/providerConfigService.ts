@@ -31,6 +31,9 @@ export type ProviderConfigMap = {
   // base URL via /set_dizibal; app reads this getter every scraper call
   // so host rotations need zero OTA.
   dizibal: ProviderEntry;
+  // Tier 4 — Kült Filmler, a curated classics/arthouse catalogue that carries
+  // films the others don't. Read through a hidden WebView (kultfilmlerSession).
+  kultfilmler: ProviderEntry;
 };
 
 type RemoteResponse = {
@@ -82,9 +85,10 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     // connection). 2026-09-15: 2131 → 2132, one day later. 2026-09-18: 2132 → 2133.
     // 2026-09-25: 2133 → 2134 (the numbered chain came back with the classic site).
     // 2026-10-04: 2134 → 2135. 2026-10-08: 2135 → 2137 (2136 lasted two days).
-    // 2026-10-16: 2137 → 2140. 2026-10-19: 2140 → 2141.
-    baseUrl: "https://dizipal2141.com",
-    referer: "https://dizipal2141.com/",
+    // 2026-10-16: 2137 → 2140. 2026-10-19: 2140 → 2141. 2026-10-23: 2141 → 2142
+    // (2141 stopped answering at all instead of redirecting).
+    baseUrl: "https://dizipal2142.com",
+    referer: "https://dizipal2142.com/",
   },
   dizibal: {
     // dizibal.org (was .com until 2026-09; .com still 301s here) — Turkish
@@ -94,6 +98,10 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     // its base URL.
     baseUrl: "https://dizibal.org",
     referer: "https://dizibal.org/",
+  },
+  kultfilmler: {
+    baseUrl: "https://kultfilmler.net",
+    referer: "https://kultfilmler.net/",
   },
 };
 
@@ -333,7 +341,7 @@ async function loadObservedFromStorage(): Promise<void> {
     for (const [provider, value] of Object.entries(parsed)) {
       const entry = value as Partial<ObservedEntry>;
       if (
-        (provider === "hdfilm" || provider === "dizipal" || provider === "dizibal") &&
+        (provider === "hdfilm" || provider === "dizipal" || provider === "dizibal" || provider === "kultfilmler") &&
         typeof entry?.origin === "string" &&
         typeof entry?.baseline === "string" &&
         typeof entry?.recordedAt === "number"
@@ -375,6 +383,7 @@ function sameProviderFamily(provider: keyof ProviderConfigMap, observedOrigin: s
   if (provider === "dizipal") return host.includes("dizipal");
   if (provider === "hdfilm") return host.includes("hdfilm");
   if (provider === "dizibal") return host.includes("dizibal");
+  if (provider === "kultfilmler") return host.includes("kultfilmler");
   return false;
 }
 
@@ -453,5 +462,5 @@ async function loadFromStorage(): Promise<ProviderConfigMap | null> {
 }
 
 function summarise(c: ProviderConfigMap): string {
-  return `hdfilm=${c.hdfilm.baseUrl} dizipal=${c.dizipal.baseUrl} dizibal=${c.dizibal.baseUrl}`;
+  return `hdfilm=${c.hdfilm.baseUrl} dizipal=${c.dizipal.baseUrl} dizibal=${c.dizibal.baseUrl} kultfilmler=${c.kultfilmler.baseUrl}`;
 }

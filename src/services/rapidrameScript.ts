@@ -753,6 +753,8 @@ type Callable = { kind: "closure"; params: string[]; body: Stmt[]; scope: Scope 
 type Native = { kind: "native"; name: string };
 type RegexValue = { kind: "regex"; pattern: string; flags: string };
 type Namespace = { kind: "namespace"; name: "String" | "Math" };
+/** A read-only host object (`location`, `self`, …): string fields only, no writes. */
+type HostObject = { kind: "host"; fields: ReadonlyMap<string, Value> };
 
 type Value =
   | number
@@ -763,7 +765,8 @@ type Value =
   | Callable
   | Native
   | RegexValue
-  | Namespace;
+  | Namespace
+  | HostObject;
 
 class Scope {
   private readonly values = new Map<string, Value>();
@@ -952,6 +955,8 @@ class Interpreter {
         const index = this.evaluate(expression.index, scope);
         if (Array.isArray(object)) return object[toNumber(index)];
         if (typeof object === "string") return object.charAt(toNumber(index));
+        // `location['hostna' + 'me']` — the 2026-10-22 bodies split the name.
+        if (isHostObject(object) && typeof index === "string") return this.readProperty(object, index);
         return bail("index on unsupported value");
       }
 
@@ -1089,6 +1094,10 @@ class Interpreter {
       bail(".length on unsupported value");
     }
     if (isNamespace(object)) return { kind: "native", name: `${object.name}.${property}` };
+    if (isHostObject(object)) {
+      if (!object.fields.has(property)) bail(`unsupported host property: .${property}`);
+      return object.fields.get(property);
+    }
     // Everything else is a method, resolved at the call site so the receiver
     // is available. Reading a method without calling it is not supported.
     bail(`unsupported property read: .${property}`);
@@ -1322,6 +1331,10 @@ function isNamespace(value: Value): value is Namespace {
   );
 }
 
+function isHostObject(value: Value): value is HostObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && (value as HostObject).kind === "host";
+}
+
 function stringify(value: Value): string {
   if (typeof value === "string") return value;
   if (typeof value === "number") return String(value);
@@ -1369,6 +1382,29 @@ function looseEqual(left: Value, right: Value): boolean {
 
 // ─── Public entry point ─────────────────────────────────────────────────────
 
+/** `location`, and the `self` / `window` / `document` paths to it, for one page. */
+function declarePageGlobals(globals: Scope, page: URL): void {
+  const location: HostObject = {
+    kind: "host",
+    fields: new Map<string, Value>([
+      ["hostname", page.hostname],
+      ["host", page.host],
+      ["origin", page.origin],
+      ["protocol", page.protocol],
+      ["pathname", page.pathname],
+      ["href", page.href],
+    ]),
+  };
+  const windowObject: HostObject = { kind: "host", fields: new Map<string, Value>([["location", location]]) };
+  globals.declare("location", location);
+  globals.declare("self", windowObject);
+  globals.declare("window", windowObject);
+  globals.declare("document", {
+    kind: "host",
+    fields: new Map<string, Value>([["location", location], ["domain", page.hostname]]),
+  });
+}
+
 /**
  * Execute a live decoder body against its parts array.
  *
@@ -1376,8 +1412,12 @@ function looseEqual(left: Value, right: Value): boolean {
  * appears on the embed page. Returns the decoded string, or null when the body
  * uses anything outside the supported subset — callers should then fall back
  * to the static schemes rather than treat null as "no stream".
+ *
+ * `pageUrl` is the embed page the body runs on. Since 2026-10-22 the key mixes
+ * in `self.location.hostname`, so the body only decodes against the host that
+ * served it; without a `pageUrl` such a body fails closed.
  */
-export function runRapidrameDecoder(functionSource: string, valueParts: string[]): string | null {
+export function runRapidrameDecoder(functionSource: string, valueParts: string[], pageUrl?: string): string | null {
   try {
     const declaration = new Parser(tokenize(functionSource)).parseFunctionDeclaration();
 
@@ -1388,6 +1428,7 @@ export function runRapidrameDecoder(functionSource: string, valueParts: string[]
     globals.declare("String", { kind: "namespace", name: "String" });
     globals.declare("Math", { kind: "namespace", name: "Math" });
     globals.declare("undefined", undefined);
+    if (pageUrl) declarePageGlobals(globals, new URL(pageUrl));
 
     const interpreter = new Interpreter();
     const result = interpreter.callClosure(

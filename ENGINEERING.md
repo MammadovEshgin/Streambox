@@ -15,10 +15,10 @@ doubt, **stop and ask** rather than guess.
   Function), IMDb chart lists, Letterboxd import. (`api.imdbapi.dev` stopped resolving in
   Sept 2026; per-title IMDb ratings now come only from the chart-seeded cache.)
 - Playback: streams are resolved **on device** by scraping providers in
-  `src/services/WebPlayerService.ts` and played in the native expo-video player. All three
-  providers are asked at once and the answer follows priority HDFilm → Dizipal → Dizibal
-  (`firstNativeByPriority`: a lower tier's stream waits at most 2.5s for a higher tier still
-  running). A provider's own web player is never shown — no native stream means
+  `src/services/WebPlayerService.ts` and played in the native expo-video player. All four
+  providers are asked at once and the answer follows priority HDFilm → Dizipal → Dizibal →
+  Kült Filmler (`firstNativeByPriority`: a lower tier's stream waits at most 2.5s for a higher
+  tier still running). A provider's own web player is never shown — no native stream means
   "Not available" with a Retry that re-resolves; a found stream that won't start is re-resolved
   once silently, then shows the retryable stream error (never "Not available").
 - Backend: Supabase (Auth, Postgres + RLS, RPCs, Storage, Realtime, Edge Functions) and
@@ -32,6 +32,7 @@ doubt, **stop and ask** rather than guess.
 | Provider search / stream resolution | `src/services/WebPlayerService.ts` (`scoreMatch`, `scoreHdFilmResult`, `scoreDizipalResult`, `probeDizipalDirectSlug`, `rankDizibalSuggestions`, `noteProviderSilence`) |
 | HDFilm decoder interpreter | `src/services/rapidrameScript.ts` (runbook: `decoder-recovery.md`) |
 | Provider base URLs (Supabase + shipped floor) | `src/services/providerConfigService.ts` |
+| Kült Filmler session (hidden WebView past its Cloudflare challenge) | `src/services/kultfilmlerSession.ts`, `src/components/common/KultfilmlerBridge.tsx` |
 | Player | `src/screens/PlayerScreen.tsx`; WebView policy `src/screens/player/playerWebViewPolicy.ts` |
 | TMDB client + Bakcell host failover | `src/api/tmdb.ts` |
 | Ratings client | `src/api/ratingsProxy.ts` |
@@ -139,6 +140,13 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   see it. Health comes from `npm run check:hdfilm` on a residential connection and from the
   app's `player_resolve` telemetry. Its obfuscation rotates; `rapidrameScript.ts` interprets
   the live decoder body. Follow `decoder-recovery.md`.
+- **HDFilm's decoder keys off the embed page's own hostname (2026-10-22).** The key string
+  gains `self.location.hostname` (also spelt `location['hostna'+'me']`, `window.location…`,
+  `document.location…` or bare `location…`, varying per request), and the parts are split on a
+  random character. The interpreter now has read-only `location` / `self` / `window` /
+  `document` objects for the page the embed came from (`runRapidrameDecoder(…, pageUrl)`), so
+  every caller passes the embed's URL. Until then every HDFilm title fell through — 41
+  `not_found` resolves on 10-22 against a usual ~7.
 - HDFilm `/dizi/` pages challenge the **first** request on a fresh connection and pass after;
   `hdFilmGet()` retries past it. `/rplayer/` embeds remain unreachable.
 - HDFilm does not tokenize apostrophes: search `Rosemarys Baby`, not `Rosemary's Baby`.
@@ -173,6 +181,13 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   the app's own user agent. A gated reply is treated as an answer, not an outage. If both
   doors close, Dizipal titles fall through to Dizibal again: `player_resolve` shows no
   `dizipal` rows. The direct-slug probe (`/film/{slug}`) reads through the same fetch.
+- **The player-config POST needs the player beacon first (2026-10-23).** The watch page's
+  script POSTs `/_pb` with `s=f:{slug}` (film) or `s=b:{slug}` (episode) before asking for the
+  config; without it the config POST answers 403/429 `{"success":false}`. Its answer sets the
+  `_ct` cookie the config is checked against (`postDizipalPlayerBeacon`). The gated page's
+  browser check (`/_bcs` script → `POST /_bc_verify` with a fingerprint and proof of work →
+  `_bc_ok` cookie) is **not** needed: the doubled-slash render skips it, and the config POST
+  doesn't look for `_bc_ok`.
 - **Dizipal's search answers an empty body to any non-ASCII query** (2026-10-16: "Çöl
   Gezegeni" → nothing). It matches by substring on the listed (often Turkish) title, so
   `toDizipalSearchQuery` sends the longest run of words the query already spells in ASCII
@@ -189,7 +204,8 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   the real site came back. **Check the old domains' redirect target before trusting a higher
   `dizipalN.com`**: the 22xx band is the clone, and 2200, 2203-2205, 2207 and 2300 are SEO
   squatters serving "güncel adres" landing pages.
-- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2141). Hops are
+- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2142; 2141 went
+  dark without a redirect, so a device pinned to it reaches 2142 only through Supabase). Hops are
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal
   rotates, and update the Supabase row with the Telegram bot (`/set_dizipal <url>`). The floor
@@ -246,6 +262,32 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   `subs`. `direct`: `/video/bolum/{id}` MP4, HEAD-probed first (some ids 502 upstream). A
   Turkish-named listing is confirmed by the page's JSON-LD `alternateName` (≤3 pages). The site
   IP-bans datacenter IPs (monitor: `blocked`); the player host does not.
+- **Kült Filmler (tier 4, 2026-10-23)** — kultfilmler.net, a WordPress catalogue of classics and
+  arthouse (~5,000 films, a few dozen series) that often has what the other three lack. **Every
+  path answers a Cloudflare managed challenge** (`403 cf-mitigated: challenge`, "Just a
+  moment…") that only a browser engine passes; it does so on its own in ~5s, with no click.
+  The clearance cookie is bound to that browser's exact user agent, and a spoofed agent fails
+  the challenge, so it can't be lifted into native requests. The site is therefore read
+  through **a hidden WebView** (`KultfilmlerBridge`, mounted in the app shell, rendering
+  nothing until asked): it loads the empty search URL, which is a tiny JSON document once
+  cleared, and every request runs as a same-origin `fetch()` in that page, bodies coming back
+  over `postMessage` (`kultfilmlerSession`). Nothing the site serves is rendered or executed;
+  navigation off the site is refused. The session stays open 10 min after its last request. A
+  challenge not passed in 10s puts the provider aside for 10 min (no second resolver pass for
+  it); a lapsed clearance mid-session reloads and retries once. Telemetry:
+  `kultfilmler_session` (`outcome: ready|challenge_timeout`, `ms`).
+  Chain: `/wp-admin/admin-ajax.php?action=kf_live_search&q=` (JSON `{title: "English –
+  Turkish", url, year, type: Film|Dizi}`; matches original titles and Turkish letters) → film
+  page, or series page → `div.eps[data-season]` → episode → the watch page's JSON player list
+  `[{name, langLabel, html: "<iframe src>"}]` ("Altyazılı" = original audio + Turkish subs,
+  preferred over "Türkçe Dublaj"). Players: **ok.ru** `/videoembed/{id}` (`data-options` →
+  `flashvars.metadata.hlsManifestUrl`, signed for the requesting IP, plays with any agent,
+  subtitles burned in) and **FirePlayer** on vidpapi.xyz (`/video/{hash}`, `getVideo` →
+  `securedLink`; `.srt` subtitles from `playerjsSubtitle`; the embed names the IMDb id, which
+  must match a film's). A 40-film sample was 22 ok.ru, 17 FirePlayer, 1 vidmoly (unreachable
+  from Azerbaijan, skipped). Some episodes are "Bu bölüm çok yakında" placeholders. The first
+  play of a session pays for the challenge; a title nobody has can then take ~5s to say "Not
+  available" instead of ~2s.
 - A stream the resolver found but that will not start is never "Not available": the player
   re-resolves once silently (`failPlayableTitle`), then shows the retryable stream error. The
   stall watchdog is 15s (`minBufferForPlayback: 4` + imagestoo's per-segment hostnames made cold

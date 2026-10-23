@@ -4,6 +4,18 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-10-23
+
+- Added: a fourth source, Kült Filmler, a library of classic and arthouse films the other
+  providers often lack (*The Exterminating Angel*, *The Goodbye Girl*, *Deep Crimson* and
+  thousands more). It is asked last, so titles the others carry still play from them. The first
+  title played from it after opening the app takes a few extra seconds.
+- Fixed: HDFilm, the main source, stopped playing anything on 22 October after it changed how
+  it hides its streams. Titles fell back to other providers, often Turkish-only, or showed "Not
+  available". HDFilm plays again.
+- Fixed: Dizipal stopped playing on 23 October after it added a new check to its player, and it
+  moved to a new address (dizipal2142.com). It plays again.
+
 ## 2026-10-18
 
 - Fixed: posters in search (and across the app) took up to ten seconds to appear. The image

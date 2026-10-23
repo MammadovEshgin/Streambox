@@ -87,6 +87,7 @@ shapes. There is no "current scheme" to pin down.
 | Aug 2026 | rolling XOR: `acc=(acc+step)%256; plain=b^acc; acc=(acc+b)%256` (feedback off the CIPHER byte) |
 | Sep 2026 | seeded shuffle: two literal seed strings derive an LCG + XOR seed, Fisher-Yates un-shuffles the chars, THEN rolling XOR |
 | 2026-09-20 | same family, but the key and the ops string are **spliced out of the parts** (`Array.splice`), the decoder is a function **expression** (`var x = function (p) {…}`), the call is `x("a\|b\|…".split("\|"))` instead of an array literal, and a decoy old-style `var y = z([…])` call precedes it |
+| 2026-10-22 | same family, but the key gains **the embed page's hostname** — `self.location.hostname`, `location['hostna'+'me']`, `window.location…`, `document.location…` or bare `location…`, varying per request — and the split character is random (`^`, `@`, …). The interpreter models read-only `location` / `self` / `window` / `document` for the page URL the caller passes (`runRapidrameDecoder(source, parts, pageUrl)`); without it the body fails closed |
 
 The 2026-09-20 rotation broke three things at once, each fatal alone: the
 interpreter had no `splice`, the decoder lookup only found `function name(`,

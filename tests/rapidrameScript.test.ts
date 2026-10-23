@@ -387,3 +387,51 @@ test("interpreter bounds a runaway loop rather than hanging the resolver", () =>
   assert.equal(runRapidrameDecoder(source, ["abc"]), null);
   assert.ok(Date.now() - started < 10_000, "step budget should stop it quickly");
 });
+
+// ---------------------------------------------------------------------------
+// 2026-10-22: the key mixes in the embed page's own hostname — as
+// `self.location.hostname`, `location['hostna' + 'me']`, `window.location`,
+// `document.location` or bare `location`, varying per request — and the parts
+// are split on a random character ("^", "@"). Two live bodies, captured from
+// hdfilmcehennemi.mobi/video/embed/ and decoded against that host.
+// ---------------------------------------------------------------------------
+
+const LIVE_OCT_22_2026_EMBED = "https://hdfilmcehennemi.mobi/video/embed/aFlcLkKnwQx/?rapidrame_id=9zu0kvlbttzx";
+
+const LIVE_OCT_22_2026_BRACKET_SOURCE = "function zo0s4(w0akc) {\n  var op9 = w0akc.length - 2, h5o = op9 % 7, w2dz = 8 + (op9 % 5);\n  var eh0 = w0akc.splice(w2dz, 1)[0], t2j = w0akc.splice(h5o, 1)[0];\n  t2j += window.location['host'+'name'];\n  var b95d = w0akc.join('');\n  if (eh0.length > 2048) { b95d = b95d.split('').reverse().join(''); }\n  var hrc5m = 0, vlk84 = 0, w8x9r, g7xq;\n  for (w8x9r = 0; w8x9r < t2j.length; w8x9r++) {\n    g7xq = t2j.charCodeAt(w8x9r);\n    hrc5m = (hrc5m * 37 + g7xq) % 241;\n    vlk84 = (vlk84 + ((g7xq << 1) ^ w8x9r)) & 255;\n  }\n  var a118 = (hrc5m * 3 + vlk84) % 256, vp95 = (vlk84 % 11) + 5, a4j = ((vlk84 * 251 + hrc5m) % 65519) + 1;\n  var dil8, kj85;\n  for (w8x9r = eh0.length - 1; w8x9r >= 0; w8x9r--) {\n    dil8 = eh0.charAt(w8x9r);\n    if (dil8 === '7') { b95d = atob(b95d); }\n    else if (dil8 === '3') { b95d = b95d.split('').reverse().join(''); }\n    else {\n      kj85 = (26 - ((dil8.charCodeAt(0) - 96) % 26)) % 26;\n      b95d = b95d.replace(/[a-zA-Z]/g, function (kh0) {\n        var l5i = kh0.charCodeAt(0), ha33w = (l5i <= 90) ? 65 : 97;\n        return String.fromCharCode((l5i - ha33w + kj85) % 26 + ha33w);\n      });\n    }\n  }\n  if (t2j.length > 4096) { b95d = atob(b95d); }\n  op9 = b95d.length;\n  var mpd13 = [], n6dl, w1bs, bw83;\n  for (w8x9r = op9 - 1; w8x9r >= 1; w8x9r--) { a4j = (a4j * 97 + 41) % 65519; mpd13[w8x9r] = a4j % (w8x9r + 1); }\n  n6dl = b95d.split('');\n  for (w8x9r = 1; w8x9r < op9; w8x9r++) { w1bs = mpd13[w8x9r]; bw83 = n6dl[w8x9r]; n6dl[w8x9r] = n6dl[w1bs]; n6dl[w1bs] = bw83; }\n  b95d = n6dl.join('');\n  var j33 = a118, s8l = '';\n  for (w8x9r = 0; w8x9r < b95d.length; w8x9r++) {\n    g7xq = b95d.charCodeAt(w8x9r);\n    j33 = (j33 * 5 + vp95) % 256;\n    s8l += String.fromCharCode(g7xq ^ j33);\n    j33 = (j33 + g7xq) % 256;\n  }\n  return s8l;\n}";
+const LIVE_OCT_22_2026_BRACKET_PARTS: string[] = ["fZ2kjKmQtFsprHCd","cjZIdHRJK","2NRdkJKMD","J3eFN6N1B","OK2wyTzBC","MmpBbHh4d","mlTWUlGVn","NKK0NQVmg","yRHhiLzBv","733rv7","VHJUQ21oN","kFET3N3Yk","pDWmxvN3h","rT29ONFph","TFhvVnpEU","0htMUlCcX","huTFZoWCt","hMm1ROFRi","VytRR1ZVN","DhpU0pyQl","dUVncwaXd","JWHlTSEg3","MkhFVz0="];
+
+const LIVE_OCT_22_2026_SELF_SOURCE = "function oa79x(j4k0) {\n  var s41m = j4k0.length - 2, b4sjx = s41m % 7, kl1g = 8 + (s41m % 5);\n  var g95o = j4k0.splice(kl1g, 1)[0], yf4g = j4k0.splice(b4sjx, 1)[0];\n  yf4g += self.location.hostname;\n  var gp3 = j4k0.join('');\n  if (g95o.length > 2048) { gp3 = gp3.split('').reverse().join(''); }\n  var b99 = 0, c3inr = 0, yb77, yi1vp;\n  for (yb77 = 0; yb77 < yf4g.length; yb77++) {\n    yi1vp = yf4g.charCodeAt(yb77);\n    b99 = (b99 * 37 + yi1vp) % 241;\n    c3inr = (c3inr + ((yi1vp << 1) ^ yb77)) & 255;\n  }\n  var kprr6 = (b99 * 3 + c3inr) % 256, gh6 = (c3inr % 11) + 5, z2tl = ((c3inr * 251 + b99) % 65519) + 1;\n  var oa3a, a5b;\n  for (yb77 = g95o.length - 1; yb77 >= 0; yb77--) {\n    oa3a = g95o.charAt(yb77);\n    if (oa3a === '7') { gp3 = atob(gp3); }\n    else if (oa3a === '3') { gp3 = gp3.split('').reverse().join(''); }\n    else {\n      a5b = (26 - ((oa3a.charCodeAt(0) - 96) % 26)) % 26;\n      gp3 = gp3.replace(/[a-zA-Z]/g, function (dit0f) {\n        var r903 = dit0f.charCodeAt(0), a0tq9 = (r903 <= 90) ? 65 : 97;\n        return String.fromCharCode((r903 - a0tq9 + a5b) % 26 + a0tq9);\n      });\n    }\n  }\n  if (yf4g.length > 4096) { gp3 = atob(gp3); }\n  s41m = gp3.length;\n  var k1o = [], g8vz, q4hm, kr1;\n  for (yb77 = s41m - 1; yb77 >= 1; yb77--) { z2tl = (z2tl * 97 + 41) % 65519; k1o[yb77] = z2tl % (yb77 + 1); }\n  g8vz = gp3.split('');\n  for (yb77 = 1; yb77 < s41m; yb77++) { q4hm = k1o[yb77]; kr1 = g8vz[yb77]; g8vz[yb77] = g8vz[q4hm]; g8vz[q4hm] = kr1; }\n  gp3 = g8vz.join('');\n  var e92 = kprr6, l70vh = '';\n  for (yb77 = 0; yb77 < gp3.length; yb77++) {\n    yi1vp = gp3.charCodeAt(yb77);\n    e92 = (e92 * 5 + gh6) % 256;\n    l70vh += String.fromCharCode(yi1vp ^ e92);\n    e92 = (e92 + yi1vp) % 256;\n  }\n  return l70vh;\n}";
+const LIVE_OCT_22_2026_SELF_PARTS: string[] = ["qtjgs7X8C0ukASPXBEW1vy","QVtnu1","WjMcgQ","DLAUP1","QSDdEY","rYyQrO","ILQLLo","JcENQ3","AIsMgF","Kd1eDd","7u77q","MlLcEr","IKLqKb","yjIWgX","Id9bDM","PpLbuJ","DNAOKe","AIDLgL","PcuFJc","WkrqEa","MV5GLO","gTLMAh","McIIvc","g2PNkM","vcAMKK","WCDaMJ","M0MMuc","QhKKIG","MMQZP3","gFJL1Z","LKMcIb","QINbLo","Mb5ZsV","QMMqMK","LbMjH1","IPtX1F","sbgqQX","kfMWAL","sWcQNW","AYQVQW","vMgMPq","Ibscb0","PqSfEc","IVDU0="];
+
+test("hostname-keyed decoder: location['hostna' + 'me'] decodes against the embed's host", () => {
+  assert.equal(
+    runRapidrameDecoder(LIVE_OCT_22_2026_BRACKET_SOURCE, LIVE_OCT_22_2026_BRACKET_PARTS.slice(), LIVE_OCT_22_2026_EMBED),
+    "https://srv12.cdnimages2039.shop/hls/edgeoftomorrow2014bluray1080pdualmp4-aFlcLkKnwQx.mp4/txt/master.txt"
+  );
+});
+
+test("hostname-keyed decoder: self.location.hostname decodes against the embed's host", () => {
+  assert.equal(
+    runRapidrameDecoder(LIVE_OCT_22_2026_SELF_SOURCE, LIVE_OCT_22_2026_SELF_PARTS.slice(), LIVE_OCT_22_2026_EMBED),
+    "https://srv12.cdnimages2034.shop/hls/edgeoftomorrow2014bluray1080pdualmp4-aFlcLkKnwQx.mp4/txt/master.txt"
+  );
+});
+
+test("hostname-keyed decoder fails closed without the page, and is wrong for another host", () => {
+  assert.equal(runRapidrameDecoder(LIVE_OCT_22_2026_SELF_SOURCE, LIVE_OCT_22_2026_SELF_PARTS.slice()), null);
+  const elsewhere = runRapidrameDecoder(
+    LIVE_OCT_22_2026_SELF_SOURCE,
+    LIVE_OCT_22_2026_SELF_PARTS.slice(),
+    "https://www.hdfilmcehennemi.nl/rplayer/x/"
+  );
+  assert.notEqual(elsewhere, "https://srv12.cdnimages2034.shop/hls/edgeoftomorrow2014bluray1080pdualmp4-aFlcLkKnwQx.mp4/txt/master.txt");
+});
+
+test("the page globals are read-only and expose only location fields", () => {
+  const page = "https://example.org/embed/";
+  assert.equal(runRapidrameDecoder("function f(p) { return location.hostname + '|' + document.domain; }", [], page), "example.org|example.org");
+  assert.equal(runRapidrameDecoder("function f(p) { return self.location.cookie; }", [], page), null);
+  assert.equal(runRapidrameDecoder("function f(p) { location.hostname = 'x'; return 'y'; }", [], page), null);
+  assert.equal(runRapidrameDecoder("function f(p) { return window.localStorage; }", [], page), null);
+});
