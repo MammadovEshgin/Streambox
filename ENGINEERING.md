@@ -195,6 +195,20 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   Gezegeni" → nothing). It matches by substring on the listed (often Turkish) title, so
   `toDizipalSearchQuery` sends the longest run of words the query already spells in ASCII
   ("Dune: Çöl Gezegeni - Bölüm İki" → "Gezegeni"); scoring ranks against the full title.
+- **imagestoo packs its player call (2026-10-26).** `FirePlayer("{hash}", {…})` sits inside a
+  Dean Edwards packer (`eval(function(p,a,c,k,e,d)…)`), so `resolveEmbedToM3u8` unpacks the embed
+  (`tryUnpackInlinePackerJs`) before looking for the hash; the `getVideo` POST is unchanged. The
+  config's `tracks` captions are WebVTT behind a `.jpg` name (`extractFirePlayerCaptionTracks`).
+  Read packed, every imagestoo title (*Harry Potter and the Deathly Hallows: Part 1*) had no
+  Dizipal stream. Dizipal pages also write JSON-LD `"datePublished":2024` as a bare number now,
+  which the direct-slug year check has to read.
+- **Stream hosts want a browser's `Sec-Fetch-*` headers (2026-10-26).** formationfeed's CDN
+  (`*.superadjacentsoddenly.xyz`) answers 403 to a playlist request without `Sec-Fetch-Site`,
+  `-Mode` and `-Dest`, whatever the Referer or agent: *The Invite* resolved, then spun through the
+  player's recoveries and a silent re-resolve that returned the same refused stream. The player
+  sends `streamRequestHeaders(referer)` (Referer, the app's agent, the Sec-Fetch trio) with every
+  playlist and segment, and a Dizipal embed stream is pre-checked with the same headers
+  (`isStreamRefused`): a 4xx drops it so the other tiers answer; no answer or a 5xx keeps it.
 - Embeds come from several hosts. `formationfeed.net` serves the m3u8 inline;
   `imagestoo.com` (`/player/index.php?do=getVideo`) was **down for everyone** on 2026-09-25
   (522 from Cloudflare, TLS stalls from Azerbaijani ISPs), so the titles on it have no Dizipal
@@ -207,8 +221,8 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   the real site came back. **Check the old domains' redirect target before trusting a higher
   `dizipalN.com`**: the 22xx band is the clone, and 2200, 2203-2205, 2207 and 2300 are SEO
   squatters serving "güncel adres" landing pages.
-- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2142; 2141 went
-  dark without a redirect, so a device pinned to it reaches 2142 only through Supabase). Hops are
+- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2143; 2141 went
+  dark without a redirect, so a device pinned to it reached 2142 only through Supabase). Hops are
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal
   rotates, and update the Supabase row with the Telegram bot (`/set_dizipal <url>`). The floor
@@ -240,8 +254,13 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   (Dizibal included, via `dizibalGet`), which counts requests that got **no answer at all**:
   two in a row and that provider is skipped instantly for a minute, doubling per further
   outage up to 15 minutes. Any HTTP reply — 404, 403, 500 — proves the host is alive and
-  clears the record, so a provider is never skipped for saying "no". A skip must never count
-  as a transient failure; that would send `resolveWebPlayerUrl` into a second pass for nothing.
+  clears the record, so a provider is never skipped for saying "no". A skip is not a request
+  failure, but a pass that **skipped** a provider never asked it, so its miss is not final:
+  `resolveWebPlayerUrl` clears the breakers and runs its second pass (`providerSkips`). Before
+  that, two dropped HDFilm requests on one phone made every HDFilm-only title (*The Fall*,
+  2026-10-24: ten episodes in a row) "Not available" in about a second until the cooldown ended
+  or the app was killed — "clearing the cache" fixed it only by restarting the app. Retry on the
+  player (`forgetProviderBackoff`) clears the breakers and Kült Filmler's cooldown too.
   A host a provider hands out has its **own** breaker (`Dizipal embed <host>`,
   `Dizibal player`), so a dead embed or player host never gets the provider's site skipped.
 - **The tiers run in parallel (2026-09-25).** They used to run one after another — HDFilm,
@@ -279,9 +298,11 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   2×2 px at opacity 0, Android never drew it, an undrawn WebView gets no animation frames, and
   every phone hit `challenge_timeout` (desktop Chromium, which renders regardless, passed). It
   is now a 360×640 viewport at opacity 0.01, mounted beneath the navigator. Detail screens
-  warm the session (`warmKultfilmlerSession`) so the challenge is usually done before Watch.
-  The session stays open 10 min after its last use. A challenge not passed in 20s puts the
-  provider aside for 10 min (no second resolver pass for it); one still running when the tier's
+  warm the session once they have been open 1.5s (`scheduleKultfilmlerWarm`; started on mount,
+  the challenge's script ran during every detail page's entrance, and for pages merely skimmed
+  past), so the challenge is usually done before Watch. The session closes 3 min after its last
+  use; a reopened WebView keeps its clearance cookie and is ready in ~1s. A challenge not passed
+  in 20s puts the provider aside for 3 min (no second resolver pass for it; Retry lifts it); one still running when the tier's
   14s budget ends counts as transient, so the second pass asks again; a lapsed clearance
   mid-session reloads and retries once. Worker egress is challenged too (checked with
   `wrangler dev --remote`), so a server-side proxy is no way round it. Telemetry:

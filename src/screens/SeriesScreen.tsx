@@ -39,6 +39,7 @@ import {
   writeRuntimeCache,
 } from "../services/runtimeCache";
 import { useAppSettings } from "../settings/AppSettingsContext";
+import { mediaListKey } from "../utils/mediaListKey";
 
 const SERIES_HUB_CACHE_KEY = "series-hub-v2";
 const SERIES_HUB_CACHE_TTL_MS = 1000 * 60 * 20;
@@ -372,7 +373,7 @@ const RailSection = memo(function RailSection({ title, items, isLoading = false,
           <FlashList
             data={items}
             horizontal
-            keyExtractor={(item) => `${item.mediaType}-${item.id}`}
+            keyExtractor={mediaListKey}
             renderItem={renderItem}
             showsHorizontalScrollIndicator={false}
             removeClippedSubviews

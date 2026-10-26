@@ -15,6 +15,7 @@ import type { AppLanguage } from "../localization/types";
 import type { StatsStackParamList } from "../navigation/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
 import { getSharedHydratedMediaCache, hydrateMediaIds } from "../services/mediaHydration";
+import { mediaListKey } from "../utils/mediaListKey";
 
 type Props = NativeStackScreenProps<StatsStackParamList, "WatchedGrid">;
 
@@ -357,8 +358,6 @@ export function WatchedGridScreen({ route, navigation }: Props) {
     [handlePressItem, hydratedItems, resolvedContentLanguage, t, currentTheme.colors.gold]
   );
 
-  const keyExtractor = useCallback((item: WatchHistoryEntry) => `${item.mediaType}-${item.id}`, []);
-
   return (
     <SafeContainer>
       <HeaderRow>
@@ -397,7 +396,7 @@ export function WatchedGridScreen({ route, navigation }: Props) {
             maxToRenderPerBatch={12}
             windowSize={5}
             removeClippedSubviews
-            keyExtractor={keyExtractor}
+            keyExtractor={mediaListKey}
             renderItem={renderItem}
             columnWrapperStyle={{ gap: GAP }}
             showsVerticalScrollIndicator={false}

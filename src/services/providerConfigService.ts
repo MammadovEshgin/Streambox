@@ -86,9 +86,9 @@ const HARDCODED_FALLBACK: ProviderConfigMap = {
     // 2026-09-25: 2133 → 2134 (the numbered chain came back with the classic site).
     // 2026-10-04: 2134 → 2135. 2026-10-08: 2135 → 2137 (2136 lasted two days).
     // 2026-10-16: 2137 → 2140. 2026-10-19: 2140 → 2141. 2026-10-23: 2141 → 2142
-    // (2141 stopped answering at all instead of redirecting).
-    baseUrl: "https://dizipal2142.com",
-    referer: "https://dizipal2142.com/",
+    // (2141 stopped answering at all instead of redirecting). 2026-10-26: 2142 → 2143.
+    baseUrl: "https://dizipal2143.com",
+    referer: "https://dizipal2143.com/",
   },
   dizibal: {
     // dizibal.org (was .com until 2026-09; .com still 301s here) — Turkish

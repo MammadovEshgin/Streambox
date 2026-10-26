@@ -39,11 +39,13 @@ import Reanimated, {
   FadeIn
 } from "react-native-reanimated";
 import {
+  forgetProviderBackoff,
   isNativeResult,
   resolveDirectWebPlayerFallback,
   resolveHdFilmRuntimeStream,
   resolveNativeAlternativeToHdFilm,
   resolveWebPlayerUrl,
+  streamRequestHeaders,
   type WebPlayerRequest,
   type WebPlayerResult
 } from "../services/WebPlayerService";
@@ -1394,10 +1396,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     const contentType: ContentType | undefined = directStreamType === "m3u8" ? "hls" : undefined;
     const source = {
       uri: directStreamUrl,
-      headers: {
-        ...(streamReferer ? { Referer: streamReferer } : {}),
-        "User-Agent": PLAYER_WEBVIEW_USER_AGENT
-      },
+      headers: streamRequestHeaders(streamReferer),
       contentType
     };
     // A new source means a new track list; let the preference re-apply once.
@@ -1448,10 +1447,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       void videoPlayer
         .replaceAsync({
           uri: directStreamUrl,
-          headers: {
-            ...(streamReferer ? { Referer: streamReferer } : {}),
-            "User-Agent": PLAYER_WEBVIEW_USER_AGENT
-          },
+          headers: streamRequestHeaders(streamReferer),
           contentType: directStreamType === "m3u8" ? ("hls" as ContentType) : undefined
         })
         .then(() => {
@@ -1761,7 +1757,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     scheduleHideClose();
     videoPlayer.replaceAsync({
       uri: url,
-      headers: streamReferer ? { Referer: streamReferer } : undefined,
+      headers: streamRequestHeaders(streamReferer),
       contentType: directStreamType === "m3u8" ? "hls" : undefined
     }).then(() => {
       videoPlayer.currentTime = currentTime;
@@ -1878,6 +1874,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       webViewRef.current?.reload();
       return;
     }
+    forgetProviderBackoff();
     setPlayerResult(null);
     setCurrentStreamUrl(null);
     setResolveNonce((nonce) => nonce + 1);

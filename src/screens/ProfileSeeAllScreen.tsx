@@ -32,6 +32,7 @@ import {
   type ProfileShelfRecord,
   type ProfileShelfSort,
 } from "../utils/profileShelf";
+import { mediaListKey } from "../utils/mediaListKey";
 
 type Props = NativeStackScreenProps<ProfileStackParamList, "ProfileSeeAll">;
 
@@ -616,8 +617,6 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
     [handlePressItem, t, currentTheme.colors.gold]
   );
 
-  const keyExtractor = useCallback((item: MediaItem) => `${item.mediaType}-${item.id}`, []);
-
   const title = section === "watchlist" ? t("profile.watchlist") : section === "liked" ? t("profile.liked") : t("profile.watched");
   const emptyText = section === "watchlist"
     ? (filter === "movie" ? t("profile.noMoviesInWatchlist") : t("profile.noSeriesInWatchlist"))
@@ -670,7 +669,7 @@ export function ProfileSeeAllScreen({ route, navigation }: Props) {
           <FlatList
             data={filteredItems}
             numColumns={NUM_COLUMNS}
-            keyExtractor={keyExtractor}
+            keyExtractor={mediaListKey}
             renderItem={renderItem}
             columnWrapperStyle={{ gap: GAP }}
             showsVerticalScrollIndicator={false}

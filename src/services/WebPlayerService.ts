@@ -23,6 +23,7 @@ import { aesCbcDecrypt } from "./aesCbc";
 import {
   fetchKultfilmlerText,
   isKultfilmlerSessionOpening,
+  liftKultfilmlerCooldown,
   setKultfilmlerOrigin,
   type KultfilmlerFetchResult,
 } from "./kultfilmlerSession";
@@ -125,6 +126,23 @@ function debugLog(...args: unknown[]) {
   if (__DEV__) {
     console.log(...args);
   }
+}
+
+/**
+ * The headers the native player sends with a stream: its playlists and its
+ * segments alike. The `Sec-Fetch-*` trio is what every browser adds to a
+ * player's fetches. Dizipal's formationfeed CDN (superadjacentsoddenly.xyz,
+ * 2026-10) answers 403 to any request without it, so *The Invite* resolved,
+ * then spun on the loader while every retry hit the same wall.
+ */
+export function streamRequestHeaders(referer?: string | null): Record<string, string> {
+  return {
+    ...(referer ? { Referer: referer } : {}),
+    "User-Agent": UA,
+    "Sec-Fetch-Site": "cross-site",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+  };
 }
 
 function getHdfilmBaseUrl(): string {
@@ -263,6 +281,17 @@ const PROVIDER_SILENCE_FORGET_MS = 1_800_000;
 type ProviderSilence = { strikes: number; lastStrikeAt: number; skipUntil: number; outages: number };
 const providerSilence = new Map<string, ProviderSilence>();
 
+/**
+ * Requests the breaker skipped. A pass that skipped a provider has not asked
+ * it, so its miss is not a "no": `resolveWebPlayerUrl` gives the skipped hosts
+ * one more try before saying "Not available". Without that, a phone whose
+ * connection dropped two HDFilm requests got an instant "Not available" for
+ * every HDFilm-only title (*The Fall*, 2026-10-24: ten episodes in a row) until
+ * the cooldown ran out or the app was restarted — "clearing the cache" fixed
+ * it by killing the app.
+ */
+let providerSkips = 0;
+
 /** Thrown instead of making a request the breaker says will not be answered. */
 class ProviderSkippedError extends Error {
   constructor(provider: string) {
@@ -283,6 +312,15 @@ function isProviderSkipped(provider: string): boolean {
   if (now - state.lastStrikeAt > PROVIDER_SILENCE_FORGET_MS) providerSilence.delete(provider);
   else if (state.skipUntil > 0) providerSilence.set(provider, { ...state, strikes: 0, skipUntil: 0 });
   return false;
+}
+
+/**
+ * The viewer pressed Retry: whatever is held back for not answering lately
+ * (a host's breaker, Kült Filmler's stalled challenge) is asked again now.
+ */
+export function forgetProviderBackoff(): void {
+  providerSilence.clear();
+  liftKultfilmlerCooldown();
 }
 
 /** The host replied, so it is up — forget everything held against it. */
@@ -328,8 +366,9 @@ async function providerGet<T = string>(
   config: Parameters<typeof axios.get>[1]
 ): Promise<import("axios").AxiosResponse<T>> {
   if (isProviderSkipped(provider)) {
-    // Not a failure: the breaker already knows this host is not answering, and
-    // counting it would send the resolver into a pointless second pass.
+    // Not a request failure, but not an answer either: the resolver gives
+    // skipped hosts one more try before a miss is final (see providerSkips).
+    providerSkips += 1;
     throw new ProviderSkippedError(provider);
   }
 
@@ -1238,8 +1277,9 @@ export function slugifyForDizipal(title: string): string {
 export function extractDizipalPageYear(html: string): string | null {
   if (!html) return null;
 
+  // A string date or, since 2026-10, a bare number (`"datePublished":2024`).
   const jsonLd = html.match(
-    /"(?:datePublished|dateCreated|releaseDate|startDate)"\s*:\s*"((?:19|20)\d{2})/i
+    /"(?:datePublished|dateCreated|releaseDate|startDate)"\s*:\s*"?((?:19|20)\d{2})/i
   );
   if (jsonLd?.[1]) return jsonLd[1];
 
@@ -2428,6 +2468,24 @@ function embedHostBreakerName(embedUrl: string): string {
   }
 }
 
+/**
+ * The caption tracks of a FirePlayer config (`"tracks":[{"kind":"captions",
+ * "file":…,"label":…,"language":…}]`), read out of an unpacked imagestoo embed.
+ * The files are WebVTT served under a `.jpg` name, so the extension says nothing.
+ */
+function extractFirePlayerCaptionTracks(script: string): SubtitleTrack[] {
+  const tracks: SubtitleTrack[] = [];
+  const pattern = /"kind":"captions","file":"([^"]+)","label":"([^"]*)"(?:,"language":"([a-z]{2,3})")?/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(script)) !== null) {
+    const url = match[1].replace(/\\+\//g, "/");
+    if (!/^https?:\/\//i.test(url)) continue;
+    const label = match[2].trim();
+    tracks.push({ url, label, lang: match[3] ?? label.toLowerCase().slice(0, 3) });
+  }
+  return tracks;
+}
+
 async function resolveEmbedToM3u8(embedUrl: string, referer: string): Promise<DizipalStreamInfo | null> {
   try {
     const resp = await providerGet<string>(embedHostBreakerName(embedUrl), embedUrl, {
@@ -2439,7 +2497,11 @@ async function resolveEmbedToM3u8(embedUrl: string, referer: string): Promise<Di
       }
     });
 
-    const html = resp.data;
+    // imagestoo packs its `FirePlayer("{hash}", {…})` call with Dean Edwards'
+    // packer since 2026-10; read packed, the page carried no hash and every
+    // title on that host (Harry Potter and the Deathly Hallows: Part 1, among
+    // others) had no Dizipal stream.
+    const html = tryUnpackInlinePackerJs(resp.data);
 
     const m3u8 = extractM3u8FromEmbedHtml(html);
     if (m3u8) {
@@ -2454,12 +2516,47 @@ async function resolveEmbedToM3u8(embedUrl: string, referer: string): Promise<Di
     }
 
     const apiResult = await resolveViaGetVideoApi(embedUrl, html);
-    if (apiResult) return apiResult;
+    if (apiResult) {
+      const known = new Set(apiResult.subtitles.map((subtitle) => subtitle.url));
+      const captions = extractFirePlayerCaptionTracks(html).filter((track) => !known.has(track.url));
+      return { ...apiResult, subtitles: [...apiResult.subtitles, ...captions] };
+    }
 
     return null;
   } catch (e) {
     noteProviderFailure(e);
     return null;
+  }
+}
+
+const STREAM_PREFLIGHT_TIMEOUT_MS = 4_000;
+
+/**
+ * Whether the stream's host turns the player away (403, 404, 410…), asked the
+ * way the player will ask. A Dizipal embed can hand out a stream its CDN then
+ * refuses (imagestoo's 410s, the formationfeed 403s of 2026-10); the player
+ * learned that only after loading it, and spun through its recoveries and a
+ * silent re-resolve that came back with the same stream. Refused here, the
+ * title falls through to the other providers at once. No answer, or a 5xx, is
+ * not a refusal: the player's own retries handle a slow or flaky host.
+ */
+async function isStreamRefused(stream: DizipalStreamInfo): Promise<boolean> {
+  try {
+    const response = await axios.get<string>(stream.streamUrl, {
+      timeout: STREAM_PREFLIGHT_TIMEOUT_MS,
+      responseType: "text",
+      validateStatus: () => true,
+      headers: {
+        ...streamRequestHeaders(stream.referer),
+        // A playlist is a few hundred bytes; an MP4 answered whole would be the film.
+        ...(stream.streamType === "mp4" ? { Range: "bytes=0-1" } : {}),
+      },
+    });
+    const refused = response.status >= 400 && response.status < 500;
+    if (refused) debugLog(`[WebPlayer] Stream refused (${response.status}):`, stream.streamUrl);
+    return refused;
+  } catch {
+    return false;
   }
 }
 
@@ -2576,7 +2673,8 @@ function readDizipalSessionCookie(headers: unknown): string | null {
   return readDizipalCookie(headers, "PHPSESSID");
 }
 
-type DizipalPlayerPage = { html: string; sessionCookie: string | null };
+/** `ctCookie`: since 2026-10-26 the page render sets `_ct` itself, not only `/_pb`. */
+type DizipalPlayerPage = { html: string; sessionCookie: string | null; ctCookie: string | null };
 
 /**
  * Since 2026-10-13 Dizipal answers every `/film/` and `/bolum/` page with a 429
@@ -2621,7 +2719,11 @@ async function fetchDizipalPlayerPage(pageUrl: string): Promise<DizipalPlayerPag
         continue;
       }
       recordObservedBaseUrl("dizipal", getResponseFinalOrigin(response));
-      return { html: response.data, sessionCookie: readDizipalSessionCookie(response.headers) };
+      return {
+        html: response.data,
+        sessionCookie: readDizipalSessionCookie(response.headers),
+        ctCookie: readDizipalCookie(response.headers, "_ct"),
+      };
     } catch {
       // A 404 for the doubled slash, say; the breaker stops a dead host.
       continue;
@@ -2739,7 +2841,7 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
         const sessionCookie = attempt === 0 ? null : page.sessionCookie;
         const beaconCookie = await postDizipalPlayerBeacon(baseUrl, pageUrl, sessionCookie);
         const cookieHeader =
-          attempt === 0 ? null : [sessionCookie, beaconCookie].filter(Boolean).join("; ") || null;
+          attempt === 0 ? null : [sessionCookie, beaconCookie ?? page.ctCookie].filter(Boolean).join("; ") || null;
         configResp = await postDizipalPlayerConfig(baseUrl, pageUrl, cfg, cookieHeader);
       }
       if (!configResp?.success) {
@@ -2771,7 +2873,8 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
       if (!normalizedEmbedUrl) return null;
 
       const embedStream = await resolveEmbedToM3u8(normalizedEmbedUrl, pageUrl);
-      return { stream: embedStream, embedUrl: normalizedEmbedUrl };
+      const playable = embedStream && (await isStreamRefused(embedStream)) ? null : embedStream;
+      return { stream: playable, embedUrl: normalizedEmbedUrl };
     }
 
     return null;
@@ -2917,6 +3020,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
 
   const deadline = Date.now() + RESOLVER_MAX_TOTAL_MS;
   const transientFailuresBefore = transientProviderFailures;
+  const skipsBefore = providerSkips;
   const pending = startResolvePass(request);
   const first = await awaitResolveWithin(pending, RESOLVER_ATTEMPT_TIMEOUT_MS);
   if (first && isNativeResult(first)) return first;
@@ -2941,6 +3045,10 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   // that is the "Not available, then it plays on the second tap" report. Take
   // the second tap for the viewer.
   const sawTransientFailure = transientProviderFailures !== transientFailuresBefore;
+  // A provider the breaker skipped was never asked. The retry asks it: a host
+  // that is really down costs one more timeout, inside the same 20s ceiling.
+  const sawSkip = providerSkips !== skipsBefore;
+  if (sawSkip) providerSilence.clear();
   const remaining = deadline - Date.now();
   if (remaining < 3_000) return first;
 
@@ -2951,7 +3059,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
       setTimeout(resolve, Math.min(RESOLVER_RETRY_REFRESH_TIMEOUT_MS, remaining))
     ),
   ]).catch(() => undefined);
-  if (!sawTransientFailure && summariseProviderBaseUrls() === baseUrlsBefore) return first;
+  if (!sawTransientFailure && !sawSkip && summariseProviderBaseUrls() === baseUrlsBefore) return first;
 
   const retryBudget = deadline - Date.now();
   if (retryBudget <= 0) return first;
@@ -3754,6 +3862,8 @@ export const __internal = {
   buildHdFilmResult,
   providerGet,
   isProviderSkipped,
+  isStreamRefused,
+  resolveEmbedToM3u8,
   resetProviderSilence: () => providerSilence.clear(),
   isCloudflareChallengeStatus,
   checkVideoAvailability,

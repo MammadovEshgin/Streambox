@@ -22,6 +22,7 @@ import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { HomeStackParamList } from "../navigation/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
+import { mediaListKey } from "../utils/mediaListKey";
 
 /* ------------------------------------------------------------------ */
 /*  Styled Components                                                 */
@@ -471,7 +472,7 @@ export function SearchResultsScreen({ navigation, route }: SearchResultsScreenPr
           )}
           <FlashList
             data={results}
-            keyExtractor={(item) => `${item.mediaType}-${item.id}`}
+            keyExtractor={mediaListKey}
             renderItem={renderItem}
             showsVerticalScrollIndicator={false}
             onEndReached={loadMore}

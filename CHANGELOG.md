@@ -4,6 +4,18 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-10-26
+
+- Fixed: *Harry Potter and the Deathly Hallows: Part 1* (and other titles on one of Dizipal's
+  players) showed "Not available". They play again, with English and Turkish subtitles.
+- Fixed: *The Invite* (2026) and other new Dizipal titles spun on the loader and never started.
+- Fixed: after a couple of dropped requests on a weak connection, titles only one source has
+  (e.g. *The Fall*) showed "Not available" until the app was restarted or its cache cleared.
+  The app now asks that source again, and "Try again" always asks every source afresh.
+- Faster: detail pages no longer start Kült Filmler's security check the moment they open,
+  which competed with the page itself.
+- Fixed: a rare crash while a list of films was refreshing.
+
 ## 2026-10-23 (2)
 
 - Fixed: Kült Filmler titles (e.g. *Vivre Sa Vie*) showed "Not available" on phones. The app

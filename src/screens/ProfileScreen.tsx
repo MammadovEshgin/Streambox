@@ -50,6 +50,7 @@ import { searchLocationSuggestions } from "../services/locationSearch";
 import { storeBannerImageFromUri, storeProfileImageFromUri } from "../services/profileImageService";
 import { formatLocalizedDate } from "../localization/format";
 import i18n from "../localization/i18n";
+import { mediaListKey } from "../utils/mediaListKey";
 
 /**
  * How many titles per profile rail get a localized TMDB lookup.
@@ -984,8 +985,6 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
     [handlePressItem]
   );
 
-  const keyExtractor = useCallback((item: MediaItem) => `${item.mediaType}-${item.id}`, []);
-
   const watchedMovieRecords = useMemo<ProfileShelfRecord[]>(
     () => {
       const localizedItems = new Map(
@@ -1224,7 +1223,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 maxToRenderPerBatch={4}
                 windowSize={3}
                 removeClippedSubviews
-                keyExtractor={keyExtractor}
+                keyExtractor={mediaListKey}
                 renderItem={renderCard}
                 showsHorizontalScrollIndicator={false}
               />
@@ -1271,7 +1270,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 maxToRenderPerBatch={4}
                 windowSize={3}
                 removeClippedSubviews
-                keyExtractor={keyExtractor}
+                keyExtractor={mediaListKey}
                 renderItem={renderCard}
                 showsHorizontalScrollIndicator={false}
               />
@@ -1318,7 +1317,7 @@ export function ProfileScreen({ navigation }: ProfileScreenProps) {
                 maxToRenderPerBatch={4}
                 windowSize={3}
                 removeClippedSubviews
-                keyExtractor={keyExtractor}
+                keyExtractor={mediaListKey}
                 renderItem={renderCard}
                 showsHorizontalScrollIndicator={false}
               />

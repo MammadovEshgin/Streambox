@@ -66,7 +66,7 @@ import {
   readRuntimeCache,
   writePersistedRuntimeCache,
 } from "../services/runtimeCache";
-import { warmKultfilmlerSession } from "../services/kultfilmlerSession";
+import { scheduleKultfilmlerWarm } from "../services/kultfilmlerSession";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
 const SERIES_SIMILAR_CACHE_PREFIX = "series-detail-similar-v1";
@@ -598,7 +598,7 @@ function formatEpisodeMeta(item: SeriesEpisode): string {
 
 export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   // Kült Filmler's Cloudflare challenge takes seconds; start it before Watch.
-  useEffect(() => warmKultfilmlerSession(), []);
+  useEffect(() => scheduleKultfilmlerWarm(), []);
   const currentTheme = useTheme();
   const { t } = useTranslation();
   const { language } = useAppSettings();

@@ -6,11 +6,13 @@ import axios from "axios";
 
 import {
   __internal,
+  forgetProviderBackoff,
   isNativeResult,
   preferResolution,
   resolveDirectWebPlayerFallback,
   resolveNativeAlternativeToHdFilm,
   resolveWebPlayerUrl,
+  streamRequestHeaders,
   type WebPlayerResult,
 } from "../src/services/WebPlayerService";
 
@@ -584,8 +586,67 @@ test("a slow pass is awaited, not abandoned and restarted", () => {
   assert.match(resolve, /const pending = startResolvePass\(request\);/);
   assert.match(resolve, /await awaitResolveWithin\(pending, remainingForPass\)/);
   // And a clean miss is retried only when the published domains changed; a
-  // pass that lost a request is always retried.
-  assert.match(resolve, /if \(!sawTransientFailure && summariseProviderBaseUrls\(\) === baseUrlsBefore\) return first;/);
+  // pass that lost a request, or skipped a provider, is always retried.
+  assert.match(
+    resolve,
+    /if \(!sawTransientFailure && !sawSkip && summariseProviderBaseUrls\(\) === baseUrlsBefore\) return first;/
+  );
+});
+
+test("a provider the breaker skipped is asked again before 'Not available'", async () => {
+  // The Fall, 2026-10-24: two HDFilm requests got no answer on a phone, the
+  // breaker set HDFilm aside, and every HDFilm-only episode after that came back
+  // "Not available" in about a second — the skip read as a "no" — until the app
+  // was killed. A pass that skipped a provider has not asked it.
+  const originalGet = axios.get;
+  const originalPost = axios.post;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+  let hdfilmDown = true;
+  const hdfilmSearches: string[] = [];
+
+  axios.get = (async (url: string) => {
+    if (url.includes("/search/")) {
+      if (hdfilmDown) throw Object.assign(new Error("timeout of 6000ms exceeded"), { code: "ECONNABORTED" });
+      hdfilmSearches.push(url);
+      return { data: { results: [] } };
+    }
+    if (url.endsWith("/ajax-search")) return { data: { success: true, results: [] } };
+    throw Object.assign(new Error("Request failed with status code 404"), { response: { status: 404 } });
+  }) as typeof axios.get;
+  axios.post = (async () => {
+    throw Object.assign(new Error("Request failed with status code 404"), { response: { status: 404 } });
+  }) as typeof axios.post;
+
+  try {
+    await resolveWebPlayerUrl({ mediaType: "movie", title: "Breaker Opener 3310", year: "2031" });
+    assert.equal(__internal.isProviderSkipped("HDFilm"), true, "two silent HDFilm requests open its breaker");
+
+    hdfilmDown = false;
+    const result = await resolveWebPlayerUrl({ mediaType: "movie", title: "Skipped Provider 7781", year: "2031" });
+    assert.equal(result.source, "not_found");
+    assert.ok(hdfilmSearches.length > 0, "HDFilm is asked before the miss is final");
+  } finally {
+    axios.get = originalGet;
+    axios.post = originalPost;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});
+
+test("Retry forgets every provider held back", async () => {
+  const originalGet = axios.get;
+  const silent = Object.assign(new Error("timeout"), { code: "ECONNABORTED" });
+  axios.get = (async () => { throw silent; }) as typeof axios.get;
+  try {
+    for (let i = 0; i < 2; i++) {
+      await __internal.providerGet("HDFilm", "https://hdfilm.example/x", {}).catch(() => undefined);
+    }
+    assert.equal(__internal.isProviderSkipped("HDFilm"), true);
+    forgetProviderBackoff();
+    assert.equal(__internal.isProviderSkipped("HDFilm"), false);
+  } finally {
+    axios.get = originalGet;
+  }
 });
 
 test("a failed HDFilm stream is replaced by another provider's native stream, never a page", async () => {
@@ -1095,9 +1156,73 @@ test("extractDizipalPageYear reads only structured year markers", () => {
     __internal.extractDizipalPageYear("<title>Dune izle (1984) | dizipal</title>"),
     "1984"
   );
+  // JSON-LD with a bare number (Dizipal, 2026-10-26: Dune: Part Two's page)
+  assert.equal(
+    __internal.extractDizipalPageYear('{"@type":"Movie","name":"Dune: Çöl Gezegeni Bölüm İki","datePublished":2024,"description":"…"}'),
+    "2024"
+  );
   // A bare 4-digit number anywhere else is NOT trusted (resolutions, ids, …)
   assert.equal(__internal.extractDizipalPageYear("<p>video 1080p bitrate 2021 kbps</p>"), null);
   assert.equal(__internal.extractDizipalPageYear(""), null);
+});
+
+test("Dizipal's packed imagestoo embed still yields its FirePlayer stream and captions", async () => {
+  // 2026-10-26: imagestoo wraps `FirePlayer("{hash}", {…})` in Dean Edwards'
+  // packer. Read packed, the hash was invisible and Harry Potter and the
+  // Deathly Hallows: Part 1 had no Dizipal stream.
+  const payload = String.raw`0("1",{"2":[{"kind":"captions","file":"https:\\/\\/i.collaborate.pics\\/r\\/abc.jpg","label":"Turkish","language":"tur","default":false}]},false)`;
+  const html = `<html><script>eval(function(p,a,c,k,e,d){while(c--)if(k[c])p=p.replace(new RegExp('\\b'+c.toString(a)+'\\b','g'),k[c]);return p}('${payload}',62,3,'FirePlayer|5d21263560dafaaf303e72c3ea33208f|tracks'.split('|'),0,{}))</script></html>`;
+  const embedUrl = "https://imagestoo.com/i?v=abc";
+  const originalGet = axios.get;
+  const originalPost = axios.post;
+  const posted: string[] = [];
+  axios.get = (async () => ({ status: 200, data: html })) as typeof axios.get;
+  axios.post = (async (url: string) => {
+    posted.push(url);
+    return { status: 200, data: { hls: true, securedLink: "https://imagestoo.com/cdn/hls/x/master.m3u8?md5=a&expires=1" } };
+  }) as typeof axios.post;
+  try {
+    const stream = await __internal.resolveEmbedToM3u8(embedUrl, "https://dizipal2143.com/film/x");
+    assert.equal(stream?.streamUrl, "https://imagestoo.com/cdn/hls/x/master.m3u8?md5=a&expires=1");
+    assert.deepEqual(posted, ["https://imagestoo.com/player/index.php?data=5d21263560dafaaf303e72c3ea33208f&do=getVideo"]);
+    assert.deepEqual(stream?.subtitles, [{ url: "https://i.collaborate.pics/r/abc.jpg", label: "Turkish", lang: "tur" }]);
+  } finally {
+    axios.get = originalGet;
+    axios.post = originalPost;
+  }
+});
+
+test("streams go out with the headers a browser's player sends", () => {
+  // Dizipal's formationfeed CDN 403s a request without Sec-Fetch-* (The
+  // Invite, 2026-10-26); ExoPlayer applies these to every playlist and segment.
+  assert.deepEqual(streamRequestHeaders("https://formationfeed.net/i?v=x"), {
+    Referer: "https://formationfeed.net/i?v=x",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+    "Sec-Fetch-Site": "cross-site",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+  });
+  assert.equal("Referer" in streamRequestHeaders(""), false);
+});
+
+test("a stream its host refuses is dropped before the player sees it; a slow host is not", async () => {
+  const originalGet = axios.get;
+  const stream = { streamUrl: "https://cdn.example/master.m3u8", streamType: "m3u8", poster: "", referer: "https://embed.example/", subtitles: [] };
+  const seen: any[] = [];
+  try {
+    for (const [status, refused] of [[403, true], [410, true], [200, false], [502, false]] as const) {
+      axios.get = (async (_url: string, config: any) => {
+        seen.push(config.headers);
+        return { status, data: "" };
+      }) as typeof axios.get;
+      assert.equal(await __internal.isStreamRefused(stream), refused, `status ${status}`);
+    }
+    axios.get = (async () => { throw Object.assign(new Error("timeout"), { code: "ECONNABORTED" }); }) as typeof axios.get;
+    assert.equal(await __internal.isStreamRefused(stream), false, "no answer is not a refusal");
+    assert.equal(seen[0]["Sec-Fetch-Mode"], "cors", "asked the way the player asks");
+  } finally {
+    axios.get = originalGet;
+  }
 });
 
 test("Dizipal direct-slug probe rejects the wrong-year movie behind the plain slug (Dune 2021 ≠ 1984)", async () => {

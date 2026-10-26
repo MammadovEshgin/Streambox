@@ -38,6 +38,7 @@ import {
   writeRuntimeCache,
 } from "../services/runtimeCache";
 import { useAppSettings } from "../settings/AppSettingsContext";
+import { mediaListKey } from "../utils/mediaListKey";
 
 const HOME_DISCOVERY_CACHE_KEY = "home-discovery-v2";
 const HOME_DISCOVERY_CACHE_TTL_MS = 1000 * 60 * 10;
@@ -249,9 +250,7 @@ const DiscoveryRail = memo(function DiscoveryRail({ title, data, onPressItem, on
           <FlashList
             data={data}
             horizontal
-            keyExtractor={(item) => {
-              return `${item.mediaType}-${item.id}`;
-            }}
+            keyExtractor={mediaListKey}
             renderItem={renderItem}
             showsHorizontalScrollIndicator={false}
             removeClippedSubviews

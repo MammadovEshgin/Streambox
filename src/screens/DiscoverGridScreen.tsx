@@ -17,6 +17,7 @@ import { MovieLoader } from "../components/common/MovieLoader";
 import { SafeContainer } from "../components/common/SafeContainer";
 import { HomeStackParamList } from "../navigation/types";
 import { useAppSettings } from "../settings/AppSettingsContext";
+import { mediaListKey } from "../utils/mediaListKey";
 
 const GRID_COLUMNS = 3;
 const GRID_GAP = 10;
@@ -371,9 +372,7 @@ export function DiscoverGridScreen({ route, navigation }: DiscoverGridProps) {
           <FlashList
             data={visibleItems}
             numColumns={GRID_COLUMNS}
-            keyExtractor={(item) => {
-              return `${item.mediaType}-${item.id}`;
-            }}
+            keyExtractor={mediaListKey}
             renderItem={renderItem}
             contentContainerStyle={{
               paddingHorizontal: HORIZONTAL_PADDING - GRID_GAP / 2,

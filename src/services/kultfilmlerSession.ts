@@ -43,18 +43,30 @@ export type KultfilmlerFetchResult =
 /**
  * A desktop browser clears the challenge in ~5s; a phone's WebView, on mobile
  * data, can take several times that. The session is usually opened from a
- * detail page (`warmKultfilmlerSession`), well before Watch is tapped.
+ * detail page (`scheduleKultfilmlerWarm`), well before Watch is tapped.
  */
 const CHALLENGE_TIMEOUT_MS = 20_000;
 /** One request inside a cleared session (search JSON, a 50-150 KB page). */
 const REQUEST_TIMEOUT_MS = 8_000;
-/** Keep the WebView alive between plays; a fresh one pays the challenge again. */
-const IDLE_CLOSE_MS = 10 * 60_000;
+/**
+ * Keep the WebView alive between plays. Not much longer: an open WebView costs
+ * memory, and a reopened one keeps its clearance cookie, so it is ready again
+ * in about a second (`ms` ≈ 600-1500 in telemetry) without a new challenge.
+ */
+const IDLE_CLOSE_MS = 3 * 60_000;
 /**
  * A device whose WebView cannot pass the challenge (an interactive one, say)
- * must not pay for trying on every play.
+ * must not pay for trying on every play. Short, because a stalled challenge is
+ * more often a bad moment on the network than a device that can never pass.
  */
-const FAILURE_COOLDOWN_MS = 10 * 60_000;
+const FAILURE_COOLDOWN_MS = 3 * 60_000;
+/**
+ * How long a detail page must stay open before it warms the session. The
+ * challenge is seconds of script in a second WebView; started the moment a
+ * detail page opens, it competed with that page's own entrance and scrolling,
+ * and ran for every page skimmed past on the way to another.
+ */
+export const KULTFILMLER_WARM_DELAY_MS = 1_500;
 
 type Pending = {
   id: number;
@@ -161,6 +173,20 @@ export function attachKultfilmlerHost(next: KultfilmlerHost | null): void {
 export function warmKultfilmlerSession(): void {
   if (listeners.size === 0 || Date.now() < unavailableUntil) return;
   if (phase === "closed") open();
+}
+
+/** Warm once the page has been open `KULTFILMLER_WARM_DELAY_MS`. Returns the cancel. */
+export function scheduleKultfilmlerWarm(): () => void {
+  const timer = setTimeout(warmKultfilmlerSession, KULTFILMLER_WARM_DELAY_MS);
+  return () => clearTimeout(timer);
+}
+
+/**
+ * The viewer asked again (Retry on "Not available"): a challenge that stalled a
+ * minute ago gets another go now instead of when the cooldown ends.
+ */
+export function liftKultfilmlerCooldown(): void {
+  unavailableUntil = 0;
 }
 
 /** Still passing the challenge: a request now would wait on it. */

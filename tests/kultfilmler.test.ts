@@ -10,7 +10,10 @@ import {
   handleKultfilmlerMessage,
   isKultfilmlerNavigationAllowed,
   isKultfilmlerSessionOpening,
+  KULTFILMLER_WARM_DELAY_MS,
   kultfilmlerSessionUrl,
+  liftKultfilmlerCooldown,
+  scheduleKultfilmlerWarm,
   setKultfilmlerOrigin,
   subscribeKultfilmlerSession,
   warmKultfilmlerSession,
@@ -104,7 +107,7 @@ test("a challenge the device can't pass fails the queue and is not retried for a
     assert.equal(opened.at(-1), false, "the WebView is let go");
 
     assert.deepEqual(await fetchKultfilmlerText("https://kultfilmler.net/b/"), { ok: false, reason: "unavailable" });
-    mock.timers.tick(10 * 60_000);
+    mock.timers.tick(3 * 60_000);
     void fetchKultfilmlerText("https://kultfilmler.net/c/");
     assert.equal(opened.at(-1), true, "after the cooldown it tries again");
   } finally {
@@ -138,8 +141,49 @@ test("a detail page warms the session, so Watch finds it open", async () => {
     const second = openFakeBridge();
     warmKultfilmlerSession();
     handleKultfilmlerMessage(JSON.stringify({ kf: "page", ready: true }));
-    mock.timers.tick(10 * 60_000);
+    mock.timers.tick(3 * 60_000);
     assert.equal(second.opened.at(-1), false);
+  } finally {
+    mock.timers.reset();
+    __resetKultfilmlerSessionForTests();
+  }
+});
+
+test("a detail page warms only once it has been open a moment, and leaving cancels it", () => {
+  // Started on mount, the challenge ran during every detail page's entrance,
+  // and for each page skimmed past on the way to another.
+  __resetKultfilmlerSessionForTests();
+  mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  try {
+    const { opened } = openFakeBridge();
+    const cancel = scheduleKultfilmlerWarm();
+    mock.timers.tick(KULTFILMLER_WARM_DELAY_MS - 1);
+    cancel();
+    mock.timers.tick(10_000);
+    assert.deepEqual(opened, [false], "a page left early never opens the session");
+
+    scheduleKultfilmlerWarm();
+    mock.timers.tick(KULTFILMLER_WARM_DELAY_MS);
+    assert.equal(opened.at(-1), true);
+  } finally {
+    mock.timers.reset();
+    __resetKultfilmlerSessionForTests();
+  }
+});
+
+test("Retry lifts the cooldown of a challenge that stalled", async () => {
+  __resetKultfilmlerSessionForTests();
+  mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  try {
+    const { opened } = openFakeBridge();
+    const pending = fetchKultfilmlerText("https://kultfilmler.net/a/");
+    mock.timers.tick(20_000);
+    assert.deepEqual(await pending, { ok: false, reason: "unavailable" });
+    assert.deepEqual(await fetchKultfilmlerText("https://kultfilmler.net/b/"), { ok: false, reason: "unavailable" });
+
+    liftKultfilmlerCooldown();
+    void fetchKultfilmlerText("https://kultfilmler.net/c/");
+    assert.equal(opened.at(-1), true, "asked again at once");
   } finally {
     mock.timers.reset();
     __resetKultfilmlerSessionForTests();
@@ -156,7 +200,7 @@ test("an idle session closes its WebView", async () => {
     answer(requestIdOf(host.scripts[0]), 200, "ok");
     await pending;
     assert.equal(opened.at(-1), true);
-    mock.timers.tick(10 * 60_000);
+    mock.timers.tick(3 * 60_000);
     assert.equal(opened.at(-1), false);
   } finally {
     mock.timers.reset();
