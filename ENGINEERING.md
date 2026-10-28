@@ -90,11 +90,11 @@ Deploys happen **only when the owner approves them**. Typical sequence:
      Slugs match the directory names under `supabase/functions/`.
    - Database: `npx supabase db push` after `--dry-run` (see `docs/DATABASE.md`).
 
-### Current deployed state (2026-10-26)
+### Current deployed state (2026-10-28)
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `7f763bf` → group `273b435b-eb03-4733-bdec-5c2f7a00c59a` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `1208b95` → group `6146176d-7754-46cf-bf07-e0c80f3557de` |
 | `streambox-tmdb-proxy` | `9bb542c0` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records; `/t/p/…` image proxy, 30-day edge TTL) |
 | `streambox-provider-monitor` | `338e4a0f` (hourly cron; classic Dizipal checks, hex `data-cfg` + `/_pb` beacon + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `provider_configs` | rows `hdfilm`, `dizipal`, `dizibal`, `kultfilmler` (added 2026-10-23, priority 3) |
@@ -108,6 +108,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-10-28 | `1208b95` | `6146176d-7754-46cf-bf07-e0c80f3557de` | `splitDualTitle` tries runs of adjacent parts (John Wick 3); Dizipal URL guard trusts an exact search row; `&`→`and` spelling and pre-colon prefix before the empty cutoff (Songbirds & Snakes); `hdfilm_embed_rate_limited` telemetry |
 | 2026-10-26 | `7f763bf` | `273b435b-eb03-4733-bdec-5c2f7a00c59a` | imagestoo packed FirePlayer embeds unpacked (HP7 Part 1); `Sec-Fetch-*` stream headers + Dizipal stream pre-check (The Invite); a pass that skipped a provider is retried, Retry clears breakers (The Fall); Dizipal numeric JSON-LD year, floor 2143; Kült warm deferred 1.5s, 3 min idle/cooldown; list key guard |
 | 2026-10-23 (2) | `7ff117f` | `6f0f5049-49a2-4af5-b35d-1e079c60cd72` | Kült Filmler session WebView drawn (360×640, opacity 0.01, beneath the navigator; opacity 0 stalled the challenge on phones), warmed from detail screens, 20s challenge budget, timeout telemetry carries page state |
 | 2026-10-23 | `7be516a` | `0cfe3425-18a4-4579-91b1-c9d150cfd4fa` | Kült Filmler as tier 4 (hidden WebView session past its Cloudflare challenge; ok.ru + FirePlayer players); HDFilm decoder keyed by the embed's hostname (interpreter page globals); Dizipal `/_pb` player beacon before player-config; Dizipal floor 2141 → 2142 |
