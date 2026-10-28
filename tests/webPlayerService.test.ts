@@ -1938,3 +1938,72 @@ test("an '&' title is also searched with 'and', punctuation kept, before the swe
   assert.ok(bare.includes("The Hunger Games"), "the franchise prefix goes out before the cutoff");
   assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(1, 0, bareTitleCount), false);
 });
+
+test("HDFilm listing entities are decoded before scoring (Léon, Philosopher's Stone)", () => {
+  const row = (title: string, year: string) => ({ href: "https://www.hdfilmcehennemi.nl/x/", text: title, title, resultYear: year });
+  const leon = __internal.extractH4Title('<h4 class="title">Sevginin G&uuml;c&uuml; - L&eacute;on: The Professional</h4>');
+  assert.equal(leon, "Sevginin Gücü - Léon: The Professional");
+  assert.ok(__internal.scoreHdFilmResult(row(leon, "1994"), "Léon: The Professional", "1994") >= 120);
+  const stone = __internal.extractH4Title('<h4 class="title">Harry Potter ve Felsefe Taşı - Harry Potter and the Philosopher&#039;s Stone</h4>');
+  assert.ok(__internal.scoreHdFilmResult(row(stone, "2001"), "Harry Potter and the Philosopher's Stone", "2001") >= 120);
+});
+
+test("Vol./Volume, Pt/Part and roman numerals are one word on both sides", () => {
+  const row = (title: string, year: string) => ({ href: "https://www.hdfilmcehennemi.nl/x/", text: title, title, resultYear: year });
+  assert.ok(__internal.scoreHdFilmResult(row("Galaksinin Koruyucuları 3 - Guardians of the Galaxy Volume 3", "2023"), "Guardians of the Galaxy Vol. 3", "2023") >= 120);
+  assert.ok(__internal.scoreHdFilmResult(row("Geleceğe Dönüş 2 - Back to the Future Part 2", "1989"), "Back to the Future Part II", "1989") >= 120);
+  // Different instalments stay different.
+  assert.ok(__internal.scoreHdFilmResult(row("Guardians of the Galaxy Volume 2", "2017"), "Guardians of the Galaxy Vol. 3", "2023") < 50);
+});
+
+test("the search plan sends the title's most distinctive word before giving up", () => {
+  const plan = (title: string) => __internal.generateSearchQueries(title, "2001");
+  const bare = (title: string) => {
+    const { queries, bareTitleCount } = plan(title);
+    return queries.slice(0, bareTitleCount);
+  };
+  assert.ok(bare("Harry Potter and the Philosopher's Stone").includes("Philosopher"));
+  assert.ok(bare("John Wick: Chapter 3 - Parabellum").includes("Parabellum"));
+  // Short titles are their own wide query; generic long words are not worth one.
+  assert.deepEqual(bare("Titanic"), ["Titanic"]);
+  assert.equal(bare("The Secret Life of Pets").includes("Secret"), false);
+});
+
+test("HDFilm falls back to its /rplayer/ page when the .mobi video host refuses", async () => {
+  // The Cycle, 2026-10-28: hdfilmcehennemi.mobi answered 429 to the whole
+  // address, and the title fell through to "Not available".
+  const pageUrl = "https://www.hdfilmcehennemi.nl/the-cycle-2026/";
+  const embedUrl = "https://hdfilmcehennemi.mobi/video/embed/W1iGIP93PZT/?rapidrame_id=ss6tggj5phmo";
+  assert.equal(__internal.hdFilmRplayerUrl(embedUrl), "https://www.hdfilmcehennemi.nl/rplayer/ss6tggj5phmo/");
+
+  const rplayer = String.raw`<script>var configs = { //sources: [{file:atob(file_link)}],
+sources: [{file:"https://s231.rapidrame.com/hls2/01/00037/ss6tggj5phmo_,l,.urlset/master.m3u8?t=x"}],
+tracks: [{"file":"\/srt\/00037\/ss6tggj5phmo_Turkish.vtt","label":"Türkçe Altyazı","language":"tr","kind":"captions"}], image: "x" };</script>`;
+  const originalGet = axios.get;
+  const asked: string[] = [];
+  axios.get = (async (url: string) => {
+    asked.push(url);
+    if (url === pageUrl) return { status: 200, data: `<div class="rapidrame"><iframe class="close" data-src="${embedUrl}"></iframe></div>` };
+    if (url === embedUrl) throw Object.assign(new Error("Request failed with status code 429"), { response: { status: 429 } });
+    if (url.includes("/rplayer/")) return { status: 200, data: rplayer };
+    return { status: 200, data: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nindex.m3u8\n" };
+  }) as typeof axios.get;
+  try {
+    const check = await __internal.checkVideoAvailability(pageUrl);
+    assert.equal(check.nativeFallback?.streamUrl, "https://s231.rapidrame.com/hls2/01/00037/ss6tggj5phmo_,l,.urlset/master.m3u8?t=x");
+    assert.equal(check.nativeFallback?.referer, "https://www.hdfilmcehennemi.nl/rplayer/ss6tggj5phmo/");
+    assert.deepEqual(check.nativeFallback?.subtitles, [
+      { url: "https://www.hdfilmcehennemi.nl/srt/00037/ss6tggj5phmo_Turkish.vtt", label: "Türkçe Altyazı", lang: "tr" },
+    ]);
+    assert.ok(asked.indexOf(embedUrl) < asked.findIndex((url) => url.includes("/rplayer/")), "the .mobi host is asked first");
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("a packed script's escaped quotes are unescaped before it is read", () => {
+  // The packer's payload is a JS string literal; left escaped, the /rplayer/
+  // decoder kept its \' and the interpreter refused it.
+  const html = String.raw`<script>eval(function(p,a,c,k,e,d){return p}('0 1=\'2\';',62,3,'var|x|ok'.split('|'),0,{}))</script>`;
+  assert.match(__internal.tryUnpackInlinePackerJs(html), /var x='ok';/);
+});

@@ -29,6 +29,7 @@ import {
   type KultfilmlerFetchResult,
 } from "./kultfilmlerSession";
 import { caesarShift, decodeBase64Binary, reverseString, runRapidrameDecoder } from "./rapidrameScript";
+import { decodeHtmlEntities } from "../utils/htmlEntities";
 import { foldNonDecomposingLetters } from "../utils/textFolding";
 
 // Pulls the post-redirect origin out of an axios response so the caller can
@@ -430,7 +431,7 @@ function extractHrefs(html: string): string[] {
 }
 
 function extractText(html: string): string {
-  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  return decodeHtmlEntities(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 /**
@@ -448,18 +449,7 @@ const foldTurkishDotlessI = foldNonDecomposingLetters;
 function extractH4Title(html: string): string {
   const match = html.match(/<h4[^>]*class=["']title["'][^>]*>(.*?)<\/h4>/i);
   if (!match?.[1]) return "";
-  return match[1]
-    .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#039;/g, "'")
-    .replace(/&Ccedil;/g, "Ç").replace(/&ccedil;/g, "ç")
-    .replace(/&Ouml;/g, "Ö").replace(/&ouml;/g, "ö")
-    .replace(/&Uuml;/g, "Ü").replace(/&uuml;/g, "ü")
-    .replace(/&Iuml;/g, "İ").replace(/&#304;/g, "İ")
-    .replace(/&[a-zA-Z]+;/g, " ") // remaining entities → space
+  return decodeHtmlEntities(match[1].replace(/<[^>]+>/g, ""))
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -500,14 +490,34 @@ type NormalizedTitle = {
 
 const TITLE_INITIAL_STOP_WORDS = new Set(["a", "an", "and", "at", "by", "for", "in", "of", "on", "the", "to", "with"]);
 
+const ROMAN_NUMERALS: Record<string, string> = {
+  ii: "2", iii: "3", iv: "4", v: "5", vi: "6", vii: "7", viii: "8", ix: "9", x: "10",
+};
+
+/**
+ * Words TMDB and the providers spell differently for the same title: TMDB's
+ * "Guardians of the Galaxy Vol. 3" is HDFilm's "\u2026Volume 3", "Part II" is
+ * "Part 2" elsewhere. Applied to BOTH sides of a comparison, so it can only make
+ * two spellings of one title equal, never a different title. Single "i" stays a
+ * word ("I, Robot").
+ */
+function canonicalTitleWords(folded: string): string {
+  return folded
+    .split(" ")
+    .map((word) => (word === "volume" ? "vol" : word === "pt" ? "part" : ROMAN_NUMERALS[word] ?? word))
+    .join(" ");
+}
+
 function normalizeTitle(value: string): NormalizedTitle {
-  const text = foldTurkishDotlessI(value.toLowerCase())
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const text = canonicalTitleWords(
+    foldTurkishDotlessI(value.toLowerCase())
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/&/g, " and ")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
   const tokens = text.split(/\s+/).filter(Boolean);
 
   return {
@@ -560,12 +570,15 @@ export function scoreMatch(resultText: string, target: string, year?: string | n
   // Fold ı/İ → i AND apply NFD diacritic stripping so Turkish-only chars
   // (Yadigârları, Bölüm, Aşk, …) compare cleanly against ASCII slugs.
   const foldForCompare = (value: string): string =>
-    foldTurkishDotlessI(value.toLowerCase())
-      .normalize("NFD")
-      .replace(/[̀-ͯ]/g, "")
-      .replace(/[^a-z0-9\s]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
+    canonicalTitleWords(
+      foldTurkishDotlessI(value.toLowerCase())
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "")
+        .replace(/&/g, " and ")
+        .replace(/[^a-z0-9\s]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+    );
   const normalizedResult = foldForCompare(resultText);
   const normalizedTarget = foldForCompare(target);
   const yearStr = year ? String(year) : null;
@@ -655,6 +668,33 @@ function normalizeName(name: string): string {
     .trim();
 }
 
+/** Long words that name nothing in particular, so they come back with hundreds of rows. */
+const UNDISTINCTIVE_WORDS = new Set([
+  "chapter", "volume", "episode", "season", "movie", "story", "stories", "return", "returns", "begins",
+  "rising", "legend", "legends", "world", "kingdom", "christmas", "secret", "secrets", "night",
+  "house", "after", "before", "under", "about", "there", "their", "these", "where", "which", "other",
+  "final", "first", "last", "great", "little", "black", "white", "dead", "death", "love", "life",
+]);
+
+/**
+ * The longest word of a title of three or more words that is at least five
+ * letters and not on the undistinctive list ("Parabellum", "Songbirds",
+ * "Philosopher" of "Philosopher's"). Null when there is none worth a request.
+ */
+function distinctiveTitleWord(title: string): string | null {
+  const words = title
+    .split(/[^\p{L}\p{N}'’]+/u)
+    .map((word) => word.replace(/['’]s?$/i, ""))
+    .filter(Boolean);
+  if (words.length < 3) return null;
+  let best: string | null = null;
+  for (const word of words) {
+    if (!/^\p{L}{5,}$/u.test(word) || UNDISTINCTIVE_WORDS.has(word.toLowerCase())) continue;
+    if (!best || word.length > best.length) best = word;
+  }
+  return best;
+}
+
 type SearchQueryPlan = {
   queries: string[];
   /**
@@ -736,6 +776,15 @@ function generateSearchQueries(
   // the full title, so the extra rows can't be mistaken for the film.
   if (title.includes(":")) add(title.split(":")[0].trim());
   if (title.includes(" - ")) add(title.split(" - ")[0].trim());
+
+  // Search wide, match here. Every spelling above must equal the provider's
+  // listing letter for letter, and listings differ from TMDB in ways no rule
+  // foresees ("Volume 3" for "Vol. 3", "Philosopher&#039;s"). The title's most
+  // distinctive word is a substring of the listing however the rest is
+  // spelled, and is rare enough to come back in a short list; scoring then
+  // picks the film from it.
+  const distinctive = distinctiveTitleWord(title);
+  if (distinctive) add(distinctive);
   const bareTitleCount = queries.length;
 
   // 1. Year-qualified variants for disambiguation.
@@ -1947,6 +1996,14 @@ function isRapidrameNativeSafeStream(streamUrl: string): boolean {
  * Returns the original HTML with the FIRST packed block replaced by its
  * expansion. Idempotent / safe to call on HTML with no packed block.
  */
+/** The value of a single-quoted JS string literal's body. */
+function unescapeJsStringLiteral(body: string): string {
+  return body.replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[\s\S])/g, (_, escape: string) => {
+    if (escape.length > 1) return String.fromCharCode(parseInt(escape.slice(1), 16));
+    return ({ n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", v: "\v", "0": "\0" } as Record<string, string>)[escape] ?? escape;
+  });
+}
+
 function tryUnpackInlinePackerJs(html: string): string {
   const match = html.match(/eval\(function\(p,a,c,k,e,(?:d|r)\)\{[\s\S]*?\}\('((?:[^'\\]|\\.)*?)',\s*(\d+),\s*(\d+),\s*'((?:[^'\\]|\\.)*?)'\.split\('\|'\)/);
   if (!match) return html;
@@ -1955,7 +2012,7 @@ function tryUnpackInlinePackerJs(html: string): string {
   const base = parseInt(baseStr, 10);
   if (!Number.isFinite(base) || base < 2 || base > 62) return html;
 
-  const words = wordsStr.split("|");
+  const words = unescapeJsStringLiteral(wordsStr).split("|");
   const digits = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
   function fromBase(token: string): number {
@@ -1968,7 +2025,10 @@ function tryUnpackInlinePackerJs(html: string): string {
     return n;
   }
 
-  const expanded = payload.replace(/\b\w+\b/g, (token) => {
+  // The payload is a JS string literal; the packer works on its VALUE. Left
+  // escaped, the /rplayer/ decoder kept its `\'`s and the interpreter bailed
+  // on the backslash (2026-10-28).
+  const expanded = unescapeJsStringLiteral(payload).replace(/\b\w+\b/g, (token) => {
     const idx = fromBase(token);
     if (idx < 0 || idx >= words.length) return token;
     const word = words[idx];
@@ -2068,9 +2128,13 @@ function extractRapidrameStreamUrl(embedHtmlInput: string, embedUrl?: string): s
   // The parts variable was `s_*` until Sep 2026 and is a random short
   // identifier since, so match any identifier. A quoted URL (`file: "http…"`)
   // is not an identifier and correctly falls through to the m3u8 scrape.
-  const sourceVariable = embedHtml.match(
-    /sources\s*:\s*\[\s*\{\s*file\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)/
-  )?.[1];
+  // The /rplayer/ page keeps a commented-out `//sources: [{file:atob(file_link)}]`
+  // ahead of the live one, so a call is never the variable, and the first
+  // candidate actually declared in the page wins.
+  const sourceVariable = Array.from(
+    embedHtml.matchAll(/sources\s*:\s*\[\s*\{\s*file\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)(?!\s*\()/g),
+    (match) => match[1]
+  ).find((name) => findVariableDeclaration(embedHtml, name) !== -1);
   if (!sourceVariable) {
     return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
   }
@@ -2141,19 +2205,28 @@ function extractHdFilmEmbedUrl(pageHtml: string, pageUrl: string): string | null
   return null;
 }
 
-function extractRapidrameSubtitles(embedHtml: string): SubtitleTrack[] {
+/**
+ * The `tracks` captions of a Rapidrame player config. The .mobi embed writes
+ * `{"file","kind","label"}` with absolute URLs; the /rplayer/ page writes
+ * `{"file","label","language","kind"}` with a root-relative "\/srt\/…" path and
+ * \u-escaped labels — so each track object is read field by field.
+ */
+function extractRapidrameSubtitles(embedHtml: string, embedUrl?: string): SubtitleTrack[] {
   const subtitles: SubtitleTrack[] = [];
-  const trackBlock = embedHtml.match(/tracks\s*:\s*(\[[\s\S]*?\])\s*,\s*captions\s*:/i)?.[1];
+  const trackBlock = embedHtml.match(/tracks\s*:\s*(\[[^\]]*\])/i)?.[1];
   if (!trackBlock) return subtitles;
 
-  const regex = /"file"\s*:\s*"([^"]+)"[\s\S]*?"kind"\s*:\s*"captions"[\s\S]*?"label"\s*:\s*"([^"]*)"/gi;
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(trackBlock)) !== null) {
-    const url = match[1].replace(/\\\//g, "/");
-    const label = match[2] || "Subtitle";
+  const field = (track: string, name: string) =>
+    track.match(new RegExp(`"${name}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`, "i"))?.[1];
+  for (const track of trackBlock.match(/\{[^{}]*\}/g) ?? []) {
+    const kind = field(track, "kind");
+    const file = field(track, "file");
+    if (!file || (kind && kind.toLowerCase() !== "captions")) continue;
+    const url = embedUrl ? toAbsoluteUrl(embedUrl, unescapeJsStringLiteral(file)) : unescapeJsStringLiteral(file);
+    if (!url) continue;
+    const label = unescapeJsStringLiteral(field(track, "label") ?? "") || "Subtitle";
     const langMatch = url.match(/[-_/]([a-z]{2,3})(?:[-_.][^/?#]*)?\.vtt/i);
-    subtitles.push({ url, label, lang: langMatch?.[1] ?? label.toLowerCase().slice(0, 3) });
+    subtitles.push({ url, label, lang: field(track, "language") ?? langMatch?.[1] ?? label.toLowerCase().slice(0, 3) });
   }
 
   return subtitles;
@@ -2274,6 +2347,29 @@ async function resolveHdFilmNativeFallback(pageUrl: string, pageHtml: string): P
   const embedUrl = extractHdFilmEmbedUrl(pageHtml, pageUrl);
   if (!embedUrl) return null;
 
+  const primary = await resolveHdFilmEmbedStream(embedUrl, pageUrl);
+  if (primary) return primary;
+
+  // The same video's second source: HDFilm's own /rplayer/{rapidrame_id}/,
+  // served from the main domain. hdfilmcehennemi.mobi answers 429 to an address
+  // that asked too often, and every viewer behind it lost HDFilm ("The Cycle",
+  // 2026-10-28); the rplayer page kept answering. Second, because the .mobi
+  // streams carry the dual Turkish/English audio.
+  const rplayerUrl = hdFilmRplayerUrl(embedUrl);
+  return rplayerUrl ? resolveHdFilmEmbedStream(rplayerUrl, pageUrl) : null;
+}
+
+/** `…/video/embed/{id}/?rapidrame_id=ss6tggj5phmo` → `{hdfilm}/rplayer/ss6tggj5phmo/`. */
+function hdFilmRplayerUrl(embedUrl: string): string | null {
+  try {
+    const id = new URL(embedUrl).searchParams.get("rapidrame_id");
+    return id && /^[a-z0-9]{6,32}$/i.test(id) ? `${getHdfilmBaseUrl()}/rplayer/${id}/` : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveHdFilmEmbedStream(embedUrl: string, pageUrl: string): Promise<DizipalStreamInfo | null> {
   try {
     const response = await hdFilmGet<string>(embedUrl, {
       timeout: 8000,
@@ -2295,7 +2391,7 @@ async function resolveHdFilmNativeFallback(pageUrl: string, pageHtml: string): P
       streamType: "m3u8",
       poster: "",
       referer: embedUrl,
-      subtitles: extractRapidrameSubtitles(response.data),
+      subtitles: extractRapidrameSubtitles(response.data, embedUrl),
       preferNative
     };
   } catch (error) {
@@ -2358,7 +2454,7 @@ export async function resolveHdFilmRuntimeStream(discoveredUrl: string, pageUrl:
         referer: absoluteUrl,
         embedUrl: absoluteUrl,
         subtitles: [
-          ...extractRapidrameSubtitles(response.data),
+          ...extractRapidrameSubtitles(response.data, absoluteUrl),
           ...extractSubtitlesFromEmbedHtml(response.data)
         ]
       };
@@ -3929,6 +4025,9 @@ export const __internal = {
   extractDizibalPlayerBox,
   extractPilavyerPlayerConfig,
   extractSubtitlesFromPlayerJs,
+  extractRapidrameSubtitles,
+  extractH4Title,
+  hdFilmRplayerUrl,
   extractDizipalCfg,
   extractDizipalPageYear,
   extractHdFilmEmbedUrl,

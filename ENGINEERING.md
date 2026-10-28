@@ -153,7 +153,15 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   every caller passes the embed's URL. Until then every HDFilm title fell through — 41
   `not_found` resolves on 10-22 against a usual ~7.
 - HDFilm `/dizi/` pages challenge the **first** request on a fresh connection and pass after;
-  `hdFilmGet()` retries past it. `/rplayer/` embeds remain unreachable.
+  `hdFilmGet()` retries past it.
+- **HDFilm's second source, `/rplayer/{rapidrame_id}/` on the main domain, is the fallback
+  (2026-10-28).** The `.mobi` embed's `rapidrame_id` names it, so no extra page read is needed;
+  `resolveHdFilmNativeFallback` asks `.mobi` first (its streams carry the dual audio) and the
+  rplayer page when `.mobi` refuses (429) or decodes nothing. Its decoder is packed, so the
+  unpacker now unescapes the payload literal first (`unescapeJsStringLiteral`); its config keeps a
+  commented-out `//sources: [{file:atob(file_link)}]` ahead of the live one, so the source variable
+  is the first declared non-call; its captions are root-relative with `\u` labels. Streams come
+  from `*.rapidrame.com` and play with `streamRequestHeaders`.
 - HDFilm does not tokenize apostrophes: search `Rosemarys Baby`, not `Rosemary's Baby`.
 - **HDFilm's search matches the listed title literally, punctuation included** (2026-10-28):
   "The Hunger Games: The Ballad of Songbirds & Snakes" finds nothing, nor does it with the colon
@@ -161,6 +169,17 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   an `&`→`and` spelling that keeps the punctuation, and the franchise prefix before a colon
   ("The Hunger Games") counts as a bare name, so the two-empty-query cutoff waits for both.
   Before, the sweep gave up and the film played from Dizipal at lower quality.
+- **Search wide, match here (2026-10-28).** Every spelling the plan sends must equal the listing
+  letter for letter, and listings differ from TMDB in ways no rule foresees. The plan's bare
+  names now end with the title's most distinctive word (`distinctiveTitleWord`: longest word of
+  five letters or more in a title of three or more words, minus generic ones), which is a
+  substring of the listing however the rest is spelled; scoring picks the film from the short
+  list it returns. Listing titles are entity-decoded properly (`decodeHtmlEntities`: HDFilm
+  writes "L&eacute;on", "Philosopher&#039;s", "Fast &amp; Furious"; the old decoder turned
+  unknown entities into spaces), and both sides of a comparison fold "Vol."/"Volume", "Pt"/"Part"
+  and roman numerals II–X (`canonicalTitleWords`). Measured with `findBestHdFilmMatch` /
+  `searchDizipal` over 97 films: HDFilm 82 → 85 found (145 → 148 searches), Dizipal 68 → 69
+  (373 → 429 searches; the extra ones are for titles it does not have), no title lost.
 - **A title can carry " - " itself.** HDFilm lists "Turkish - English"; splitting
   "John Wick 3 Parabellum - John Wick: Chapter 3 - Parabellum" on every dash never offered the
   English title whole (score 43, "Not available"). `splitDualTitle` also tries every run of

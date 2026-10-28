@@ -4,6 +4,15 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-10-28 (2)
+
+- Fixed: HDFilm titles (e.g. *The Cycle*) could show "Not available" when HDFilm's video server
+  turned a network away for asking too often, which mobile networks can trigger as many people
+  share one address. The app now plays HDFilm's second source in that case.
+- Improved: more films are found on HDFilm when its listing spells the title differently from
+  ours (*Léon: The Professional*, *Harry Potter and the Philosopher's Stone*, *Guardians of the
+  Galaxy Vol. 3*), so they play from the best source instead of a lower-quality one.
+
 ## 2026-10-28
 
 - Fixed: *John Wick: Chapter 3 - Parabellum* showed "Not available". Titles with a dash of their
