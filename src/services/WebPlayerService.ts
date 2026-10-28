@@ -20,6 +20,7 @@ import {
   type ProviderConfigMap,
 } from "./providerConfigService";
 import { aesCbcDecrypt } from "./aesCbc";
+import { trackEvent } from "./telemetryService";
 import {
   fetchKultfilmlerText,
   isKultfilmlerSessionOpening,
@@ -473,10 +474,22 @@ function extractResultYear(html: string): string {
  * For HDFilm results with format "Turkish Title - English Title",
  * split and return all title variants to match against.
  */
+/**
+ * HDFilm lists a film as "Turkish Title - English Title", but a title can carry
+ * " - " itself: "John Wick 3 Parabellum - John Wick: Chapter 3 - Parabellum".
+ * Splitting on every dash cut the English name in half and the film scored 43
+ * against itself (2026-10-28), so every run of adjacent parts is a candidate too.
+ */
 function splitDualTitle(title: string): string[] {
   const parts = title.split(/\s+-\s+/).map(p => p.trim()).filter(Boolean);
-  // Also add the full combined title
-  return [title, ...parts];
+  const runs: string[] = [];
+  for (let start = 0; start < parts.length; start++) {
+    for (let end = start + 1; end <= parts.length; end++) {
+      if (end - start === parts.length) continue; // the whole title, added first
+      runs.push(parts.slice(start, end).join(" - "));
+    }
+  }
+  return [title, ...runs];
 }
 
 type NormalizedTitle = {
@@ -701,21 +714,34 @@ function generateSearchQueries(
       .replace(/\s+/g, " ")
       .trim();
 
+  // HDFilm's search matches its listed title literally, colon and all, and
+  // lists "&" as "and": "The Hunger Games: The Ballad of Songbirds & Snakes"
+  // found nothing as written, nothing with its punctuation stripped, and only
+  // "…: The Ballad of Songbirds and Snakes" (2026-10-28). So the spelling with
+  // nothing but the ampersand swapped is a name of its own.
+  const spellAmpersand = (value: string) => value.replace(/\s*&\s*/g, " and ");
+
   if (originalTitle) add(originalTitle);
   add(title);
+  if (originalTitle) add(spellAmpersand(originalTitle));
+  add(spellAmpersand(title));
   const cleanTitle = cleanSpelling(title);
   if (originalTitle) add(cleanSpelling(originalTitle));
   add(cleanTitle);
+
+  // The franchise name before a subtitle ("The Hunger Games", "Alien" of
+  // "Alien: Romulus") is the widest net, and it went out only after the
+  // empty-result cutoff had already given up on every narrower spelling. It
+  // counts as a bare name so that cutoff waits for it; scoring still requires
+  // the full title, so the extra rows can't be mistaken for the film.
+  if (title.includes(":")) add(title.split(":")[0].trim());
+  if (title.includes(" - ")) add(title.split(" - ")[0].trim());
   const bareTitleCount = queries.length;
 
   // 1. Year-qualified variants for disambiguation.
   if (originalTitle && year) add(`${originalTitle} ${year}`);
   if (year) add(`${title} ${year}`);
   if (year) add(`${cleanTitle} ${year}`);
-
-  // 4. Prefix before colon/dash (for subtitled movies like "Alien: Romulus")
-  if (title.includes(":")) add(title.split(":")[0].trim());
-  if (title.includes(" - ")) add(title.split(" - ")[0].trim());
 
   // 5. Partial word combinations for very long titles
   const significantWords = cleanTitle.split(/\s+/).filter((word) => word.length >= 2);
@@ -1460,7 +1486,7 @@ async function searchDizipal(title: string, mediaType: "movie" | "tv", year?: st
       // different-year movie (Dune 1984) just because the title scored
       // high enough after the -55 penalty.
       if (isYearIncompatible(entry.resultYear, year)) return false;
-      return isDizipalUrlTitleCompatible(entry.href, title, safeOriginalTitle);
+      return isDizipalUrlTitleCompatible(entry.href, title, safeOriginalTitle, entry.title);
     })
     .sort((a, b) => b.score - a.score);
 
@@ -1532,11 +1558,24 @@ function extractDizipalTitleFromUrl(url: string): string {
   }
 }
 
+/**
+ * `listedTitle` is the title Dizipal's own search row gave the page. Its slugs
+ * abbreviate ("John Wick: Chapter 3 - Parabellum" lives at
+ * /film/john-wick-3-parabellum, 2026-10-28), so a slug alone rejected the right
+ * page; a row that names the title exactly vouches for it.
+ */
 function isDizipalUrlTitleCompatible(
   url: string,
   title: string,
   originalTitle?: string,
+  listedTitle?: string,
 ): boolean {
+  if (listedTitle) {
+    const targets = [title, ...(isAlternateTitleSafeForDizipal(title, originalTitle) ? [originalTitle ?? ""] : [])];
+    const listed = splitDualTitle(listedTitle);
+    if (listed.some((variant) => targets.some((target) => hasStrictTitleIdentity(variant, target)))) return true;
+  }
+
   const slugTitle = extractDizipalTitleFromUrl(url);
   if (!slugTitle) return false;
 
@@ -2259,9 +2298,25 @@ async function resolveHdFilmNativeFallback(pageUrl: string, pageHtml: string): P
       subtitles: extractRapidrameSubtitles(response.data),
       preferNative
     };
-  } catch {
+  } catch (error) {
+    noteHdFilmEmbedRateLimit(error);
     return null;
   }
+}
+
+/**
+ * HDFilm's embed host answers 429 to an address that asks too often (seen
+ * 2026-10-28 after ~60 titles in a few minutes), and the title then plays from
+ * a lower tier or not at all. Phones share addresses behind carrier NAT, so
+ * report it, once per app session, to see whether real viewers meet it.
+ */
+let hdFilmEmbedRateLimitReported = false;
+
+function noteHdFilmEmbedRateLimit(error: unknown): void {
+  if (hdFilmEmbedRateLimitReported) return;
+  if ((error as { response?: { status?: number } } | null)?.response?.status !== 429) return;
+  hdFilmEmbedRateLimitReported = true;
+  trackEvent("hdfilm_embed_rate_limited", "network", {}, "warning");
 }
 
 export async function resolveHdFilmRuntimeStream(discoveredUrl: string, pageUrl: string): Promise<WebPlayerResult | null> {
@@ -2935,7 +2990,7 @@ async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<Diz
     targetUrl = episodeUrl;
   } else if (request.mediaType === "tv") return null;
 
-  if (!isDizipalUrlTitleCompatible(targetUrl, request.title, request.originalTitle)) {
+  if (!isDizipalUrlTitleCompatible(targetUrl, request.title, request.originalTitle, dizipalMatch.title)) {
     debugLog("[WebPlayer] Dizipal rejected mismatched page:", targetUrl, "for", request.title);
     return null;
   }

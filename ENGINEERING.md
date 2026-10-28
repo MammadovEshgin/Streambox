@@ -154,6 +154,21 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 - HDFilm `/dizi/` pages challenge the **first** request on a fresh connection and pass after;
   `hdFilmGet()` retries past it. `/rplayer/` embeds remain unreachable.
 - HDFilm does not tokenize apostrophes: search `Rosemarys Baby`, not `Rosemary's Baby`.
+- **HDFilm's search matches the listed title literally, punctuation included** (2026-10-28):
+  "The Hunger Games: The Ballad of Songbirds & Snakes" finds nothing, nor does it with the colon
+  stripped; "…: The Ballad of Songbirds and Snakes" finds the film. `generateSearchQueries` sends
+  an `&`→`and` spelling that keeps the punctuation, and the franchise prefix before a colon
+  ("The Hunger Games") counts as a bare name, so the two-empty-query cutoff waits for both.
+  Before, the sweep gave up and the film played from Dizipal at lower quality.
+- **A title can carry " - " itself.** HDFilm lists "Turkish - English"; splitting
+  "John Wick 3 Parabellum - John Wick: Chapter 3 - Parabellum" on every dash never offered the
+  English title whole (score 43, "Not available"). `splitDualTitle` also tries every run of
+  adjacent parts. Dizipal's slugs abbreviate (`/film/john-wick-3-parabellum`), so its URL guard
+  accepts a page whose own search row names the title exactly.
+- **HDFilm's embed host (`hdfilmcehennemi.mobi`) rate-limits per address**: ~60 resolves in a few
+  minutes from one IP drew `429` on every embed (2026-10-28) and every HDFilm title fell to lower
+  tiers. Sweep test titles slowly. Devices report it once per session as
+  `hdfilm_embed_rate_limited` (carrier NAT shares addresses).
 - **Dizipal (2026-09-25 onward) is the numbered chain again: `dizipal2134.com`**, on
   Cloudflare, reached by 2133's 301, with the classic site. The chain is `/ajax-search?q=`
   (JSON rows `{title, year, type: Film|Dizi, url}`; Turkish titles, but it matches English

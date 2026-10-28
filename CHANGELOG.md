@@ -4,6 +4,13 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-10-28
+
+- Fixed: *John Wick: Chapter 3 - Parabellum* showed "Not available". Titles with a dash of their
+  own were cut in half when matched against the providers' listings. It plays again, from HDFilm.
+- Fixed: titles with "&" in them (*The Hunger Games: The Ballad of Songbirds & Snakes*) weren't
+  found on HDFilm and played from a lower-quality source. They now play from HDFilm.
+
 ## 2026-10-26
 
 - Fixed: *Harry Potter and the Deathly Hallows: Part 1* (and other titles on one of Dizipal's

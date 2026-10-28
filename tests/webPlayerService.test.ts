@@ -1892,3 +1892,49 @@ test("FirePlayer root-relative subtitles resolve against the embed (Criminal Min
     ["https://cdn.test/a_eng.vtt", "https://imagestoo.com/subs/b.srt"],
   );
 });
+
+test("a title with its own ' - ' still matches HDFilm's 'Turkish - English' listing (John Wick 3)", () => {
+  // Split on every dash, "John Wick 3 Parabellum - John Wick: Chapter 3 - Parabellum"
+  // never offered the English title whole, and the film scored 43 against itself.
+  const listing = {
+    href: "https://www.hdfilmcehennemi.nl/hd-john-wick-3-parabellum-1080p-full-hd-izle-hdf-106/",
+    text: "2019 7.4 Film John Wick 3 Parabellum - John Wick: Chapter 3 - Parabellum",
+    title: "John Wick 3 Parabellum - John Wick: Chapter 3 - Parabellum",
+    resultYear: "2019",
+  };
+  assert.ok(__internal.scoreHdFilmResult(listing, "John Wick: Chapter 3 - Parabellum", "2019") >= 120);
+  // The neighbouring film in the franchise still loses to it.
+  assert.ok(__internal.scoreHdFilmResult(listing, "John Wick: Chapter 4", "2023") < 50);
+});
+
+test("Dizipal's own search row vouches for a page whose slug abbreviates the title", () => {
+  // /film/john-wick-3-parabellum is "John Wick: Chapter 3 - Parabellum".
+  const url = `${dizipalBase}/film/john-wick-3-parabellum`;
+  const title = "John Wick: Chapter 3 - Parabellum";
+  assert.equal(__internal.isDizipalUrlTitleCompatible(url, title), false, "the slug alone can't tell");
+  assert.equal(__internal.isDizipalUrlTitleCompatible(url, title, undefined, "John Wick: Chapter 3 - Parabellum"), true);
+  // A row naming another title vouches for nothing.
+  assert.equal(
+    __internal.isDizipalUrlTitleCompatible(
+      `${dizipalBase}/dizi/malcolm-in-the-middle-life-s-still-unfair`,
+      "M.I.A.",
+      undefined,
+      "Malcolm in the Middle: Life's Still Unfair"
+    ),
+    false
+  );
+});
+
+test("an '&' title is also searched with 'and', punctuation kept, before the sweep can give up", () => {
+  // HDFilm: "…Songbirds & Snakes" → 0 rows, "…Songbirds and Snakes" without the
+  // colon → 0 rows, "The Hunger Games: The Ballad of Songbirds and Snakes" → the
+  // film. The two-empty-query cutoff stopped before the franchise name went out.
+  const { queries, bareTitleCount } = __internal.generateSearchQueries(
+    "The Hunger Games: The Ballad of Songbirds & Snakes",
+    "2023"
+  );
+  const bare = queries.slice(0, bareTitleCount);
+  assert.ok(bare.includes("The Hunger Games: The Ballad of Songbirds and Snakes"));
+  assert.ok(bare.includes("The Hunger Games"), "the franchise prefix goes out before the cutoff");
+  assert.equal(__internal.shouldStopSearchingAfterEmptyQueries(1, 0, bareTitleCount), false);
+});
