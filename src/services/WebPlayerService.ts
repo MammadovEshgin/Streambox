@@ -3293,6 +3293,33 @@ function toDizipalWebPlayerResult(dizipalResult: DizipalResolveResult | null): W
   };
 }
 
+/**
+ * TMDB's Turkish title when it differs from both titles the request carries.
+ * Cross-language titles ("Harry Potter and the Deathly Hallows" vs "Harry
+ * Potter ve Ölüm Yadigârları") score too low against a Turkish-only listing,
+ * so the Turkish tiers retry with it. Never rejects.
+ */
+function fetchTurkishAlternativeTitle(request: WebPlayerRequest): Promise<string | null> {
+  if (!request.tmdbId) return Promise.resolve(null);
+  return getTurkishAlternativeTitle(request.tmdbId, request.mediaType)
+    .then((alt) => (alt && alt !== request.title && alt !== request.originalTitle ? alt : null))
+    .catch(() => null);
+}
+
+/** Dizipal's stream for the request, retried under the Turkish title. */
+async function resolveDizipalStream(
+  request: WebPlayerRequest,
+  turkishTitle: Promise<string | null>
+): Promise<WebPlayerResult | null> {
+  const direct = toDizipalWebPlayerResult(await resolvePlayableDizipalUrl(request));
+  if (direct) return direct;
+  const alt = await turkishTitle;
+  if (!alt) return null;
+  return toDizipalWebPlayerResult(
+    await resolvePlayableDizipalUrl({ ...request, title: alt, originalTitle: undefined })
+  );
+}
+
 async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebPlayerResult> {
   // Every tier starts at once and the answer follows tier priority (HDFilm →
   // Dizipal → Dizibal → Kült Filmler). They used to run one after another, so a title only
@@ -3307,15 +3334,8 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
   const considerHdFilmResult = (result: WebPlayerResult): WebPlayerResult | null =>
     result.streamUrl ? result : null;
 
-  // Cross-language titles ("Harry Potter and the Deathly Hallows" vs "Harry
-  // Potter ve Ölüm Yadigârları") score too low against a Turkish-only listing,
-  // so each Turkish tier retries with TMDB's Turkish title. Fetched once, and
-  // early, so neither retry waits for it.
-  const turkishTitle: Promise<string | null> = request.tmdbId
-    ? getTurkishAlternativeTitle(request.tmdbId, request.mediaType)
-        .then((alt) => (alt && alt !== request.title && alt !== request.originalTitle ? alt : null))
-        .catch(() => null)
-    : Promise.resolve(null);
+  // Fetched once, and early, so no tier's retry waits for it.
+  const turkishTitle = fetchTurkishAlternativeTitle(request);
 
   const hdfilmStream = async (title: string, originalTitle?: string): Promise<WebPlayerResult | null> => {
     const match = await findBestHdFilmMatch(title, request.castNames ?? [], request.year, originalTitle);
@@ -3340,15 +3360,7 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
     return alt ? hdfilmStream(alt) : null;
   };
 
-  const dizipalTier = async () => {
-    const direct = toDizipalWebPlayerResult(await resolvePlayableDizipalUrl(request));
-    if (direct) return direct;
-    const alt = await turkishTitle;
-    if (!alt) return null;
-    return toDizipalWebPlayerResult(
-      await resolvePlayableDizipalUrl({ ...request, title: alt, originalTitle: undefined })
-    );
-  };
+  const dizipalTier = () => resolveDizipalStream(request, turkishTitle);
 
   // Dizibal serves HLS from its own player CDN (pilavyer*.top).
   const dizibalTier = async () => {
@@ -3384,7 +3396,7 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
  */
 export async function resolveNativeAlternativeToHdFilm(request: WebPlayerRequest): Promise<WebPlayerResult> {
   const dizipal = Promise.race([
-    resolvePlayableDizipalUrl(request).then(toDizipalWebPlayerResult),
+    resolveDizipalStream(request, fetchTurkishAlternativeTitle(request)),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), DIRECT_FALLBACK_TIMEOUT_MS)),
   ]);
   const result = await firstNativeByPriority(

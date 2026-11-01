@@ -4,6 +4,14 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-01
+
+- Fixed: when an HDFilm stream wouldn't start on a phone, the app looked for the same title on
+  the other sources but missed the ones Dizipal lists only under their Turkish name (*Harry
+  Potter and the Deathly Hallows: Part 1*), and showed "Not available". It now plays those
+  from Dizipal.
+- Faster: Dizipal answers without two redirects when the app can't fetch the current address.
+
 ## 2026-10-28 (2)
 
 - Fixed: HDFilm titles (e.g. *The Cycle*) could show "Not available" when HDFilm's video server

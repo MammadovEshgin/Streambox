@@ -80,3 +80,17 @@ test("a rejected data-cfg is never replayed: the retry re-reads the page", () =>
   assert.match(streamFn, /for \(let attempt = 0; attempt < 2 && !configResp\?\.success; attempt\+\+\) \{\s*const page = await fetchDizipalPlayerPage\(pageUrl\);/);
   assert.equal(source.includes("${baseUrl}/ajax-token"), false, "no token mint on the critical path");
 });
+
+test("the stand-in for a failed HDFilm stream also asks Dizipal under the Turkish title", () => {
+  // Dizipal lists Harry Potter and the Deathly Hallows: Part 1 only as "Harry
+  // Potter ve Ölüm Yadigârları: Bölüm 1". The main resolve retried under TMDB's
+  // Turkish title; the stand-in did not, so it found nothing (2026-11-01).
+  const start = source.indexOf("export async function resolveNativeAlternativeToHdFilm");
+  const alternative = source.slice(start, source.indexOf("\n}\n", start));
+  assert.match(alternative, /resolveDizipalStream\(request, fetchTurkishAlternativeTitle\(request\)\)/);
+  const inner = source.slice(
+    source.indexOf("async function resolveWebPlayerUrlInner"),
+    source.indexOf("export async function resolveNativeAlternativeToHdFilm")
+  );
+  assert.match(inner, /const dizipalTier = \(\) => resolveDizipalStream\(request, turkishTitle\);/);
+});
