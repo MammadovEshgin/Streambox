@@ -7,9 +7,11 @@ import {
   __resetKultfilmlerSessionForTests,
   attachKultfilmlerHost,
   fetchKultfilmlerText,
+  handleKultfilmlerLoadError,
   handleKultfilmlerMessage,
   isKultfilmlerNavigationAllowed,
   isKultfilmlerSessionOpening,
+  KULTFILMLER_PAGE_PROBE,
   KULTFILMLER_WARM_DELAY_MS,
   kultfilmlerSessionUrl,
   liftKultfilmlerCooldown,
@@ -169,6 +171,46 @@ test("a detail page warms only once it has been open a moment, and leaving cance
     mock.timers.reset();
     __resetKultfilmlerSessionForTests();
   }
+});
+
+test("Cloudflare's block page or a failed load gives up at once instead of after 20s", async () => {
+  // 2026-11-06/07: phones on some networks got "Attention Required! |
+  // Cloudflare" (a block, no challenge to pass) or never loaded the page at
+  // all, and each play waited out the full 20s before "Not available".
+  __resetKultfilmlerSessionForTests();
+  mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  try {
+    const { opened } = openFakeBridge();
+    const blocked = fetchKultfilmlerText("https://kultfilmler.net/a/");
+    handleKultfilmlerMessage(JSON.stringify({ kf: "page", ready: false, blocked: true, title: "Attention Required! | Cloudflare" }));
+    assert.deepEqual(await blocked, { ok: false, reason: "unavailable" });
+    assert.equal(opened.at(-1), false, "the WebView is let go");
+    assert.deepEqual(await fetchKultfilmlerText("https://kultfilmler.net/b/"), { ok: false, reason: "unavailable" }, "and rests");
+
+    liftKultfilmlerCooldown();
+    const unreachable = fetchKultfilmlerText("https://kultfilmler.net/c/");
+    handleKultfilmlerLoadError("net::ERR_NAME_NOT_RESOLVED");
+    assert.deepEqual(await unreachable, { ok: false, reason: "unavailable" });
+    assert.equal(isKultfilmlerSessionOpening(), false);
+  } finally {
+    mock.timers.reset();
+    __resetKultfilmlerSessionForTests();
+  }
+});
+
+test("a load error once the session is open leaves it alone", async () => {
+  __resetKultfilmlerSessionForTests();
+  const { host } = openFakeBridge();
+  const pending = fetchKultfilmlerText("https://kultfilmler.net/a/");
+  handleKultfilmlerMessage(JSON.stringify({ kf: "page", ready: true }));
+  handleKultfilmlerLoadError("net::ERR_FAILED");
+  answer(requestIdOf(host.scripts[0]), 200, "ok");
+  assert.deepEqual(await pending, { ok: true, body: "ok" });
+  __resetKultfilmlerSessionForTests();
+});
+
+test("the page probe reports Cloudflare's block page", () => {
+  assert.match(KULTFILMLER_PAGE_PROBE, /blocked: !!document\.getElementById\("cf-error-details"\) \|\| \/you have been blocked\/i\.test\(text\)/);
 });
 
 test("Retry lifts the cooldown of a challenge that stalled", async () => {

@@ -118,7 +118,9 @@ export function getKultfilmlerOrigin(): string {
 
 /**
  * Runs after every page load. The session is ready once the page is the JSON
- * search answer rather than the challenge.
+ * search answer rather than the challenge. `blocked` is Cloudflare's block
+ * page ("Attention Required!", "Sorry, you have been blocked"): the site turns
+ * this network away outright, so there is no challenge to wait out.
  */
 export const KULTFILMLER_PAGE_PROBE = `(function () {
   var text = document.body ? document.body.innerText : "";
@@ -127,6 +129,7 @@ export const KULTFILMLER_PAGE_PROBE = `(function () {
   window.ReactNativeWebView.postMessage(JSON.stringify({
     kf: "page",
     ready: ready,
+    blocked: !!document.getElementById("cf-error-details") || /you have been blocked/i.test(text),
     title: String(document.title || "").slice(0, 60),
     visibility: String(document.visibilityState || ""),
     challengeFrame: !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
@@ -232,6 +235,7 @@ export function handleKultfilmlerMessage(raw: string): void {
     title?: unknown;
     visibility?: unknown;
     challengeFrame?: unknown;
+    blocked?: unknown;
   };
   try {
     message = JSON.parse(raw);
@@ -247,6 +251,10 @@ export function handleKultfilmlerMessage(raw: string): void {
       visibility: typeof message.visibility === "string" ? message.visibility : "",
       challengeFrame: message.challengeFrame === true,
     };
+    if (message.blocked === true && phase === "opening") {
+      giveUp("blocked");
+      return;
+    }
     if (message.ready !== true) return;
     if (phase === "opening") {
       trackEvent("kultfilmler_session", "network", { outcome: "ready", ms: Date.now() - openedAt, loads: pageLoads });
@@ -312,31 +320,45 @@ function close(reason: "unavailable" | "timeout" = "timeout"): void {
   notify();
 }
 
+/**
+ * The session WebView could not load the page at all (no DNS, no connection):
+ * the bridge reports it at once instead of the challenge timer finding out 20s
+ * later.
+ */
+export function handleKultfilmlerLoadError(description: string): void {
+  if (phase === "opening") giveUp("load_error", { error: description.slice(0, 80) });
+}
+
 function startChallengeTimer(): void {
   clearChallengeTimer();
   challengeTimer = setTimeout(() => {
     challengeTimer = null;
-    if (phase !== "opening") return;
-    // What the page looked like when we gave up: no loads at all means the
-    // WebView never ran; "hidden" visibility or a challenge frame that never
-    // went away say which way the challenge stalled.
-    trackEvent(
-      "kultfilmler_session",
-      "network",
-      {
-        outcome: "challenge_timeout",
-        ms: Date.now() - openedAt,
-        loads: pageLoads,
-        title: lastPage?.title ?? null,
-        visibility: lastPage?.visibility ?? null,
-        challengeFrame: lastPage?.challengeFrame ?? null,
-      },
-      "warning"
-    );
-    unavailableUntil = Date.now() + FAILURE_COOLDOWN_MS;
-    // "unavailable", not "timeout": asking again within the cooldown can't help.
-    close("unavailable");
+    if (phase === "opening") giveUp("challenge_timeout");
   }, CHALLENGE_TIMEOUT_MS);
+}
+
+/** The session can't open now: report why, fail the queue, and rest a while. */
+function giveUp(outcome: "challenge_timeout" | "blocked" | "load_error", detail: Record<string, string> = {}): void {
+  // What the page looked like when we gave up: no loads at all means the
+  // WebView never ran; "hidden" visibility or a challenge frame that never
+  // went away say which way the challenge stalled.
+  trackEvent(
+    "kultfilmler_session",
+    "network",
+    {
+      outcome,
+      ms: Date.now() - openedAt,
+      loads: pageLoads,
+      title: lastPage?.title ?? null,
+      visibility: lastPage?.visibility ?? null,
+      challengeFrame: lastPage?.challengeFrame ?? null,
+      ...detail,
+    },
+    "warning"
+  );
+  unavailableUntil = Date.now() + FAILURE_COOLDOWN_MS;
+  // "unavailable", not "timeout": asking again within the cooldown can't help.
+  close("unavailable");
 }
 
 function clearChallengeTimer(): void {

@@ -5,6 +5,7 @@ import WebView, { type WebViewMessageEvent } from "react-native-webview";
 import {
   KULTFILMLER_PAGE_PROBE,
   attachKultfilmlerHost,
+  handleKultfilmlerLoadError,
   handleKultfilmlerMessage,
   isKultfilmlerNavigationAllowed,
   kultfilmlerSessionUrl,
@@ -46,6 +47,7 @@ export function KultfilmlerBridge() {
         mediaPlaybackRequiresUserAction
         injectedJavaScript={KULTFILMLER_PAGE_PROBE}
         onMessage={(event: WebViewMessageEvent) => handleKultfilmlerMessage(event.nativeEvent.data)}
+        onError={(event) => handleKultfilmlerLoadError(event.nativeEvent.description)}
         onShouldStartLoadWithRequest={(request) => isKultfilmlerNavigationAllowed(request.url)}
       />
     </View>

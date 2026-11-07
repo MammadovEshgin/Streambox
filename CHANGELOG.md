@@ -4,6 +4,11 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-07
+
+- Faster "Not available": on networks that Kült Filmler turns away, the app no longer waits
+  20 seconds on it before giving up.
+
 ## 2026-11-01
 
 - Fixed: when an HDFilm stream wouldn't start on a phone, the app looked for the same title on

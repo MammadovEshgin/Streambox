@@ -189,8 +189,10 @@ order by 1 desc, 5 desc;
 ```
 
 Kült Filmler sessions: whether devices' hidden WebView gets past the site's Cloudflare
-challenge (`ready`, with how long it took) or not (`challenge_timeout` after 20s, after which the
-provider is set aside for 3 minutes, or until the viewer presses Retry). A timeout carries what the page last reported: `loads: 0`
+challenge (`ready`, with how long it took) or not: `challenge_timeout` after 20s, `blocked` at once
+when Cloudflare's block page ("Attention Required!") comes up instead of a challenge, or
+`load_error` at once when the WebView can't load the page (with the WebView's `error`). Each
+sets the provider aside for 3 minutes, or until the viewer presses Retry. A timeout carries what the page last reported: `loads: 0`
 means the WebView never loaded anything, `visibility: hidden` that it isn't being drawn, and a
 `challengeFrame` that stayed means the challenge wants interaction. Plays it served show as
 `provider = 'kultfilmler'` in `player_resolve`:

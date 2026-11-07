@@ -259,7 +259,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   the real site came back. **Check the old domains' redirect target before trusting a higher
   `dizipalN.com`**: the 22xx band is the clone, and 2200, 2203-2205, 2207 and 2300 are SEO
   squatters serving "güncel adres" landing pages.
-- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2145; 2141 went
+- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2147; 2141 went
   dark without a redirect, so a device pinned to it reached 2142 only through Supabase). Hops are
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal
@@ -344,8 +344,10 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   14s budget ends counts as transient, so the second pass asks again; a lapsed clearance
   mid-session reloads and retries once. Worker egress is challenged too (checked with
   `wrangler dev --remote`), so a server-side proxy is no way round it. Telemetry:
-  `kultfilmler_session` (`outcome: ready|challenge_timeout`, `ms`, `loads`, and on a timeout
-  the page's last `title`, `visibility` and `challengeFrame`).
+  `kultfilmler_session` (`outcome: ready|challenge_timeout|blocked|load_error`, `ms`, `loads`,
+  and on a failure the page's last `title`, `visibility` and `challengeFrame`; `load_error` adds
+  `error`). Since 2026-11-06 some networks get Cloudflare's block page rather than the
+  challenge; the session gives up on it at once instead of waiting out the 20s.
   Chain: `/wp-admin/admin-ajax.php?action=kf_live_search&q=` (JSON `{title: "English –
   Turkish", url, year, type: Film|Dizi}`; matches original titles and Turkish letters) → film
   page, or series page → `div.eps[data-season]` → episode → the watch page's JSON player list
