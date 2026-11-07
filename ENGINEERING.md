@@ -94,7 +94,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `d92b285` → group `ea4bdbb9-c657-42d5-bd0c-7d025f8f49ce` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `19099b6` → group `979f0929-eff1-4be8-97c3-2bb91fe6fbf8` |
 | `streambox-tmdb-proxy` | `9bb542c0` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records; `/t/p/…` image proxy, 30-day edge TTL) |
 | `streambox-provider-monitor` | `338e4a0f` (hourly cron; classic Dizipal checks, hex `data-cfg` + `/_pb` beacon + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `provider_configs` | rows `hdfilm`, `dizipal`, `dizibal`, `kultfilmler` (added 2026-10-23, priority 3) |
@@ -108,6 +108,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-11-07 | `19099b6` | `979f0929-eff1-4be8-97c3-2bb91fe6fbf8` | Kült Filmler session gives up at once on Cloudflare's block page (`blocked`) or a WebView load error (`load_error`) instead of after the 20s challenge timer; Dizipal floor 2145 → 2147 |
 | 2026-11-01 | `d92b285` | `ea4bdbb9-c657-42d5-bd0c-7d025f8f49ce` | `resolveNativeAlternativeToHdFilm` retries Dizipal under TMDB's Turkish title like the main resolve (HP7 Part 1); Dizipal floor 2143 → 2145 |
 | 2026-10-28 (2) | `3099420` | `8f93c4a4-ed26-4ce1-a043-661951b858ca` | HDFilm `/rplayer/` fallback when `.mobi` 429s or decodes nothing (The Cycle); search plan ends with the distinctive word; listing entities decoded; Vol/Part/roman folding |
 | 2026-10-28 | `1208b95` | `6146176d-7754-46cf-bf07-e0c80f3557de` | `splitDualTitle` tries runs of adjacent parts (John Wick 3); Dizipal URL guard trusts an exact search row; `&`→`and` spelling and pre-colon prefix before the empty cutoff (Songbirds & Snakes); `hdfilm_embed_rate_limited` telemetry |
