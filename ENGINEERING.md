@@ -94,7 +94,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `19099b6` → group `979f0929-eff1-4be8-97c3-2bb91fe6fbf8` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `2981572` → group `95a4846d-c936-4bc7-adc3-1ccae49ce1db` |
 | `streambox-tmdb-proxy` | `9bb542c0` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records; `/t/p/…` image proxy, 30-day edge TTL) |
 | `streambox-provider-monitor` | `338e4a0f` (hourly cron; classic Dizipal checks, hex `data-cfg` + `/_pb` beacon + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `provider_configs` | rows `hdfilm`, `dizipal`, `dizibal`, `kultfilmler` (added 2026-10-23, priority 3) |
@@ -108,6 +108,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-11-12 | `2981572` | `95a4846d-c936-4bc7-adc3-1ccae49ce1db` | HDFilm `/dizi/` pages still challenged after native retries are read through a hidden WebView session (`hdfilmSession`; shared `webSession`/`WebSessionBridge` with Kült Filmler), warmed from series pages after a recent challenge; Dizipal floor 2147 → 2148 |
 | 2026-11-07 | `19099b6` | `979f0929-eff1-4be8-97c3-2bb91fe6fbf8` | Kült Filmler session gives up at once on Cloudflare's block page (`blocked`) or a WebView load error (`load_error`) instead of after the 20s challenge timer; Dizipal floor 2145 → 2147 |
 | 2026-11-01 | `d92b285` | `ea4bdbb9-c657-42d5-bd0c-7d025f8f49ce` | `resolveNativeAlternativeToHdFilm` retries Dizipal under TMDB's Turkish title like the main resolve (HP7 Part 1); Dizipal floor 2143 → 2145 |
 | 2026-10-28 (2) | `3099420` | `8f93c4a4-ed26-4ce1-a043-661951b858ca` | HDFilm `/rplayer/` fallback when `.mobi` 429s or decodes nothing (The Cycle); search plan ends with the distinctive word; listing entities decoded; Vol/Part/roman folding |
