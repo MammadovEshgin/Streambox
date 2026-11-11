@@ -1,10 +1,10 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useAppSettings } from "../settings/AppSettingsContext";
+import { withLibraryLock } from "../services/libraryLocks";
+import { libraryStorage } from "../services/libraryStorage";
 import {
   enqueueEpisodeProgressBatch,
-  enqueueEpisodeProgressSync,
   type EpisodeProgressQueueItem,
 } from "../services/userDataSync";
 import { WATCHED_EPISODES_STORAGE_KEY } from "../services/userDataStorage";
@@ -15,6 +15,19 @@ export type SeasonEpisodeStateChange = {
   episodeNumbers: number[];
   watched: boolean;
 };
+
+function parseWatchedEpisodeMap(raw: string | null): WatchedEpisodeMap {
+  if (!raw) return {};
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const map: WatchedEpisodeMap = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (value === true) map[key] = true;
+  }
+  return map;
+}
+
+type EpisodeMutation = { key: string; watched: boolean; item: EpisodeProgressQueueItem };
 
 export function useWatchedEpisodes() {
   const [watchedEpisodes, setWatchedEpisodes] = useState<WatchedEpisodeMap>({});
@@ -28,33 +41,15 @@ export function useWatchedEpisodes() {
   useEffect(() => {
     let isMounted = true;
 
-    AsyncStorage.getItem(WATCHED_EPISODES_STORAGE_KEY)
+    libraryStorage
+      .getItem(WATCHED_EPISODES_STORAGE_KEY)
       .then((data) => {
-        if (!isMounted) {
-          return;
-        }
-        if (!data) {
-          watchedEpisodesRef.current = {};
-          setWatchedEpisodes({});
-          return;
-        }
-
-        try {
-          const parsed = JSON.parse(data) as unknown;
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            const next = parsed as Record<string, boolean>;
-            watchedEpisodesRef.current = next;
-            setWatchedEpisodes(next);
-          } else {
-            watchedEpisodesRef.current = {};
-            setWatchedEpisodes({});
-          }
-        } catch (error) {
-          console.error("Failed to parse watched episodes", error);
-          watchedEpisodesRef.current = {};
-          setWatchedEpisodes({});
-        }
+        if (!isMounted) return;
+        const next = parseWatchedEpisodeMap(data);
+        watchedEpisodesRef.current = next;
+        setWatchedEpisodes(next);
       })
+      // Keep what is on screen; a failed read must never untick a season.
       .catch((error) => console.error("Failed to load watched episodes", error));
 
     return () => {
@@ -76,14 +71,38 @@ export function useWatchedEpisodes() {
     [getEpisodeKey, watchedEpisodes]
   );
 
-  const persistWatchedEpisodes = useCallback(
-    async (nextState: Record<string, boolean>) => {
+  // Every change is applied to the STORED map inside the shared library lock
+  // (never to this hook's copy, which another screen or the cloud reconcile
+  // may have outdated), and its sync ops are queued in the same lock.
+  const applyEpisodeMutations = useCallback(
+    async (buildMutations: (current: WatchedEpisodeMap) => EpisodeMutation[]): Promise<WatchedEpisodeMap> => {
+      const nextState = await withLibraryLock(WATCHED_EPISODES_STORAGE_KEY, async () => {
+        const current = parseWatchedEpisodeMap(await libraryStorage.getItem(WATCHED_EPISODES_STORAGE_KEY));
+        const mutations = buildMutations(current);
+        const next = { ...current };
+        for (const { key, watched } of mutations) {
+          if (watched) next[key] = true;
+          else delete next[key];
+        }
+        await libraryStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(next));
+        await enqueueEpisodeProgressBatch(mutations.map((mutation) => mutation.item));
+        return next;
+      });
       watchedEpisodesRef.current = nextState;
       setWatchedEpisodes(nextState);
-      await AsyncStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(nextState));
       notifyStorageChanged();
+      return nextState;
     },
     [notifyStorageChanged]
+  );
+
+  const buildMutation = useCallback(
+    (seriesId: string | number, seasonNumber: number, episodeNumber: number, watched: boolean, source: string): EpisodeMutation => ({
+      key: getEpisodeKey(seriesId, seasonNumber, episodeNumber),
+      watched,
+      item: { seriesTmdbId: Number(seriesId), seasonNumber, episodeNumber, isWatched: watched, audit: { source } },
+    }),
+    [getEpisodeKey]
   );
 
   // Returns the RESULTING map. Callers that must react to the new state (e.g.
@@ -91,65 +110,34 @@ export function useWatchedEpisodes() {
   // straight after awaiting this — their closure still holds the pre-toggle
   // render's value — so the post-write snapshot is handed back explicitly.
   const toggleEpisodeWatched = useCallback(
-    async (
-      seriesId: string | number,
-      seasonNumber: number,
-      episodeNumber: number
-    ): Promise<WatchedEpisodeMap> => {
-      const key = getEpisodeKey(seriesId, seasonNumber, episodeNumber);
-      const wasWatched = !!watchedEpisodesRef.current[key];
-      const nextWatched = !wasWatched;
-      const nextState = { ...watchedEpisodesRef.current };
-
-      if (nextWatched) {
-        nextState[key] = true;
-      } else {
-        delete nextState[key];
-      }
-
-      await persistWatchedEpisodes(nextState);
-
-      await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, nextWatched, {
-        source: "episode_toggle",
-      });
-
-      return nextState;
-    },
-    [getEpisodeKey, persistWatchedEpisodes]
+    (seriesId: string | number, seasonNumber: number, episodeNumber: number): Promise<WatchedEpisodeMap> =>
+      applyEpisodeMutations((current) => {
+        const wasWatched = !!current[getEpisodeKey(seriesId, seasonNumber, episodeNumber)];
+        return [buildMutation(seriesId, seasonNumber, episodeNumber, !wasWatched, "episode_toggle")];
+      }),
+    [applyEpisodeMutations, buildMutation, getEpisodeKey]
   );
 
   const markSeasonWatched = useCallback(
     async (seriesId: string | number, seasonNumber: number, episodeNumbers: number[]) => {
-      const nextState = { ...watchedEpisodesRef.current };
-      for (const episodeNumber of episodeNumbers) {
-        nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)] = true;
-      }
-      await persistWatchedEpisodes(nextState);
-
-      for (const episodeNumber of episodeNumbers) {
-        await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, true, {
-          source: "season_mark_watched",
-        });
-      }
+      await applyEpisodeMutations(() =>
+        episodeNumbers.map((episodeNumber) =>
+          buildMutation(seriesId, seasonNumber, episodeNumber, true, "season_mark_watched")
+        )
+      );
     },
-    [getEpisodeKey, persistWatchedEpisodes]
+    [applyEpisodeMutations, buildMutation]
   );
 
   const unmarkSeasonWatched = useCallback(
     async (seriesId: string | number, seasonNumber: number, episodeNumbers: number[]) => {
-      const nextState = { ...watchedEpisodesRef.current };
-      for (const episodeNumber of episodeNumbers) {
-        delete nextState[getEpisodeKey(seriesId, seasonNumber, episodeNumber)];
-      }
-      await persistWatchedEpisodes(nextState);
-
-      for (const episodeNumber of episodeNumbers) {
-        await enqueueEpisodeProgressSync(Number(seriesId), seasonNumber, episodeNumber, false, {
-          source: "season_unmark_watched",
-        });
-      }
+      await applyEpisodeMutations(() =>
+        episodeNumbers.map((episodeNumber) =>
+          buildMutation(seriesId, seasonNumber, episodeNumber, false, "season_unmark_watched")
+        )
+      );
     },
-    [getEpisodeKey, persistWatchedEpisodes]
+    [applyEpisodeMutations, buildMutation]
   );
 
   // Batch variant for the season-log modal: every marked/unmarked season lands
@@ -161,30 +149,21 @@ export function useWatchedEpisodes() {
         return;
       }
 
-      const nextState = { ...watchedEpisodesRef.current };
-      const queueItems: EpisodeProgressQueueItem[] = [];
-      for (const { seasonNumber, episodeNumbers, watched } of changes) {
-        for (const episodeNumber of episodeNumbers) {
-          const key = getEpisodeKey(seriesId, seasonNumber, episodeNumber);
-          if (watched) {
-            nextState[key] = true;
-          } else {
-            delete nextState[key];
-          }
-          queueItems.push({
-            seriesTmdbId: Number(seriesId),
-            seasonNumber,
-            episodeNumber,
-            isWatched: watched,
-            audit: { source: watched ? "season_mark_watched" : "season_unmark_watched" },
-          });
-        }
-      }
-
-      await persistWatchedEpisodes(nextState);
-      await enqueueEpisodeProgressBatch(queueItems);
+      await applyEpisodeMutations(() =>
+        changes.flatMap(({ seasonNumber, episodeNumbers, watched }) =>
+          episodeNumbers.map((episodeNumber) =>
+            buildMutation(
+              seriesId,
+              seasonNumber,
+              episodeNumber,
+              watched,
+              watched ? "season_mark_watched" : "season_unmark_watched"
+            )
+          )
+        )
+      );
     },
-    [getEpisodeKey, persistWatchedEpisodes]
+    [applyEpisodeMutations, buildMutation]
   );
 
   return {

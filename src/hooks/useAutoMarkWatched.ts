@@ -4,6 +4,7 @@ import type { VideoPlayer } from "expo-video";
 import { getMovieDetails, getSeriesDetails, type MediaType } from "../api/tmdb";
 import { accumulateWatchedDelta } from "../utils/continueWatching";
 import { shouldAutoMarkWatched } from "../utils/playerProgress";
+import { withTimeout, WATCH_LOG_DETAILS_TIMEOUT_MS } from "../utils/watchLogging";
 import { useSeasonWatchHistorySync } from "./useSeasonWatchHistorySync";
 import { useWatchHistory } from "./useWatchHistory";
 import { useWatchedEpisodes } from "./useWatchedEpisodes";
@@ -16,6 +17,9 @@ type UseAutoMarkWatchedParams = {
   tmdbId: number;
   seasonNumber?: number;
   episodeNumber?: number;
+  /** What the player already knows, for logging without a details fetch. */
+  title?: string;
+  year?: string | number | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -35,11 +39,15 @@ export function useAutoMarkWatched({
   tmdbId,
   seasonNumber,
   episodeNumber,
+  title,
+  year,
 }: UseAutoMarkWatchedParams) {
-  const { saveMovieToWatchHistory, saveSeriesToWatchHistory } = useWatchHistory();
+  const { saveMovieToWatchHistory, saveSeriesToWatchHistory, saveFallbackToWatchHistory } = useWatchHistory();
   const { isEpisodeWatched, toggleEpisodeWatched, watchedEpisodes } = useWatchedEpisodes();
   const syncSeasonWatchHistory = useSeasonWatchHistorySync();
 
+  const titleRef = useRef({ title, year });
+  titleRef.current = { title, year };
   const firedRef = useRef(false);
   const inFlightRef = useRef(false);
   const lastPositionRef = useRef<number | null>(null);
@@ -52,6 +60,7 @@ export function useAutoMarkWatched({
   const saveRef = useRef({
     saveMovieToWatchHistory,
     saveSeriesToWatchHistory,
+    saveFallbackToWatchHistory,
     isEpisodeWatched,
     toggleEpisodeWatched,
     syncSeasonWatchHistory,
@@ -60,6 +69,7 @@ export function useAutoMarkWatched({
   saveRef.current = {
     saveMovieToWatchHistory,
     saveSeriesToWatchHistory,
+    saveFallbackToWatchHistory,
     isEpisodeWatched,
     toggleEpisodeWatched,
     syncSeasonWatchHistory,
@@ -84,9 +94,23 @@ export function useAutoMarkWatched({
       const watchedAt = Date.now();
       void (async () => {
         try {
+          // Without details (offline, TMDB unreachable) the film is still
+          // logged from what the player knows; before, the save waited for a
+          // fetch that could fail on the last tick, and nothing was logged.
+          const known = titleRef.current;
+          const saveFallback = () =>
+            known.title && known.title.trim().length > 0
+              ? saveRef.current.saveFallbackToWatchHistory({ id: tmdbId, mediaType, title: known.title, year: known.year }, watchedAt)
+              : Promise.reject(new Error("no details and no title to log"));
           if (mediaType === "movie") {
-            const details = await getMovieDetails(String(tmdbId));
-            await saveRef.current.saveMovieToWatchHistory(details, watchedAt);
+            let details: Awaited<ReturnType<typeof getMovieDetails>> | null = null;
+            try {
+              details = await withTimeout(getMovieDetails(String(tmdbId)), WATCH_LOG_DETAILS_TIMEOUT_MS);
+            } catch {
+              details = null;
+            }
+            if (details) await saveRef.current.saveMovieToWatchHistory(details, watchedAt);
+            else await saveFallback();
           } else {
             // Mark the specific episode (set, not toggle) and upsert the series
             // into watch history the same way the episode-watched UI does.
@@ -98,7 +122,18 @@ export function useAutoMarkWatched({
             ) {
               episodeState = await saveRef.current.toggleEpisodeWatched(tmdbId, seasonNumber, episodeNumber);
             }
-            const details = await getSeriesDetails(String(tmdbId));
+            let details: Awaited<ReturnType<typeof getSeriesDetails>> | null = null;
+            try {
+              details = await withTimeout(getSeriesDetails(String(tmdbId)), WATCH_LOG_DETAILS_TIMEOUT_MS);
+            } catch {
+              details = null;
+            }
+            if (!details) {
+              // The episode tick is saved; log the series without details and
+              // let the season reconcile run on the next watched episode.
+              await saveFallback();
+              return;
+            }
             await saveRef.current.saveSeriesToWatchHistory(details, watchedAt);
             // Finishing the last episode of a season should log the SEASON too,
             // not just the series title — otherwise Stats and the season rail

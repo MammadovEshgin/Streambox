@@ -17,6 +17,8 @@ import {
 import { getMovieDetails, getSeriesDetails } from "../api/tmdb";
 import { buildWatchedMediaKeySet, collectWatchedFranchiseEntryIds } from "../services/franchiseProgress";
 import { prefetchRemoteImages } from "../services/remoteImageCache";
+import { trackAppError } from "../services/telemetryService";
+import { tmdbPosterPathFromUrl, withTimeout, WATCH_LOG_DETAILS_TIMEOUT_MS } from "../utils/watchLogging";
 import { TimelinePath, NodeRect } from "../components/franchise/TimelinePath";
 import { TimelineNode, POSTER_WIDTH, POSTER_HEIGHT, NODE_FULL_WIDTH } from "../components/franchise/TimelineNode";
 import { ProgressRing } from "../components/franchise/ProgressRing";
@@ -246,7 +248,7 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
   const { t } = useTranslation();
   const { user } = useAuth();
   const { language } = useAppSettings();
-  const { history, saveMovieToWatchHistory, saveSeriesToWatchHistory, removeFromWatchHistory } = useWatchHistory();
+  const { history, saveMovieToWatchHistory, saveSeriesToWatchHistory, saveFallbackToWatchHistory, removeFromWatchHistory } = useWatchHistory();
   const accent = theme.colors.primary;
 
   const [entries, setEntries] = useState<FranchiseEntry[]>([]);
@@ -486,49 +488,82 @@ export function FranchiseTimelineScreen({ route, navigation }: FranchiseTimeline
 
       const isCurrentlyWatched = watchedEntryIds.has(entry.id);
       const newWatched = !isCurrentlyWatched;
+      const mediaType = entry.mediaType === "tv" ? ("tv" as const) : ("movie" as const);
 
+      // 1. Watch history FIRST. It is local (works offline) and it is what the
+      //    profile's Watched shelf shows. This used to run second, after a
+      //    network write, and only once full details had downloaded — a failed
+      //    fetch was swallowed as "best-effort", so the journey showed the film
+      //    as watched (from its progress row) while the profile never got it.
+      let historySaved = !entry.tmdbId;
+      if (entry.tmdbId) {
+        const tmdbId = entry.tmdbId;
+        const now = Date.now();
+        try {
+          if (newWatched) {
+            try {
+              if (mediaType === "tv") {
+                const details = await withTimeout(getSeriesDetails(String(tmdbId)), WATCH_LOG_DETAILS_TIMEOUT_MS);
+                await saveSeriesToWatchHistory(details, now);
+              } else {
+                const details = await withTimeout(getMovieDetails(String(tmdbId)), WATCH_LOG_DETAILS_TIMEOUT_MS);
+                await saveMovieToWatchHistory(details, now);
+              }
+            } catch {
+              // No details right now: log it from what the journey knows; the
+              // metadata backfill fills in cast and genres later.
+              await saveFallbackToWatchHistory(
+                {
+                  id: tmdbId,
+                  mediaType,
+                  title: entry.title,
+                  year: entry.year,
+                  posterPath: tmdbPosterPathFromUrl(entry.posterUrl),
+                  runtimeMinutes: entry.runtimeMinutes,
+                  episodeCount: entry.episodeCount,
+                },
+                now
+              );
+            }
+          } else {
+            await removeFromWatchHistory(tmdbId, mediaType);
+          }
+          historySaved = true;
+        } catch (error) {
+          trackAppError("franchise_watch_history_save_failed", error, { watched: newWatched });
+        }
+      }
+
+      // 2. The journey's own progress row (network).
+      let progressSaved = false;
       try {
         await toggleFranchiseEntryWatched(user.id, entry.id, franchiseId, newWatched);
-
-        // Optimistic update for franchise progress
+        progressSaved = true;
         setProgress((prev) => {
           if (newWatched) {
             return [...prev, { entryId: entry.id, watchedAt: new Date().toISOString() }];
           }
           return prev.filter((p) => p.entryId !== entry.id);
         });
-
-        // Sync with global watch history so profile page + detail screens reflect the state
-        if (entry.tmdbId) {
-          const now = Date.now();
-          try {
-            if (newWatched) {
-              if (entry.mediaType === "tv") {
-                const details = await getSeriesDetails(String(entry.tmdbId));
-                await saveSeriesToWatchHistory(details, now);
-              } else {
-                const details = await getMovieDetails(String(entry.tmdbId));
-                await saveMovieToWatchHistory(details, now);
-              }
-            } else {
-              const mediaType = entry.mediaType === "tv" ? "tv" as const : "movie" as const;
-              await removeFromWatchHistory(entry.tmdbId, mediaType);
-            }
-          } catch {
-            // Franchise progress was saved; watch history sync is best-effort
-          }
-        }
-
-        showToast(
-          newWatched
-            ? t("franchise.markedWatched", { title: entry.title })
-            : t("franchise.unmarkedWatched", { title: entry.title })
-        );
-      } catch (error) {
-        showToast(t("franchise.failedToUpdateProgress"));
+      } catch {
+        // Marking: the watch-history entry alone shows it as watched here.
       }
+
+      // Unmarking only succeeds if no record left would still show it watched.
+      const stillShownByProgress = !newWatched && !progressSaved && progress.some((p) => p.entryId === entry.id);
+      const succeeded = newWatched ? historySaved || progressSaved : historySaved && !stillShownByProgress;
+      if (!succeeded) {
+        showToast(t("franchise.failedToUpdateProgress"));
+        return;
+      }
+
+      showToast(
+        newWatched
+          ? t("franchise.markedWatched", { title: entry.title })
+          : t("franchise.unmarkedWatched", { title: entry.title })
+      );
     },
-    [franchiseId, removeFromWatchHistory, saveMovieToWatchHistory, saveSeriesToWatchHistory, showToast, t, user, watchedEntryIds]
+    [franchiseId, progress, removeFromWatchHistory, saveFallbackToWatchHistory, saveMovieToWatchHistory, saveSeriesToWatchHistory, showToast, t, user, watchedEntryIds]
   );
 
   // ── Scroll handler for lazy loading + SVG viewport culling ──────────

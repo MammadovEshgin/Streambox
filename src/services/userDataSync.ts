@@ -34,10 +34,15 @@ import {
   type RetryableSyncOperation,
 } from "../utils/syncQueue";
 import { deriveStableUuidFromKey } from "../utils/uuid";
+import { normalizeMediaListId } from "../utils/mediaIdList";
+import { reconcileCollection, type PendingIntent } from "../utils/libraryReconcile";
+import { withLibraryLock } from "./libraryLocks";
+import { libraryStorage } from "./libraryStorage";
 import { supabase } from "./supabase";
-import { trackAppError, trackNetworkFailure } from "./telemetryService";
+import { trackAppError, trackEvent, trackNetworkFailure } from "./telemetryService";
 import {
   CONTINUE_WATCHING_STORAGE_KEY,
+  LIBRARY_SYNC_BASE_STORAGE_KEY,
   LIKED_MOVIES_STORAGE_KEY,
   LIKED_SERIES_STORAGE_KEY,
   MOVIE_OF_DAY_CURRENT_STORAGE_KEY,
@@ -45,12 +50,12 @@ import {
   RECENTLY_WATCHED_STORAGE_KEY,
   SERIES_OF_DAY_CURRENT_STORAGE_KEY,
   SERIES_WATCHLIST_STORAGE_KEY,
+  SYNC_QUEUE_STORAGE_KEY,
   WATCHED_EPISODES_STORAGE_KEY,
   WATCHLIST_STORAGE_KEY,
   WATCH_HISTORY_STORAGE_KEY,
 } from "./userDataStorage";
 
-const SYNC_QUEUE_STORAGE_KEY = "@streambox/sync-queue-v1";
 const ACTIVE_SYNC_USER_KEY = "@streambox/active-sync-user-id-v1";
 const BOOTSTRAP_COMPLETE_KEY_PREFIX = "@streambox/bootstrap-complete-v1:";
 const PROFILE_ASSETS_BUCKET = "profile-assets";
@@ -385,7 +390,7 @@ function normalizeMovieOfDayHistory(raw: string | null): MovieOfDayHistory {
 }
 
 async function readLocalUserSnapshot(): Promise<LocalUserSnapshot> {
-  const entries = await AsyncStorage.multiGet([APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY]);
+  const entries = await libraryStorage.multiGet([APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY]);
   const map = new Map(entries);
   return {
     settings: normalizePersistedSettings(map.get(APP_SETTINGS_STORAGE_KEY) ?? null),
@@ -401,16 +406,15 @@ async function readLocalUserSnapshot(): Promise<LocalUserSnapshot> {
   };
 }
 
-async function writeLocalUserSnapshot(snapshot: LocalUserSnapshot) {
+// Writes everything in a bootstrap snapshot EXCEPT the library collections.
+// Those (watchlists, liked lists, watch history, watched episodes) are merged
+// item by item under their own locks by applyRemoteLibrary — writing a whole
+// snapshot computed before the network round-trip used to erase anything the
+// user logged while the bootstrap was still downloading.
+async function writeLocalProfileSnapshot(snapshot: LocalUserSnapshot) {
   const pairs: Array<[string, string]> = [
     [APP_SETTINGS_STORAGE_KEY, JSON.stringify(snapshot.settings)],
-    [WATCHLIST_STORAGE_KEY, JSON.stringify(snapshot.movieWatchlist)],
-    [SERIES_WATCHLIST_STORAGE_KEY, JSON.stringify(snapshot.seriesWatchlist)],
-    [LIKED_MOVIES_STORAGE_KEY, JSON.stringify(snapshot.likedMovies)],
-    [LIKED_SERIES_STORAGE_KEY, JSON.stringify(snapshot.likedSeries)],
-    [WATCH_HISTORY_STORAGE_KEY, JSON.stringify(snapshot.watchHistory)],
     [RECENTLY_WATCHED_STORAGE_KEY, JSON.stringify(snapshot.recentlyViewed)],
-    [WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(snapshot.watchedEpisodes)],
     [MOVIE_OF_DAY_HISTORY_STORAGE_KEY, JSON.stringify(snapshot.movieOfDayHistory)],
   ];
   if (snapshot.movieOfDayCurrent) pairs.push([MOVIE_OF_DAY_CURRENT_STORAGE_KEY, JSON.stringify(snapshot.movieOfDayCurrent)]);
@@ -444,8 +448,16 @@ async function getSyncUserId() {
   if (sessionUserId) return sessionUserId;
   return AsyncStorage.getItem(ACTIVE_SYNC_USER_KEY);
 }
-async function readPendingQueue(): Promise<PendingSyncOperation[]> { try { const raw = await AsyncStorage.getItem(SYNC_QUEUE_STORAGE_KEY); return raw ? JSON.parse(raw) : []; } catch { return []; } }
-async function writePendingQueue(queue: PendingSyncOperation[]) { if (queue.length === 0) await AsyncStorage.removeItem(SYNC_QUEUE_STORAGE_KEY); else await AsyncStorage.setItem(SYNC_QUEUE_STORAGE_KEY, JSON.stringify(queue)); }
+async function readPendingQueue(): Promise<PendingSyncOperation[]> {
+  try {
+    const raw = await libraryStorage.getItem(SYNC_QUEUE_STORAGE_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? (parsed as PendingSyncOperation[]) : [];
+  } catch {
+    return [];
+  }
+}
+async function writePendingQueue(queue: PendingSyncOperation[]) { if (queue.length === 0) await libraryStorage.removeItem(SYNC_QUEUE_STORAGE_KEY); else await libraryStorage.setItem(SYNC_QUEUE_STORAGE_KEY, JSON.stringify(queue)); }
 
 // Serializes every read-modify-write of the pending queue. Enqueues and the
 // flush's final reconciliation both go through here so no path can overwrite
@@ -506,15 +518,6 @@ function scheduleSupabaseUserDataSync(userId: string, delayMs = SYNC_FLUSH_DEBOU
 }
 
 function unionIds(p: (number | string)[], s: (number | string)[]) { return Array.from(new Set([...p, ...s])); }
-
-function mergeWatchHistoryEntries(p: WatchHistoryEntry[], s: WatchHistoryEntry[]) {
-  const m = new Map<string, WatchHistoryEntry>();
-  [...p, ...s].forEach(e => {
-    const k = `${e.mediaType}:${e.id}`; const ex = m.get(k);
-    if (!ex || e.watchedAt > ex.watchedAt || e.metadataVersion > ex.metadataVersion) m.set(k, e);
-  });
-  return [...m.values()].sort((a,b) => b.watchedAt - a.watchedAt);
-}
 
 function mergeRecentlyViewedEntries(p: RecentlyWatchedEntry[], s: RecentlyWatchedEntry[]) {
   const m = new Map<string, RecentlyWatchedEntry>();
@@ -751,20 +754,304 @@ async function createLocalSnapshotFromRemote(remote: RemoteBootstrap, baseSettin
   return { settings, movieWatchlist, seriesWatchlist, likedMovies, likedSeries, watchHistory, recentlyViewed, watchedEpisodes: convertRemoteEpisodeProgress(remote.episodeProgress || []), movieOfDayCurrent: movieOfDayState.current, movieOfDayHistory: movieOfDayState.history };
 }
 
-async function mergeInitialSnapshot(local: LocalUserSnapshot, remoteB: RemoteBootstrap) {
+// Settings, recently viewed and movie-of-the-day only; the library collections
+// are reconciled separately (applyRemoteLibrary).
+async function mergeInitialProfileSnapshot(local: LocalUserSnapshot, remoteB: RemoteBootstrap): Promise<LocalUserSnapshot> {
   const remote = await createLocalSnapshotFromRemote(remoteB, local.settings);
   return {
+    ...local,
     settings: remote.settings,
-    movieWatchlist: unionIds(remote.movieWatchlist, local.movieWatchlist),
-    seriesWatchlist: unionIds(remote.seriesWatchlist, local.seriesWatchlist),
-    likedMovies: unionIds(remote.likedMovies, local.likedMovies),
-    likedSeries: unionIds(remote.likedSeries, local.likedSeries),
-    watchHistory: mergeWatchHistoryEntries(remote.watchHistory, local.watchHistory),
     recentlyViewed: mergeRecentlyViewedEntries(remote.recentlyViewed, local.recentlyViewed),
-    watchedEpisodes: { ...remote.watchedEpisodes, ...local.watchedEpisodes },
     movieOfDayCurrent: local.movieOfDayCurrent?.dateKey === getTodayDateKey() ? local.movieOfDayCurrent : remote.movieOfDayCurrent,
     movieOfDayHistory: { tmdbIds: unionIds(remote.movieOfDayHistory.tmdbIds, local.movieOfDayHistory.tmdbIds), imdbIds: Array.from(new Set([...remote.movieOfDayHistory.imdbIds, ...local.movieOfDayHistory.imdbIds])) }
-  } satisfies LocalUserSnapshot;
+  };
+}
+
+// ── Library reconcile ────────────────────────────────────────────────────────
+// A device that had bootstrapped once never read the cloud again, so anything
+// that went missing locally stayed missing on that phone although Supabase
+// still held it. Every launch and (throttled) foreground now three-way merges
+// each collection with the cloud — see utils/libraryReconcile for the rules.
+
+type LibraryCollectionId = "movieWatchlist" | "seriesWatchlist" | "likedMovies" | "likedSeries" | "watchHistory" | "watchedEpisodes";
+type MediaListCollectionId = Exclude<LibraryCollectionId, "watchHistory" | "watchedEpisodes">;
+
+const MEDIA_LIST_COLLECTIONS: Array<{ id: MediaListCollectionId; storageKey: string; listKind: "watchlist" | "liked"; mediaType: MediaType }> = [
+  { id: "movieWatchlist", storageKey: WATCHLIST_STORAGE_KEY, listKind: "watchlist", mediaType: "movie" },
+  { id: "seriesWatchlist", storageKey: SERIES_WATCHLIST_STORAGE_KEY, listKind: "watchlist", mediaType: "tv" },
+  { id: "likedMovies", storageKey: LIKED_MOVIES_STORAGE_KEY, listKind: "liked", mediaType: "movie" },
+  { id: "likedSeries", storageKey: LIKED_SERIES_STORAGE_KEY, listKind: "liked", mediaType: "tv" },
+];
+
+type LibrarySyncBase = { userId: string; collections: Partial<Record<LibraryCollectionId, string[]>>; updatedAt: string };
+
+const LIBRARY_RECONCILE_MIN_INTERVAL_MS = 10 * 60_000;
+const lastLibraryReconcileAt = new Map<string, number>();
+const libraryReconcileInFlight = new Map<string, Promise<boolean>>();
+
+function mediaIdKey(id: number | string) { return String(normalizeMediaListId(id)); }
+function watchHistoryKey(entry: Pick<WatchHistoryEntry, "mediaType" | "id">) { return `${entry.mediaType}:${mediaIdKey(entry.id)}`; }
+
+function mediaListCollectionFor(listKind: SyncListKind, mediaType: MediaType): MediaListCollectionId | null {
+  if (listKind === "watchlist") return mediaType === "tv" ? "seriesWatchlist" : "movieWatchlist";
+  if (listKind === "liked") return mediaType === "tv" ? "likedSeries" : "likedMovies";
+  return null;
+}
+
+type PendingLibraryState = {
+  intents: Record<LibraryCollectionId, Map<string, PendingIntent>>;
+  // What a queued upsert carries, so an item whose local copy was lost can be
+  // rebuilt from the queue even before the cloud has it.
+  queuedIds: Record<MediaListCollectionId, Map<string, number | string>>;
+  queuedHistory: Map<string, WatchHistoryEntry>;
+};
+
+function collectPendingLibraryState(queue: PendingSyncOperation[], userId: string): PendingLibraryState {
+  const state: PendingLibraryState = {
+    intents: { movieWatchlist: new Map(), seriesWatchlist: new Map(), likedMovies: new Map(), likedSeries: new Map(), watchHistory: new Map(), watchedEpisodes: new Map() },
+    queuedIds: { movieWatchlist: new Map(), seriesWatchlist: new Map(), likedMovies: new Map(), likedSeries: new Map() },
+    queuedHistory: new Map(),
+  };
+  // Queue order is execution order, so a later op on the same item wins.
+  for (const op of queue) {
+    if (op.userId !== userId) continue;
+    if (op.kind === "media_library") {
+      const collection = mediaListCollectionFor(op.listKind, op.mediaType);
+      if (!collection) continue;
+      const key = mediaIdKey(op.tmdbId);
+      state.intents[collection].set(key, op.operation === "delete" ? "delete" : "upsert");
+      if (op.operation === "upsert") state.queuedIds[collection].set(key, normalizeMediaListId(op.tmdbId));
+      else state.queuedIds[collection].delete(key);
+    } else if (op.kind === "watch_history_upsert") {
+      const key = watchHistoryKey(op.entry);
+      state.intents.watchHistory.set(key, "upsert");
+      state.queuedHistory.set(key, op.entry);
+    } else if (op.kind === "watch_history_delete") {
+      const key = `${op.mediaType}:${mediaIdKey(op.tmdbId)}`;
+      state.intents.watchHistory.set(key, "delete");
+      state.queuedHistory.delete(key);
+    } else if (op.kind === "episode_progress") {
+      state.intents.watchedEpisodes.set(getEpisodeKey(op.seriesTmdbId, op.seasonNumber, op.episodeNumber), op.isWatched ? "upsert" : "delete");
+    }
+  }
+  return state;
+}
+
+type RemoteLibrary = Record<MediaListCollectionId, number[] | null> & {
+  watchHistory: WatchHistoryEntry[] | null;
+  watchedEpisodes: string[] | null;
+};
+
+// Only items whose id survives the round trip can be compared with the cloud:
+// TMDB ids, and season entries (rebuilt from their snapshot). The bootstrap
+// returns no internal id for list rows and a hash for other string ids, so
+// those are left exactly as they are locally — never removed, never re-sent.
+function isReconcilableMediaId(id: number | string) { return typeof normalizeMediaListId(id) === "number"; }
+function isReconcilableHistoryEntry(entry: WatchHistoryEntry) { return isReconcilableMediaId(entry.id) || entry.historyKind === "season"; }
+
+/** The cloud's library collections; null for a collection the payload doesn't carry. */
+function convertRemoteLibrary(remote: RemoteBootstrap): RemoteLibrary {
+  // The RPC lists newest first; local lists are oldest first (new items append).
+  const ids = (entries: RemoteMediaLibraryEntry[] | undefined, mediaType: MediaType) =>
+    Array.isArray(entries)
+      ? entries.filter((e) => coerceMediaType(e.mediaType) === mediaType && typeof e.tmdbId === "number" && e.tmdbId > 0).map((e) => e.tmdbId).reverse()
+      : null;
+  return {
+    movieWatchlist: ids(remote.watchlist, "movie"),
+    seriesWatchlist: ids(remote.watchlist, "tv"),
+    likedMovies: ids(remote.liked, "movie"),
+    likedSeries: ids(remote.liked, "tv"),
+    watchHistory: Array.isArray(remote.watchHistory) ? convertRemoteWatchHistory(remote.watchHistory).filter(isReconcilableHistoryEntry) : null,
+    watchedEpisodes: Array.isArray(remote.episodeProgress) ? Object.keys(convertRemoteEpisodeProgress(remote.episodeProgress)) : null,
+  };
+}
+
+// Both sides hold the title. Keep the richer metadata (usually local: the
+// cloud predates the deeper cast), but the cloud's date — it is where a date
+// edited on another device arrives. A local edit still waiting in the queue
+// never reaches here (pending upserts keep the local copy).
+function mergeWatchHistoryPair(local: WatchHistoryEntry, remote: WatchHistoryEntry): WatchHistoryEntry {
+  const richer = remote.metadataVersion > local.metadataVersion ? remote : local;
+  if (richer === local && local.watchedAt === remote.watchedAt && local.watchPrecision === remote.watchPrecision) return local;
+  return { ...richer, id: local.id, watchedAt: remote.watchedAt, watchPrecision: remote.watchPrecision };
+}
+
+async function readLibrarySyncBase(userId: string): Promise<LibrarySyncBase | null> {
+  try {
+    const raw = await libraryStorage.getItem(LIBRARY_SYNC_BASE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LibrarySyncBase;
+    return isRecord(parsed) && parsed.userId === userId && isRecord(parsed.collections) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function baseSetFor(base: LibrarySyncBase | null, id: LibraryCollectionId): Set<string> | null {
+  const keys = base?.collections[id];
+  return Array.isArray(keys) ? new Set(keys) : null;
+}
+
+// Serializes queue flushes against the library merge. The merge decides "the
+// cloud no longer has X" from a snapshot; a flush landing between that
+// download and the merge would make the snapshot stale (an add executed and
+// dropped from the queue but not in the snapshot would look deleted).
+let syncExclusiveChain: Promise<void> = Promise.resolve();
+function withSyncExclusive<T>(task: () => Promise<T>): Promise<T> {
+  const run = syncExclusiveChain.then(task, task);
+  syncExclusiveChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+type ReconcileStats = { restored: number; removed: number; uploaded: number; suppressed: number };
+
+/**
+ * Merge the cloud's library into local storage. Each collection is read,
+ * merged and written inside its own lock, with the pending queue read inside
+ * that lock too, so a save running at the same moment is never lost. Items
+ * only this device has are queued for upload in the same lock. Returns whether
+ * anything local changed.
+ */
+async function applyRemoteLibrary(userId: string, remoteBootstrap: RemoteBootstrap, stats: ReconcileStats): Promise<boolean> {
+  const remote = convertRemoteLibrary(remoteBootstrap);
+  const base = await readLibrarySyncBase(userId);
+  const nextBase: LibrarySyncBase = { userId, collections: { ...(base?.collections ?? {}) }, updatedAt: new Date().toISOString() };
+  let changed = false;
+
+  const note = (result: { restoredKeys: string[]; removedKeys: string[]; localOnlyKeys: string[]; removalsSuppressed: boolean }) => {
+    stats.restored += result.restoredKeys.length;
+    stats.removed += result.removedKeys.length;
+    stats.uploaded += result.localOnlyKeys.length;
+    if (result.removalsSuppressed) stats.suppressed += 1;
+  };
+
+  for (const collection of MEDIA_LIST_COLLECTIONS) {
+    const remoteIds = remote[collection.id];
+    if (!remoteIds) continue;
+    await withLibraryLock(collection.storageKey, async () => {
+      const pending = collectPendingLibraryState(await readPendingQueue(), userId);
+      const stored = normalizeIdList(await libraryStorage.getItem(collection.storageKey));
+      const storedKeys = new Set(stored.map(mediaIdKey));
+      const queued = [...pending.queuedIds[collection.id].entries()].filter(([key]) => !storedKeys.has(key)).map(([, id]) => id);
+      const local = [...stored, ...queued];
+      const passthrough = local.filter((id) => !isReconcilableMediaId(id));
+      const result = reconcileCollection<number | string>({
+        local: local.filter(isReconcilableMediaId), remote: remoteIds, keyOf: mediaIdKey, base: baseSetFor(base, collection.id), pending: pending.intents[collection.id],
+      });
+      note(result);
+      if (result.changed || queued.length > 0) {
+        await libraryStorage.setItem(collection.storageKey, JSON.stringify([...passthrough, ...result.items].map(normalizeMediaListId)));
+        changed = true;
+      }
+      if (result.localOnlyKeys.length > 0) {
+        const uploads = new Set(result.localOnlyKeys);
+        await enqueueMediaLibraryBatch(result.items.filter((id) => uploads.has(mediaIdKey(id))).map((id) => ({
+          operation: "upsert" as const, listKind: collection.listKind, mediaType: collection.mediaType, tmdbId: normalizeMediaListId(id),
+        })));
+      }
+    });
+    nextBase.collections[collection.id] = remoteIds.map(mediaIdKey);
+  }
+
+  const remoteHistory = remote.watchHistory;
+  if (remoteHistory) {
+    await withLibraryLock(WATCH_HISTORY_STORAGE_KEY, async () => {
+      const pending = collectPendingLibraryState(await readPendingQueue(), userId);
+      const stored = normalizeWatchHistory(await libraryStorage.getItem(WATCH_HISTORY_STORAGE_KEY));
+      const storedKeys = new Set(stored.map(watchHistoryKey));
+      const queued = [...pending.queuedHistory.entries()].filter(([key]) => !storedKeys.has(key)).map(([, entry]) => entry);
+      const local = [...stored, ...queued];
+      const passthrough = local.filter((entry) => !isReconcilableHistoryEntry(entry));
+      const result = reconcileCollection<WatchHistoryEntry>({
+        local: local.filter(isReconcilableHistoryEntry), remote: remoteHistory, keyOf: watchHistoryKey, base: baseSetFor(base, "watchHistory"),
+        pending: pending.intents.watchHistory, mergeBoth: mergeWatchHistoryPair,
+      });
+      note(result);
+      if (result.changed || queued.length > 0) {
+        const sorted = [...passthrough, ...result.items].sort((a, b) => b.watchedAt - a.watchedAt);
+        await libraryStorage.setItem(WATCH_HISTORY_STORAGE_KEY, JSON.stringify(sorted));
+        changed = true;
+      }
+      if (result.localOnlyKeys.length > 0) {
+        const uploads = new Set(result.localOnlyKeys);
+        await enqueueWatchHistoryBatch(result.items.filter((entry) => uploads.has(watchHistoryKey(entry))).map((entry) => ({
+          operation: "upsert" as const, entry, audit: { source: "library_reconcile" },
+        })));
+      }
+    });
+    nextBase.collections.watchHistory = remoteHistory.map(watchHistoryKey);
+  }
+
+  const remoteEpisodes = remote.watchedEpisodes;
+  if (remoteEpisodes) {
+    await withLibraryLock(WATCHED_EPISODES_STORAGE_KEY, async () => {
+      const pending = collectPendingLibraryState(await readPendingQueue(), userId);
+      const stored = Object.keys(normalizeWatchedEpisodes(await libraryStorage.getItem(WATCHED_EPISODES_STORAGE_KEY)));
+      const result = reconcileCollection<string>({
+        local: stored, remote: remoteEpisodes, keyOf: (key) => key, base: baseSetFor(base, "watchedEpisodes"), pending: pending.intents.watchedEpisodes,
+      });
+      note(result);
+      if (result.changed) {
+        await libraryStorage.setItem(WATCHED_EPISODES_STORAGE_KEY, JSON.stringify(Object.fromEntries(result.items.map((key) => [key, true]))));
+        changed = true;
+      }
+      const uploads = result.localOnlyKeys.map((key) => key.split("_").map(Number)).filter((parts) => parts.length === 3 && parts.every((n) => Number.isFinite(n)) && parts[0] > 0);
+      if (uploads.length > 0) {
+        await enqueueEpisodeProgressBatch(uploads.map(([seriesTmdbId, seasonNumber, episodeNumber]) => ({
+          seriesTmdbId, seasonNumber, episodeNumber, isWatched: true, audit: { source: "library_reconcile" },
+        })));
+      }
+    });
+    nextBase.collections.watchedEpisodes = remoteEpisodes;
+  }
+
+  await libraryStorage.setItem(LIBRARY_SYNC_BASE_STORAGE_KEY, JSON.stringify(nextBase));
+  return changed;
+}
+
+async function runLibraryReconcile(userId: string, fetchRemote: () => Promise<RemoteBootstrap>): Promise<{ changed: boolean; remote: RemoteBootstrap }> {
+  return withSyncExclusive(async () => {
+    const remote = await fetchRemote();
+    // Signed out or switched account while downloading: this payload is not
+    // the current owner's library.
+    if ((await getCurrentUserId()) !== userId) return { changed: false, remote };
+    const stats: ReconcileStats = { restored: 0, removed: 0, uploaded: 0, suppressed: 0 };
+    const changed = await applyRemoteLibrary(userId, remote, stats);
+    lastLibraryReconcileAt.set(userId, Date.now());
+    if (stats.restored > 0 || stats.removed > 0 || stats.uploaded > 0 || stats.suppressed > 0) {
+      trackEvent("library_reconcile", "supabase", { ...stats }, stats.suppressed > 0 ? "warning" : "info");
+    }
+    return { changed, remote };
+  });
+}
+
+/**
+ * Bring this device's library in line with the cloud: push pending writes,
+ * download, three-way merge. Throttled to once per LIBRARY_RECONCILE_MIN_INTERVAL_MS
+ * unless `force`. Returns whether local data changed (the caller refreshes the
+ * UI). Never throws.
+ */
+export async function reconcileUserLibraryWithCloud(userId: string, options?: { force?: boolean }): Promise<boolean> {
+  const last = lastLibraryReconcileAt.get(userId) ?? 0;
+  if (!options?.force && Date.now() - last < LIBRARY_RECONCILE_MIN_INTERVAL_MS) return false;
+  const inFlight = libraryReconcileInFlight.get(userId);
+  if (inFlight) return inFlight;
+  const run = (async () => {
+    try {
+      await drainSupabaseUserDataSync(userId).catch(() => false);
+      const { changed } = await runLibraryReconcile(userId, fetchRemoteBootstrap);
+      return changed;
+    } catch (error) {
+      if (!isTransientNetworkSyncError(error) && !isExpiredSessionSyncError(error)) {
+        trackAppError("library_reconcile_failed", error);
+      }
+      return false;
+    } finally {
+      libraryReconcileInFlight.delete(userId);
+    }
+  })();
+  libraryReconcileInFlight.set(userId, run);
+  return run;
 }
 
 // buildProfileRpcPayload / buildProfileRowPayload moved to
@@ -957,10 +1244,12 @@ async function executePendingOperation(op: PendingSyncOperation) {
 export async function clearLocalUserDataCache(options?: { preserveSyncQueue?: boolean }) {
   scheduledFlushTimers.forEach((timer) => clearTimeout(timer));
   scheduledFlushTimers.clear();
-  const keys = [APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, CONTINUE_WATCHING_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY, SERIES_OF_DAY_CURRENT_STORAGE_KEY, ACTIVE_SYNC_USER_KEY];
+  lastLibraryReconcileAt.clear();
+  const keys = [APP_SETTINGS_STORAGE_KEY, WATCHLIST_STORAGE_KEY, SERIES_WATCHLIST_STORAGE_KEY, LIKED_MOVIES_STORAGE_KEY, LIKED_SERIES_STORAGE_KEY, WATCH_HISTORY_STORAGE_KEY, RECENTLY_WATCHED_STORAGE_KEY, CONTINUE_WATCHING_STORAGE_KEY, WATCHED_EPISODES_STORAGE_KEY, MOVIE_OF_DAY_CURRENT_STORAGE_KEY, MOVIE_OF_DAY_HISTORY_STORAGE_KEY, SERIES_OF_DAY_CURRENT_STORAGE_KEY, ACTIVE_SYNC_USER_KEY, LIBRARY_SYNC_BASE_STORAGE_KEY];
   if (!options?.preserveSyncQueue) keys.push(SYNC_QUEUE_STORAGE_KEY);
   const all = await AsyncStorage.getAllKeys(); const bKeys = all.filter(k => k.startsWith(BOOTSTRAP_COMPLETE_KEY_PREFIX));
-  await AsyncStorage.multiRemove([...keys, ...bKeys]);
+  // Routed: library documents are files, the rest AsyncStorage rows.
+  await libraryStorage.multiRemove([...keys, ...bKeys]);
 }
 
 export async function flushSupabaseUserDataSync(targetId?: string) {
@@ -976,7 +1265,7 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
     await flushPromise;
     return flushSupabaseUserDataSync(targetId);
   }
-  flushPromise = (async () => {
+  flushPromise = withSyncExclusive(async () => {
     const uid = targetId || (await getCurrentUserId()); if (!uid) return;
     const scheduledTimer = scheduledFlushTimers.get(uid);
     if (scheduledTimer) {
@@ -1038,7 +1327,7 @@ export async function flushSupabaseUserDataSync(targetId?: string) {
     if (remaining.length > 0 || f.length > 0) {
       scheduleSupabaseUserDataSync(uid, f.length > 0 ? nextDelayMs : SYNC_RETRY_DEBOUNCE_MS);
     }
-  })().finally(() => { flushPromise = null; });
+  }).finally(() => { flushPromise = null; });
   await flushPromise;
 }
 
@@ -1106,7 +1395,10 @@ export async function bootstrapSupabaseUserData() {
   // in the 30s debounce window before the previous sign-out) would otherwise
   // be resurrected by its own not-yet-deleted remote row.
   await drainSupabaseUserDataSync(uid).catch(() => undefined);
-  let rb: RemoteBootstrap; try { rb = await fetchRemoteBootstrap(); } catch { const a = await resolveProfileAssetUris(); if (a.profileImageUri) local.settings.profileImageUri = a.profileImageUri; if (a.bannerImageUri) local.settings.bannerImageUri = a.bannerImageUri; await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(local.settings)); return; }
+  // The download and the library merge run as one step (no flush between
+  // them), each collection merged under its own lock — never a whole-snapshot
+  // write computed before the download, which erased saves made meanwhile.
+  let rb: RemoteBootstrap; try { rb = (await runLibraryReconcile(uid, fetchRemoteBootstrap)).remote; } catch { const a = await resolveProfileAssetUris(); if (a.profileImageUri) local.settings.profileImageUri = a.profileImageUri; if (a.bannerImageUri) local.settings.bannerImageUri = a.bannerImageUri; await AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(local.settings)); return; }
   // Did this device hold any data the cloud might not have yet? After a sign-out
   // the local store is wiped, so on the next sign-in there's nothing local-only
   // to push and the merged snapshot equals what we just downloaded.
@@ -1119,7 +1411,8 @@ export async function bootstrapSupabaseUserData() {
     local.recentlyViewed.length > 0 ||
     Object.keys(local.watchedEpisodes).length > 0;
 
-  const merged = await mergeInitialSnapshot(local, rb); await writeLocalUserSnapshot(merged);
+  await writeLocalProfileSnapshot(await mergeInitialProfileSnapshot(local, rb));
+  const merged = await readLocalUserSnapshot();
   // Local data is ready here — return so the UI renders it immediately instead
   // of blocking on the work below. Only push the snapshot back up when the
   // device actually had local-only data to contribute; otherwise we'd be

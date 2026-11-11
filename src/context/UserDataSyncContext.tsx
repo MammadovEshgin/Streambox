@@ -6,6 +6,7 @@ import {
   bootstrapSupabaseUserData,
   flushSupabaseUserDataSync,
   hasWarmBootstrappedUserData,
+  reconcileUserLibraryWithCloud,
 } from "../services/userDataSync";
 import { trackAppError } from "../services/telemetryService";
 import { useAppSettings } from "../settings/AppSettingsContext";
@@ -58,6 +59,15 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
           setReadyState({ userId, ready: true });
         }
       }
+
+      // Then bring the library in line with the cloud, in the background:
+      // anything this phone lost (or never received) comes back, anything
+      // only it has goes up. Skipped (throttled) right after a first
+      // sign-in's bootstrap, which has just done the same merge.
+      const changed = await reconcileUserLibraryWithCloud(userId);
+      if (active && changed) {
+        notifyStorageChanged();
+      }
     }
 
     void runBootstrap();
@@ -92,6 +102,11 @@ export function UserDataSyncProvider({ children }: PropsWithChildren) {
           })
           .catch((error) => {
             trackAppError("sync_flush_failed", error, { trigger: "foreground" });
+          })
+          // Throttled inside (at most every 10 minutes); never throws.
+          .then(() => reconcileUserLibraryWithCloud(userId))
+          .then((changed) => {
+            if (changed) notifyStorageChanged();
           });
       }
     });

@@ -1,10 +1,11 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system/legacy";
 import JSZip from "jszip";
 
 import { findMovieByTitleAndYear, getMovieDetails } from "../api/tmdb";
 import { buildMovieWatchEntry, type WatchHistoryEntry } from "../hooks/useWatchHistory";
 import { mapWithConcurrency } from "../utils/concurrency";
+import { withLibraryLock } from "./libraryLocks";
+import { libraryStorage } from "./libraryStorage";
 import { parseCsvToObjects } from "../utils/csv";
 import {
   LIKED_MOVIES_STORAGE_KEY,
@@ -278,52 +279,62 @@ export async function importLetterboxdArchive(
 
   // Phase 3 — merge into local storage (union lists, preserve existing).
   onProgress({ phase: "saving", completed: 0, total: 1 });
-  const [watchlistRaw, likedRaw, historyRaw] = await Promise.all([
-    AsyncStorage.getItem(WATCHLIST_STORAGE_KEY),
-    AsyncStorage.getItem(LIKED_MOVIES_STORAGE_KEY),
-    AsyncStorage.getItem(WATCH_HISTORY_STORAGE_KEY),
-  ]);
+  // Read, merged and written inside the library locks (watch history, then
+  // the watchlist, then liked — the order every other writer uses), so a title
+  // logged or bookmarked on another screen mid-import is never overwritten.
+  const { addedWatchlist, removedWatchlist, addedLiked, addedWatchEntries } = await withLibraryLock(
+    WATCH_HISTORY_STORAGE_KEY,
+    () => withLibraryLock(WATCHLIST_STORAGE_KEY, () => withLibraryLock(LIKED_MOVIES_STORAGE_KEY, async () => {
+      const [watchlistRaw, likedRaw, historyRaw] = await Promise.all([
+        libraryStorage.getItem(WATCHLIST_STORAGE_KEY),
+        libraryStorage.getItem(LIKED_MOVIES_STORAGE_KEY),
+        libraryStorage.getItem(WATCH_HISTORY_STORAGE_KEY),
+      ]);
 
-  const existingWatchlist = parseStoredIds(watchlistRaw);
-  const existingLiked = parseStoredIds(likedRaw);
-  const existingHistory = parseStoredHistory(historyRaw);
+      const existingWatchlist = parseStoredIds(watchlistRaw);
+      const existingLiked = parseStoredIds(likedRaw);
+      const existingHistory = parseStoredHistory(historyRaw);
 
-  const watchlistSet = new Set(existingWatchlist);
-  const likedSet = new Set(existingLiked);
-  const watchedIdSet = new Set<number>(watchedIds);
-  const historyKeys = new Set(existingHistory.map((entry) => `${entry.mediaType}:${entry.id}`));
+      const watchlistSet = new Set(existingWatchlist);
+      const likedSet = new Set(existingLiked);
+      const watchedIdSet = new Set<number>(watchedIds);
+      const historyKeys = new Set(existingHistory.map((entry) => `${entry.mediaType}:${entry.id}`));
 
-  // A watched film shouldn't also sit in the watchlist — neither one arriving
-  // in this import, nor one already stored from before it. The second half used
-  // to be missed: importing a Letterboxd diary left every film the viewer had
-  // previously bookmarked AND has now been shown to have watched sitting in the
-  // watchlist forever.
-  const addedWatchlist = watchlistIds.filter(
-    (id) => !watchlistSet.has(id) && !watchedIdSet.has(id)
+      // A watched film shouldn't also sit in the watchlist — neither one arriving
+      // in this import, nor one already stored from before it. The second half used
+      // to be missed: importing a Letterboxd diary left every film the viewer had
+      // previously bookmarked AND has now been shown to have watched sitting in the
+      // watchlist forever.
+      const addedWatchlist = watchlistIds.filter(
+        (id) => !watchlistSet.has(id) && !watchedIdSet.has(id)
+      );
+      const removedWatchlist = existingWatchlist.filter(
+        (id) => typeof id === "number" && watchedIdSet.has(id)
+      );
+      const removedWatchlistSet = new Set(removedWatchlist);
+      const addedLiked = likedIds.filter((id) => !likedSet.has(id));
+      const addedWatchEntries = newWatchEntries.filter(
+        (entry) => !historyKeys.has(`movie:${entry.id}`)
+      );
+
+      const mergedWatchlist = [
+        ...existingWatchlist.filter((id) => !removedWatchlistSet.has(id)),
+        ...addedWatchlist,
+      ];
+      const mergedLiked = [...existingLiked, ...addedLiked];
+      const mergedHistory = [...existingHistory, ...addedWatchEntries].sort(
+        (left, right) => right.watchedAt - left.watchedAt
+      );
+
+      await libraryStorage.multiSet([
+        [WATCHLIST_STORAGE_KEY, JSON.stringify(mergedWatchlist)],
+        [LIKED_MOVIES_STORAGE_KEY, JSON.stringify(mergedLiked)],
+        [WATCH_HISTORY_STORAGE_KEY, JSON.stringify(mergedHistory)],
+      ]);
+
+      return { addedWatchlist, removedWatchlist, addedLiked, addedWatchEntries };
+    }))
   );
-  const removedWatchlist = existingWatchlist.filter(
-    (id) => typeof id === "number" && watchedIdSet.has(id)
-  );
-  const removedWatchlistSet = new Set(removedWatchlist);
-  const addedLiked = likedIds.filter((id) => !likedSet.has(id));
-  const addedWatchEntries = newWatchEntries.filter(
-    (entry) => !historyKeys.has(`movie:${entry.id}`)
-  );
-
-  const mergedWatchlist = [
-    ...existingWatchlist.filter((id) => !removedWatchlistSet.has(id)),
-    ...addedWatchlist,
-  ];
-  const mergedLiked = [...existingLiked, ...addedLiked];
-  const mergedHistory = [...existingHistory, ...addedWatchEntries].sort(
-    (left, right) => right.watchedAt - left.watchedAt
-  );
-
-  await AsyncStorage.multiSet([
-    [WATCHLIST_STORAGE_KEY, JSON.stringify(mergedWatchlist)],
-    [LIKED_MOVIES_STORAGE_KEY, JSON.stringify(mergedLiked)],
-    [WATCH_HISTORY_STORAGE_KEY, JSON.stringify(mergedHistory)],
-  ]);
 
   // Push the merged snapshot to Supabase. Failure here (offline / rate limit)
   // is non-fatal for the import itself — the data is saved locally — but it

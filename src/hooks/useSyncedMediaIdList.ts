@@ -1,4 +1,3 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { MediaType } from "../api/tmdb";
@@ -11,6 +10,7 @@ import {
   removeMediaIdFromList,
   toggleMediaIdInList,
 } from "../utils/mediaIdList";
+import { libraryStorage } from "../services/libraryStorage";
 import { withMediaListMutationLock } from "../services/mediaListStore";
 
 type SyncedListKind = "watchlist" | "liked";
@@ -21,10 +21,12 @@ type UseSyncedMediaIdListOptions = {
   mediaType: MediaType;
 };
 
-// The per-key mutation lock lives in services/mediaListStore so the
-// watch-history save path serializes against these hooks on the same key:
-// marking a title watched removes it from the watchlist, and that write must
-// not interleave with a toggle happening on another screen.
+// The per-key mutation lock lives in services/libraryLocks so the
+// watch-history save path and the cloud reconcile serialize against these
+// hooks on the same key: marking a title watched removes it from the
+// watchlist, and that write must not interleave with a toggle happening on
+// another screen. The sync op is queued INSIDE the lock, together with the
+// local write, so the reconcile never sees one without the other.
 
 export function useSyncedMediaIdList({ storageKey, listKind, mediaType }: UseSyncedMediaIdListOptions) {
   const [items, setItems] = useState<(number | string)[]>([]);
@@ -33,8 +35,11 @@ export function useSyncedMediaIdList({ storageKey, listKind, mediaType }: UseSyn
 
   const loadItems = useCallback(async () => {
     try {
-      const rawValue = await AsyncStorage.getItem(storageKey);
+      const rawValue = await libraryStorage.getItem(storageKey);
       setItems(parseStoredMediaIds(rawValue));
+    } catch (error) {
+      // Keep what is on screen; a failed read must never blank the list.
+      console.warn(`[library] failed to read ${storageKey}:`, error);
     } finally {
       setIsLoading(false);
     }
@@ -49,23 +54,22 @@ export function useSyncedMediaIdList({ storageKey, listKind, mediaType }: UseSyn
   const toggle = useCallback(
     async (id: number | string, details?: UserMediaSyncDetails | null) => {
       const normalizedId = normalizeMediaListId(id);
-      const existed = await withMediaListMutationLock(storageKey, async () => {
-        const current = parseStoredMediaIds(await AsyncStorage.getItem(storageKey));
+      await withMediaListMutationLock(storageKey, async () => {
+        const current = parseStoredMediaIds(await libraryStorage.getItem(storageKey));
         const mutation = toggleMediaIdInList(current, normalizedId);
-        await AsyncStorage.setItem(storageKey, JSON.stringify(mutation.next));
+        await libraryStorage.setItem(storageKey, JSON.stringify(mutation.next));
         setItems(mutation.next);
-        return mutation.existed;
+        await enqueueMediaLibrarySync({
+          operation: mutation.existed ? "delete" : "upsert",
+          listKind,
+          mediaType,
+          tmdbId: normalizedId,
+          details,
+        });
       });
       // Always notify: every other mounted instance reloads from storage, so
       // stale copies never linger long enough to mislead the UI.
       notifyStorageChanged();
-      await enqueueMediaLibrarySync({
-        operation: existed ? "delete" : "upsert",
-        listKind,
-        mediaType,
-        tmdbId: normalizedId,
-        details,
-      });
     },
     [listKind, mediaType, notifyStorageChanged, storageKey]
   );
@@ -74,28 +78,26 @@ export function useSyncedMediaIdList({ storageKey, listKind, mediaType }: UseSyn
     async (id: number | string, details?: UserMediaSyncDetails | null) => {
       const normalizedId = normalizeMediaListId(id);
       const removed = await withMediaListMutationLock(storageKey, async () => {
-        const current = parseStoredMediaIds(await AsyncStorage.getItem(storageKey));
+        const current = parseStoredMediaIds(await libraryStorage.getItem(storageKey));
         const mutation = removeMediaIdFromList(current, normalizedId);
         if (!mutation.changed) {
           return false;
         }
-        await AsyncStorage.setItem(storageKey, JSON.stringify(mutation.next));
+        await libraryStorage.setItem(storageKey, JSON.stringify(mutation.next));
         setItems(mutation.next);
+        await enqueueMediaLibrarySync({
+          operation: "delete",
+          listKind,
+          mediaType,
+          tmdbId: normalizedId,
+          details,
+        });
         return true;
       });
 
-      if (!removed) {
-        return;
+      if (removed) {
+        notifyStorageChanged();
       }
-
-      notifyStorageChanged();
-      await enqueueMediaLibrarySync({
-        operation: "delete",
-        listKind,
-        mediaType,
-        tmdbId: normalizedId,
-        details,
-      });
     },
     [listKind, mediaType, notifyStorageChanged, storageKey]
   );

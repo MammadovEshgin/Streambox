@@ -1,4 +1,3 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { InteractionManager } from "react-native";
 
@@ -17,6 +16,8 @@ import {
   type UserMediaSyncDetails,
 } from "../services/userDataSync";
 import { WATCH_HISTORY_STORAGE_KEY } from "../services/userDataStorage";
+import { withLibraryLock } from "../services/libraryLocks";
+import { libraryStorage } from "../services/libraryStorage";
 import { pruneWatchedFromWatchlist } from "../services/mediaListStore";
 import { isPlayerActive } from "../services/playerActivityFlag";
 import { mapWithConcurrency } from "../utils/concurrency";
@@ -217,6 +218,53 @@ export function buildMovieWatchEntry(
   };
 }
 
+export type FallbackWatchEntryInput = {
+  id: number;
+  mediaType: MediaType;
+  title: string;
+  year?: string | number | null;
+  posterPath?: string | null;
+  runtimeMinutes?: number | null;
+  episodeCount?: number | null;
+};
+
+/**
+ * A watched entry built without any network: used when the full details can't
+ * be fetched at the moment of logging (offline, TMDB unreachable — Bakcell
+ * drops it often). Before, those paths fetched first and silently skipped the
+ * save on failure, so a film long-pressed in a Cinematic Journey, or finished
+ * in the player, showed as watched there but never reached the profile.
+ * metadataVersion 1 hands it to the metadata backfill, which fills in genres,
+ * cast and directors once TMDB answers.
+ */
+export function buildFallbackWatchEntry(input: FallbackWatchEntryInput, watchedAt: number): WatchHistoryEntry {
+  const year = input.year === null || input.year === undefined ? "" : String(input.year).slice(0, 4);
+  return {
+    id: input.id,
+    sourceTmdbId: input.id,
+    mediaType: input.mediaType,
+    historyKind: "title",
+    seasonNumber: null,
+    title: input.title,
+    posterPath: input.posterPath ?? null,
+    genres: [],
+    runtimeMinutes: input.runtimeMinutes ?? null,
+    episodeCount: input.mediaType === "tv" ? input.episodeCount ?? null : null,
+    voteAverage: 0,
+    year: /^\d{4}$/.test(year) ? year : "",
+    castIds: [],
+    castNames: [],
+    castProfilePaths: [],
+    castGenders: [],
+    directorIds: [],
+    directorNames: [],
+    directorProfilePaths: [],
+    watchedAt,
+    watchPrecision: "day",
+    metadataVersion: 1,
+  };
+}
+
 function buildSeriesWatchEntry(
   details: SeriesDetails,
   watchedAt: number,
@@ -280,7 +328,7 @@ function sortEntries(entries: WatchHistoryEntry[]) {
 
 // ── Shared stored copy ───────────────────────────────────────────────────────
 // A dozen screens mount this hook, and every storage change in the app reloaded
-// each of them: one AsyncStorage read plus a parse of the whole history (twenty
+// each of them: one storage read plus a parse of the whole history (twenty
 // credits per title) per mounted screen, even when the change was a liked film
 // and the history hadn't moved. The last parse is kept here and reused while
 // the stored text is unchanged, so an unrelated change costs a string compare
@@ -302,7 +350,7 @@ function parseStoredHistory(raw: string | null): WatchHistoryEntry[] {
  * because a writer handed an empty list would persist it over the real history.
  */
 async function readEntriesForMutation(): Promise<WatchHistoryEntry[]> {
-  const raw = await AsyncStorage.getItem(WATCH_HISTORY_STORAGE_KEY);
+  const raw = await libraryStorage.getItem(WATCH_HISTORY_STORAGE_KEY);
   if (raw !== storedHistoryRaw) {
     storedHistoryEntries = parseStoredHistory(raw);
     storedHistoryRaw = raw;
@@ -322,24 +370,21 @@ async function readEntriesFromStorage(): Promise<WatchHistoryEntry[]> {
 async function writeEntriesToStorage(entries: WatchHistoryEntry[]): Promise<WatchHistoryEntry[]> {
   const sorted = sortEntries(entries);
   const raw = JSON.stringify(sorted);
-  await AsyncStorage.setItem(WATCH_HISTORY_STORAGE_KEY, raw);
+  await libraryStorage.setItem(WATCH_HISTORY_STORAGE_KEY, raw);
   storedHistoryRaw = raw;
   storedHistoryEntries = sorted;
   return sorted;
 }
 
-// Every write to the history from this module queues here — the mutations of
-// every mounted hook as well as the metadata backfill — and each one reads the
-// stored list inside the lock. Mutations used to start from their own hook's
+// Every write to the history queues here — the mutations of every mounted
+// hook, the metadata backfill, the Letterboxd import and the cloud reconcile
+// (one shared lock in services/libraryLocks) — and each one reads the stored
+// list inside the lock. Mutations used to start from their own hook's
 // in-memory copy, and the backfill from a snapshot taken minutes earlier, so
 // whichever wrote last silently undid the other: a title marked watched while
 // the backfill ran disappeared again when it finished.
-let watchHistoryWriteChain: Promise<unknown> = Promise.resolve();
-
 function withWatchHistoryWriteLock<T>(task: () => Promise<T>): Promise<T> {
-  const run = watchHistoryWriteChain.then(task, task);
-  watchHistoryWriteChain = run.catch(() => undefined);
-  return run;
+  return withLibraryLock(WATCH_HISTORY_STORAGE_KEY, task);
 }
 
 // ── Metadata backfill ────────────────────────────────────────────────────────
@@ -489,11 +534,15 @@ export function useWatchHistory() {
 
   const loadEntries = useCallback(async () => {
     try {
-      const normalized = await readEntriesFromStorage();
+      const normalized = await readEntriesForMutation();
       setEntries(normalized);
       if (normalized.some((entry) => entry.metadataVersion < METADATA_VERSION)) {
         startMetadataBackfill(notifyStorageChanged);
       }
+    } catch (error) {
+      // Keep what is on screen: blanking the Watched shelf on a failed read is
+      // what made logged films look deleted.
+      console.warn("[library] failed to read watch history:", error);
     } finally {
       setIsLoading(false);
     }
@@ -503,8 +552,8 @@ export function useWatchHistory() {
     void loadEntries();
   }, [loadEntries, storageRevision]);
 
-  // Local-first: apply the whole batch to the stored list, write AsyncStorage
-  // once, and hand Supabase work to the debounced sync queue. No network
+  // Local-first: apply the whole batch to the stored list, write it once, and
+  // hand Supabase work to the debounced sync queue. No network
   // round-trip happens on the save path.
   const applyWatchHistoryMutations = useCallback(
     async (mutations: WatchHistoryMutation[]) => {
@@ -587,6 +636,25 @@ export function useWatchHistory() {
         posterPath: details.posterPath,
         year: details.firstAirDate ? details.firstAirDate.slice(0, 4) : null,
         ...auditDetails,
+      });
+    },
+    [upsertWatchHistoryEntry]
+  );
+
+  // Network-free save for when details can't be fetched. An already-logged
+  // title keeps its rich metadata and only takes the new date.
+  const saveFallbackToWatchHistory = useCallback(
+    async (input: FallbackWatchEntryInput, watchedAt: number) => {
+      const existing = (await readEntriesFromStorage()).find(
+        (entry) => entry.historyKind === "title" && entry.mediaType === input.mediaType && entry.id === input.id
+      );
+      const nextEntry = existing
+        ? { ...existing, watchedAt, watchPrecision: "day" as const }
+        : buildFallbackWatchEntry(input, watchedAt);
+      await upsertWatchHistoryEntry(nextEntry, {
+        title: nextEntry.title,
+        posterPath: nextEntry.posterPath,
+        year: nextEntry.year || null,
       });
     },
     [upsertWatchHistoryEntry]
@@ -763,6 +831,7 @@ export function useWatchHistory() {
       getSeriesSeasonWatchEntries,
       saveMovieToWatchHistory,
       saveSeriesToWatchHistory,
+      saveFallbackToWatchHistory,
       saveSeriesSeasonToWatchHistory,
       saveSeriesWatchedBatch,
       removeFromWatchHistory,
@@ -780,6 +849,7 @@ export function useWatchHistory() {
       rawHistory,
       removeFromWatchHistory,
       removeSeriesSeasonFromWatchHistory,
+      saveFallbackToWatchHistory,
       saveMovieToWatchHistory,
       saveSeriesSeasonToWatchHistory,
       saveSeriesToWatchHistory,

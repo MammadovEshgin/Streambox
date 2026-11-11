@@ -1,37 +1,27 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
-
 import type { MediaType } from "../api/tmdb";
 import {
   parseStoredMediaIds,
   removeMediaIdFromList,
   normalizeMediaListId,
 } from "../utils/mediaIdList";
+import { withLibraryLock } from "./libraryLocks";
+import { libraryStorage } from "./libraryStorage";
 import { SERIES_WATCHLIST_STORAGE_KEY, WATCHLIST_STORAGE_KEY } from "./userDataStorage";
 import { enqueueMediaLibraryBatch, type UserMediaSyncDetails } from "./userDataSync";
 
 /**
  * Shared mutation lock for the stored media id lists (watchlist / liked).
  *
- * Every mutation of a given storage key — from any mounted hook instance, and
- * from the watch-history save path below — has to queue behind this. Mutations
- * re-read storage inside the lock and apply the change to THAT list, never to a
- * caller's in-memory copy: writing `[...items, id]` from component state is how
- * an instance mounted before an import or another screen's toggle silently
- * erased everything added since it mounted (the vanished-watchlist bug).
+ * Every mutation of a given storage key — from any mounted hook instance, from
+ * the watch-history save path below, and from the cloud reconcile — has to
+ * queue behind this (services/libraryLocks). Mutations re-read storage inside
+ * the lock and apply the change to THAT list, never to a caller's in-memory
+ * copy: writing `[...items, id]` from component state is how an instance
+ * mounted before an import or another screen's toggle silently erased
+ * everything added since it mounted (the vanished-watchlist bug).
  */
-const listMutationChains = new Map<string, Promise<void>>();
-
 export function withMediaListMutationLock<T>(storageKey: string, task: () => Promise<T>): Promise<T> {
-  const previous = listMutationChains.get(storageKey) ?? Promise.resolve();
-  const run = previous.then(task, task);
-  listMutationChains.set(
-    storageKey,
-    run.then(
-      () => undefined,
-      () => undefined
-    )
-  );
-  return run;
+  return withLibraryLock(storageKey, task);
 }
 
 export function getWatchlistStorageKey(mediaType: MediaType): string {
@@ -80,7 +70,7 @@ export async function pruneWatchedFromWatchlist(
 
   for (const [storageKey, bucket] of byKey) {
     const removedFromList = await withMediaListMutationLock(storageKey, async () => {
-      let list = parseStoredMediaIds(await AsyncStorage.getItem(storageKey));
+      let list = parseStoredMediaIds(await libraryStorage.getItem(storageKey));
       const changed: WatchlistPruneRequest[] = [];
 
       for (const request of bucket) {
@@ -92,25 +82,24 @@ export async function pruneWatchedFromWatchlist(
       }
 
       if (changed.length > 0) {
-        await AsyncStorage.setItem(storageKey, JSON.stringify(list));
+        await libraryStorage.setItem(storageKey, JSON.stringify(list));
+        // Queued inside the lock: the reconcile reads the queue under this
+        // same lock, so it never sees the removal without its delete.
+        await enqueueMediaLibraryBatch(
+          changed.map((request) => ({
+            operation: "delete" as const,
+            listKind: "watchlist" as const,
+            mediaType: request.mediaType,
+            tmdbId: normalizeMediaListId(request.tmdbId),
+            details: request.details,
+          }))
+        );
       }
 
       return changed;
     });
 
     removed.push(...removedFromList);
-  }
-
-  if (removed.length > 0) {
-    await enqueueMediaLibraryBatch(
-      removed.map((request) => ({
-        operation: "delete" as const,
-        listKind: "watchlist" as const,
-        mediaType: request.mediaType,
-        tmdbId: normalizeMediaListId(request.tmdbId),
-        details: request.details,
-      }))
-    );
   }
 
   return removed;

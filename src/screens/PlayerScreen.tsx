@@ -1333,6 +1333,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     tmdbId: Number(route.params.tmdbId),
     seasonNumber: route.params.seasonNumber,
     episodeNumber: route.params.episodeNumber,
+    title: route.params.title,
+    year: route.params.year,
   });
 
   // Next episode + in-player episode picker (native series path; excluded in
