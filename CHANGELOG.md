@@ -4,6 +4,17 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-12 (2)
+
+- Fixed: watched films, the watchlist and liked titles could vanish from the profile and had to
+  be logged again — worst for long histories, where a watched film often didn't save at all.
+  Your library is now stored in a way that has no size limit, and every launch checks it against
+  your account, so anything missing on the phone comes back by itself.
+- Fixed: long-pressing a film in a Cinematic Journey, or finishing it in the player, now always
+  logs it as watched, even when the connection drops at that moment.
+- Fixed: in Watch Together, some phones showed the partner's camera as a black square while
+  your own camera worked. Video now uses a format every phone can play.
+
 ## 2026-11-12
 
 - Fixed: TV episodes from HDFilm (*The Institute*, among others) played from a lower-quality source

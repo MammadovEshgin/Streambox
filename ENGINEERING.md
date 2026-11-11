@@ -37,7 +37,8 @@ doubt, **stop and ask** rather than guess.
 | TMDB client + Bakcell host failover | `src/api/tmdb.ts` |
 | Ratings client | `src/api/ratingsProxy.ts` |
 | Watch history / episodes | `src/hooks/useWatchHistory.ts`, `src/hooks/useWatchedEpisodes.ts` |
-| Supabase sync queue | `src/services/userDataSync.ts`, pure helpers `src/utils/syncQueue.ts` |
+| Supabase sync queue + library reconcile | `src/services/userDataSync.ts`, pure helpers `src/utils/syncQueue.ts`, `src/utils/libraryReconcile.ts` |
+| Library storage (files, not AsyncStorage) | `src/services/libraryStorage.ts`, `src/utils/durableDocumentStore.ts`, locks `src/services/libraryLocks.ts` |
 | Watch Together | `src/services/watchRoomService.ts`, `src/hooks/useWatchRoom*.ts`, `src/hooks/useWebRtcPeers.ts`, `src/components/watchTogether/` |
 | OTA delivery on device | `src/services/appUpdateService.ts`, `src/components/common/LiveOpsHost.tsx` |
 | DB schema | `supabase/migrations/` (see `docs/DATABASE.md`) |
@@ -413,6 +414,31 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 - Sync queue (`userDataSync.ts`): rejected writes back off (5s → 5min) and are dropped with
   `sync_operation_dead_lettered` telemetry after 8 server rejections; connectivity and
   expired-session failures back off but never count.
+- **The library lives in files, not AsyncStorage (2026-11-12).** Android AsyncStorage is one
+  SQLite table capped at 6 MB for the whole app, and a single value over the 2 MB CursorWindow
+  can't be read back ("Row too big to fit into CursorWindow"). With 20 billed cast per entry a
+  watch history crosses 2 MB at ~900 titles (three accounts had 596–924); from then on the
+  profile's Watched shelf read empty and every new log threw before it was saved or queued.
+  `DURABLE_LIBRARY_STORAGE_KEYS` (watchlists, liked lists, watch history, watched episodes, the
+  sync queue, the reconcile base) go through `libraryStorage` → `utils/durableDocumentStore`:
+  one file per document under `documentDirectory/user-library/`, written tmp → read back →
+  main→bak → tmp→main, read main → tmp → bak. The first read migrates the AsyncStorage row and
+  then deletes it. Telemetry: `library_storage` (`legacy_migrated`, `legacy_unreadable`,
+  `recovered_from_copy`, `write_failed`). Never read or write those keys with AsyncStorage
+  directly (`tests/libraryDurabilityArchitecture.test.ts`).
+- **Every launch and foreground (≤ every 10 min) reconciles the library with Supabase**
+  (`reconcileUserLibraryWithCloud`). Before, a device that had bootstrapped once never read the
+  cloud again, so anything lost locally stayed lost on that phone. The merge is three-way
+  (`utils/libraryReconcile`): pending queue ops win; cloud-only items are restored; local-only
+  items are uploaded unless the previous reconcile's cloud keys (the base) had them, in which
+  case they were deleted elsewhere — but a pass that would remove more than half a collection
+  (≥10 items) removes nothing. It runs under `withSyncExclusive` (no flush between download and
+  merge), each collection inside its `libraryLocks` lock, and every writer queues its sync op
+  inside that same lock. The first-sign-in bootstrap uses the same merge instead of writing
+  whole lists computed before its download. Telemetry: `library_reconcile`.
+- Logging paths that need TMDB details (Cinematic Journeys long-press, player auto-mark) wait at
+  most 6s, then save `buildFallbackWatchEntry` (metadataVersion 1, enriched later by the
+  backfill). Journeys saves watch history before its network progress row.
 
 ---
 
@@ -440,6 +466,13 @@ wire protocol: `docs/watch-together.md`.
   drift, have a 5s cooldown, and skip while buffering.
 - A `webrtc-ready` handshake gates the offer so it cannot race the guest's peer connection.
   Offers use `iceRestart`; failed connections rebuild up to 3 times, then show "Tap to retry".
+- **Video is VP8, always (2026-11-12).** react-native-webrtc's default Android factories put
+  hardware-only H.264 first, and a misbehaving MediaCodec H.264 path on some chipsets showed a
+  black partner tile while audio worked. `preferCodecInSdp` (`src/utils/webrtcMedia.ts`) puts VP8
+  first in every SDP created and applied. The partner `RTCView` mounts only once its stream has a
+  video track, keyed by it. Telemetry: `watch_room_media_probe` (codec, encoder/decoder, frames)
+  and `watch_room_video_stalled` (no frame decoded for 15s; rebuilds once). Details in
+  `docs/watch-together.md`.
 
 ### Photo capture (non-obvious)
 - **Do not view-shot the `RTCView`** — it renders to a SurfaceView that screenshots capture
