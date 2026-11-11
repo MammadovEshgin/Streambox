@@ -32,7 +32,7 @@ doubt, **stop and ask** rather than guess.
 | Provider search / stream resolution | `src/services/WebPlayerService.ts` (`scoreMatch`, `scoreHdFilmResult`, `scoreDizipalResult`, `probeDizipalDirectSlug`, `rankDizibalSuggestions`, `noteProviderSilence`) |
 | HDFilm decoder interpreter | `src/services/rapidrameScript.ts` (runbook: `decoder-recovery.md`) |
 | Provider base URLs (Supabase + shipped floor) | `src/services/providerConfigService.ts` |
-| Kült Filmler session (hidden WebView past its Cloudflare challenge) | `src/services/kultfilmlerSession.ts`, `src/components/common/KultfilmlerBridge.tsx` |
+| Hidden WebView sessions past a Cloudflare challenge (Kült Filmler, HDFilm series pages) | `src/services/webSession.ts`, `src/services/kultfilmlerSession.ts`, `src/services/hdfilmSession.ts`, `src/components/common/WebSessionBridge.tsx` |
 | Player | `src/screens/PlayerScreen.tsx`; WebView policy `src/screens/player/playerWebViewPolicy.ts` |
 | TMDB client + Bakcell host failover | `src/api/tmdb.ts` |
 | Ratings client | `src/api/ratingsProxy.ts` |
@@ -155,8 +155,17 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   `document` objects for the page the embed came from (`runRapidrameDecoder(…, pageUrl)`), so
   every caller passes the embed's URL. Until then every HDFilm title fell through — 41
   `not_found` resolves on 10-22 against a usual ~7.
-- HDFilm `/dizi/` pages challenge the **first** request on a fresh connection and pass after;
-  `hdFilmGet()` retries past it.
+- HDFilm `/dizi/` pages (the show and every episode) answer non-browser clients with Cloudflare's
+  managed challenge (403 `cf-mitigated: challenge`, `Connection: close`). Through 2026-11-10 a
+  native retry right after one usually passed; on 2026-11-11 phones went a whole day without a
+  pass, and every episode fell to Dizipal or "Not available" while films played. Headers make no
+  difference (tested: XHR, Accept-Language, full browser navigation headers). `hdFilmGet()` now
+  reads a series page that is still the challenge after its retries through **a hidden WebView
+  session** (`hdfilmSession`, same machinery as Kült Filmler's), which holds HDFilm's 8 KB
+  404 page at `/dizi/streambox/` and fetches `/dizi/…` same-origin; once that session is
+  open, series pages go to it first. Films, search, `/rplayer/` and `.mobi` stay native.
+  Opened on demand (12s challenge budget, 3 min idle), and warmed from a series detail page
+  only when a challenge was seen in the last 30 minutes. Telemetry: `hdfilm_session`.
 - **HDFilm's second source, `/rplayer/{rapidrame_id}/` on the main domain, is the fallback
   (2026-10-28).** The `.mobi` embed's `rapidrame_id` names it, so no extra page read is needed;
   `resolveHdFilmNativeFallback` asks `.mobi` first (its streams carry the dual audio) and the
@@ -260,7 +269,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   the real site came back. **Check the old domains' redirect target before trusting a higher
   `dizipalN.com`**: the 22xx band is the clone, and 2200, 2203-2205, 2207 and 2300 are SEO
   squatters serving "güncel adres" landing pages.
-- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2147; 2141 went
+- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2148; 2141 went
   dark without a redirect, so a device pinned to it reached 2142 only through Supabase). Hops are
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal
@@ -329,7 +338,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   moment…") that only a browser engine passes; it does so on its own in ~5s, with no click.
   The clearance cookie is bound to that browser's exact user agent, and a spoofed agent fails
   the challenge, so it can't be lifted into native requests. The site is therefore read
-  through **a hidden WebView** (`KultfilmlerBridge`, mounted in the app shell, rendering
+  through **a hidden WebView** (`WebSessionBridge`, mounted in the app shell, rendering
   nothing until asked): it loads the empty search URL, which is a tiny JSON document once
   cleared, and every request runs as a same-origin `fetch()` in that page, bodies coming back
   over `postMessage` (`kultfilmlerSession`). Nothing the site serves is rendered or executed;

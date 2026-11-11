@@ -21,6 +21,7 @@ import {
 } from "./providerConfigService";
 import { aesCbcDecrypt } from "./aesCbc";
 import { trackEvent } from "./telemetryService";
+import { hdfilmSession, isHdfilmSeriesPage, noteHdfilmChallenge } from "./hdfilmSession";
 import {
   fetchKultfilmlerText,
   isKultfilmlerSessionOpening,
@@ -323,6 +324,7 @@ function isProviderSkipped(provider: string): boolean {
 export function forgetProviderBackoff(): void {
   providerSilence.clear();
   liftKultfilmlerCooldown();
+  hdfilmSession.liftCooldown();
 }
 
 /** The host replied, so it is up — forget everything held against it. */
@@ -396,12 +398,45 @@ async function providerGet<T = string>(
   throw lastError;
 }
 
-/** HDFilm-flavoured `providerGet`. Kept as a named helper for call-site clarity. */
-function hdFilmGet<T = string>(
+/**
+ * HDFilm-flavoured `providerGet`. A series page that is still Cloudflare's
+ * challenge after the retries is read through the HDFilm WebView session (see
+ * hdfilmSession); once that session is open, series pages go to it first.
+ */
+async function hdFilmGet<T = string>(
   url: string,
   config: Parameters<typeof axios.get>[1]
 ): Promise<import("axios").AxiosResponse<T>> {
-  return providerGet<T>("HDFilm", url, config);
+  hdfilmSession.setOrigin(getHdfilmBaseUrl());
+  const seriesPage = isHdfilmSeriesPage(url);
+  if (seriesPage && hdfilmSession.isReady()) {
+    const viaSession = await readHdFilmPageInSession<T>(url);
+    if (viaSession) return viaSession;
+  }
+  try {
+    return await providerGet<T>("HDFilm", url, config);
+  } catch (error) {
+    if (!seriesPage || !isCloudflareChallengeResponse(error)) throw error;
+    noteHdfilmChallenge();
+    const viaSession = await readHdFilmPageInSession<T>(url);
+    if (viaSession) return viaSession;
+    throw error;
+  }
+}
+
+/** Cloudflare's managed challenge, as opposed to the site's own 403. */
+function isCloudflareChallengeResponse(error: unknown): boolean {
+  const response = (error as { response?: { status?: number; headers?: Record<string, unknown>; data?: unknown } } | null)
+    ?.response;
+  if (response?.status !== 403) return false;
+  const mitigated = response.headers?.["cf-mitigated"];
+  return mitigated === "challenge" || /<title>\s*Just a moment/i.test(String(response.data ?? ""));
+}
+
+async function readHdFilmPageInSession<T>(url: string): Promise<import("axios").AxiosResponse<T> | null> {
+  const result = await hdfilmSession.fetchText(url);
+  if (!result.ok) return null;
+  return { data: result.body as T, status: 200, statusText: "OK", headers: {}, config: { url } } as import("axios").AxiosResponse<T>;
 }
 
 /** Dizipal-flavoured `providerGet`. */

@@ -24,7 +24,9 @@ import {
   SplashBackdrop,
   SplashLoading,
 } from "./src/components/common/LaunchSplash";
-import { KultfilmlerBridge } from "./src/components/common/KultfilmlerBridge";
+import { WebSessionBridge } from "./src/components/common/WebSessionBridge";
+import { hdfilmSession } from "./src/services/hdfilmSession";
+import { kultfilmlerSession } from "./src/services/kultfilmlerSession";
 import { LiveOpsHost } from "./src/components/common/LiveOpsHost";
 import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import { UserDataSyncProvider, useUserDataSync } from "./src/context/UserDataSyncContext";
@@ -640,7 +642,8 @@ function AppShell() {
           onError={handleStartupError}
         >
           {/* Before the navigator, so the app's screens draw over it. */}
-          <KultfilmlerBridge />
+          <WebSessionBridge session={kultfilmlerSession} />
+          <WebSessionBridge session={hdfilmSession} />
           <NavigationContainer ref={navigationRef} theme={navigationTheme} linking={watchTogetherLinking}>
             <Navigation />
           </NavigationContainer>

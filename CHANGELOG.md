@@ -4,6 +4,13 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-12
+
+- Fixed: TV episodes from HDFilm (*The Institute*, among others) played from a lower-quality source
+  or showed "Not available" since 2026-11-11, while films played normally. HDFilm put a security
+  check on its series pages that only a browser passes; the app now passes it the way a browser
+  does when it comes up.
+
 ## 2026-11-07
 
 - Faster "Not available": on networks that Kült Filmler turns away, the app no longer waits

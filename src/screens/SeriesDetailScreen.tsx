@@ -66,6 +66,7 @@ import {
   readRuntimeCache,
   writePersistedRuntimeCache,
 } from "../services/runtimeCache";
+import { scheduleHdfilmWarm } from "../services/hdfilmSession";
 import { scheduleKultfilmlerWarm } from "../services/kultfilmlerSession";
 import { useAppSettings } from "../settings/AppSettingsContext";
 
@@ -599,6 +600,7 @@ function formatEpisodeMeta(item: SeriesEpisode): string {
 export function SeriesDetailScreen({ route, navigation }: SeriesDetailProps) {
   // Kült Filmler's Cloudflare challenge takes seconds; start it before Watch.
   useEffect(() => scheduleKultfilmlerWarm(), []);
+  useEffect(() => scheduleHdfilmWarm(), []);
   const currentTheme = useTheme();
   const { t } = useTranslation();
   const { language } = useAppSettings();

@@ -2,35 +2,27 @@ import { useEffect, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import WebView, { type WebViewMessageEvent } from "react-native-webview";
 
-import {
-  KULTFILMLER_PAGE_PROBE,
-  attachKultfilmlerHost,
-  handleKultfilmlerLoadError,
-  handleKultfilmlerMessage,
-  isKultfilmlerNavigationAllowed,
-  kultfilmlerSessionUrl,
-  subscribeKultfilmlerSession,
-} from "../../services/kultfilmlerSession";
+import type { WebSession } from "../../services/webSession";
 
 /**
- * The hidden WebView that holds a Kült Filmler session open past the site's
- * Cloudflare challenge (see kultfilmlerSession). Renders nothing until the
- * resolver asks the site for something, and unmounts after a quiet spell.
+ * The hidden WebView that holds a provider session open past the site's
+ * Cloudflare challenge (see webSession). Renders nothing until the resolver
+ * asks the site for something, and unmounts after a quiet spell.
  */
-export function KultfilmlerBridge() {
+export function WebSessionBridge({ session }: { session: WebSession }) {
   const [open, setOpen] = useState(false);
   const webViewRef = useRef<WebView>(null);
 
-  useEffect(() => subscribeKultfilmlerSession(setOpen), []);
+  useEffect(() => session.subscribe(setOpen), [session]);
 
   useEffect(() => {
     if (!open) return;
-    attachKultfilmlerHost({
+    session.attachHost({
       evaluate: (script) => webViewRef.current?.injectJavaScript(script),
       reload: () => webViewRef.current?.reload(),
     });
-    return () => attachKultfilmlerHost(null);
-  }, [open]);
+    return () => session.attachHost(null);
+  }, [open, session]);
 
   if (!open) return null;
 
@@ -38,17 +30,17 @@ export function KultfilmlerBridge() {
     <View pointerEvents="none" style={styles.host}>
       <WebView
         ref={webViewRef}
-        source={{ uri: kultfilmlerSessionUrl() }}
+        source={{ uri: session.sessionUrl() }}
         javaScriptEnabled
         domStorageEnabled
         thirdPartyCookiesEnabled
         setSupportMultipleWindows={false}
         javaScriptCanOpenWindowsAutomatically={false}
         mediaPlaybackRequiresUserAction
-        injectedJavaScript={KULTFILMLER_PAGE_PROBE}
-        onMessage={(event: WebViewMessageEvent) => handleKultfilmlerMessage(event.nativeEvent.data)}
-        onError={(event) => handleKultfilmlerLoadError(event.nativeEvent.description)}
-        onShouldStartLoadWithRequest={(request) => isKultfilmlerNavigationAllowed(request.url)}
+        injectedJavaScript={session.pageProbe}
+        onMessage={(event: WebViewMessageEvent) => session.handleMessage(event.nativeEvent.data)}
+        onError={(event) => session.handleLoadError(event.nativeEvent.description)}
+        onShouldStartLoadWithRequest={(request) => session.isNavigationAllowed(request.url)}
       />
     </View>
   );

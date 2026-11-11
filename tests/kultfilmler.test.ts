@@ -284,7 +284,7 @@ test("the session WebView may load the site and Cloudflare's challenge, nothing 
 test("the session WebView is drawn: a real size and a non-zero opacity", () => {
   // Android never draws a view at opacity 0, and an undrawn WebView gets no
   // animation frames, so Cloudflare's challenge stalls (2026-10-23, every phone).
-  const source = readFileSync(join(process.cwd(), "src/components/common/KultfilmlerBridge.tsx"), "utf8");
+  const source = readFileSync(join(process.cwd(), "src/components/common/WebSessionBridge.tsx"), "utf8");
   const host = source.match(/host:\s*\{([^}]*)\}/)?.[1] ?? "";
   const number = (key: string) => Number(host.match(new RegExp(`${key}:\\s*([\\d.]+)`))?.[1]);
   assert.ok(number("opacity") > 0, "opacity must be above zero");
