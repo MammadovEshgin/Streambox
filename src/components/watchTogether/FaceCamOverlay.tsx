@@ -6,6 +6,7 @@ import styled from "styled-components/native";
 
 import { getWebRtc } from "../../services/webrtcCompat";
 import type { PeerConnectionState } from "../../hooks/useWebRtcPeers";
+import { rtcViewBinding } from "../../utils/webrtcMedia";
 
 // Two square "screen" tiles hugging the left edge — partner on top, you below.
 // Styled like little cinema monitors (warm amber frame, soft glow, a glassy
@@ -30,16 +31,10 @@ export type FaceCamOverlayProps = {
 const BOX_SIZE = 122;
 const STREAM_STYLE = { width: "100%" as const, height: "100%" as const };
 
-function safeStreamUrl(stream: MediaStream | null): string | null {
-  if (!stream) return null;
-  try {
-    return stream.toURL();
-  } catch {
-    // Native teardown can invalidate a stream one render before React receives
-    // the null state. Render the placeholder instead of throwing from RTCView.
-    return null;
-  }
-}
+// Both RTCViews stay on the default (below-window) SurfaceView layer: they
+// never overlap, and a raised zOrder would draw the surface over the sheen,
+// LIVE tag and name plate. Each view is keyed by its video track and only
+// mounts once there is one (see rtcViewBinding).
 
 export function FaceCamOverlay({
   visible,
@@ -55,10 +50,10 @@ export function FaceCamOverlay({
   const RTCView = getWebRtc()?.RTCView;
   if (!visible) return null;
 
-  const remoteStreamUrl = safeStreamUrl(remoteStream);
-  const localStreamUrl = safeStreamUrl(localStream);
-  const partnerLive = Boolean(RTCView && remoteStreamUrl && partnerConnected);
-  const selfLive = Boolean(RTCView && localStreamUrl && cameraEnabled);
+  const remoteVideo = rtcViewBinding(remoteStream);
+  const localVideo = rtcViewBinding(localStream);
+  const partnerLive = Boolean(RTCView && remoteVideo && partnerConnected);
+  const selfLive = Boolean(RTCView && localVideo && cameraEnabled);
   const showFailed = mediaState === "failed";
   const showConnecting = !showFailed && !partnerLive && partnerConnected && mediaState === "connecting";
 
@@ -68,8 +63,14 @@ export function FaceCamOverlay({
           through to the player beneath. */}
       <Box pointerEvents={showFailed ? "auto" : "none"}>
         <Screen>
-          {RTCView && remoteStreamUrl && partnerConnected ? (
-            <RTCView streamURL={remoteStreamUrl} style={STREAM_STYLE} objectFit="cover" mirror={false} />
+          {RTCView && remoteVideo && partnerConnected ? (
+            <RTCView
+              key={remoteVideo.key}
+              streamURL={remoteVideo.streamURL}
+              style={STREAM_STYLE}
+              objectFit="cover"
+              mirror={false}
+            />
           ) : (
             <Placeholder>
               <Feather name="user" size={22} color="#8A938B" />
@@ -102,8 +103,8 @@ export function FaceCamOverlay({
 
       <Box pointerEvents="none">
         <Screen>
-          {RTCView && localStreamUrl && cameraEnabled ? (
-            <RTCView streamURL={localStreamUrl} style={STREAM_STYLE} objectFit="cover" mirror />
+          {RTCView && localVideo && cameraEnabled ? (
+            <RTCView key={localVideo.key} streamURL={localVideo.streamURL} style={STREAM_STYLE} objectFit="cover" mirror />
           ) : (
             <Placeholder>
               <Feather name={cameraEnabled ? "user" : "video-off"} size={22} color="#8A938B" />

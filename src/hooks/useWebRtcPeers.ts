@@ -3,7 +3,16 @@ import type { MediaStream, RTCPeerConnection } from "react-native-webrtc";
 
 import { getWebRtc, isWebRtcAvailable } from "../services/webrtcCompat";
 import { fetchIceServers } from "../services/turnCredentials";
+import { trackEvent } from "../services/telemetryService";
 import { negotiationActionOnPeerReady, type WatchRoomSignal } from "../utils/watchRoom";
+import {
+  advanceVideoProgress,
+  canSendOffer,
+  isVideoStalled,
+  preferCodecInSdp,
+  summarizeVideoStats,
+  type VideoProgress,
+} from "../utils/webrtcMedia";
 
 // ---------------------------------------------------------------------------
 // Two-person WebRTC face-cam/audio. Because a room is exactly 2 people we use a
@@ -23,6 +32,11 @@ import { negotiationActionOnPeerReady, type WatchRoomSignal } from "../utils/wat
 //     full restart (new connection + fresh TURN creds) — this is what survives
 //     a Wi-Fi ↔ cellular switch mid-movie.
 //   · Mic/camera mute state survives restarts (kept in refs, reapplied).
+//   · Every SDP we create or apply puts VP8 first — the default Android
+//     factories prefer hardware-only H.264, which renders a black partner
+//     tile on phones whose MediaCodec H.264 misbehaves (see webrtcMedia.ts).
+//   · A connection whose remote video never decodes rebuilds once on its own
+//     and reports the codec/decoder in use to telemetry.
 //
 // The native module is absent in Expo Go — there the hook reports "unavailable"
 // and produces no streams, and the UI falls back to placeholder tiles.
@@ -53,10 +67,16 @@ const VIDEO_MAX_BITRATE_BPS = 400_000;
 
 const READY_REANNOUNCE_MS = 2_000;
 const READY_LOOP_MAX_TICKS = 45; // ≈90s, then the watchdog / manual retry owns it
-const REOFFER_MIN_INTERVAL_MS = 5_000;
 const DISCONNECT_GRACE_MS = 8_000;
 const RESTART_DELAY_MS = 1_500;
 const MAX_AUTO_RESTARTS = 3;
+// Remote video watch: frames normally decode within a second or two of
+// "connected". No progress for this long means the video path is broken even
+// though the call is up (audio usually still flows).
+const VIDEO_WATCH_INTERVAL_MS = 3_000;
+const VIDEO_PROBE_DELAY_MS = 8_000;
+const VIDEO_STALL_MS = 15_000;
+const MAX_VIDEO_STALL_RESTARTS = 1;
 
 export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }: Options) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -69,9 +89,20 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
   // Bumping the generation tears the whole media stack down and rebuilds it —
   // the restart primitive used by both the auto-recovery and the retry UI.
   const [generation, setGeneration] = useState(0);
+  // A track can land on the SAME remote stream object (same URL). Bumping
+  // this re-renders the tiles so the RTCView re-keys onto the new track —
+  // the native view never re-resolves a stream URL it already has.
+  const [, setRemoteTrackRevision] = useState(0);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  // The partner's stream for the current connection, kept while the UI shows
+  // a placeholder ("failed") so an ICE restart that revives the same
+  // connection can put it back — no new `track` event fires in that case.
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  // Our offer has been sent and its answer has not been applied yet.
+  const awaitingAnswerRef = useRef(false);
+  const videoStallRestartsRef = useRef(0);
   const remoteDescSetRef = useRef(false);
   const pendingCandidatesRef = useRef<any[]>([]);
   const sendSignalRef = useRef(sendSignal);
@@ -112,20 +143,24 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
   }, []);
 
   // Host-only: (re)create and send an offer. Guarded so overlapping readiness
-  // signals don't fire concurrent offers, and rate-limited so the re-announce
-  // loop doesn't re-gather ICE every tick while an answer is in flight.
+  // signals don't fire concurrent offers, and paced (canSendOffer) so the
+  // re-announce loop neither re-gathers ICE every tick nor supersedes an offer
+  // whose answer is still in flight.
   // iceRestart is always set: a re-offer must re-gather + re-trickle candidates
   // or a peer that rebuilt its connection can never complete ICE.
   const makeOffer = useCallback(async () => {
+    const webrtc = getWebRtc();
     const pc = pcRef.current;
-    if (!pc || makingOfferRef.current) return;
-    if (Date.now() - lastOfferAtRef.current < REOFFER_MIN_INTERVAL_MS) return;
+    if (!webrtc || !pc || makingOfferRef.current) return;
+    if (!canSendOffer(awaitingAnswerRef.current, Date.now() - lastOfferAtRef.current)) return;
     makingOfferRef.current = true;
     lastOfferAtRef.current = Date.now();
     try {
       const offer = await pc.createOffer({ iceRestart: true });
-      await pc.setLocalDescription(offer);
-      sendSignalRef.current({ type: "webrtc-offer", from: selfUserIdRef.current, sdp: offer.sdp });
+      const sdp = preferCodecInSdp(offer.sdp ?? "");
+      await pc.setLocalDescription(new webrtc.RTCSessionDescription({ type: "offer", sdp }));
+      awaitingAnswerRef.current = true;
+      sendSignalRef.current({ type: "webrtc-offer", from: selfUserIdRef.current, sdp });
     } catch {
       setConnectionState("failed");
     } finally {
@@ -152,6 +187,7 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
   // Manual retry from the UI: clears the attempt budget and rebuilds now.
   const restartMedia = useCallback(() => {
     restartAttemptsRef.current = 0;
+    videoStallRestartsRef.current = 0;
     if (restartTimerRef.current) {
       clearTimeout(restartTimerRef.current);
       restartTimerRef.current = null;
@@ -197,14 +233,24 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
       }
       try {
         if (signal.type === "webrtc-offer") {
-          await pc.setRemoteDescription(new webrtc.RTCSessionDescription({ type: "offer", sdp: signal.sdp }));
+          // Reordering the partner's offer too keeps VP8 first in what we
+          // send even when their (older) bundle offered H.264 first.
+          const offerSdp = preferCodecInSdp(signal.sdp);
+          await pc.setRemoteDescription(new webrtc.RTCSessionDescription({ type: "offer", sdp: offerSdp }));
           remoteDescSetRef.current = true;
           await flushPendingCandidates();
           const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          sendSignalRef.current({ type: "webrtc-answer", from: selfUserIdRef.current, sdp: answer.sdp });
+          const answerSdp = preferCodecInSdp(answer.sdp ?? "");
+          await pc.setLocalDescription(new webrtc.RTCSessionDescription({ type: "answer", sdp: answerSdp }));
+          sendSignalRef.current({ type: "webrtc-answer", from: selfUserIdRef.current, sdp: answerSdp });
         } else if (signal.type === "webrtc-answer") {
-          await pc.setRemoteDescription(new webrtc.RTCSessionDescription({ type: "answer", sdp: signal.sdp }));
+          // Only the answer to our outstanding offer applies. A late answer to
+          // an offer that is already settled is noise — applying it throws
+          // ("wrong state: stable"), which used to flag a healthy call failed.
+          if (!awaitingAnswerRef.current) return;
+          awaitingAnswerRef.current = false;
+          const answerSdp = preferCodecInSdp(signal.sdp);
+          await pc.setRemoteDescription(new webrtc.RTCSessionDescription({ type: "answer", sdp: answerSdp }));
           remoteDescSetRef.current = true;
           await flushPendingCandidates();
         } else if (signal.type === "webrtc-ice") {
@@ -244,6 +290,62 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
 
     let cancelled = false;
     let readyInterval: ReturnType<typeof setInterval> | null = null;
+    let videoWatch: ReturnType<typeof setInterval> | null = null;
+    const stopVideoWatch = () => {
+      if (videoWatch) clearInterval(videoWatch);
+      videoWatch = null;
+    };
+
+    // Polls inbound video while connected. Reports the negotiated codec and
+    // decoder once (the only field signal of which codec phones end up on),
+    // and rebuilds once when frames never decode — a renegotiation from this
+    // side also moves a partner on an older bundle onto VP8.
+    function watchRemoteVideo(pc: RTCPeerConnection) {
+      if (videoWatch) return;
+      const startedAt = Date.now();
+      let progress: VideoProgress | null = null;
+      let probed = false;
+      let polling = false;
+      videoWatch = setInterval(() => {
+        if (polling) return;
+        if (cancelled || pcRef.current !== pc) {
+          stopVideoWatch();
+          return;
+        }
+        if ((pc as any).connectionState !== "connected") {
+          // A disconnect pauses the clock; ICE recovery restarts it.
+          progress = null;
+          return;
+        }
+        polling = true;
+        void (async () => {
+          try {
+            const stats: any = await (pc as any).getStats();
+            if (cancelled || pcRef.current !== pc) return;
+            const summary = summarizeVideoStats(stats);
+            const now = Date.now();
+            progress = advanceVideoProgress(progress, summary.framesDecoded, now);
+            const role = isInitiatorRef.current ? "host" : "guest";
+            if (!probed && now - startedAt >= VIDEO_PROBE_DELAY_MS) {
+              probed = true;
+              trackEvent("watch_room_media_probe", "app", { role, ...summary });
+            }
+            if (!isVideoStalled(progress, now, VIDEO_STALL_MS)) return;
+            stopVideoWatch();
+            const willRestart = videoStallRestartsRef.current < MAX_VIDEO_STALL_RESTARTS;
+            trackEvent("watch_room_video_stalled", "app", { role, willRestart, ...summary }, "warning");
+            if (willRestart) {
+              videoStallRestartsRef.current += 1;
+              scheduleRestart();
+            }
+          } catch {
+            /* stats are best-effort */
+          } finally {
+            polling = false;
+          }
+        })();
+      }, VIDEO_WATCH_INTERVAL_MS);
+    }
 
     async function setup() {
       const { RTCPeerConnection: PC, MediaStream: MS, mediaDevices } = webrtc!;
@@ -254,6 +356,8 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
       pendingOfferRef.current = null;
       makingOfferRef.current = false;
       lastOfferAtRef.current = 0;
+      awaitingAnswerRef.current = false;
+      remoteStreamRef.current = null;
       peerReadyRef.current = false;
       const iceServers = await fetchIceServers();
       if (cancelled) return;
@@ -271,7 +375,12 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
         // the camera stays natively locked — expo-camera (the polaroid handoff)
         // and every later getUserMedia would then fail until an app restart.
         stream?.getTracks().forEach((track: any) => track.stop?.());
-        if (!cancelled) setConnectionState("failed");
+        if (!cancelled) {
+          setConnectionState("failed");
+          // Usually the camera is still held for a moment after the polaroid
+          // handoff — retry (bounded) instead of waiting for "Tap to retry".
+          scheduleRestart();
+        }
         return;
       }
       // Reapply the user's mute choices from before the restart/handoff.
@@ -308,12 +417,20 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
         }
       };
 
+      // A track without a stream (an msid-less offer) joins ONE stream per
+      // connection. A fresh stream per event split audio and video apart and
+      // the last write won — often the audio-only one, i.e. a black tile.
+      let streamlessRemote: MediaStream | null = null;
       (pc as any).ontrack = (event: any) => {
-        const incoming: MediaStream = event?.streams?.[0] ?? new MS();
-        if (!event?.streams?.[0] && event?.track) {
-          incoming.addTrack(event.track);
+        let incoming: MediaStream | undefined = event?.streams?.[0];
+        if (!incoming) {
+          streamlessRemote ??= new MS();
+          incoming = streamlessRemote;
+          if (event?.track) incoming.addTrack(event.track);
         }
+        remoteStreamRef.current = incoming;
         setRemoteStream(incoming);
+        setRemoteTrackRevision((revision) => revision + 1);
       };
 
       (pc as any).onconnectionstatechange = () => {
@@ -324,7 +441,11 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
             clearTimeout(disconnectTimerRef.current);
             disconnectTimerRef.current = null;
           }
+          // "failed" cleared the tile; an ICE restart on this same connection
+          // fires no new track event, so restore what we already have.
+          if (remoteStreamRef.current) setRemoteStream(remoteStreamRef.current);
           setConnectionState("connected");
+          watchRemoteVideo(pc);
           if (__DEV__) void logSelectedCandidatePair(pc);
         } else if (cs === "disconnected") {
           // Give ICE a grace window to self-heal (it often does after a brief
@@ -341,6 +462,7 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
           setConnectionState("failed");
           scheduleRestart();
         } else if (cs === "closed") {
+          remoteStreamRef.current = null;
           setRemoteStream(null);
           setConnectionState("closed");
         }
@@ -405,10 +527,12 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
 
     void setup().catch(() => {
       if (cancelled) return;
+      stopVideoWatch();
       pcRef.current?.close();
       pcRef.current = null;
       localStreamRef.current?.getTracks().forEach((track: any) => track.stop?.());
       localStreamRef.current = null;
+      remoteStreamRef.current = null;
       setLocalStream(null);
       setRemoteStream(null);
       setConnectionState("failed");
@@ -418,6 +542,7 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
     return () => {
       cancelled = true;
       if (readyInterval) clearInterval(readyInterval);
+      stopVideoWatch();
       if (disconnectTimerRef.current) {
         clearTimeout(disconnectTimerRef.current);
         disconnectTimerRef.current = null;
@@ -433,10 +558,12 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
       pcRef.current = null;
       localStreamRef.current?.getTracks().forEach((track: any) => track.stop?.());
       localStreamRef.current = null;
+      remoteStreamRef.current = null;
       remoteDescSetRef.current = false;
       pendingCandidatesRef.current = [];
       pendingOfferRef.current = null;
       makingOfferRef.current = false;
+      awaitingAnswerRef.current = false;
       peerReadyRef.current = false;
       setLocalStream(null);
       setRemoteStream(null);
@@ -448,6 +575,7 @@ export function useWebRtcPeers({ enabled, isInitiator, selfUserId, sendSignal }:
   useEffect(() => {
     if (enabled) return;
     restartAttemptsRef.current = 0;
+    videoStallRestartsRef.current = 0;
     if (restartTimerRef.current) {
       clearTimeout(restartTimerRef.current);
       restartTimerRef.current = null;

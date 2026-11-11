@@ -118,3 +118,34 @@ test("a peer still coming up answers the readiness handshake", () => {
   assert.equal(readyBranch.includes("if (pcRef.current) announceReady();"), false);
   assert.equal(readyBranch.includes("announceReady();"), true);
 });
+
+// ---------------------------------------------------------------------------
+// Black partner tile on some phones: react-native-webrtc's Android factories
+// put hardware-only H.264 first, and a misbehaving MediaCodec H.264 path
+// renders nothing while audio carries on. Every description the hook creates
+// or applies must go through the VP8-first reorder.
+// ---------------------------------------------------------------------------
+
+test("every SDP the face-cam creates or applies prefers VP8", () => {
+  const source = readSource("src", "hooks", "useWebRtcPeers.ts");
+  const descriptions = source.match(/new webrtc\.RTCSessionDescription\(\{[^}]*\}\)/g) ?? [];
+  assert.equal(descriptions.length, 4, "offer (local), offer (remote), answer (local), answer (remote)");
+  for (const description of descriptions) {
+    assert.match(description, /(sdp|sdp: offerSdp|sdp: answerSdp) \}\)$/, description);
+  }
+  assert.equal(source.includes("preferCodecInSdp(offer.sdp"), true);
+  assert.equal(source.includes("preferCodecInSdp(answer.sdp"), true);
+  assert.equal(source.split("preferCodecInSdp(signal.sdp)").length - 1, 2);
+  // Raw descriptions straight from createOffer/createAnswer are never applied.
+  assert.equal(source.includes("setLocalDescription(offer)"), false);
+  assert.equal(source.includes("setLocalDescription(answer)"), false);
+});
+
+test("the partner tile binds RTCView to a video track, keyed by it", () => {
+  const source = readSource("src", "components", "watchTogether", "FaceCamOverlay.tsx");
+  assert.equal(source.includes("rtcViewBinding(remoteStream)"), true);
+  assert.equal(source.includes("key={remoteVideo.key}"), true);
+  assert.equal(source.includes("streamURL={remoteVideo.streamURL}"), true);
+  // A raised zOrder would draw the surface over the tile chrome.
+  assert.equal(source.includes("zOrder="), false);
+});

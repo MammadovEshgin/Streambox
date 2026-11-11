@@ -65,7 +65,17 @@ content timecode:
 - `webrtc-ready` gates the host's offer so it cannot arrive before the guest's peer
   connection exists; it is re-announced every 2s until SDP lands. Early offers are queued.
 - Offers use `iceRestart`; failed or stuck connections rebuild up to 3 times, then the partner
-  tile shows "Tap to retry".
+  tile shows "Tap to retry". A re-offer never supersedes an offer whose answer is still in
+  flight (10s), and a late answer to a settled offer is ignored.
+- **Video is VP8, always.** react-native-webrtc's Android factories put hardware-only H.264
+  first (no software fallback), and a misbehaving MediaCodec H.264 path shows a black partner
+  tile on some chipsets while audio still works. `preferCodecInSdp` (`src/utils/webrtcMedia.ts`)
+  puts VP8 first in every SDP we create *and* apply, so it wins even against an older bundle.
+- The partner `RTCView` only mounts once the stream has a video track and is keyed by it — the
+  native view resolves the track once per `streamURL` and never looks again.
+- Once connected, inbound video is polled; `watch_room_media_probe` reports the codec and
+  encoder/decoder in use, and `watch_room_video_stalled` fires (and the side rebuilds once) when
+  no frame decodes for 15s.
 - Realtime sends use server acknowledgements; a 20s liveness probe requires an open socket.
   Auth refreshes before expiry and reconnects when the token is unusable.
 - Audio: explicit echo cancellation / noise suppression / AGC; face-cam capped at 640×480@24,
