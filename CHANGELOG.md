@@ -4,6 +4,11 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-15
+
+- Fixed: some episodes (e.g. *The Mandalorian*) played with a dark, dimmed picture. They are
+  filmed in HDR, and the player wasn't adapting HDR video to the phone screen; it now does.
+
 ## 2026-11-12 (2)
 
 - Fixed: watched films, the watchlist and liked titles could vanish from the profile and had to

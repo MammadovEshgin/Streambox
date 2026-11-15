@@ -1926,7 +1926,15 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           style={styles.nativePlayer}
           contentFit={videoFit}
           nativeControls
-          surfaceType="textureView"
+          // SurfaceView, not TextureView: many provider streams are HDR
+          // (PQ/BT.2020 — The Mandalorian among them), and Android's TextureView
+          // does not tone-map HDR to an SDR display, so PQ video renders dark
+          // and dim. SurfaceView goes through the display compositor's HDR path,
+          // and expo-video recommends it for all but overlapping-video cases.
+          // A Watch Together room is that case: its face-cam RTCView tiles only
+          // compose above the video when the video is a TextureView, so the
+          // room keeps it (its streams are the same whichever device hosts).
+          surfaceType={route.params.watchRoomCode ? "textureView" : "surfaceView"}
           onTouchEnd={toggleCloseBtn}
         />
         {route.params.watchRoomCode && route.params.watchRoomNickname ? (

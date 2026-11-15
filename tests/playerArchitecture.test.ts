@@ -151,3 +151,21 @@ test("a load error is visible, not hidden behind the loading overlay", () => {
   const source = fs.readFileSync(playerScreenPath, "utf8");
   assert.match(source, /const isLoading = isResolving \|\| \(!isPlaybackReady && !loadError && /);
 });
+
+test("native video uses SurfaceView so HDR streams aren't dimmed, TextureView only in a watch room", () => {
+  // Many provider streams are HDR (PQ/BT.2020 — The Mandalorian). Android's
+  // TextureView does not tone-map HDR to an SDR display, so the video rendered
+  // dark. SurfaceView does. A Watch Together room keeps TextureView because its
+  // face-cam overlay only composes above a TextureView video.
+  const playerScreenSource = fs.readFileSync(playerScreenPath, "utf8");
+  assert.match(
+    playerScreenSource,
+    /surfaceType=\{route\.params\.watchRoomCode \? "textureView" : "surfaceView"\}/,
+    "the direct-stream VideoView must pick surfaceType by watch-room, defaulting to surfaceView"
+  );
+  assert.equal(
+    playerScreenSource.includes('surfaceType="textureView"'),
+    false,
+    "no unconditional textureView may remain"
+  );
+});
