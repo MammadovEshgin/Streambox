@@ -95,7 +95,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `0cf260c` → group `fb3a25da-e164-4082-b1f6-6027e00b831e` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `8e3e066` → group `c140ee56-5345-4e84-8521-1ff0a6349470` |
 | `streambox-tmdb-proxy` | `9bb542c0` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records; `/t/p/…` image proxy, 30-day edge TTL) |
 | `streambox-provider-monitor` | `338e4a0f` (hourly cron; classic Dizipal checks, hex `data-cfg` + `/_pb` beacon + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `provider_configs` | rows `hdfilm`, `dizipal`, `dizibal`, `kultfilmler` (added 2026-10-23, priority 3) |
@@ -109,6 +109,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-11-15 (2) | `8e3e066` | `c140ee56-5345-4e84-8521-1ff0a6349470` | HDFilm app-blocks its `/rplayer/` embed (403 "desteklenmiyor") while `.mobi` 404s, killing native playback; `/rplayer/` added to `isHdfilmSessionPath` and `hdFilmGet` reroutes the app-block page (`isHdfilmAppBlockResponse`) through the WebView session that holds browser clearance |
 | 2026-11-15 | `0cf260c` | `fb3a25da-e164-4082-b1f6-6027e00b831e` | Native `VideoView` renders on a `SurfaceView` (not `TextureView`) so HDR/PQ streams tone-map to the SDR display instead of showing dark (The Mandalorian); a Watch Together room keeps `TextureView` for its face-cam overlay; Dizipal floor 2148 → 2149 |
 | 2026-11-12 (2) | `bb8bd86` | `15da0de7-c2e2-4813-a14f-385670b1d8a4` | Library (watchlists, liked, watch history, episodes, sync queue) moved from AsyncStorage to crash-safe files; three-way cloud reconcile on launch/foreground; Journeys long-press and auto-mark log offline with a fallback entry; Watch Together video forced to VP8 |
 | 2026-11-12 | `2981572` | `95a4846d-c936-4bc7-adc3-1ccae49ce1db` | HDFilm `/dizi/` pages still challenged after native retries are read through a hidden WebView session (`hdfilmSession`; shared `webSession`/`WebSessionBridge` with Kült Filmler), warmed from series pages after a recent challenge; Dizipal floor 2147 → 2148 |
