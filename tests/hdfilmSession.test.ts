@@ -3,7 +3,7 @@ import test from "node:test";
 
 import axios from "axios";
 
-import { hdfilmSession, isHdfilmSeriesPage } from "../src/services/hdfilmSession";
+import { hdfilmSession, isHdfilmAppBlockResponse, isHdfilmSessionPath } from "../src/services/hdfilmSession";
 import { __internal } from "../src/services/WebPlayerService";
 
 // Read only at call time, so setting it after the imports is enough.
@@ -46,14 +46,24 @@ function answerLast(host: FakeHost, body: string) {
   hdfilmSession.handleMessage(JSON.stringify({ kf: "fetch", id, status: 200, challenged: false, body }));
 }
 
-test("only HDFilm's own series pages count as series pages", () => {
+test("only HDFilm's own gated pages (/dizi/ and /rplayer/) are session paths", () => {
   hdfilmSession.resetForTests();
-  assert.equal(isHdfilmSeriesPage(EPISODE), true);
-  assert.equal(isHdfilmSeriesPage(`${BASE}/dizi/the-institute-1/`), true);
-  assert.equal(isHdfilmSeriesPage(`${BASE}/oppenheimer-4/`), false);
-  assert.equal(isHdfilmSeriesPage(`${BASE}/search/?q=dizi`), false);
-  assert.equal(isHdfilmSeriesPage("https://hdfilmcehennemi.mobi/dizi/x/"), false);
-  assert.equal(isHdfilmSeriesPage("not a url"), false);
+  assert.equal(isHdfilmSessionPath(EPISODE), true);
+  assert.equal(isHdfilmSessionPath(`${BASE}/dizi/the-institute-1/`), true);
+  assert.equal(isHdfilmSessionPath(`${BASE}/rplayer/rzkjymtky9wh/`), true);
+  assert.equal(isHdfilmSessionPath(`${BASE}/oppenheimer-4/`), false);
+  assert.equal(isHdfilmSessionPath(`${BASE}/search/?q=dizi`), false);
+  // The .mobi embed host is a different origin and stays native.
+  assert.equal(isHdfilmSessionPath("https://hdfilmcehennemi.mobi/video/embed/x/"), false);
+  assert.equal(isHdfilmSessionPath("not a url"), false);
+});
+
+test("HDFilm's app-block page is recognised by its body, not a header", () => {
+  assert.equal(isHdfilmAppBlockResponse(403, "<h1>Bu uygulama desteklenmiyor</h1>"), true);
+  assert.equal(isHdfilmAppBlockResponse(403, 'c.href="intent://h/#Intent;scheme=https;package=com.android.chrome;end"'), true);
+  assert.equal(isHdfilmAppBlockResponse(403, "<title>Just a moment...</title>"), false, "the Cloudflare challenge is not an app-block");
+  assert.equal(isHdfilmAppBlockResponse(404, "desteklenmiyor"), false, "only a 403 is the app-block");
+  assert.equal(isHdfilmAppBlockResponse(200, "<html>the real player</html>"), false);
 });
 
 test("the session holds a page under /dizi/ and is ready on anything but the challenge", () => {

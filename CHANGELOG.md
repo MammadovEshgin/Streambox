@@ -8,6 +8,10 @@ runtime **1.2.0**; update IDs and technical detail for each release are in
 
 - Fixed: some episodes (e.g. *The Mandalorian*) played with a dark, dimmed picture. They are
   filmed in HDR, and the player wasn't adapting HDR video to the phone screen; it now does.
+- Fixed: films and episodes stopped playing from HDFilm (the best source) after HDFilm began
+  blocking the app from its video player. The app now reaches the player the way a browser does,
+  so HDFilm works again; until the update reaches you, those titles keep playing from other
+  sources.
 
 ## 2026-11-12 (2)
 

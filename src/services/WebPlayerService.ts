@@ -21,7 +21,7 @@ import {
 } from "./providerConfigService";
 import { aesCbcDecrypt } from "./aesCbc";
 import { trackEvent } from "./telemetryService";
-import { hdfilmSession, isHdfilmSeriesPage, noteHdfilmChallenge } from "./hdfilmSession";
+import { hdfilmSession, isHdfilmAppBlockResponse, isHdfilmSessionPath, noteHdfilmChallenge } from "./hdfilmSession";
 import {
   fetchKultfilmlerText,
   isKultfilmlerSessionOpening,
@@ -399,29 +399,46 @@ async function providerGet<T = string>(
 }
 
 /**
- * HDFilm-flavoured `providerGet`. A series page that is still Cloudflare's
- * challenge after the retries is read through the HDFilm WebView session (see
- * hdfilmSession); once that session is open, series pages go to it first.
+ * HDFilm-flavoured `providerGet`. A gated page on HDFilm's main origin — a
+ * series page still answering Cloudflare's challenge, or a `/rplayer/` embed
+ * answering the app-block page — is read through the HDFilm WebView session
+ * (see hdfilmSession), which holds the site's browser clearance. Once that
+ * session is open, those pages go to it first. Films, search and `.mobi` are
+ * untouched.
  */
 async function hdFilmGet<T = string>(
   url: string,
   config: Parameters<typeof axios.get>[1]
 ): Promise<import("axios").AxiosResponse<T>> {
   hdfilmSession.setOrigin(getHdfilmBaseUrl());
-  const seriesPage = isHdfilmSeriesPage(url);
-  if (seriesPage && hdfilmSession.isReady()) {
+  const gated = isHdfilmSessionPath(url);
+  if (gated && hdfilmSession.isReady()) {
     const viaSession = await readHdFilmPageInSession<T>(url);
     if (viaSession) return viaSession;
   }
   try {
-    return await providerGet<T>("HDFilm", url, config);
+    const response = await providerGet<T>("HDFilm", url, config);
+    // A 200 can still carry the app-block page (open-in-Chrome) in place of the
+    // player; reroute it through the cleared session like a 403 block.
+    if (gated && isHdfilmAppBlockResponse(200, response.data)) {
+      noteHdfilmChallenge();
+      const viaSession = await readHdFilmPageInSession<T>(url);
+      if (viaSession) return viaSession;
+    }
+    return response;
   } catch (error) {
-    if (!seriesPage || !isCloudflareChallengeResponse(error)) throw error;
+    if (!gated || !isHdfilmGateResponse(error)) throw error;
     noteHdfilmChallenge();
     const viaSession = await readHdFilmPageInSession<T>(url);
     if (viaSession) return viaSession;
     throw error;
   }
+}
+
+/** Either HDFilm gate: the Cloudflare challenge, or HDFilm's own app-block. */
+function isHdfilmGateResponse(error: unknown): boolean {
+  const response = (error as { response?: { status?: number; data?: unknown } } | null)?.response;
+  return isCloudflareChallengeResponse(error) || isHdfilmAppBlockResponse(response?.status, response?.data);
 }
 
 /** Cloudflare's managed challenge, as opposed to the site's own 403. */

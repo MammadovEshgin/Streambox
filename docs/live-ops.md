@@ -211,6 +211,8 @@ order by 1 desc, 2;
 HDFilm series-page sessions (since 2026-11-12): the same outcomes for the hidden WebView that
 reads HDFilm's `/dizi/` pages when native requests stay challenged, with a 12s challenge
 budget. Run the query above with `event_name = 'hdfilm_session'`. Many `ready` rows mean
-HDFilm is challenging phones; none means native requests are getting through.
+HDFilm is challenging phones; none means native requests are getting through. Since 2026-11-15 the session also
+serves HDFilm's `/rplayer/` embed when HDFilm app-blocks it (403 "desteklenmiyor"), so `ready`
+rows now also mean the player block is being lifted.
 
 Telemetry and audit logs are pruned after 90 days by the `streambox-event-log-cleanup` cron.

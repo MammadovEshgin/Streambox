@@ -166,10 +166,18 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   difference (tested: XHR, Accept-Language, full browser navigation headers). `hdFilmGet()` now
   reads a series page that is still the challenge after its retries through **a hidden WebView
   session** (`hdfilmSession`, same machinery as Kült Filmler's), which holds HDFilm's 8 KB
-  404 page at `/dizi/streambox/` and fetches `/dizi/…` same-origin; once that session is
-  open, series pages go to it first. Films, search, `/rplayer/` and `.mobi` stay native.
-  Opened on demand (12s challenge budget, 3 min idle), and warmed from a series detail page
-  only when a challenge was seen in the last 30 minutes. Telemetry: `hdfilm_session`.
+  404 page at `/dizi/streambox/` and fetches gated pages same-origin; once that session is
+  open, they go to it first. Opened on demand (12s challenge budget, 3 min idle), and warmed
+  from a series detail page only when a gate was seen in the last 30 minutes. Films, search
+  and the `.mobi` host stay native. Telemetry: `hdfilm_session`.
+- **HDFilm app-blocks its `/rplayer/` embed too (2026-11-15).** Non-browser clients get a 403
+  "Uygulama desteklenmiyor" page (open-in-Chrome, `intent://…package=com.android.chrome`) in
+  place of the player, while the `.mobi` host 404s — so native HDFilm playback died (films and
+  episodes both). A browser-cleared same-origin fetch returns the real player, so `/rplayer/`
+  is on `isHdfilmSessionPath` alongside `/dizi/`, and `hdFilmGet()` reroutes a `/rplayer/`
+  response that is the app-block page (`isHdfilmAppBlockResponse`, matched by body — no
+  `cf-mitigated` header — on a 403, or on a 200 that still carries it) through the same session.
+  The decoder is unchanged; only the fetch moves into the WebView.
 - **HDFilm's second source, `/rplayer/{rapidrame_id}/` on the main domain, is the fallback
   (2026-10-28).** The `.mobi` embed's `rapidrame_id` names it, so no extra page read is needed;
   `resolveHdFilmNativeFallback` asks `.mobi` first (its streams carry the dual audio) and the
