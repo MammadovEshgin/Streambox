@@ -1743,7 +1743,24 @@ type DizipalStreamInfo = {
 };
 
 const HDFILM_NATIVE_FALLBACK_CACHE_LIMIT = 80;
-const hdfilmNativeFallbackCache = new Map<string, Promise<DizipalStreamInfo | null>>();
+/**
+ * A decoded HDFilm stream is remembered per page so a second look at the same
+ * title (the detail page's check, then Watch) costs nothing. Not for long: the
+ * link is signed and short-lived, and a remembered one that had gone bad was
+ * handed back to every retry for as long as the app stayed open — the player's
+ * own re-resolve came back in 0.1s with the link that had just failed.
+ */
+const HDFILM_NATIVE_FALLBACK_CACHE_TTL_MS = 10 * 60_000;
+const hdfilmNativeFallbackCache = new Map<string, { task: Promise<DizipalStreamInfo | null>; storedAt: number }>();
+
+/**
+ * Drop what is remembered about a result's stream, so the next resolve asks the
+ * provider again. The player calls this before re-resolving a stream that
+ * failed or froze.
+ */
+export function forgetResolvedStream(result: WebPlayerResult | null | undefined): void {
+  if (result?.webViewFallbackUrl) hdfilmNativeFallbackCache.delete(result.webViewFallbackUrl);
+}
 
 function getStreamTypeFromUrl(url: string): string {
   return /\.m3u8(?:[?#].*)?$/i.test(url) ? "m3u8" : "mp4";
@@ -1760,19 +1777,21 @@ function isTrustedHdFilmEmbedUrl(url: string): boolean {
 function getCachedHdFilmNativeFallback(pageUrl: string, pageHtml: string) {
   const cacheKey = pageUrl;
   const cached = hdfilmNativeFallbackCache.get(cacheKey);
-  if (cached) return cached;
+  if (cached && Date.now() - cached.storedAt < HDFILM_NATIVE_FALLBACK_CACHE_TTL_MS) return cached.task;
 
   const task = resolveHdFilmNativeFallback(pageUrl, pageHtml);
-  hdfilmNativeFallbackCache.set(cacheKey, task);
+  // Re-inserted, so the map's order stays oldest-first for the size cap below.
+  hdfilmNativeFallbackCache.delete(cacheKey);
+  hdfilmNativeFallbackCache.set(cacheKey, { task, storedAt: Date.now() });
   // Only a success is worth remembering. A miss (embed unreachable, decoder
   // rotated) memoised for the whole session made the resolver's own retry and
   // every manual Retry return the same cached null instantly.
   void task.then(
     (stream) => {
-      if (!stream && hdfilmNativeFallbackCache.get(cacheKey) === task) hdfilmNativeFallbackCache.delete(cacheKey);
+      if (!stream && hdfilmNativeFallbackCache.get(cacheKey)?.task === task) hdfilmNativeFallbackCache.delete(cacheKey);
     },
     () => {
-      if (hdfilmNativeFallbackCache.get(cacheKey) === task) hdfilmNativeFallbackCache.delete(cacheKey);
+      if (hdfilmNativeFallbackCache.get(cacheKey)?.task === task) hdfilmNativeFallbackCache.delete(cacheKey);
     }
   );
 

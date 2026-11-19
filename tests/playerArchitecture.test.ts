@@ -61,10 +61,13 @@ test("a mid-playback stream error recovers in place instead of showing not_found
 
   // The error branch must try in-place recovery first, and only for a stream
   // that had actually started.
-  assert.equal(source.includes("if (hasStarted && recoverCurrentStream(ev.error?.message)) return;"), true);
+  assert.equal(
+    source.includes("if ((hasStarted || nativePlaybackStartedRef.current) && recoverCurrentStream(ev.error?.message)) return;"),
+    true
+  );
   assert.equal(source.includes("const recoverCurrentStream = useCallback("), true);
   assert.equal(source.includes("MAX_STREAM_RECOVERY_ATTEMPTS"), true);
-  assert.equal(source.includes("streamRecoveryAttemptsRef"), true);
+  assert.equal(source.includes("planStreamRecovery(streamRecoveryStateRef.current"), true);
 
   // Recovery must preserve the position, or "recovery" restarts the film.
   assert.equal(/resumeAt\s*=\s*videoPlayer\.currentTime/.test(source), true);
@@ -168,4 +171,42 @@ test("native video uses SurfaceView so HDR streams aren't dimmed, TextureView on
     false,
     "no unconditional textureView may remain"
   );
+});
+
+test("a stream that freezes mid-film is watched for, reloaded, and re-resolved for a fresh link", () => {
+  // Past Lives (HDFilm, 2026-11-19) sat on the buffering spinner: the CDN went
+  // quiet without an error, so the error-only recovery never ran. HDFilm's own
+  // web player has a "position has not moved" watchdog for the same reason.
+  const source = fs.readFileSync(playerScreenPath, "utf8");
+
+  // The watchdog samples the position and recovers the way an error does.
+  assert.equal(source.includes("nextStallWatch(watch, { position, expectingProgress, now: Date.now() })"), true);
+  assert.equal(source.includes('expectingProgress = videoPlayer.status === "loading" || videoPlayer.playing === true;'), true);
+  assert.equal(source.includes('recoverCurrentStream("freeze");'), true);
+  // A watch room drives playback itself.
+  assert.equal(source.includes("if (!videoPlayer || !isNativeStreamSource || route.params.watchRoomCode) return;"), true);
+
+  // When reloading cannot help, a fresh link is resolved and playback resumes where it stopped.
+  assert.equal(source.includes("const refreshStreamAtPosition = useCallback("), true);
+  assert.equal(source.includes("linkExpired: isStreamLinkExpired(directStreamUrl),"), true);
+  assert.equal(source.includes("if (resumeAt > 1) pendingResumeSecondsRef.current = resumeAt;"), true);
+  assert.equal(source.includes("videoPlayer.currentTime = resumeAt;"), true);
+
+  // No re-resolve may be answered with the remembered link that just failed.
+  const occurrences = source.split("forgetResolvedStream(").length - 1;
+  assert.ok(occurrences >= 3, `silent retry, fresh link and Retry must each forget the failed link (found ${occurrences})`);
+});
+
+test("an HDFilm failure with the other providers already asked fails the title instead of hanging", () => {
+  // recoverFromHdFilmFailure returned silently when it had already run for the
+  // source, after the caller had put the loader up: a spinner with nothing
+  // behind it. It now says so, and both callers fall through to the error.
+  const source = fs.readFileSync(playerScreenPath, "utf8");
+  assert.equal(source.includes("const recoverFromHdFilmFailure = useCallback((reason: string): boolean => {"), true);
+  assert.equal(source.includes("if (hdfilmRecoveryTriggeredRef.current) return false;"), true);
+  assert.equal(source.includes('prev.webViewFallbackUrl && recoverFromHdFilmFailure("native_stall")'), true);
+  assert.equal(source.includes('recoverFromHdFilmFailure(ev.error?.message ?? "native_error")'), true);
+  // The silent retry reports what the player actually said.
+  assert.equal(source.includes('failPlayableTitle("hdfilm_no_alternative", reason);'), true);
+  assert.equal(source.includes("...(cause ? { cause: cause.slice(0, 160) } : {}),"), true);
 });

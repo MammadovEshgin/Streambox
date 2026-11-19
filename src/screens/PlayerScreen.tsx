@@ -40,6 +40,7 @@ import Reanimated, {
 } from "react-native-reanimated";
 import {
   forgetProviderBackoff,
+  forgetResolvedStream,
   isNativeResult,
   resolveDirectWebPlayerFallback,
   resolveHdFilmRuntimeStream,
@@ -50,7 +51,7 @@ import {
   type WebPlayerResult
 } from "../services/WebPlayerService";
 import { setPlayerActive } from "../services/playerActivityFlag";
-import { trackPerformance } from "../services/telemetryService";
+import { trackEvent, trackPerformance } from "../services/telemetryService";
 import {
   hideSystemNavigationBar,
   showSystemNavigationBar,
@@ -70,6 +71,14 @@ import {
   type ParsedSubtitleCue
 } from "../utils/subtitles";
 import { HlsWebPlayer, type HlsWebPlayerEvent } from "./player/HlsWebPlayer";
+import {
+  STREAM_HEALTH_SAMPLE_MS,
+  isStreamLinkExpired,
+  nextStallWatch,
+  planStreamRecovery,
+  type RecoveryState,
+  type StallWatch,
+} from "./player/streamHealth";
 import {
   shouldAcceptDiscoveredHdFilmStream,
   shouldAllowPlayerWebViewRequest,
@@ -95,6 +104,9 @@ function debugLog(...args: unknown[]) {
 // (segment 5xx, token refresh, seek past the buffered edge) without spinning on
 // a stream that is genuinely dead.
 const MAX_STREAM_RECOVERY_ATTEMPTS = 3;
+
+// Recoveries reported per player mount; enough to see a pattern, not a flood.
+const MAX_STREAM_RECOVERY_REPORTS = 8;
 
 // How long a native stream may take to reach readyToPlay before the stall
 // watchdog walks the fallback ladder. It was 8s when ExoPlayer started on 1s
@@ -504,8 +516,16 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const hdfilmRecoveryTriggeredRef = useRef(false);
   // Bumped by the Retry buttons to run the whole resolve again.
   const [resolveNonce, setResolveNonce] = useState(0);
-  // In-place recoveries spent on the current source; reset whenever it changes.
-  const streamRecoveryAttemptsRef = useRef(0);
+  // In-place reloads and fresh links spent on the current title (see streamHealth).
+  const streamRecoveryStateRef = useRef<RecoveryState>({ attempts: 0, lastRecoveryAt: 0, lastRefreshAt: 0 });
+  // Where playback resumes once a freshly resolved link has loaded.
+  const pendingResumeSecondsRef = useRef<number | null>(null);
+  const streamRefreshInFlightRef = useRef(false);
+  const streamRecoveryReportsRef = useRef(0);
+  // True once the current native source has produced frames.
+  const nativePlaybackStartedRef = useRef(false);
+  // The last position seen advancing, for a player that reports 0 after an error.
+  const lastPlaybackPositionRef = useRef(0);
   // Re-opens the current source even when a re-resolve hands back the same URL
   // (HDFilm's decoded stream is cached per page, so the URL often is the same).
   const [sourceGeneration, setSourceGeneration] = useState(0);
@@ -535,7 +555,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
    * fixing. So resolve once more, silently, behind the loader; only if that
    * also fails show the retryable error.
    */
-  const failPlayableTitle = useCallback((reason: string) => {
+  const failPlayableTitle = useCallback((reason: string, cause?: string) => {
     if (silentRetryUsedRef.current) {
       setLoadError(t("player.errorStream"));
       return;
@@ -547,10 +567,17 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     setLoadError(null);
     setIsPlaybackReady(false);
     setIsResolving(true);
+    // The link that just failed must not be the one this resolve hands back.
+    forgetResolvedStream(failed);
 
     void resolveWebPlayerUrl(buildWebPlayerRequest())
       .then((result) => {
-        trackPerformance("player_silent_retry", Date.now() - startedAt, { reason, source: result.source });
+        trackPerformance("player_silent_retry", Date.now() - startedAt, {
+          reason,
+          source: result.source,
+          // What the player actually reported, when the reason is only the step that followed it.
+          ...(cause ? { cause: cause.slice(0, 160) } : {}),
+        });
         // The viewer moved on, or the original stream came up after all.
         if (playerResultRef.current !== failed || isPlaybackReadyRef.current) return;
         if (!isNativeResult(result)) {
@@ -621,8 +648,12 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   // An HDFilm stream that resolved but will not play here. The provider's own
   // page player is never an option, so ask the other providers for a native
   // stream of the same title; if none has one, say so with a working Retry.
-  const recoverFromHdFilmFailure = useCallback((reason: string) => {
-    if (hdfilmRecoveryTriggeredRef.current) return;
+  //
+  // Returns false when the other providers were already asked for this source:
+  // the caller must then fail the title itself. Returning silently left the
+  // loader up for ever with nothing behind it.
+  const recoverFromHdFilmFailure = useCallback((reason: string): boolean => {
+    if (hdfilmRecoveryTriggeredRef.current) return false;
     hdfilmRecoveryTriggeredRef.current = true;
     debugLog("[Player] HDFilm stream failed; trying the other providers:", reason);
     const failed = playerResultRef.current;
@@ -636,7 +667,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         // The HDFilm stream came up while the others were being asked: keep it.
         if (isPlaybackReadyRef.current) return;
         if (alternative.source === "not_found" || !alternative.streamUrl) {
-          failPlayableTitle("hdfilm_no_alternative");
+          failPlayableTitle("hdfilm_no_alternative", reason);
           return;
         }
         setPlayerResult(alternative);
@@ -644,12 +675,13 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       })
       .catch(() => {
         if (playerResultRef.current === failed && !isPlaybackReadyRef.current) {
-          failPlayableTitle("hdfilm_alternative_threw");
+          failPlayableTitle("hdfilm_alternative_threw", reason);
         }
       })
       .finally(() => {
         setIsResolving(false);
       });
+    return true;
   }, [buildWebPlayerRequest, failPlayableTitle]);
 
   useEffect(() => {
@@ -1011,8 +1043,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       debugLog(`[Player] Native stream stalled (${source}) — switching to fallback player`);
       const prev = playerResultRef.current;
 
-      if (prev?.source === "direct" && prev.webViewFallbackUrl) {
-        recoverFromHdFilmFailure("native_stall");
+      if (prev?.source === "direct" && prev.webViewFallbackUrl && recoverFromHdFilmFailure("native_stall")) {
         return;
       }
 
@@ -1406,11 +1437,84 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     subtitleChosenByViewerRef.current = false;
     setAvailableAudioTracks([]);
     setSelectedAudioTrack(null);
-    // A fresh source gets a fresh recovery budget.
-    streamRecoveryAttemptsRef.current = 0;
+    // A fresh source gets a fresh reload budget (how recently a fresh link was
+    // asked for is kept, so a title cannot be re-resolved in a tight loop).
+    streamRecoveryStateRef.current = { ...streamRecoveryStateRef.current, attempts: 0 };
+    nativePlaybackStartedRef.current = false;
     void videoPlayer.replaceAsync(source);
     // Don't call play() here â€” wait for readyToPlay status so play() doesn't silently fail
   }, [videoPlayer, directStreamUrl, streamReferer, directStreamType, sourceGeneration]);
+
+  /** One line of telemetry per recovery: which step, why, on which host, how far in. */
+  const reportStreamRecovery = useCallback(
+    (step: "reload" | "refresh", reason: string | undefined, positionSeconds: number) => {
+      if (streamRecoveryReportsRef.current >= MAX_STREAM_RECOVERY_REPORTS) return;
+      streamRecoveryReportsRef.current += 1;
+      let host: string | null = null;
+      try {
+        host = directStreamUrl ? new URL(directStreamUrl).hostname : null;
+      } catch {
+        /* not a URL */
+      }
+      trackEvent(
+        "player_stream_recovery",
+        "performance",
+        {
+          step,
+          reason: (reason ?? "unknown").slice(0, 160),
+          source: playerResultRef.current?.source ?? null,
+          host,
+          positionMinutes: Math.round(positionSeconds / 60),
+          mediaType: route.params.mediaType,
+        },
+        "warning"
+      );
+    },
+    [directStreamUrl, route.params.mediaType]
+  );
+
+  /**
+   * Resolve the title again for a fresh link and carry on from `resumeAt`.
+   * The loader covers the swap. If no provider answers, the viewer gets the
+   * retryable error — and Retry resumes at the same position.
+   */
+  const refreshStreamAtPosition = useCallback(
+    (resumeAt: number) => {
+      if (streamRefreshInFlightRef.current) return;
+      streamRefreshInFlightRef.current = true;
+      const failed = playerResultRef.current;
+      if (resumeAt > 1) pendingResumeSecondsRef.current = resumeAt;
+      debugLog(`[Player] Asking for a fresh link to resume at ${resumeAt}s`);
+      setLoadError(null);
+      setIsPlaybackReady(false);
+      // The link being replaced must not be the one this resolve hands back.
+      forgetResolvedStream(failed);
+
+      void resolveWebPlayerUrl(buildWebPlayerRequest())
+        .then((result) => {
+          // The viewer moved on (closed, switched source) while it resolved.
+          if (playerResultRef.current !== failed) return;
+          if (!isNativeResult(result)) {
+            setLoadError(t("player.errorStream"));
+            return;
+          }
+          // A fresh source gets a fresh fallback ladder.
+          dizipalRecoveryTriggeredRef.current = false;
+          hdfilmRecoveryTriggeredRef.current = false;
+          directFallbackPromiseRef.current = null;
+          setPlayerResult(result);
+          setCurrentStreamUrl(result.streamUrl ?? null);
+          setSourceGeneration((generation) => generation + 1);
+        })
+        .catch(() => {
+          if (playerResultRef.current === failed) setLoadError(t("player.errorStream"));
+        })
+        .finally(() => {
+          streamRefreshInFlightRef.current = false;
+        });
+    },
+    [buildWebPlayerRequest, t]
+  );
 
   /**
    * Re-open the CURRENT stream at the position it died on.
@@ -1425,25 +1529,44 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
    * Re-issuing the same source is enough to clear all of those: the provider
    * URL is still valid and the position is preserved, so recovery is invisible
    * apart from a short re-buffer. The attempt budget stops a genuinely dead
-   * stream from looping forever; exhausting it surfaces the retryable playback
-   * error, never `not_found`.
+   * stream from looping forever, and refills after two trouble-free minutes.
+   *
+   * When the budget is spent, or the link itself has expired, reloading it can
+   * only fail the same way: the title is resolved again for a fresh link and
+   * playback resumes where it stopped (`refreshStreamAtPosition`). Returns
+   * false only when neither is possible right now.
    */
   const recoverCurrentStream = useCallback(
     (reason?: string): boolean => {
       if (!videoPlayer || !directStreamUrl) return false;
-      if (streamRecoveryAttemptsRef.current >= MAX_STREAM_RECOVERY_ATTEMPTS) return false;
+      // A fresh link is already on its way.
+      if (streamRefreshInFlightRef.current) return true;
 
-      streamRecoveryAttemptsRef.current += 1;
-      const attempt = streamRecoveryAttemptsRef.current;
       let resumeAt = 0;
       try {
         resumeAt = videoPlayer.currentTime ?? 0;
       } catch {
         /* expo-video already torn down */
       }
+      // A player that just errored can report 0; the last position seen playing is the truth.
+      if (resumeAt < 1) resumeAt = lastPlaybackPositionRef.current;
+
+      const plan = planStreamRecovery(streamRecoveryStateRef.current, {
+        linkExpired: isStreamLinkExpired(directStreamUrl),
+        maxAttempts: MAX_STREAM_RECOVERY_ATTEMPTS,
+        now: Date.now(),
+      });
+      streamRecoveryStateRef.current = plan.state;
+      if (plan.step === "none") return false;
+
+      reportStreamRecovery(plan.step, reason, resumeAt);
+      if (plan.step === "refresh") {
+        refreshStreamAtPosition(resumeAt);
+        return true;
+      }
 
       debugLog(
-        `[Player] Recovering stream in place (attempt ${attempt}/${MAX_STREAM_RECOVERY_ATTEMPTS}) at ${resumeAt}s — ${reason ?? "unknown error"}`
+        `[Player] Recovering stream in place (attempt ${plan.state.attempts}/${MAX_STREAM_RECOVERY_ATTEMPTS}) at ${resumeAt}s — ${reason ?? "unknown error"}`
       );
 
       void videoPlayer
@@ -1467,8 +1590,42 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
 
       return true;
     },
-    [videoPlayer, directStreamUrl, streamReferer, directStreamType, t]
+    [videoPlayer, directStreamUrl, streamReferer, directStreamType, t, reportStreamRecovery, refreshStreamAtPosition]
   );
+
+  // Freeze watchdog (see streamHealth). A provider CDN can go quiet mid-film
+  // without an error: the player buffers for ever and nothing above runs,
+  // because nothing was reported. Sample the position; if it has not moved for
+  // 20s while it should have, recover exactly as for an error. Never an error
+  // card from here: when nothing can be done yet the stream is left buffering
+  // and looked at again. Watch rooms drive playback themselves and are left alone.
+  useEffect(() => {
+    if (!videoPlayer || !isNativeStreamSource || route.params.watchRoomCode) return;
+    let watch: StallWatch | null = null;
+    const timer = setInterval(() => {
+      if (!nativePlaybackStartedRef.current) {
+        watch = null;
+        return;
+      }
+      let position = 0;
+      let expectingProgress = false;
+      try {
+        position = videoPlayer.currentTime ?? 0;
+        expectingProgress = videoPlayer.status === "loading" || videoPlayer.playing === true;
+      } catch {
+        return; // expo-video already torn down
+      }
+      const next = nextStallWatch(watch, { position, expectingProgress, now: Date.now() });
+      // Moving again (or first seen): this is a position worth returning to.
+      if (next.watch && next.watch !== watch && position > 1) lastPlaybackPositionRef.current = position;
+      watch = next.watch;
+      if (!next.frozen) return;
+      watch = null; // whatever is tried next gets its own 20s
+      debugLog(`[Player] Stream frozen at ${position}s — recovering`);
+      recoverCurrentStream("freeze");
+    }, STREAM_HEALTH_SAMPLE_MS);
+    return () => clearInterval(timer);
+  }, [videoPlayer, isNativeStreamSource, route.params.watchRoomCode, recoverCurrentStream]);
 
   // Restore the viewer's remembered soundtrack choice before the first stream
   // reports its tracks, so the very first auto-pick already honours it.
@@ -1557,12 +1714,33 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         setAvailableSubtitleTracks(videoPlayer.availableSubtitleTracks);
         enforceSubtitlesOff();
         applyAudioTracks(videoPlayer.availableAudioTracks ?? []);
-        // Continue-watching may hold playback for the resume prompt, or seek
-        // to the saved position and start itself.
-        if (!handleContinueWatchingReady()) {
+        const resumeAt = pendingResumeSecondsRef.current;
+        pendingResumeSecondsRef.current = null;
+        if (resumeAt !== null) {
+          // A fresh link for a film already under way: carry on where it stopped.
+          try {
+            videoPlayer.currentTime = resumeAt;
+          } catch {
+            /* expo-video already torn down */
+          }
+          videoPlayer.play();
+        } else if (!handleContinueWatchingReady()) {
+          // Continue-watching may hold playback for the resume prompt, or seek
+          // to the saved position and start itself.
           videoPlayer.play();
         }
         setIsPlaybackReady(true);
+      } else if (ev.status === "readyToPlay" && pendingResumeSecondsRef.current !== null) {
+        // The fresh link came back as the very same URL, so these listeners were
+        // not re-attached and the branch above did not run.
+        const resumeAt = pendingResumeSecondsRef.current;
+        pendingResumeSecondsRef.current = null;
+        try {
+          videoPlayer.currentTime = resumeAt;
+        } catch {
+          /* expo-video already torn down */
+        }
+        videoPlayer.play();
       }
       if (ev.status === "error") {
         debugLog("[Player] Video error:", ev.error?.message);
@@ -1573,14 +1751,21 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         // recover in place and leave `playerResult` — and the whole screen —
         // alone. Only a stream that never started is evidence the SOURCE is
         // wrong, and only then is it worth walking the fallback ladder.
-        if (hasStarted && recoverCurrentStream(ev.error?.message)) return;
+        // (`hasStarted` belongs to this subscription and starts over whenever
+        // the listeners are re-attached; the ref remembers across that.)
+        if ((hasStarted || nativePlaybackStartedRef.current) && recoverCurrentStream(ev.error?.message)) return;
 
         setIsPlaybackReady(false);
         // An HDFilm stream that will not start: ask the other providers for a
         // native stream of the same title. Never the provider's page player.
+        // If they were already asked for this source, fall through and fail the
+        // title — returning here left the loader up with nothing behind it.
         const failed = playerResultRef.current;
-        if (failed?.source === "direct" && failed.webViewFallbackUrl) {
-          recoverFromHdFilmFailure(ev.error?.message ?? "native_error");
+        if (
+          failed?.source === "direct" &&
+          failed.webViewFallbackUrl &&
+          recoverFromHdFilmFailure(ev.error?.message ?? "native_error")
+        ) {
           return;
         }
         if (failed?.source === "dizipal_direct" && failed.streamUrl) {
@@ -1598,6 +1783,7 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
     const playingSub = videoPlayer.addListener("playingChange", (ev: any) => {
       if (!ev.isPlaying) return;
       hasStarted = true;
+      nativePlaybackStartedRef.current = true;
       // Unconditionally, not just on the first play: a recovered error left
       // `isPlaybackReady` false, and nothing else flips it back — which is the
       // "I can hear it but the screen stays black" case, the black screen being
@@ -1877,6 +2063,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       return;
     }
     forgetProviderBackoff();
+    // Retry must not be answered with the remembered link that just failed.
+    forgetResolvedStream(playerResult);
     setPlayerResult(null);
     setCurrentStreamUrl(null);
     setResolveNonce((nonce) => nonce + 1);

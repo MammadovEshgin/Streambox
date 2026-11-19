@@ -4,6 +4,15 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-20 (2)
+
+- Fixed: a film could stop on the loading spinner partway through and stay there (*Past Lives*).
+  The video source had gone quiet without reporting an error, and the player only reacted to
+  errors. It now notices when playback has stopped moving, reloads at the same position, and if
+  that doesn't help gets a fresh link and carries on from where you were.
+- Fixed: after a stream failed, the automatic retry and the Retry button could be handed the same
+  failed link again. They now always ask for a new one.
+
 ## 2026-11-20
 
 - Fixed: films that only HDFilm has (*Verity*, *The Dog Stars*) showed "Not available", and

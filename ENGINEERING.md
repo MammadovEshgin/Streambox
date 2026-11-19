@@ -411,6 +411,23 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   stall watchdog is 15s (`minBufferForPlayback: 4` + imagestoo's per-segment hostnames made cold
   starts outrun 8s). A resolve pass in which a request got no answer (timeout, 5xx, 403/429 —
   never 404) is retried; a clean miss still answers after one pass.
+- **A stream that stops mid-film is recovered, error or not (2026-11-20,
+  `src/screens/player/streamHealth.ts`).** Provider CDNs freeze without reporting an error
+  (connection open, no bytes): HDFilm's own web player carries a 5s "position has not moved"
+  watchdog for it and re-issues links past their lifetime (`s` + `e` in the URL, 4h). The
+  native player only recovered on ExoPlayer's `error`, so a freeze was a spinner for ever
+  (Past Lives). Now the position is sampled every 2s; 20s without progress while the player is
+  loading or says it is playing runs the same recovery as an error: reload the same link at the
+  position (budget 3, refilled after 2 trouble-free minutes — it used to be 3 for the whole
+  film), and when the budget is spent or the link has expired, resolve the title again and
+  resume at the position (`refreshStreamAtPosition`, at most once a minute). A freeze never
+  produces an error card by itself, and watch rooms are left alone. Decoded HDFilm links are
+  remembered for 10 minutes, not the app session, and `forgetResolvedStream` drops one before
+  any re-resolve — the silent retry used to get the failed link straight back in 0.1s.
+  `recoverFromHdFilmFailure` returns false when it already ran for the source, so its callers
+  fail the title instead of leaving the loader up. Telemetry: `player_stream_recovery`
+  (`step: reload|refresh`, `reason`: the player's error or `freeze`, `host`,
+  `positionMinutes`), and `player_silent_retry` carries the player's own error as `cause`.
 - **Discovery rails hide films still in cinemas** (`src/api/releaseWindow.ts`). No provider
   carries a film until it is released online: TMDB `release_dates` type 4/5/6 (digital,
   physical, TV). A film shows once its earliest home release in any country is past, or 90

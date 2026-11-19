@@ -141,9 +141,25 @@ group by 1, 2
 order by 1 desc, 3 desc;
 ```
 
+Streams that stopped mid-film and were recovered (since 2026-11-20). `step` is `reload` (same
+link, same position) or `refresh` (a fresh link resolved, resumed at the position); `reason`
+is the player's error, or `freeze` when it stalled without one. Many rows for one `host` mean
+that CDN is misbehaving; `refresh` rows mean reloading was not enough. At most 8 per player:
+
+```sql
+select occurred_at::date as day, metadata->>'host' as host, metadata->>'step' as step,
+       left(metadata->>'reason', 80) as reason, count(*),
+       round(avg((metadata->>'positionMinutes')::numeric)) as avg_minute
+from public.app_telemetry_events
+where event_name = 'player_stream_recovery' and occurred_at > now() - interval '7 days'
+group by 1, 2, 3, 4
+order by 1 desc, 5 desc;
+```
+
 Found streams that would not start and were re-resolved silently (`reason`: `native_stall`,
-`dizipal_fallback_empty`, `hdfilm_no_alternative`, or the player error; `source` is what the
-retry got — `not_found` means the viewer saw the stream error):
+`dizipal_fallback_empty`, `hdfilm_no_alternative`, or the player error; `cause`, when present,
+is the player's own error behind that reason; `source` is what the retry got — `not_found`
+means the viewer saw the stream error):
 
 ```sql
 select date_trunc('day', occurred_at) as day, metadata->>'reason' as reason,
