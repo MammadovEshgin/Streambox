@@ -425,6 +425,16 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 - Sync queue (`userDataSync.ts`): rejected writes back off (5s → 5min) and are dropped with
   `sync_operation_dead_lettered` telemetry after 8 server rejections; connectivity and
   expired-session failures back off but never count.
+- **Every watch-history sync path must sanitise through `watchHistoryRows.ts`.** The table
+  range-checks its scalar columns (`runtime_minutes` 1-5000, `episode_count` 1-50000,
+  `vote_average` 0-10, `release_year` 1878-2100, `title` 1-500 chars, `genres` ≤25) just as it
+  cardinality-checks the cast/director arrays. The direct upsert clamped them but the RPC flush
+  path (`sync_streambox_watch_history_entry`) sent them raw, so a 0-minute runtime (or a summed
+  series runtime over 5000) failed `user_watch_history_runtime_minutes_check` and dead-lettered —
+  170 writes over 2026-11-17..19. Both paths now build scalars through
+  `buildWatchHistoryScalarFields` and arrays through `buildWatchHistorySyncArrays`, so they can't
+  diverge again. (The reconcile re-queues a dead-lettered entry that is still in the local file,
+  so the fix also recovers the lost writes on the next launch.)
 - **The library lives in files, not AsyncStorage (2026-11-12).** Android AsyncStorage is one
   SQLite table capped at 6 MB for the whole app, and a single value over the 2 MB CursorWindow
   can't be read back ("Row too big to fit into CursorWindow"). With 20 billed cast per entry a

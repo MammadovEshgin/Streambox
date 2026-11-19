@@ -4,7 +4,7 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import type { MediaType } from "../api/tmdb";
 import type { WatchHistoryEntry, WatchPrecision } from "../hooks/useWatchHistory";
-import { buildWatchHistorySyncArrays, clampIntOrNull, WATCH_HISTORY_CAST_SYNC_VERSION } from "../utils/watchHistoryRows";
+import { buildWatchHistoryScalarFields, buildWatchHistorySyncArrays, WATCH_HISTORY_CAST_SYNC_VERSION } from "../utils/watchHistoryRows";
 import { buildSeriesSeasonInternalId } from "../utils/watchHistoryOps";
 import { normalizeAppLanguage } from "../localization/types";
 import {
@@ -231,16 +231,17 @@ function buildWatchHistoryRows(userId: string, entries: WatchHistoryEntry[]) {
       sourceTmdbId: entry.sourceTmdbId,
       watchPrecision: entry.watchPrecision,
     };
+    const scalars = buildWatchHistoryScalarFields(entry);
     return {
       user_id: userId,
       media_type: entry.mediaType,
-      title: (entry.title ?? "").slice(0, 500),
+      title: scalars.title,
       poster_path: entry.posterPath,
-      genres: (Array.isArray(entry.genres) ? entry.genres : []).slice(0, 25),
-      runtime_minutes: clampIntOrNull(entry.runtimeMinutes, 1, 5000),
-      episode_count: clampIntOrNull(entry.episodeCount, 1, 50000),
-      vote_average: Math.min(10, Math.max(0, Number.isFinite(entry.voteAverage) ? entry.voteAverage : 0)),
-      release_year: clampIntOrNull(entry.year, 1878, 2100),
+      genres: scalars.genres,
+      runtime_minutes: scalars.runtimeMinutes,
+      episode_count: scalars.episodeCount,
+      vote_average: scalars.voteAverage,
+      release_year: scalars.releaseYear,
       cast_ids: arrays.castIds,
       cast_names: arrays.castNames,
       cast_profile_paths: arrays.castProfilePaths,
@@ -1215,8 +1216,8 @@ async function executePendingOperation(op: PendingSyncOperation) {
       break;
     }
     case "watch_history_upsert": {
-      const ids = getSyncIds(op.entry.id); const arrays = buildWatchHistorySyncArrays(op.entry);
-      const { error } = await supabase.rpc("sync_streambox_watch_history_entry", { p_media_type: op.entry.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_imdb_id: (op.entry as any).imdbId, p_title: op.entry.title, p_poster_path: op.entry.posterPath, p_genres: op.entry.genres, p_runtime_minutes: op.entry.runtimeMinutes, p_episode_count: op.entry.episodeCount, p_vote_average: op.entry.voteAverage, p_release_year: op.entry.year ? Number(op.entry.year) : null, p_cast_ids: arrays.castIds, p_cast_names: arrays.castNames, p_cast_profile_paths: arrays.castProfilePaths, p_cast_genders: arrays.castGenders, p_director_ids: arrays.directorIds, p_director_names: arrays.directorNames, p_director_profile_paths: arrays.directorProfilePaths, p_watched_at: new Date(op.entry.watchedAt).toISOString(), p_metadata_version: op.entry.metadataVersion, p_snapshot: { historyKind: op.entry.historyKind, seasonNumber: op.entry.seasonNumber, sourceTmdbId: op.entry.sourceTmdbId, watchPrecision: op.entry.watchPrecision }, p_audit_metadata: op.auditMetadata });
+      const ids = getSyncIds(op.entry.id); const arrays = buildWatchHistorySyncArrays(op.entry); const scalars = buildWatchHistoryScalarFields(op.entry);
+      const { error } = await supabase.rpc("sync_streambox_watch_history_entry", { p_media_type: op.entry.mediaType, p_tmdb_id: ids.tmdb_id, p_internal_id: ids.internal_id, p_imdb_id: (op.entry as any).imdbId, p_title: scalars.title, p_poster_path: op.entry.posterPath, p_genres: scalars.genres, p_runtime_minutes: scalars.runtimeMinutes, p_episode_count: scalars.episodeCount, p_vote_average: scalars.voteAverage, p_release_year: scalars.releaseYear, p_cast_ids: arrays.castIds, p_cast_names: arrays.castNames, p_cast_profile_paths: arrays.castProfilePaths, p_cast_genders: arrays.castGenders, p_director_ids: arrays.directorIds, p_director_names: arrays.directorNames, p_director_profile_paths: arrays.directorProfilePaths, p_watched_at: new Date(op.entry.watchedAt).toISOString(), p_metadata_version: op.entry.metadataVersion, p_snapshot: { historyKind: op.entry.historyKind, seasonNumber: op.entry.seasonNumber, sourceTmdbId: op.entry.sourceTmdbId, watchPrecision: op.entry.watchPrecision }, p_audit_metadata: op.auditMetadata });
       if (error) throw error;
       break;
     }

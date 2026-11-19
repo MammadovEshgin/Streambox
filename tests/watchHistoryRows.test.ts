@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildWatchHistorySyncArrays, clampIntOrNull } from "../src/utils/watchHistoryRows";
+import { buildWatchHistoryScalarFields, buildWatchHistorySyncArrays, clampIntOrNull } from "../src/utils/watchHistoryRows";
 
 // Minimal entry factory — only the cast/director fields matter here.
 function entry(overrides: Record<string, unknown> = {}) {
@@ -95,4 +95,32 @@ test("clampIntOrNull keeps in-range values and nulls the rest", () => {
   assert.equal(clampIntOrNull("", 1878, 2100), null);
   assert.equal(clampIntOrNull(undefined, 1, 5000), null);
   assert.equal(clampIntOrNull(120.6, 1, 5000), 121);
+});
+
+test("buildWatchHistoryScalarFields clamps every range-checked column (runtime dead-letter bug)", () => {
+  // The RPC flush path sent runtimeMinutes raw, so a 0-minute runtime (and a
+  // series runtime over 5000, a year out of range, a vote over 10) failed the
+  // user_watch_history CHECK and dead-lettered. Out-of-range → null; genres/
+  // title bounded.
+  const zero = buildWatchHistoryScalarFields(entry({ runtimeMinutes: 0, episodeCount: 0, voteAverage: 42, year: "1200" }));
+  assert.equal(zero.runtimeMinutes, null, "a 0-minute runtime is nulled, not sent (>= 1)");
+  assert.equal(zero.episodeCount, null, "a 0 episode count is nulled (>= 1)");
+  assert.equal(zero.voteAverage, 10, "vote average is clamped into 0-10");
+  assert.equal(zero.releaseYear, null, "a year before 1878 is nulled");
+
+  const huge = buildWatchHistoryScalarFields(entry({ runtimeMinutes: 21000, year: 2099, voteAverage: -3 }));
+  assert.equal(huge.runtimeMinutes, null, "a summed series runtime over 5000 is nulled");
+  assert.equal(huge.releaseYear, 2099, "an in-range year is kept");
+  assert.equal(huge.voteAverage, 0, "a negative vote average is clamped to 0");
+
+  const ok = buildWatchHistoryScalarFields(entry({ runtimeMinutes: 142, episodeCount: 62, voteAverage: 8.3, year: "1994" }));
+  assert.deepEqual(
+    { r: ok.runtimeMinutes, e: ok.episodeCount, v: ok.voteAverage, y: ok.releaseYear },
+    { r: 142, e: 62, v: 8.3, y: 1994 }
+  );
+
+  const longTitle = "t".repeat(600);
+  const bounded = buildWatchHistoryScalarFields(entry({ title: longTitle, genres: Array.from({ length: 40 }, (_, i) => i) }));
+  assert.equal(bounded.title.length, 500, "title is bounded to 500 chars");
+  assert.equal(bounded.genres.length, 25, "genres are bounded to 25");
 });

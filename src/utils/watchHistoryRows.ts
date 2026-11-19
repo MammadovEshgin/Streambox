@@ -76,3 +76,24 @@ export function clampIntOrNull(value: unknown, min: number, max: number): number
   const rounded = Math.round(numeric);
   return rounded < min || rounded > max ? null : rounded;
 }
+
+/**
+ * The scalar columns the user_watch_history table range-checks: title length,
+ * genre count, runtime, episode count, vote average and release year. Every
+ * watch-history sync path must flow through here, exactly like the parallel
+ * arrays flow through `buildWatchHistorySyncArrays` — otherwise a path that
+ * sends a raw value (a 0-minute runtime, a summed series runtime over 5000, a
+ * year outside 1878-2100) fails the row's CHECK and the sync op dead-letters.
+ * That is what happened to the RPC flush path: it sent `runtimeMinutes` raw and
+ * every such write was rejected (`..._runtime_minutes_check`, 2026-11-17+).
+ */
+export function buildWatchHistoryScalarFields(entry: WatchHistoryEntry) {
+  return {
+    title: (entry.title ?? "").slice(0, 500),
+    genres: (Array.isArray(entry.genres) ? entry.genres : []).slice(0, 25),
+    runtimeMinutes: clampIntOrNull(entry.runtimeMinutes, 1, 5000),
+    episodeCount: clampIntOrNull(entry.episodeCount, 1, 50000),
+    voteAverage: Math.min(10, Math.max(0, Number.isFinite(entry.voteAverage) ? entry.voteAverage : 0)),
+    releaseYear: clampIntOrNull(entry.year, 1878, 2100),
+  };
+}

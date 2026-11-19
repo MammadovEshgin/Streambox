@@ -4,6 +4,12 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-19
+
+- Fixed: some watched titles failed to save to your account and could reappear as unwatched on
+  another device. Their stored running time was out of the range the server accepts, so the
+  save was rejected; the app now keeps every entry's values in range before it syncs.
+
 ## 2026-11-15
 
 - Fixed: some episodes (e.g. *The Mandalorian*) played with a dark, dimmed picture. They are
