@@ -295,6 +295,16 @@ Two very different causes — check which before concluding anything:
 Remember to fetch it **more than once**. The body changes every request, and a
 single sample will mislead you into thinking a constant is fixed.
 
+Since 2026-11-19 none of this works with curl: every HDFilm page answers
+non-browser clients with a Cloudflare challenge, and `/rplayer/` with an
+"Uygulama desteklenmiyor" page. Use the Playwright browser instead — open
+`https://www.hdfilmcehennemi.nl/dizi/streambox/`, wait for "Just a moment…" to
+clear, then `fetch()` the film page and `/rplayer/{rapidrame_id}/` from that
+page (same-origin) and save the bodies. The config no longer has a parts
+variable either: look for `sources: [{file:(function(){ … return NAME(ARG); })()}]`
+(`decodeRapidrameInlineSource`), where both the decoder's form and the
+argument's form change between requests.
+
 ### `git push` rejected (non-fast-forward)
 
 ```powershell

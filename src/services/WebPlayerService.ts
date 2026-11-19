@@ -21,7 +21,14 @@ import {
 } from "./providerConfigService";
 import { aesCbcDecrypt } from "./aesCbc";
 import { trackEvent } from "./telemetryService";
-import { hdfilmSession, isHdfilmAppBlockResponse, isHdfilmSessionPath, noteHdfilmChallenge } from "./hdfilmSession";
+import {
+  hdfilmSession,
+  isHdfilmAppBlockBody,
+  isHdfilmAppBlockResponse,
+  isHdfilmSessionPath,
+  noteHdfilmChallenge,
+  noteHdfilmNativePass,
+} from "./hdfilmSession";
 import {
   fetchKultfilmlerText,
   isKultfilmlerSessionOpening,
@@ -399,12 +406,12 @@ async function providerGet<T = string>(
 }
 
 /**
- * HDFilm-flavoured `providerGet`. A gated page on HDFilm's main origin — a
- * series page still answering Cloudflare's challenge, or a `/rplayer/` embed
+ * HDFilm-flavoured `providerGet`. A gated page on HDFilm's main origin — a film
+ * or series page answering Cloudflare's challenge, or a `/rplayer/` embed
  * answering the app-block page — is read through the HDFilm WebView session
- * (see hdfilmSession), which holds the site's browser clearance. Once that
- * session is open, those pages go to it first. Films, search and `.mobi` are
- * untouched.
+ * (see hdfilmSession), which holds the site's browser clearance. While that
+ * session is open, or opening, those pages go to it first. Search and `.mobi`
+ * are untouched.
  */
 async function hdFilmGet<T = string>(
   url: string,
@@ -412,18 +419,22 @@ async function hdFilmGet<T = string>(
 ): Promise<import("axios").AxiosResponse<T>> {
   hdfilmSession.setOrigin(getHdfilmBaseUrl());
   const gated = isHdfilmSessionPath(url);
-  if (gated && hdfilmSession.isReady()) {
+  if (gated && (hdfilmSession.isReady() || hdfilmSession.isOpening())) {
     const viaSession = await readHdFilmPageInSession<T>(url);
     if (viaSession) return viaSession;
   }
   try {
     const response = await providerGet<T>("HDFilm", url, config);
-    // A 200 can still carry the app-block page (open-in-Chrome) in place of the
-    // player; reroute it through the cleared session like a 403 block.
-    if (gated && isHdfilmAppBlockResponse(200, response.data)) {
-      noteHdfilmChallenge();
-      const viaSession = await readHdFilmPageInSession<T>(url);
-      if (viaSession) return viaSession;
+    if (gated) {
+      // A 200 can still carry the app-block page (open-in-Chrome) in place of
+      // the player; reroute it through the cleared session like a 403 block.
+      if (isHdfilmAppBlockBody(response.data)) {
+        noteHdfilmChallenge();
+        const viaSession = await readHdFilmPageInSession<T>(url);
+        if (viaSession) return viaSession;
+      } else {
+        noteHdfilmNativePass();
+      }
     }
     return response;
   } catch (error) {
@@ -653,15 +664,18 @@ export function scoreMatch(resultText: string, target: string, year?: string | n
     score = 100;
   } else if (normalizedResult === normalizedTarget) {
     score = 100;
-  } else if (resultTitle.startsWith(normalizedTarget + " ") || resultTitle.startsWith(normalizedTarget)) {
+  } else if (resultTitle.startsWith(normalizedTarget + " ")) {
     // Result starts with target but has extra words (e.g. "dune part two" for "dune")
-    // Penalize proportional to how many extra words there are
+    // Penalize proportional to how many extra words there are.
+    // Whole words only: the bare `startsWith(target)` this also allowed took
+    // "Canavarcıklar" for "Canavar" (The Beast, 2026, played another film) and
+    // would take "Aliens" for "Alien".
     const targetWordCount = normalizedTarget.split(/\s+/).length;
     const resultWordCount = resultTitle.split(/\s+/).length;
     const extraRatio = targetWordCount / Math.max(resultWordCount, 1);
     score = Math.round(60 + extraRatio * 30); // Range: 60-90, exact prefix = 90
-  } else if (resultTitle.includes(normalizedTarget)) {
-    // Target is a substring but not at the start (e.g. "planet dune" for "dune")
+  } else if (` ${resultTitle} `.includes(` ${normalizedTarget} `)) {
+    // Target appears as whole words but not at the start (e.g. "planet dune" for "dune")
     // This is a weak match — heavily penalize
     const targetWordCount = normalizedTarget.split(/\s+/).length;
     const resultWordCount = resultTitle.split(/\s+/).length;
@@ -2136,18 +2150,34 @@ function decodeRapidrameByInterpretingDcBody(
     .match(/=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/)?.[1];
   if (!decoderName) return null;
 
-  // `function name(…) {…}` until 2026-09-19; since then a function EXPRESSION,
-  // `var name = function (…) {…};`, which is rewritten into the declaration
-  // form the interpreter parses.
-  let fnStart = embedHtml.search(new RegExp(`\\bfunction\\s+${escapeRegExp(decoderName)}\\s*\\(`));
+  return runRapidramePageDecoder(embedHtml, decoderName, valueParts, embedUrl);
+}
+
+/** Find the page's own function `decoderName` and run it on the parts. */
+function runRapidramePageDecoder(
+  embedHtml: string,
+  decoderName: string,
+  valueParts: string[],
+  embedUrl?: string
+): string | null {
+  const declaration = findRapidramePageFunction(embedHtml, decoderName);
+  return declaration ? runRapidrameDecoder(declaration, valueParts, embedUrl) : null;
+}
+
+/** The page's own function `name`, as the `function name(…) {…}` text the interpreter parses. */
+function findRapidramePageFunction(embedHtml: string, name: string): string | null {
+  // `function name(…) {…}` until 2026-09-19; since then usually a function
+  // EXPRESSION, `var name = function (…) {…};`, which is rewritten into the
+  // declaration form.
+  let fnStart = embedHtml.search(new RegExp(`\\bfunction\\s+${escapeRegExp(name)}\\s*\\(`));
   let declarationPrefix = "";
   if (fnStart === -1) {
     const expression = new RegExp(
-      `\\b(?:var|let|const)\\s+${escapeRegExp(decoderName)}\\s*=\\s*function\\s*\\(`
+      `\\b(?:var|let|const)\\s+${escapeRegExp(name)}\\s*=\\s*function\\s*\\(`
     ).exec(embedHtml);
     if (!expression) return null;
     fnStart = embedHtml.indexOf("(", expression.index + expression[0].length - 1);
-    declarationPrefix = `function ${decoderName}`;
+    declarationPrefix = `function ${name}`;
   }
 
   const braceStart = embedHtml.indexOf("{", fnStart);
@@ -2165,7 +2195,65 @@ function decodeRapidrameByInterpretingDcBody(
   }
   if (braceEnd === -1) return null;
 
-  return runRapidrameDecoder(declarationPrefix + embedHtml.slice(fnStart, braceEnd + 1), valueParts, embedUrl);
+  return declarationPrefix + embedHtml.slice(fnStart, braceEnd + 1);
+}
+
+/**
+ * The text between a call's parentheses, given the index of its "(". Strings
+ * are skipped whole, so a bracket inside a literal does not count. Null when the
+ * call never closes.
+ */
+function readCallArguments(source: string, openParenIndex: number): string | null {
+  let depth = 0;
+  for (let i = openParenIndex; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '"' || ch === "'" || ch === "`") {
+      for (i += 1; i < source.length && source[i] !== ch; i += 1) {
+        if (source[i] === "\\") i += 1;
+      }
+    } else if (ch === "(" || ch === "[" || ch === "{") {
+      depth += 1;
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(openParenIndex + 1, i);
+    }
+  }
+  return null;
+}
+
+/**
+ * The inline source of 2026-11: no parts variable any more, the config reads
+ *
+ *   sources: [{file:(function(){ …guards on a hidden element of the page…
+ *                                return hyz("ab~cd~…".split("~")); })()}]
+ *
+ * with the decoder named afresh per request, written as a declaration or an
+ * expression, and its argument a split string on one request and an array
+ * literal (`qxj(["PW85","yeE8",…])`) on the next. The guards only check that
+ * the page is the player's own document and the decoder is pure, so the call is
+ * run as the page wrote it — decoder and argument both — in the interpreter.
+ * Null when the config is not of this shape.
+ */
+function decodeRapidrameInlineSource(embedHtml: string, embedUrl?: string): string | null {
+  const wrapper = /sources\s*:\s*\[\s*\{\s*file\s*:\s*\(\s*function\s*\(\s*\)\s*\{/g;
+  let match: RegExpExecArray | null;
+  while ((match = wrapper.exec(embedHtml)) !== null) {
+    const body = embedHtml.slice(match.index + match[0].length);
+    const call = /return\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/.exec(body);
+    if (!call) continue;
+    const args = readCallArguments(body, call.index + call[0].length - 1);
+    const decoder = findRapidramePageFunction(embedHtml, call[1]);
+    if (args === null || !decoder) continue;
+    // The interpreter takes a nested function as an expression, not a declaration.
+    const decoderExpression = decoder.replace(/^function\s+[A-Za-z_$][A-Za-z0-9_$]*/, "function");
+    const decoded = runRapidrameDecoder(
+      `function inlineSource() { var ${call[1]} = ${decoderExpression};\nreturn ${call[1]}(${args}); }`,
+      [],
+      embedUrl
+    );
+    if (decoded) return decoded;
+  }
+  return null;
 }
 
 /**
@@ -2188,7 +2276,8 @@ function extractRapidrameStreamUrl(embedHtmlInput: string, embedUrl?: string): s
     (match) => match[1]
   ).find((name) => findVariableDeclaration(embedHtml, name) !== -1);
   if (!sourceVariable) {
-    return normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
+    const inline = normalizeExtractedMediaUrl(decodeRapidrameInlineSource(embedHtml, embedUrl));
+    return inline ?? normalizeExtractedMediaUrl(extractM3u8FromEmbedHtml(embedHtml));
   }
 
   const variableIndex = findVariableDeclaration(embedHtml, sourceVariable);

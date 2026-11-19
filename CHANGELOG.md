@@ -4,6 +4,15 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-20
+
+- Fixed: films that only HDFilm has (*Verity*, *The Dog Stars*) showed "Not available", and
+  HDFilm had stopped serving films and episodes altogether. HDFilm now checks every page for a
+  real browser and changed how its player hides the video address; the app handles both, so
+  HDFilm plays again, with its better quality and audio choices.
+- Fixed: *The Beast* (2026) played a different film. Its Turkish title, "Canavar", was matched to
+  another title that merely starts with the same letters; titles now have to match whole words.
+
 ## 2026-11-19
 
 - Fixed: some watched titles failed to save to your account and could reappear as unwatched on

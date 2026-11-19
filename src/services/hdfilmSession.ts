@@ -1,20 +1,21 @@
 /**
  * hdfilmSession
  *
- * HDFilm gates non-browser clients on its main domain two ways:
- *   - its series pages (`/dizi/…`, the show and every episode) answer with a
- *     Cloudflare managed challenge (2026-11-11), and
+ * HDFilm gates non-browser clients across its main domain:
+ *   - its series pages (`/dizi/…`) answer with a Cloudflare managed challenge
+ *     since 2026-11-11, and its film pages too since 2026-11-19 — every native
+ *     try is a 403, so titles only HDFilm carries read "Not available";
  *   - its own `/rplayer/{id}/` embed answers with an "Uygulama desteklenmiyor"
- *     app-block page (403, "open it in Chrome") (2026-11-15), while the `.mobi`
- *     embed host 404s. That killed HDFilm playback: films and episodes both
- *     fell to Dizipal/Dizibal.
+ *     app-block page (403, "open it in Chrome") since 2026-11-15, while the
+ *     `.mobi` embed host 404s.
  *
  * Both are lifted by a real browser engine: it clears the challenge on its own
  * in a few seconds, and a same-origin `fetch()` from a cleared page returns the
- * real `/rplayer/` player. So those pages are read through a hidden WebView
+ * real page or player. So HDFilm's pages are read through a hidden WebView
  * session (see webSession). The WebView holds HDFilm's 8 KB 404 page (no ads, no
- * player) at `/dizi/streambox/`, and every `/dizi/` or `/rplayer/` request then
- * runs same-origin inside it. Films, search, and the `.mobi` host stay native.
+ * player) at `/dizi/streambox/`, and every page request then runs same-origin
+ * inside it. Search (a JSON endpoint that wants its own request header and is
+ * not gated) and the `.mobi` host stay native.
  */
 
 import { createWebSession } from "./webSession";
@@ -34,17 +35,15 @@ export const hdfilmSession = createWebSession({
 });
 
 /**
- * A page on HDFilm's main origin that the site gates behind browser clearance:
- * a series page (`/dizi/…`) or its `/rplayer/` embed. These are the requests
- * routed through the session when a native try is challenged or app-blocked.
+ * A page on HDFilm's main origin that the site may gate behind browser
+ * clearance: a film page, a series or episode page, or the `/rplayer/` embed.
+ * These are the requests routed through the session when a native try is
+ * challenged or app-blocked. The search endpoint is not one of them.
  */
 export function isHdfilmSessionPath(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return (
-      parsed.origin === hdfilmSession.getOrigin() &&
-      (parsed.pathname.startsWith("/dizi/") || parsed.pathname.startsWith("/rplayer/"))
-    );
+    return parsed.origin === hdfilmSession.getOrigin() && !parsed.pathname.startsWith("/search/");
   } catch {
     return false;
   }
@@ -58,37 +57,47 @@ export function isHdfilmSessionPath(url: string): boolean {
  * its body.
  */
 export function isHdfilmAppBlockResponse(status: number | undefined, body: unknown): boolean {
-  if (status !== 403) return false;
+  return status === 403 && isHdfilmAppBlockBody(body);
+}
+
+/** The app-block page by its text alone, whatever status carried it. */
+export function isHdfilmAppBlockBody(body: unknown): boolean {
   const text = typeof body === "string" ? body : "";
-  return /desteklenmiyor|package=com\.android\.chrome|app is not supported/i.test(text);
+  return /uygulama desteklenmiyor|package=com\.android\.chrome/i.test(text);
 }
 
 /**
- * Gated pages are only sometimes blocked, so the session is not opened for
- * every series page browsed: only once a block has been seen recently.
+ * Every HDFilm page is gated now, so a detail page starts the session ahead of
+ * Watch — unless a native request got through lately, which says the gate is
+ * down and there is nothing to clear.
  */
-const WARM_AFTER_CHALLENGE_MS = 30 * 60_000;
+const NATIVE_PASS_TRUST_MS = 30 * 60_000;
 const WARM_DELAY_MS = 1_500;
-let lastChallengedAt = 0;
+let lastNativePassAt = 0;
 
 /** A native request to a gated page came back challenged or app-blocked. */
 export function noteHdfilmChallenge(): void {
-  lastChallengedAt = Date.now();
+  lastNativePassAt = 0;
+}
+
+/** A native request to a gated page was answered with the page itself. */
+export function noteHdfilmNativePass(): void {
+  lastNativePassAt = Date.now();
 }
 
 /**
- * From a series detail page: when HDFilm challenged recently, start the session
- * now, so the episode the viewer picks does not wait on the challenge. Returns
- * the cancel.
+ * From a film or series detail page: start the session now, so the title the
+ * viewer plays does not wait on the challenge. Returns the cancel.
  */
 export function scheduleHdfilmWarm(): () => void {
   const timer = setTimeout(() => {
-    if (lastChallengedAt && Date.now() - lastChallengedAt < WARM_AFTER_CHALLENGE_MS) hdfilmSession.warm();
+    const gateIsDown = lastNativePassAt > 0 && Date.now() - lastNativePassAt < NATIVE_PASS_TRUST_MS;
+    if (!gateIsDown) hdfilmSession.warm();
   }, WARM_DELAY_MS);
   return () => clearTimeout(timer);
 }
 
-/** Test seam — forget any challenge seen. */
+/** Test seam — forget what the native requests last said. */
 export function __resetHdfilmChallengeForTests(): void {
-  lastChallengedAt = 0;
+  lastNativePassAt = 0;
 }

@@ -12,6 +12,7 @@ import {
   resolveDirectWebPlayerFallback,
   resolveNativeAlternativeToHdFilm,
   resolveWebPlayerUrl,
+  scoreMatch,
   streamRequestHeaders,
   type WebPlayerResult,
 } from "../src/services/WebPlayerService";
@@ -2006,4 +2007,21 @@ test("a packed script's escaped quotes are unescaped before it is read", () => {
   // decoder kept its \' and the interpreter refused it.
   const html = String.raw`<script>eval(function(p,a,c,k,e,d){return p}('0 1=\'2\';',62,3,'var|x|ok'.split('|'),0,{}))</script>`;
   assert.match(__internal.tryUnpackInlinePackerJs(html), /var x='ok';/);
+});
+
+test("a title that only begins with the target's letters is a different title", () => {
+  // The Beast (2026): TMDB's Turkish title is "Canavar", and Dizipal's retry
+  // under it took "Canavarcıklar" — another film — because a bare
+  // startsWith() counted as a prefix match. Prefixes are whole words.
+  const dizipal = "https://dizipal2150.com";
+  const row = { href: `${dizipal}/film/canavarciklar`, text: "canavarcıklar 2025", title: "Canavarcıklar", resultYear: "2025" };
+  assert.ok(__internal.scoreDizipalResult(row, "Canavar", "2026") < 80, "Canavarcıklar must not pass for Canavar");
+  assert.equal(__internal.isDizipalUrlTitleCompatible(row.href, "Canavar", undefined, row.title), false);
+  assert.ok(scoreMatch("aliens 1986", "Alien", "1979") < 80, "Aliens is not Alien");
+  assert.ok(scoreMatch("esrarengiz canavar 2022", "Canavar") < 80, "a whole word elsewhere in the title stays a weak match");
+
+  // Whole-word prefixes and exact titles score as before.
+  assert.equal(scoreMatch("canavar 2026", "Canavar", "2026"), 120);
+  assert.equal(scoreMatch("dune part two", "Dune"), 70);
+  assert.equal(scoreMatch("planet dune", "Dune"), 40);
 });

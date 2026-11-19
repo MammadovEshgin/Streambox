@@ -180,6 +180,27 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   response that is the app-block page (`isHdfilmAppBlockResponse`, matched by body — no
   `cf-mitigated` header — on a 403, or on a 200 that still carries it) through the same session.
   The decoder is unchanged; only the fetch moves into the WebView.
+- **Every HDFilm page is gated, and the source is inline (2026-11-19).** Film pages answer the
+  Cloudflare challenge too now (403 on every native try), so titles only HDFilm carries read
+  "Not available" (Verity, The Dog Stars). `isHdfilmSessionPath` is therefore every path on
+  the main origin except `/search/` (JSON, needs `X-Requested-With: fetch`, not gated);
+  `hdFilmGet` goes to the session first while it is open **or opening**, and film and series
+  detail pages both warm it (`scheduleHdfilmWarm`) unless a native request passed in the last
+  30 min. The `/rplayer/` config also changed: no parts variable, but
+  `sources: [{file:(function(){ …guards on a hidden data-v element…; return NAME(ARG); })()}]`,
+  where NAME is named afresh per request and written as a declaration or an expression, and
+  ARG is `"a~b".split("~")` (any separator, `/` escapes) on one request and an array literal
+  on the next. `decodeRapidrameInlineSource` runs the call as written — decoder and argument —
+  in the `rapidrameScript` interpreter (nested functions go in as expressions; declarations
+  are not supported there). With the session working since 11-15 but this decoder failing,
+  HDFilm served 0 plays for days: **a `ready` `hdfilm_session` with no `hdfilm` resolves
+  means the decoder, not the gate.** To verify without a phone: open `/dizi/streambox/` in the
+  Playwright browser, `fetch()` the page and its `/rplayer/{rapidrame_id}/` same-origin, save
+  the bodies, and run the resolver with a fake `hdfilmSession` host that answers from them.
+- **Title prefixes are whole words (2026-11-19).** `scoreMatch` took any listing that began
+  with the target's letters as a prefix match, so Dizipal's retry under TMDB's Turkish title
+  "Canavar" (The Beast, 2026) accepted "Canavarcıklar" and played another film. Prefix and
+  substring matches now need a word boundary ("Aliens" is not "Alien").
 - **HDFilm's second source, `/rplayer/{rapidrame_id}/` on the main domain, is the fallback
   (2026-10-28).** The `.mobi` embed's `rapidrame_id` names it, so no extra page read is needed;
   `resolveHdFilmNativeFallback` asks `.mobi` first (its streams carry the dual audio) and the
@@ -283,7 +304,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   the real site came back. **Check the old domains' redirect target before trusting a higher
   `dizipalN.com`**: the 22xx band is the clone, and 2200, 2203-2205, 2207 and 2300 are SEO
   squatters serving "güncel adres" landing pages.
-- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2149; 2141 went
+- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2150; 2141 went
   dark without a redirect, so a device pinned to it reached 2142 only through Supabase). Hops are
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal

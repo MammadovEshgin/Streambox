@@ -213,6 +213,9 @@ reads HDFilm's `/dizi/` pages when native requests stay challenged, with a 12s c
 budget. Run the query above with `event_name = 'hdfilm_session'`. Many `ready` rows mean
 HDFilm is challenging phones; none means native requests are getting through. Since 2026-11-15 the session also
 serves HDFilm's `/rplayer/` embed when HDFilm app-blocks it (403 "desteklenmiyor"), so `ready`
-rows now also mean the player block is being lifted.
+rows now also mean the player block is being lifted. Since 2026-11-20 film pages go through it
+too and detail pages warm it, so expect a `ready` row for most app sessions that open a title;
+`ready` rows with no `provider = 'hdfilm'` plays in `player_resolve` point at the decoder, not
+the gate.
 
 Telemetry and audit logs are pruned after 90 days by the `streambox-event-log-cleanup` cron.
