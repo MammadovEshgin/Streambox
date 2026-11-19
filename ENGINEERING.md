@@ -95,7 +95,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `4eab960` → group `e0b66bce-6fab-48bc-a67f-e6a8bf556872` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `68f47f1` → group `08b44529-f268-4218-8073-23d3336c499c` |
 | `streambox-tmdb-proxy` | `9bb542c0` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records; `/t/p/…` image proxy, 30-day edge TTL) |
 | `streambox-provider-monitor` | `338e4a0f` (hourly cron; classic Dizipal checks, hex `data-cfg` + `/_pb` beacon + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `provider_configs` | rows `hdfilm`, `dizipal`, `dizibal`, `kultfilmler` (added 2026-10-23, priority 3) |
@@ -109,6 +109,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-11-20 (2) | `68f47f1` | `08b44529-f268-4218-8073-23d3336c499c` | Freeze watchdog for native streams (20s without progress → reload at position; `streamHealth.ts`); reload budget refills after 2 min; spent budget or expired link → fresh resolve resumed at position; HDFilm links remembered 10 min and forgotten before any re-resolve; `recoverFromHdFilmFailure` no longer leaves the loader up; `player_stream_recovery` telemetry and `cause` on `player_silent_retry` (Past Lives) |
 | 2026-11-20 | `4eab960` | `e0b66bce-6fab-48bc-a67f-e6a8bf556872` | HDFilm film pages are challenged too: every main-origin path but `/search/` is a session path, read session-first while it is open or opening, warmed from film and series pages; `/rplayer/` inline source (`file:(function(){… return NAME(ARG)})()`) decoded by running the call in the interpreter (Verity, The Dog Stars); `scoreMatch` prefixes need a word boundary (The Beast → "Canavarcıklar"); Dizipal floor 2149 → 2150 |
 | 2026-11-19 | `79b65db` | `d5aeb4b9-f391-45d0-a796-213bb4ddcd8c` | Watch-history RPC flush path sanitises its range-checked scalars through the shared `buildWatchHistoryScalarFields` (it sent `runtime_minutes` etc. raw, so out-of-range runtimes failed the CHECK and dead-lettered — 170 writes 11-17..19); reconcile recovers the dropped entries |
 | 2026-11-15 (2) | `8e3e066` | `c140ee56-5345-4e84-8521-1ff0a6349470` | HDFilm app-blocks its `/rplayer/` embed (403 "desteklenmiyor") while `.mobi` 404s, killing native playback; `/rplayer/` added to `isHdfilmSessionPath` and `hdFilmGet` reroutes the app-block page (`isHdfilmAppBlockResponse`) through the WebView session that holds browser clearance |
