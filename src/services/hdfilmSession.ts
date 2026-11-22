@@ -24,8 +24,12 @@ export const hdfilmSession = createWebSession({
   eventName: "hdfilm_session",
   initialOrigin: "https://www.hdfilmcehennemi.nl",
   sessionUrl: (origin) => `${origin}/dizi/streambox/`,
-  // Anything but the challenge (or block) page means the clearance is in.
-  readyExpression: '!!document.body && !/just a moment|attention required/i.test(document.title)',
+  // HDFilm's own page (its 404 names the site in the title), or failing that
+  // anything but the challenge or block page. The challenge is told by
+  // `challenge`, not only by its English title: Cloudflare translates the title
+  // to the phone's language, and "Один момент…" passed for a cleared page.
+  readyExpression:
+    '!!document.body && (/hdfilm/i.test(document.title) || (!challenge && !/just a moment|attention required/i.test(document.title)))',
   // Shorter than Kült Filmler's 20s: Dizipal and Dizibal usually have the same
   // title, and the HDFilm tier holds the result back while it waits.
   challengeTimeoutMs: 12_000,
@@ -74,15 +78,27 @@ export function isHdfilmAppBlockBody(body: unknown): boolean {
 const NATIVE_PASS_TRUST_MS = 30 * 60_000;
 const WARM_DELAY_MS = 1_500;
 let lastNativePassAt = 0;
+let lastChallengedAt = 0;
 
 /** A native request to a gated page came back challenged or app-blocked. */
 export function noteHdfilmChallenge(): void {
   lastNativePassAt = 0;
+  lastChallengedAt = Date.now();
 }
 
 /** A native request to a gated page was answered with the page itself. */
 export function noteHdfilmNativePass(): void {
   lastNativePassAt = Date.now();
+  lastChallengedAt = 0;
+}
+
+/**
+ * The gate was met lately, so the next gated page goes straight to the session
+ * instead of collecting another 403 first. It is asked natively again after
+ * half an hour, in case the site has taken the gate down.
+ */
+export function isHdfilmGateUp(): boolean {
+  return lastChallengedAt > 0 && Date.now() - lastChallengedAt < NATIVE_PASS_TRUST_MS;
 }
 
 /**
@@ -100,4 +116,5 @@ export function scheduleHdfilmWarm(): () => void {
 /** Test seam — forget what the native requests last said. */
 export function __resetHdfilmChallengeForTests(): void {
   lastNativePassAt = 0;
+  lastChallengedAt = 0;
 }

@@ -200,6 +200,35 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   means the decoder, not the gate.** To verify without a phone: open `/dizi/streambox/` in the
   Playwright browser, `fetch()` the page and its `/rplayer/{rapidrame_id}/` same-origin, save
   the bodies, and run the resolver with a fake `hdfilmSession` host that answers from them.
+- **The session worked on two or three phones (2026-11-19 → 11-23).** After the gate, HDFilm
+  went from most plays for 4-7 viewers a day to 1-2 viewers, and `not_found` from ~10% to ~40%
+  of resolves, while every phone logged `hdfilm_session` `ready`. The split is in `loads`:
+  the phones HDFilm plays on reach `ready` after **two** page loads (challenge, then the 404
+  page); every other phone after **one**, in 0.2-4s, and never gets a stream. Those phones are
+  holding some other page that passed for ready. Which one is not known yet — `ready` now
+  records the page's `title` and the WebView's `engine`, and `player_resolve` records each
+  tier's outcome (`tiers`) and the HDFilm reads that failed (`hdReads`, e.g.
+  `page:native:cf rplayer:web:403app`). **Read those before changing the session again.**
+  The page loads fine in a desktop browser, and the captured pages resolve in ~1.2s through
+  the resolver, so matching and the decoder are not the problem. Shipped on 11-23, each for a
+  cause that is possible but unconfirmed:
+  - Cloudflare translates its challenge page's title ("Один момент…", "Un instant…" seen in
+    Kült Filmler's timeouts), and HDFilm's ready test only knew the English one. The probe
+    now exposes `challenge` (`_cf_chl_opt.cType` is a string only on the challenge page; the
+    object itself is on every page), and HDFilm is ready on its own title first.
+  - A read answered with the app-block page inside the session is asked once more with
+    `X-Requested-With: XMLHttpRequest` (an Android WebView names the hosting app in that
+    header unless the page sets it). `hdReads` shows `ok-xrw` when that helped.
+  - A session whose page never confirms a request script started (`ack`, 2.5s) is given a
+    new WebView once (`recycled` in telemetry), as is one whose renderer process died. A read
+    sent in a ready session times out after the request budget (9s), not challenge + request
+    (20s), and the page aborts its own fetch at 8s.
+  - Once a native request has met the gate, gated pages go straight to the session for 30
+    minutes (`isHdfilmGateUp`), a native gate answer is tried once, not three times, and it
+    is not counted as a failed request when the session then answers — that count was
+    sending every miss through a second pass. An error page read in the session is final.
+  - `/rplayer/` and `.mobi` are asked together (`firstHitByPriority`, `.mobi` preferred within
+    600ms), and search falls back to the session when the native request fails.
 - **Title prefixes are whole words (2026-11-19).** `scoreMatch` took any listing that began
   with the target's letters as a prefix match, so Dizipal's retry under TMDB's Turkish title
   "Canavar" (The Beast, 2026) accepted "Canavarcıklar" and played another film. Prefix and

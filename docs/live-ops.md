@@ -236,4 +236,31 @@ too and detail pages warm it, so expect a `ready` row for most app sessions that
 `ready` rows with no `provider = 'hdfilm'` plays in `player_resolve` point at the decoder, not
 the gate.
 
+Since 2026-11-23 the events say which step fails. `ready` carries `loads` (page loads before
+ready: 2 is challenge-then-page, 1 is a page that needed no challenge or a page mistaken for
+the site), the page's `title` and the WebView's `engine` version; `recycled` means the WebView
+stopped answering and was replaced (`cause`: `no_ack`, `process_gone`). `player_resolve`
+carries `tiers` — each provider's outcome and milliseconds in the last pass, e.g.
+`hd:no_stream/2100 dp:miss/4 db:hit/900 kf:pending` (HDFilm stops at `no_match`, `no_episode`,
+`no_page`, `no_player` or `no_stream`) — `passes`, and `hdReads`: the HDFilm reads that did not
+simply succeed, as `step:via:outcome` (`via` is `native` or `web` for the session; outcomes are
+a status, `cf`, `app`, `403app`, `timeout`, `unavailable`, `ok-xrw`). Per viewer:
+
+```sql
+select left(user_id::text, 8) as viewer, metadata->>'source' as source,
+       metadata->>'tiers' as tiers, metadata->>'hdReads' as hd_reads,
+       (metadata->>'durationMs')::int as ms, occurred_at
+from public.app_telemetry_events
+where event_name = 'player_resolve' and occurred_at > now() - interval '2 days'
+order by occurred_at desc;
+
+select left(user_id::text, 8) as viewer, metadata->>'outcome' as outcome,
+       metadata->>'loads' as loads, metadata->>'title' as title,
+       metadata->>'engine' as engine, count(*)
+from public.app_telemetry_events
+where event_name = 'hdfilm_session' and occurred_at > now() - interval '2 days'
+group by 1, 2, 3, 4, 5
+order by 1, 6 desc;
+```
+
 Telemetry and audit logs are pruned after 90 days by the `streambox-event-log-cleanup` cron.

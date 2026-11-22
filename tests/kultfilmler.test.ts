@@ -66,7 +66,7 @@ test("a request opens the session, waits out the challenge, then runs inside the
   assert.equal(host.scripts.length, 0);
   handleKultfilmlerMessage(JSON.stringify({ kf: "page", ready: true }));
   assert.equal(host.scripts.length, 1);
-  assert.match(host.scripts[0], /fetch\("https:\/\/kultfilmler\.net\/rashomon-izle\/", \{ credentials: "same-origin" \}\)/);
+  assert.ok(host.scripts[0].includes('fetch("https://kultfilmler.net/rashomon-izle/", { credentials: "same-origin"'));
 
   answer(requestIdOf(host.scripts[0]), 200, "<html>page</html>");
   assert.deepEqual(await pending, { ok: true, body: "<html>page</html>" });
@@ -75,7 +75,7 @@ test("a request opens the session, waits out the challenge, then runs inside the
   const second = fetchKultfilmlerText("https://kultfilmler.net/x/");
   assert.equal(host.scripts.length, 2);
   answer(requestIdOf(host.scripts[1]), 404, "");
-  assert.deepEqual(await second, { ok: false, reason: "http", status: 404 });
+  assert.deepEqual(await second, { ok: false, reason: "http", status: 404, body: "" });
   __resetKultfilmlerSessionForTests();
 });
 
@@ -91,7 +91,11 @@ test("a lapsed clearance re-runs the challenge and retries once", async () => {
   handleKultfilmlerMessage(JSON.stringify({ kf: "page", ready: true }));
   assert.equal(host.scripts.length, 2, "the same request is sent again once the page is clear");
   answer(requestIdOf(host.scripts[1]), 403, "Just a moment...", true);
-  assert.deepEqual(await pending, { ok: false, reason: "http", status: 403 }, "only one retry");
+  assert.deepEqual(
+    await pending,
+    { ok: false, reason: "http", status: 403, body: "Just a moment..." },
+    "only one retry"
+  );
   __resetKultfilmlerSessionForTests();
 });
 

@@ -25,6 +25,7 @@ import {
   hdfilmSession,
   isHdfilmAppBlockBody,
   isHdfilmAppBlockResponse,
+  isHdfilmGateUp,
   isHdfilmSessionPath,
   noteHdfilmChallenge,
   noteHdfilmNativePass,
@@ -113,6 +114,8 @@ export type WebPlayerResult = {
   embedUrl?: string;
   subtitles?: Array<{ url: string; label: string; lang: string }>;
   qualityOptions?: Array<{ label: string; height: number; url: string }>;
+  /** How the resolve went, tier by tier (see `buildResolveTrace`). Telemetry only. */
+  trace?: Record<string, string | number>;
   /** If set, the stream is low quality (e.g. "CAM", "TS") — UI should warn the user before playback */
   qualityWarning?: string;
   /**
@@ -405,7 +408,14 @@ function noteProviderSilence(provider: string, error: unknown): void {
 async function providerGet<T = string>(
   provider: string,
   url: string,
-  config: Parameters<typeof axios.get>[1]
+  config: Parameters<typeof axios.get>[1],
+  /**
+   * `challengeIsFinal`: a challenge will not go away on asking again (HDFilm's
+   * gate), and the caller has another way to read the page. No retries, and the
+   * challenge is not counted as a failed request; the caller counts it if its
+   * other way fails too.
+   */
+  options: { challengeIsFinal?: boolean } = {}
 ): Promise<import("axios").AxiosResponse<T>> {
   if (isProviderSkipped(provider)) {
     // Not a request failure, but not an answer either: the resolver gives
@@ -428,6 +438,10 @@ async function providerGet<T = string>(
         noteProviderSilence(provider, error);
         throw error;
       }
+      if (options.challengeIsFinal) {
+        noteProviderSilence(provider, error);
+        throw error;
+      }
       if (attempt === PROVIDER_CHALLENGE_RETRIES) break;
       debugLog(`[WebPlayer] ${provider} challenge on ${url} — retry ${attempt + 1}`);
     }
@@ -442,40 +456,110 @@ async function providerGet<T = string>(
  * or series page answering Cloudflare's challenge, or a `/rplayer/` embed
  * answering the app-block page — is read through the HDFilm WebView session
  * (see hdfilmSession), which holds the site's browser clearance. While that
- * session is open, or opening, those pages go to it first. Search and `.mobi`
- * are untouched.
+ * session is open or opening, or the gate was met lately, those pages go to it
+ * first: the native try would only be a 403 on the way there. Search and
+ * `.mobi` stay native.
  */
 async function hdFilmGet<T = string>(
   url: string,
   config: Parameters<typeof axios.get>[1]
 ): Promise<import("axios").AxiosResponse<T>> {
   hdfilmSession.setOrigin(getHdfilmBaseUrl());
-  const gated = isHdfilmSessionPath(url);
-  if (gated && (hdfilmSession.isReady() || hdfilmSession.isOpening())) {
-    const viaSession = await readHdFilmPageInSession<T>(url);
-    if (viaSession) return viaSession;
-  }
-  try {
-    const response = await providerGet<T>("HDFilm", url, config);
-    if (gated) {
-      // A 200 can still carry the app-block page (open-in-Chrome) in place of
-      // the player; reroute it through the cleared session like a 403 block.
-      if (isHdfilmAppBlockBody(response.data)) {
-        noteHdfilmChallenge();
-        const viaSession = await readHdFilmPageInSession<T>(url);
-        if (viaSession) return viaSession;
-      } else {
-        noteHdfilmNativePass();
-      }
+  if (!isHdfilmSessionPath(url)) {
+    try {
+      return await providerGet<T>("HDFilm", url, config);
+    } catch (error) {
+      noteHdfilmRead(url, "native", describeRequestError(error));
+      throw error;
     }
-    return response;
-  } catch (error) {
-    if (!gated || !isHdfilmGateResponse(error)) throw error;
-    noteHdfilmChallenge();
-    const viaSession = await readHdFilmPageInSession<T>(url);
-    if (viaSession) return viaSession;
-    throw error;
   }
+
+  const sessionFirst = hdfilmSession.isReady() || hdfilmSession.isOpening() || isHdfilmGateUp();
+  let sessionMiss: "timeout" | "unavailable" | null = null;
+  if (sessionFirst) {
+    const viaSession = await readHdFilmPageInSession<T>(url);
+    if (viaSession.response) return viaSession.response;
+    // The site answered a real browser with an error page: a native request
+    // gets no further, and three more 403s only spend the viewer's time.
+    if (viaSession.error) throw viaSession.error;
+    sessionMiss = viaSession.miss ?? null;
+  }
+
+  let gateError: unknown;
+  try {
+    const response = await providerGet<T>("HDFilm", url, config, { challengeIsFinal: true });
+    // A 200 can still carry the app-block page (open-in-Chrome) in place of
+    // the player; it is the gate like a 403 block is.
+    if (!isHdfilmAppBlockBody(response.data)) {
+      noteHdfilmNativePass();
+      return response;
+    }
+    gateError = Object.assign(new Error("HDFilm answered its app-block page"), { response });
+  } catch (error) {
+    if (!isHdfilmGateResponse(error)) {
+      noteHdfilmRead(url, "native", describeRequestError(error));
+      // A 403/503 that is neither gate was left uncounted by `challengeIsFinal`.
+      if (isCloudflareChallengeStatus((error as { response?: { status?: number } } | null)?.response?.status)) {
+        noteProviderFailure(error);
+      }
+      throw error;
+    }
+    gateError = error;
+  }
+
+  noteHdfilmChallenge();
+  noteHdfilmRead(url, "native", isCloudflareChallengeResponse(gateError) ? "cf" : "app");
+  if (!sessionFirst) {
+    const viaSession = await readHdFilmPageInSession<T>(url);
+    if (viaSession.response) return viaSession.response;
+    if (viaSession.error) throw viaSession.error;
+    sessionMiss = viaSession.miss ?? null;
+  }
+  // Gated, and the session did not answer in time: nobody said "no", so the
+  // resolver may ask once more. A session resting after a failed challenge
+  // ("unavailable") would only say the same again.
+  if (sessionMiss === "timeout") noteProviderFailure({});
+  throw gateError;
+}
+
+/**
+ * HDFilm reads that did not simply succeed, kept for a few minutes so a
+ * resolve's telemetry can say which step failed and how (`hdReads`). HDFilm
+ * served two or three viewers a day for a week after it gated its pages
+ * (2026-11-19 on) while every phone reported its session "ready", and nothing
+ * recorded said whether the search, the page, the player or the decoder was
+ * the step that failed on the others.
+ */
+const HDFILM_READ_NOTE_LIMIT = 24;
+let hdfilmReadNotes: Array<{ at: number; note: string }> = [];
+
+function hdfilmReadKind(url: string): string {
+  if (url.includes("/search/")) return "search";
+  if (url.includes("/rplayer/")) return "rplayer";
+  if (!isHdfilmSessionPath(url)) return "embed";
+  return "page";
+}
+
+/** `via`: "native" is the app's own request, "web" the WebView session. */
+function noteHdfilmRead(url: string, via: "native" | "web", outcome: string): void {
+  hdfilmReadNotes.push({ at: Date.now(), note: `${hdfilmReadKind(url)}:${via}:${outcome}` });
+  if (hdfilmReadNotes.length > HDFILM_READ_NOTE_LIMIT) hdfilmReadNotes = hdfilmReadNotes.slice(-HDFILM_READ_NOTE_LIMIT);
+}
+
+function hdfilmReadNotesSince(since: number): string {
+  return hdfilmReadNotes
+    .filter((entry) => entry.at >= since)
+    .map((entry) => entry.note)
+    .slice(-8)
+    .join(" ");
+}
+
+/** A failed request in a word: its status, "skipped" by the breaker, or the error code. */
+function describeRequestError(error: unknown): string {
+  if (error instanceof ProviderSkippedError) return "skipped";
+  const failure = error as { response?: { status?: number }; code?: string } | null;
+  if (failure?.response?.status) return String(failure.response.status);
+  return failure?.code === "ECONNABORTED" ? "timeout" : String(failure?.code ?? "error").slice(0, 24);
 }
 
 /** Either HDFilm gate: the Cloudflare challenge, or HDFilm's own app-block. */
@@ -493,10 +577,51 @@ function isCloudflareChallengeResponse(error: unknown): boolean {
   return mitigated === "challenge" || /<title>\s*Just a moment/i.test(String(response.data ?? ""));
 }
 
-async function readHdFilmPageInSession<T>(url: string): Promise<import("axios").AxiosResponse<T> | null> {
-  const result = await hdfilmSession.fetchText(url);
-  if (!result.ok) return null;
-  return { data: result.body as T, status: 200, statusText: "OK", headers: {}, config: { url } } as import("axios").AxiosResponse<T>;
+/**
+ * One read through the HDFilm session: the page, the site's own error answer
+ * (`error`, shaped like an axios error), or no answer at all (`miss`).
+ */
+type HdfilmSessionRead<T> =
+  | { response: import("axios").AxiosResponse<T>; error?: undefined; miss?: undefined }
+  | { response?: undefined; error: unknown; miss?: undefined }
+  | { response?: undefined; error?: undefined; miss: "timeout" | "unavailable" };
+
+function asHdfilmSessionResponse<T>(url: string, body: string): import("axios").AxiosResponse<T> {
+  return { data: body as T, status: 200, statusText: "OK", headers: {}, config: { url } } as import("axios").AxiosResponse<T>;
+}
+
+async function readHdFilmPageInSession<T>(
+  url: string,
+  headers?: Record<string, string>
+): Promise<HdfilmSessionRead<T>> {
+  let result = await hdfilmSession.fetchText(url, headers ? { headers } : undefined);
+
+  if (!result.ok && result.reason === "http" && isHdfilmAppBlockBody(result.body)) {
+    // HDFilm's "open it in Chrome" page, inside the WebView too. An Android
+    // WebView names the app that hosts it in an X-Requested-With header on
+    // every request, unless the page sets that header itself the way a site's
+    // own AJAX does. Asked once more that way; the note says whether it helped.
+    noteHdfilmRead(url, "web", "app");
+    result = await hdfilmSession.fetchText(url, { headers: { ...headers, "X-Requested-With": "XMLHttpRequest" } });
+    if (result.ok) noteHdfilmRead(url, "web", "ok-xrw");
+  }
+
+  if (result.ok) return { response: asHdfilmSessionResponse<T>(url, result.body) };
+
+  if (result.reason === "http" && result.status) {
+    noteHdfilmRead(url, "web", `${result.status}${isHdfilmAppBlockBody(result.body) ? "app" : ""}`);
+    const error = Object.assign(new Error(`HDFilm answered ${result.status}`), {
+      response: { status: result.status, data: result.body ?? "", headers: {} },
+    });
+    // A 403 or 404 inside a cleared browser is the site's answer. A 429 or a
+    // 5xx is a bad moment, worth asking about again.
+    if (result.status !== 403 && result.status !== 404) noteProviderFailure(error);
+    return { error };
+  }
+
+  const miss = result.reason === "timeout" ? "timeout" : "unavailable";
+  noteHdfilmRead(url, "web", miss);
+  return { miss };
 }
 
 /** Dizipal-flavoured `providerGet`. */
@@ -947,24 +1072,36 @@ function toAbsoluteUrl(baseUrl: string, href: string): string | null {
   }
 }
 
+/**
+ * HDFilm's search JSON. Asked natively; where that fails — the endpoint gated
+ * on this network, HDFilm's host not answering the app's own requests — the
+ * WebView session reads it instead, when one is open or the gate is up.
+ */
+async function fetchHdFilmSearch(query: string): Promise<{ results?: string[] } | null> {
+  const url = `${getHdfilmBaseUrl()}/search/?q=${encodeURIComponent(query)}`;
+  const headers = { "X-Requested-With": "fetch", Accept: "application/json" };
+  try {
+    const response = await hdFilmGet<{ results?: string[] }>(url, {
+      timeout: 6000,
+      headers: { ...headers, "User-Agent": UA, Referer: getHdfilmReferer() },
+    });
+    recordObservedBaseUrl("hdfilm", getResponseFinalOrigin(response));
+    return response.data ?? null;
+  } catch (error) {
+    if (!hdfilmSession.isReady() && !hdfilmSession.isOpening() && !isHdfilmGateUp()) throw error;
+    const result = await hdfilmSession.fetchText(url, { headers });
+    if (!result.ok) {
+      noteHdfilmRead(url, "web", result.reason === "http" ? String(result.status ?? "http") : result.reason);
+      throw error;
+    }
+    noteHdfilmRead(url, "web", "ok");
+    return JSON.parse(result.body) as { results?: string[] };
+  }
+}
+
 async function queryHdFilm(query: string): Promise<SearchResult[]> {
   try {
-    const response = await hdFilmGet<{ results?: string[] }>(
-      `${getHdfilmBaseUrl()}/search/?q=${encodeURIComponent(query)}`,
-      {
-        timeout: 6000,
-        headers: {
-          "X-Requested-With": "fetch",
-          "Accept": "application/json",
-          "User-Agent": UA,
-          "Referer": getHdfilmReferer()
-        }
-      }
-    );
-
-    recordObservedBaseUrl("hdfilm", getResponseFinalOrigin(response));
-
-    const rawResults = response.data?.results;
+    const rawResults = (await fetchHdFilmSearch(query))?.results;
     if (!Array.isArray(rawResults) || rawResults.length === 0) return [];
 
     return rawResults
@@ -1213,6 +1350,8 @@ async function findBestHdFilmMatch(title: string, castNames: string[], year?: st
 
 type VideoCheck = {
   available: boolean;
+  /** Why not, for telemetry: the page could not be read, or it carries no player. */
+  reason?: "no_page" | "no_player";
   qualityWarning?: string;
   nativeFallback?: DizipalStreamInfo | null;
 };
@@ -1234,7 +1373,7 @@ async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
     const hasPlayerIframe = /iframe[^>]+src=[^>]+(rplayer|vidmoly|closeload|fastplayer|filemoon|voe|streamwish|dood|mixdrop|streamtape)/i.test(html);
 
     const available = hasRapidrame || hasAlternativeLink || hasPlayerIframe || html.includes('kePlayerTitle');
-    if (!available) return { available: false };
+    if (!available) return { available: false, reason: "no_player" };
 
     // Attempt native extraction whenever the page carries a trusted HDFilm
     // embed iframe — NOT only when the literal "rapidrame" string is present.
@@ -1267,7 +1406,7 @@ async function checkVideoAvailability(pageUrl: string): Promise<VideoCheck> {
 
     return { available: true, nativeFallback };
   } catch {
-    return { available: false };
+    return { available: false, reason: "no_page" };
   }
 }
 
@@ -2539,17 +2678,27 @@ async function resolveHdFilmNativeFallback(pageUrl: string, pageHtml: string): P
   const embedUrl = extractHdFilmEmbedUrl(pageHtml, pageUrl);
   if (!embedUrl) return null;
 
-  const primary = await resolveHdFilmEmbedStream(embedUrl, pageUrl);
-  if (primary) return primary;
-
   // The same video's second source: HDFilm's own /rplayer/{rapidrame_id}/,
   // served from the main domain. hdfilmcehennemi.mobi answers 429 to an address
   // that asked too often, and every viewer behind it lost HDFilm ("The Cycle",
-  // 2026-10-28); the rplayer page kept answering. Second, because the .mobi
-  // streams carry the dual Turkish/English audio.
+  // 2026-10-28); the rplayer page kept answering.
   const rplayerUrl = hdFilmRplayerUrl(embedUrl);
-  return rplayerUrl ? resolveHdFilmEmbedStream(rplayerUrl, pageUrl) : null;
+  if (!rplayerUrl || rplayerUrl === embedUrl) return resolveHdFilmEmbedStream(embedUrl, pageUrl);
+
+  // Both are asked at once. The .mobi stream is preferred (it carries the dual
+  // Turkish/English audio) when it arrives with or just after the rplayer one,
+  // but the play no longer waits on it: since 2026-11 the .mobi host turns the
+  // app away, and where it does so slowly that was up to 8s before the rplayer
+  // page was even asked.
+  return firstHitByPriority(
+    [resolveHdFilmEmbedStream(embedUrl, pageUrl), resolveHdFilmEmbedStream(rplayerUrl, pageUrl)],
+    HDFILM_EMBED_PRIORITY_GRACE_MS,
+    (stream) => Boolean(stream?.streamUrl)
+  );
 }
+
+/** How long a decoded /rplayer/ stream waits for the .mobi one still loading. */
+const HDFILM_EMBED_PRIORITY_GRACE_MS = 600;
 
 /** `…/video/embed/{id}/?rapidrame_id=ss6tggj5phmo` → `{hdfilm}/rplayer/ss6tggj5phmo/`. */
 function hdFilmRplayerUrl(embedUrl: string): string | null {
@@ -3337,11 +3486,34 @@ async function awaitResolveWithin(
   }
 }
 
-function startResolvePass(request: WebPlayerRequest): Promise<WebPlayerResult> {
+/** What each tier of one pass came to, as `outcome/ms` (see `buildResolveTrace`). */
+type PassTrace = Record<string, string>;
+
+function startResolvePass(request: WebPlayerRequest, trace: PassTrace): Promise<WebPlayerResult> {
   // A rejection here is a bug, not a provider failure (every provider helper
   // swallows its own errors), but the caller races this promise twice, so it
   // must never reject.
-  return resolveWebPlayerUrlInner(request).catch(() => ({ url: "", source: "not_found" }));
+  return resolveWebPlayerUrlInner(request, trace).catch(() => ({ url: "", source: "not_found" }));
+}
+
+/**
+ * The resolve in a few words, for the `player_resolve` event. `tiers` is each
+ * provider's outcome and time in the last pass, e.g.
+ * `hd:no_stream/2100 dp:miss/4 db:hit/900 kf:pending`: `hit`, `miss`, `pending`
+ * (still running when the answer was given), and for HDFilm the step it
+ * stopped at — `no_match` (search), `no_episode`, `no_page`, `no_player`,
+ * `no_stream` (player or decoder). `hdReads` lists the HDFilm reads that did
+ * not simply succeed. The keys avoid the words telemetry redacts.
+ */
+function buildResolveTrace(passes: PassTrace[], startedAt: number): Record<string, string | number> {
+  const last = passes[passes.length - 1] ?? {};
+  const trace: Record<string, string | number> = {
+    tiers: ["hd", "dp", "db", "kf"].map((tier) => `${tier}:${last[tier] ?? "pending"}`).join(" "),
+    passes: passes.length,
+  };
+  const reads = hdfilmReadNotesSince(startedAt);
+  if (reads) trace.hdReads = reads;
+  return trace;
 }
 
 /** Published base URLs, to tell "the operator rotated a domain" from "nothing changed". */
@@ -3361,12 +3533,18 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   // Wait briefly for provider config so we don't run against stale hardcoded URLs.
   await ensureProviderConfigReady();
 
-  const deadline = Date.now() + RESOLVER_MAX_TOTAL_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + RESOLVER_MAX_TOTAL_MS;
   const transientFailuresBefore = transientProviderFailures;
   const skipsBefore = providerSkips;
-  const pending = startResolvePass(request);
+  const passes: PassTrace[] = [{}];
+  const traced = (result: WebPlayerResult): WebPlayerResult => ({
+    ...result,
+    trace: buildResolveTrace(passes, startedAt),
+  });
+  const pending = startResolvePass(request, passes[0]);
   const first = await awaitResolveWithin(pending, RESOLVER_ATTEMPT_TIMEOUT_MS);
-  if (first && isNativeResult(first)) return first;
+  if (first && isNativeResult(first)) return traced(first);
 
   // Still running. It used to be abandoned here and the whole pipeline started
   // again from the top — re-paying for the very requests that were slow, with
@@ -3377,7 +3555,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   if (!first) {
     const remainingForPass = deadline - Date.now();
     const late = remainingForPass > 0 ? await awaitResolveWithin(pending, remainingForPass) : null;
-    return late ?? { url: "", source: "not_found" };
+    return traced(late ?? { url: "", source: "not_found" });
   }
 
   // A miss. When every provider actually answered and none had a native
@@ -3393,7 +3571,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   const sawSkip = providerSkips !== skipsBefore;
   if (sawSkip) providerSilence.clear();
   const remaining = deadline - Date.now();
-  if (remaining < 3_000) return first;
+  if (remaining < 3_000) return traced(first);
 
   const baseUrlsBefore = summariseProviderBaseUrls();
   await Promise.race([
@@ -3402,13 +3580,14 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
       setTimeout(resolve, Math.min(RESOLVER_RETRY_REFRESH_TIMEOUT_MS, remaining))
     ),
   ]).catch(() => undefined);
-  if (!sawTransientFailure && !sawSkip && summariseProviderBaseUrls() === baseUrlsBefore) return first;
+  if (!sawTransientFailure && !sawSkip && summariseProviderBaseUrls() === baseUrlsBefore) return traced(first);
 
   const retryBudget = deadline - Date.now();
-  if (retryBudget <= 0) return first;
+  if (retryBudget <= 0) return traced(first);
 
-  const retry = await awaitResolveWithin(startResolvePass(request), retryBudget);
-  return retry ? preferResolution(first, retry) : first;
+  passes.push({});
+  const retry = await awaitResolveWithin(startResolvePass(request, passes[1]), retryBudget);
+  return traced(retry ? preferResolution(first, retry) : first);
 }
 
 /**
@@ -3428,7 +3607,16 @@ function firstNativeByPriority(
   tasks: Array<Promise<WebPlayerResult | null>>,
   graceMs: number
 ): Promise<WebPlayerResult | null> {
-  const outcomes: Array<{ done: boolean; value: WebPlayerResult | null }> = tasks.map(() => ({
+  return firstHitByPriority(tasks, graceMs, (value) => Boolean(value?.streamUrl));
+}
+
+/** `firstNativeByPriority` for any kind of answer; `isHit` says which ones count. */
+function firstHitByPriority<T>(
+  tasks: Array<Promise<T | null>>,
+  graceMs: number,
+  isHit: (value: T | null) => boolean
+): Promise<T | null> {
+  const outcomes: Array<{ done: boolean; value: T | null }> = tasks.map(() => ({
     done: false,
     value: null,
   }));
@@ -3437,7 +3625,7 @@ function firstNativeByPriority(
   return new Promise((resolve) => {
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
     let answered = false;
-    const answer = (value: WebPlayerResult | null) => {
+    const answer = (value: T | null) => {
       if (answered) return;
       answered = true;
       if (graceTimer) clearTimeout(graceTimer);
@@ -3459,7 +3647,7 @@ function firstNativeByPriority(
       void task
         .catch(() => null)
         .then((value) => {
-          outcomes[index] = { done: true, value: value?.streamUrl ? value : null };
+          outcomes[index] = { done: true, value: isHit(value) ? value : null };
           evaluate();
         });
     });
@@ -3512,7 +3700,11 @@ async function resolveDizipalStream(
   );
 }
 
-async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebPlayerResult> {
+/** HDFilm's steps in order; the furthest one a pass reached is the one reported. */
+const HDFILM_STAGES = ["no_match", "no_episode", "no_page", "no_player", "no_stream"] as const;
+type HdfilmStage = (typeof HDFILM_STAGES)[number];
+
+async function resolveWebPlayerUrlInner(request: WebPlayerRequest, trace: PassTrace = {}): Promise<WebPlayerResult> {
   // Every tier starts at once and the answer follows tier priority (HDFilm →
   // Dizipal → Dizibal → Kült Filmler). They used to run one after another, so a title only
   // Dizibal had paid for HDFilm's search, both Turkish-title retries and
@@ -3529,20 +3721,44 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
   // Fetched once, and early, so no tier's retry waits for it.
   const turkishTitle = fetchTurkishAlternativeTitle(request);
 
+  let hdfilmStage: HdfilmStage | null = null;
+  const stoppedAt = (stage: HdfilmStage): null => {
+    if (!hdfilmStage || HDFILM_STAGES.indexOf(stage) > HDFILM_STAGES.indexOf(hdfilmStage)) hdfilmStage = stage;
+    return null;
+  };
+
   const hdfilmStream = async (title: string, originalTitle?: string): Promise<WebPlayerResult | null> => {
     const match = await findBestHdFilmMatch(title, request.castNames ?? [], request.year, originalTitle);
-    if (!match) return null;
+    if (!match) return stoppedAt("no_match");
     if (isSeries) {
-      if (!request.seasonNumber || !request.episodeNumber) return null;
+      if (!request.seasonNumber || !request.episodeNumber) return stoppedAt("no_episode");
       const episodeResult = await resolvePlayableSeriesEpisodeUrl(match.url, request.seasonNumber, request.episodeNumber);
-      if (!episodeResult) return null;
-      return considerHdFilmResult(
-        buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback)
+      if (!episodeResult) return stoppedAt("no_episode");
+      return (
+        considerHdFilmResult(
+          buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback)
+        ) ?? stoppedAt("no_stream")
       );
     }
     const videoCheck = await checkVideoAvailability(match.url);
-    if (!videoCheck.available) return null;
-    return considerHdFilmResult(buildHdFilmResult(match.url, videoCheck.qualityWarning, videoCheck.nativeFallback));
+    if (!videoCheck.available) return stoppedAt(videoCheck.reason ?? "no_player");
+    return (
+      considerHdFilmResult(buildHdFilmResult(match.url, videoCheck.qualityWarning, videoCheck.nativeFallback)) ??
+      stoppedAt("no_stream")
+    );
+  };
+
+  // Each tier's outcome and time, for the resolve's telemetry.
+  const timed = (
+    tier: string,
+    task: Promise<WebPlayerResult | null>,
+    missLabel: () => string = () => "miss"
+  ): Promise<WebPlayerResult | null> => {
+    const tierStartedAt = Date.now();
+    return task.then((value) => {
+      trace[tier] = `${value?.streamUrl ? "hit" : missLabel()}/${Date.now() - tierStartedAt}`;
+      return value;
+    });
   };
 
   const hdfilmTier = async () => {
@@ -3574,7 +3790,12 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest): Promise<WebP
     ]);
 
   const result = await firstNativeByPriority(
-    [hdfilmTier(), dizipalTier(), dizibalTier(), kultfilmlerTier()],
+    [
+      timed("hd", hdfilmTier(), () => hdfilmStage ?? "miss"),
+      timed("dp", dizipalTier()),
+      timed("db", dizibalTier()),
+      timed("kf", kultfilmlerTier()),
+    ],
     PROVIDER_PRIORITY_GRACE_MS
   );
   return result ?? { url: "", source: "not_found" };
@@ -4222,6 +4443,8 @@ export const __internal = {
   resetProviderSilence: () => providerSilence.clear(),
   isCloudflareChallengeStatus,
   checkVideoAvailability,
+  fetchHdFilmSearch,
+  resolveHdFilmNativeFallback,
   decodeDizipalCfg,
   decryptDizipalEnc,
   decodeRapidrameByInterpretingDcBody,

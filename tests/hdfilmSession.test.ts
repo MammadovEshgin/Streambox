@@ -3,7 +3,13 @@ import test from "node:test";
 
 import axios from "axios";
 
-import { hdfilmSession, isHdfilmAppBlockBody, isHdfilmAppBlockResponse, isHdfilmSessionPath } from "../src/services/hdfilmSession";
+import {
+  __resetHdfilmChallengeForTests,
+  hdfilmSession,
+  isHdfilmAppBlockBody,
+  isHdfilmAppBlockResponse,
+  isHdfilmSessionPath,
+} from "../src/services/hdfilmSession";
 import { __internal } from "../src/services/WebPlayerService";
 
 // Read only at call time, so setting it after the imports is enough.
@@ -29,6 +35,37 @@ function openFakeBridge(): FakeHost {
     hdfilmSession.attachHost(open ? { evaluate: (script) => host.scripts.push(script), reload: () => undefined } : null);
   });
   return host;
+}
+
+/** Run a session's page probe against a stand-in page; returns what it posts to the app. */
+function runPageProbe(
+  probe: string,
+  page: { title: string; text?: string; challengeOptions?: Record<string, unknown> }
+): { ready: boolean; blocked: boolean; engine: number; title: string } {
+  let posted = "";
+  const window = {
+    _cf_chl_opt: page.challengeOptions,
+    ReactNativeWebView: { postMessage: (message: string) => (posted = message) },
+  };
+  const document = {
+    title: page.title,
+    body: { innerText: page.text ?? "" },
+    visibilityState: "visible",
+    getElementById: () => null,
+    querySelector: () => null,
+  };
+  const navigator = {
+    userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UQ1A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.6478.71 Mobile Safari/537.36",
+  };
+  new Function("window", "document", "navigator", probe)(window, document, navigator);
+  return JSON.parse(posted);
+}
+
+/** A cold start: no session, and nothing remembered about the gate. */
+function resetHdfilm(): void {
+  hdfilmSession.resetForTests();
+  __resetHdfilmChallengeForTests();
+  __internal.resetProviderSilence();
 }
 
 function challenge(): Error {
@@ -76,14 +113,26 @@ test("HDFilm's app-block page is recognised by its body, not a header", () => {
 test("the session holds a page under /dizi/ and is ready on anything but the challenge", () => {
   hdfilmSession.resetForTests();
   assert.equal(hdfilmSession.sessionUrl(), `${BASE}/dizi/streambox/`);
-  assert.match(hdfilmSession.pageProbe, /ready = !!document\.body && !\/just a moment\|attention required\/i\.test\(document\.title\);/);
+  const probe = (title: string, challengeType?: string) =>
+    runPageProbe(hdfilmSession.pageProbe, { title, challengeOptions: challengeType ? { cType: challengeType } : {} });
+  // HDFilm's 404 page. Cloudflare leaves a `_cf_chl_opt` object on real pages
+  // too, without a challenge type.
+  assert.equal(probe("404 Hata - Sayfa Bulunamadı | Hdfilmcehennemi | Film izle").ready, true);
+  assert.equal(probe("Just a moment...", "managed").ready, false);
+  // The challenge page's title is translated to the phone's language; it was
+  // taken for a cleared page, and every read on it then came back challenged.
+  assert.equal(probe("Один момент…", "managed").ready, false);
+  assert.equal(probe("Un instant…", "precursor_interstitial").ready, false);
+  assert.equal(probe("Attention Required! | Cloudflare").ready, false);
+  // The site's own page counts even if a challenge type were left behind.
+  assert.equal(probe("Verity izle | Hdfilmcehennemi", "managed").ready, true);
+  assert.equal(probe("Hdfilmcehennemi").engine, 126, "the WebView's engine version is reported");
   assert.equal(hdfilmSession.isNavigationAllowed(`${BASE}/dizi/streambox/`), true);
   assert.equal(hdfilmSession.isNavigationAllowed("https://ads.example/x"), false);
 });
 
-test("a series page still challenged after the retries is read through the session", async () => {
-  hdfilmSession.resetForTests();
-  __internal.resetProviderSilence();
+test("a challenged series page is read through the session", async () => {
+  resetHdfilm();
   const host = openFakeBridge();
   const originalGet = axios.get;
   let nativeCalls = 0;
@@ -94,7 +143,7 @@ test("a series page still challenged after the retries is read through the sessi
   try {
     const check = __internal.checkVideoAvailability(EPISODE);
     await until(() => hdfilmSession.isOpening());
-    assert.equal(nativeCalls, 3, "the native request and its two retries come first");
+    assert.equal(nativeCalls, 1, "one native try finds the gate; asking again would only repeat the 403");
 
     hdfilmSession.handleMessage(JSON.stringify({ kf: "page", ready: false, title: "Just a moment..." }));
     assert.equal(host.scripts.length, 0, "nothing runs on the challenge page");
@@ -109,7 +158,7 @@ test("a series page still challenged after the retries is read through the sessi
     await until(() => host.scripts.length === 2);
     answerLast(host, EPISODE_HTML);
     assert.equal((await next).available, true);
-    assert.equal(nativeCalls, 3, "no native request while the session is open");
+    assert.equal(nativeCalls, 1, "no native request while the session is open");
   } finally {
     axios.get = originalGet;
     hdfilmSession.resetForTests();
@@ -117,8 +166,7 @@ test("a series page still challenged after the retries is read through the sessi
 });
 
 test("a challenged film page is read through the session; search and the site's own 403s are not", async () => {
-  hdfilmSession.resetForTests();
-  __internal.resetProviderSilence();
+  resetHdfilm();
   const host = openFakeBridge();
   const originalGet = axios.get;
   try {
@@ -145,8 +193,7 @@ test("a challenged film page is read through the session; search and the site's 
 });
 
 test("while the session is still opening, pages wait on it instead of being asked natively", async () => {
-  hdfilmSession.resetForTests();
-  __internal.resetProviderSilence();
+  resetHdfilm();
   const host = openFakeBridge();
   const originalGet = axios.get;
   let nativeCalls = 0;
@@ -170,8 +217,7 @@ test("while the session is still opening, pages wait on it instead of being aske
 });
 
 test("with no bridge mounted a challenged series page fails as before", async () => {
-  hdfilmSession.resetForTests();
-  __internal.resetProviderSilence();
+  resetHdfilm();
   const originalGet = axios.get;
   axios.get = (async () => {
     throw challenge();

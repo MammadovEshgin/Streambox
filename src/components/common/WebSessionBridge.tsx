@@ -10,10 +10,15 @@ import type { WebSession } from "../../services/webSession";
  * asks the site for something, and unmounts after a quiet spell.
  */
 export function WebSessionBridge({ session }: { session: WebSession }) {
-  const [open, setOpen] = useState(false);
+  // `generation` changes when the session wants a fresh WebView in place of one
+  // that stopped answering (its process was killed, say).
+  const [{ open, generation }, setState] = useState({ open: false, generation: 0 });
   const webViewRef = useRef<WebView>(null);
 
-  useEffect(() => session.subscribe(setOpen), [session]);
+  useEffect(
+    () => session.subscribe((isOpen, nextGeneration) => setState({ open: isOpen, generation: nextGeneration })),
+    [session]
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -29,6 +34,7 @@ export function WebSessionBridge({ session }: { session: WebSession }) {
   return (
     <View pointerEvents="none" style={styles.host}>
       <WebView
+        key={generation}
         ref={webViewRef}
         source={{ uri: session.sessionUrl() }}
         javaScriptEnabled
@@ -40,6 +46,8 @@ export function WebSessionBridge({ session }: { session: WebSession }) {
         injectedJavaScript={session.pageProbe}
         onMessage={(event: WebViewMessageEvent) => session.handleMessage(event.nativeEvent.data)}
         onError={(event) => session.handleLoadError(event.nativeEvent.description)}
+        onRenderProcessGone={() => session.handleProcessGone()}
+        onContentProcessDidTerminate={() => session.handleProcessGone()}
         onShouldStartLoadWithRequest={(request) => session.isNavigationAllowed(request.url)}
       />
     </View>

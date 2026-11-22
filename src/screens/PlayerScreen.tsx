@@ -941,6 +941,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
           mediaType: route.params.mediaType,
           isEpisode: route.params.episodeNumber != null,
           isRetry: resolveNonce > 0,
+          // Which tier answered what, and which HDFilm step failed.
+          ...(result.trace ?? {}),
         });
 
         if (result.qualityWarning && result.source !== "not_found") {

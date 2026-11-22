@@ -34,9 +34,13 @@ export type WebSessionFetchResult =
   /**
    * `unavailable`: the session could not be opened recently, so nothing was
    * asked (not a failure of this request). `timeout`: no answer in time, which
-   * is worth asking again. `http`: the site answered with an error status.
+   * is worth asking again. `http`: the site answered with an error status;
+   * `body` is the start of that error page, enough to tell a block page apart.
    */
-  | { ok: false; reason: "unavailable" | "timeout" | "http"; status?: number };
+  | { ok: false; reason: "unavailable" | "timeout" | "http"; status?: number; body?: string };
+
+/** Extra request headers for one read (same-origin, so any header may be set). */
+export type WebSessionFetchOptions = { headers?: Record<string, string> };
 
 export type WebSessionOptions = {
   /** Telemetry event for the session's outcomes (`ready`, `challenge_timeout`, …). */
@@ -61,27 +65,51 @@ export type WebSession = ReturnType<typeof createWebSession>;
 type Pending = {
   id: number;
   url: string;
+  headers: Record<string, string> | undefined;
+  /** Sent again once already, after the clearance lapsed. */
   retried: boolean;
+  /** The WebView was replaced once already for this request. */
+  recycled: boolean;
   timer: ReturnType<typeof setTimeout>;
+  /** Runs out when the page never confirms it started the request. */
+  ackTimer: ReturnType<typeof setTimeout> | null;
   resolve: (result: WebSessionFetchResult) => void;
 };
+
+/**
+ * How long the page has to confirm a request script started. It answers in
+ * milliseconds; silence means the script never ran — the WebView's process was
+ * killed, or it was mid-navigation — and without this the request sat out its
+ * whole timeout on a page that was never going to answer.
+ */
+const ACK_TIMEOUT_MS = 2_500;
+/** How much of an error page is carried back (a block page is recognised by its text). */
+const ERROR_BODY_LIMIT = 2_000;
 
 type Phase = "closed" | "opening" | "ready";
 
 /**
  * Runs after every page load. The session is ready once `readyExpression`
- * holds. `blocked` is Cloudflare's block page ("Attention Required!", "Sorry,
+ * holds. The expression may use `text` (the page's text) and `challenge`, which
+ * is true on Cloudflare's challenge page whatever language it is shown in: the
+ * page's title is translated to the phone's language ("Один момент…", "Un
+ * instant…"), so a test for the English title alone calls that page ready.
+ * `blocked` is Cloudflare's block page ("Attention Required!", "Sorry,
  * you have been blocked"): the site turns this network away outright, so there
  * is no challenge to wait out.
  */
 export function webSessionPageProbe(readyExpression: string): string {
   return `(function () {
   var text = document.body ? document.body.innerText : "";
+  var chl = window._cf_chl_opt;
+  var challenge = !!(chl && typeof chl.cType === "string" && chl.cType);
   var ready = false;
   try { ready = ${readyExpression}; } catch (e) {}
+  var engine = String(navigator.userAgent || "").split("Chrome/")[1];
   window.ReactNativeWebView.postMessage(JSON.stringify({
     kf: "page",
     ready: ready,
+    engine: parseInt(engine, 10) || 0,
     blocked: !!document.getElementById("cf-error-details") || /you have been blocked/i.test(text),
     title: String(document.title || "").slice(0, 60),
     visibility: String(document.visibilityState || ""),
@@ -91,17 +119,28 @@ export function webSessionPageProbe(readyExpression: string): string {
 true;`;
 }
 
-function fetchScript(id: number, url: string): string {
+function fetchScript(
+  id: number,
+  url: string,
+  headers: Record<string, string> | undefined,
+  timeoutMs: number
+): string {
   return `(function () {
   var post = function (message) { window.ReactNativeWebView.postMessage(JSON.stringify(message)); };
-  fetch(${JSON.stringify(url)}, { credentials: "same-origin" })
+  post({ kf: "ack", id: ${id} });
+  var controller = typeof AbortController === "function" ? new AbortController() : null;
+  var timer = controller ? setTimeout(function () { controller.abort(); }, ${timeoutMs}) : null;
+  var done = function (message) { if (timer) clearTimeout(timer); post(message); };
+  fetch(${JSON.stringify(url)}, { credentials: "same-origin", headers: ${JSON.stringify(headers ?? {})},
+    signal: controller ? controller.signal : undefined })
     .then(function (response) {
       return response.text().then(function (body) {
-        post({ kf: "fetch", id: ${id}, status: response.status,
-          challenged: response.headers.get("cf-mitigated") === "challenge", body: body });
+        done({ kf: "fetch", id: ${id}, status: response.status,
+          challenged: response.headers.get("cf-mitigated") === "challenge",
+          body: response.ok ? body : body.slice(0, ${ERROR_BODY_LIMIT}) });
       });
     })
-    .catch(function () { post({ kf: "fetch", id: ${id}, status: 0, challenged: false, body: "" }); });
+    .catch(function () { done({ kf: "fetch", id: ${id}, status: 0, challenged: false, body: "" }); });
 })();
 true;`;
 }
@@ -117,7 +156,11 @@ export function createWebSession(options: WebSessionOptions) {
   const pending = new Map<number, Pending>();
   let challengeTimer: ReturnType<typeof setTimeout> | null = null;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const listeners = new Set<(open: boolean) => void>();
+  const listeners = new Set<(open: boolean, generation: number) => void>();
+  /** Bumped to make the bridge mount a new WebView in place of a dead one. */
+  let generation = 0;
+  /** The page's browser engine version, for telemetry (0 = unknown). */
+  let engine = 0;
   /** What the page last reported, for the telemetry of a challenge that never clears. */
   let pageLoads = 0;
   let lastPage: { title: string; visibility: string; challengeFrame: boolean } | null = null;
@@ -146,9 +189,9 @@ export function createWebSession(options: WebSessionOptions) {
   }
 
   /** The bridge mounts its WebView while this reports open. */
-  function subscribe(listener: (open: boolean) => void): () => void {
+  function subscribe(listener: (open: boolean, generation: number) => void): () => void {
     listeners.add(listener);
-    listener(phase !== "closed");
+    listener(phase !== "closed", generation);
     return () => {
       listeners.delete(listener);
     };
@@ -193,7 +236,7 @@ export function createWebSession(options: WebSessionOptions) {
   }
 
   /** GET a same-origin URL on the site. Never rejects. */
-  function fetchText(url: string): Promise<WebSessionFetchResult> {
+  function fetchText(url: string, fetchOptions: WebSessionFetchOptions = {}): Promise<WebSessionFetchResult> {
     // No bridge mounted (outside the app shell) means no WebView will ever open.
     if (listeners.size === 0 || Date.now() < unavailableUntil) {
       return Promise.resolve({ ok: false, reason: "unavailable" });
@@ -205,13 +248,14 @@ export function createWebSession(options: WebSessionOptions) {
       const request: Pending = {
         id,
         url,
+        headers: fetchOptions.headers,
         retried: false,
+        recycled: false,
         // Covers the challenge too: a request queued while the session opens
         // waits for it, and the challenge timer fails it sooner if it can't.
-        timer: setTimeout(
-          () => settle(id, { ok: false, reason: "timeout" }),
-          options.challengeTimeoutMs + options.requestTimeoutMs
-        ),
+        // Once the request is actually sent, `dispatch` shortens this.
+        timer: setTimeout(() => settle(id, { ok: false, reason: "timeout" }), queuedTimeoutMs()),
+        ackTimer: null,
         resolve,
       };
       pending.set(id, request);
@@ -234,6 +278,7 @@ export function createWebSession(options: WebSessionOptions) {
       visibility?: unknown;
       challengeFrame?: unknown;
       blocked?: unknown;
+      engine?: unknown;
     };
     try {
       message = JSON.parse(raw);
@@ -249,13 +294,24 @@ export function createWebSession(options: WebSessionOptions) {
         visibility: typeof message.visibility === "string" ? message.visibility : "",
         challengeFrame: message.challengeFrame === true,
       };
+      if (typeof message.engine === "number" && message.engine > 0) engine = message.engine;
       if (message.blocked === true && phase === "opening") {
         giveUp("blocked");
         return;
       }
       if (message.ready !== true) return;
       if (phase === "opening") {
-        trackEvent(options.eventName, "network", { outcome: "ready", ms: Date.now() - openedAt, loads: pageLoads });
+        trackEvent(options.eventName, "network", {
+          outcome: "ready",
+          ms: Date.now() - openedAt,
+          loads: pageLoads,
+          engine,
+          // Which page the session took for "ready". On most phones HDFilm's
+          // session was ready after ONE page load and never served a stream,
+          // while the phones it worked on showed two (challenge, then page):
+          // the title says what the others were holding.
+          title: lastPage.title,
+        });
       }
       phase = "ready";
       clearChallengeTimer();
@@ -265,9 +321,12 @@ export function createWebSession(options: WebSessionOptions) {
       return;
     }
 
-    if (message?.kf !== "fetch" || typeof message.id !== "number") return;
+    if ((message?.kf !== "fetch" && message?.kf !== "ack") || typeof message.id !== "number") return;
     const request = pending.get(message.id);
     if (!request) return;
+    // The page is alive and running the request.
+    clearAckTimer(request);
+    if (message.kf === "ack") return;
     const status = typeof message.status === "number" ? message.status : 0;
 
     // The clearance lapsed mid-session: pass the challenge again, then retry once.
@@ -276,15 +335,34 @@ export function createWebSession(options: WebSessionOptions) {
       phase = "opening";
       openedAt = Date.now();
       startChallengeTimer();
+      // Everything queued waits on the challenge again.
+      for (const queued of pending.values()) {
+        clearAckTimer(queued);
+        armTimer(queued, queuedTimeoutMs());
+      }
       host?.reload();
       return;
     }
 
     if (status >= 200 && status < 300 && typeof message.body === "string") {
       settle(request.id, { ok: true, body: message.body });
+    } else if (status === 0) {
+      settle(request.id, { ok: false, reason: "timeout" });
     } else {
-      settle(request.id, status === 0 ? { ok: false, reason: "timeout" } : { ok: false, reason: "http", status });
+      const body = typeof message.body === "string" ? message.body.slice(0, ERROR_BODY_LIMIT) : "";
+      settle(request.id, { ok: false, reason: "http", status, body });
     }
+  }
+
+  /**
+   * The WebView's renderer process is gone (Android kills it under memory
+   * pressure, iOS terminates the content process). The view is a dead shell:
+   * scripts injected into it do nothing, so it is replaced.
+   */
+  function handleProcessGone(): void {
+    if (phase === "closed") return;
+    if (pending.size === 0) close();
+    else recycle("process_gone");
   }
 
   /**
@@ -311,8 +389,55 @@ export function createWebSession(options: WebSessionOptions) {
     }
   }
 
+  /** A request not yet sent waits out the challenge first. */
+  function queuedTimeoutMs(): number {
+    return options.challengeTimeoutMs + options.requestTimeoutMs;
+  }
+
+  function armTimer(request: Pending, ms: number): void {
+    clearTimeout(request.timer);
+    request.timer = setTimeout(() => settle(request.id, { ok: false, reason: "timeout" }), ms);
+  }
+
+  function clearAckTimer(request: Pending): void {
+    if (request.ackTimer) clearTimeout(request.ackTimer);
+    request.ackTimer = null;
+  }
+
   function dispatch(request: Pending): void {
-    host?.evaluate(fetchScript(request.id, request.url));
+    // Sent now, so it gets a request's worth of time, not a challenge's too. A
+    // read that hung inside a ready session used to hold its caller for the
+    // challenge budget as well (20s on HDFilm: the whole resolve).
+    armTimer(request, options.requestTimeoutMs + 1_000);
+    clearAckTimer(request);
+    request.ackTimer = setTimeout(() => {
+      request.ackTimer = null;
+      if (!pending.has(request.id) || phase !== "ready") return;
+      if (request.recycled) settle(request.id, { ok: false, reason: "timeout" });
+      else recycle("no_ack");
+    }, ACK_TIMEOUT_MS);
+    host?.evaluate(fetchScript(request.id, request.url, request.headers, options.requestTimeoutMs));
+  }
+
+  /**
+   * Replace a WebView that stopped answering with a fresh one. Its clearance
+   * cookie survives, so the new page is usually ready in about a second, and
+   * everything queued is sent again on it. Once per request.
+   */
+  function recycle(cause: "no_ack" | "process_gone"): void {
+    trackEvent(options.eventName, "network", { outcome: "recycled", cause, queued: pending.size, engine }, "warning");
+    for (const request of pending.values()) {
+      request.recycled = true;
+      clearAckTimer(request);
+      armTimer(request, queuedTimeoutMs());
+    }
+    phase = "opening";
+    openedAt = Date.now();
+    pageLoads = 0;
+    lastPage = null;
+    generation += 1;
+    startChallengeTimer();
+    notify();
   }
 
   function settle(id: number, result: WebSessionFetchResult): void {
@@ -320,6 +445,7 @@ export function createWebSession(options: WebSessionOptions) {
     if (!request) return;
     pending.delete(id);
     clearTimeout(request.timer);
+    clearAckTimer(request);
     request.resolve(result);
     if (pending.size === 0 && phase !== "closed") scheduleIdleClose();
   }
@@ -394,7 +520,7 @@ export function createWebSession(options: WebSessionOptions) {
 
   function notify(): void {
     const isOpen = phase !== "closed";
-    for (const listener of listeners) listener(isOpen);
+    for (const listener of listeners) listener(isOpen, generation);
   }
 
   function isSameOrigin(url: string): boolean {
@@ -407,7 +533,10 @@ export function createWebSession(options: WebSessionOptions) {
 
   /** Test seam — back to a cold start. */
   function resetForTests(): void {
-    for (const request of pending.values()) clearTimeout(request.timer);
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      clearAckTimer(request);
+    }
     pending.clear();
     clearChallengeTimer();
     clearIdleTimer();
@@ -433,6 +562,7 @@ export function createWebSession(options: WebSessionOptions) {
     fetchText,
     handleMessage,
     handleLoadError,
+    handleProcessGone,
     isNavigationAllowed,
     resetForTests,
   };

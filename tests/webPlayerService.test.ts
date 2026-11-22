@@ -584,13 +584,15 @@ test("a slow pass is awaited, not abandoned and restarted", () => {
   );
   assert.ok(resolve.length > 0, "resolveWebPlayerUrl should be locatable");
   // The same in-flight promise is waited on again for the rest of the budget.
-  assert.match(resolve, /const pending = startResolvePass\(request\);/);
+  assert.equal(resolve.includes("const pending = startResolvePass(request, passes[0]);"), true);
   assert.match(resolve, /await awaitResolveWithin\(pending, remainingForPass\)/);
   // And a clean miss is retried only when the published domains changed; a
   // pass that lost a request, or skipped a provider, is always retried.
-  assert.match(
-    resolve,
-    /if \(!sawTransientFailure && !sawSkip && summariseProviderBaseUrls\(\) === baseUrlsBefore\) return first;/
+  assert.equal(
+    resolve.includes(
+      "if (!sawTransientFailure && !sawSkip && summariseProviderBaseUrls() === baseUrlsBefore) return traced(first);"
+    ),
+    true
   );
 });
 

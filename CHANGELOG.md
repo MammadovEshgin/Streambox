@@ -4,6 +4,18 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-23
+
+- More reliable HDFilm. Since HDFilm closed its pages to apps (2026-11-19) it was playing for
+  only two or three viewers a day; everyone else saw "Not available" for films only HDFilm has.
+  The hidden browser that reads HDFilm now recovers when it stops answering, no longer mistakes
+  Cloudflare's check page for the site when the phone is not set to English, and retries a page
+  HDFilm refuses to apps. This is a first step: the app now also records which step fails on
+  each phone, so the remaining cases can be fixed from real data.
+- Faster starts and shorter waits. HDFilm's two video sources are asked at the same time, pages
+  go straight to the hidden browser instead of being refused first, and a page that hangs is
+  given up on after 9 seconds instead of 20.
+
 ## 2026-11-22
 
 - Faster "Not available" while Dizipal is down. Dizipal's site has been unreachable since
