@@ -271,9 +271,10 @@ function noteProviderFailure(error: unknown): void {
  * rest of that pass — and every resolve for the next minute — skips it
  * instantly and spends the budget on the providers that are answering.
  *
- * Only a request that got NO answer counts. Any HTTP reply, including 404,
- * 403 and 500, proves the host is alive and clears the record: a provider is
- * never skipped for saying "no".
+ * Only a request the SITE did not answer counts. Any reply of its own,
+ * including 404, 403 and 500, proves the host is alive and clears the record: a
+ * provider is never skipped for saying "no". The edge answering for a site that
+ * is down (`isOriginDownStatus`) is not a reply of its own.
  */
 const PROVIDER_UNREACHABLE_STRIKES = 2;
 const PROVIDER_UNREACHABLE_COOLDOWN_MS = 60_000;
@@ -288,8 +289,28 @@ const PROVIDER_STRIKE_WINDOW_MS = 120_000;
 /** Nothing heard from a provider for this long: forget the outage entirely. */
 const PROVIDER_SILENCE_FORGET_MS = 1_800_000;
 
-type ProviderSilence = { strikes: number; lastStrikeAt: number; skipUntil: number; outages: number };
+type ProviderSilence = {
+  strikes: number;
+  lastStrikeAt: number;
+  skipUntil: number;
+  outages: number;
+  /** The strikes were the edge saying the origin is down, not silence. */
+  originDown: boolean;
+};
 const providerSilence = new Map<string, ProviderSilence>();
+
+/**
+ * The CDN in front of a provider answering in its place: 502/504 and
+ * Cloudflare's 520-530 mean the edge reached no origin. They come back in a
+ * tenth of a second, so they never cost a timeout, but they are no more an
+ * answer from the site than silence is. Dizipal's origin was down from
+ * 2026-11-21 (502 on every path): each 502 counted as "ask again", so every
+ * title the other providers lacked ran the whole resolve twice and took 13-17s
+ * to say "Not available".
+ */
+function isOriginDownStatus(status: number | undefined): boolean {
+  return status === 502 || status === 504 || (status !== undefined && status >= 520 && status <= 530);
+}
 
 /**
  * Requests the breaker skipped. A pass that skipped a provider has not asked
@@ -299,6 +320,11 @@ const providerSilence = new Map<string, ProviderSilence>();
  * every HDFilm-only title (*The Fall*, 2026-10-24: ten episodes in a row) until
  * the cooldown ran out or the app was restarted — "clearing the cache" fixed
  * it by killing the app.
+ *
+ * That is about a phone that could not reach a healthy site. A site whose own
+ * edge reported its origin down is skipped without counting here: it was heard
+ * from, the answer was "down", and asking again inside the cooldown is the
+ * second resolve pass that helps nobody.
  */
 let providerSkips = 0;
 
@@ -340,7 +366,9 @@ function noteProviderAnswered(provider: string): void {
 }
 
 function noteProviderSilence(provider: string, error: unknown): void {
-  if ((error as { response?: unknown } | null)?.response !== undefined) {
+  const response = (error as { response?: { status?: number } } | null)?.response;
+  const originDown = isOriginDownStatus(response?.status);
+  if (response !== undefined && !originDown) {
     noteProviderAnswered(provider);
     return;
   }
@@ -360,9 +388,12 @@ function noteProviderSilence(provider: string, error: unknown): void {
     lastStrikeAt: now,
     skipUntil: opening ? now + cooldown : 0,
     outages,
+    originDown,
   });
   if (opening) {
-    debugLog(`[WebPlayer] ${provider} answered nothing ${strikes}x — skipping it for ${cooldown / 1000}s`);
+    debugLog(
+      `[WebPlayer] ${provider} ${originDown ? "is down behind its edge" : "answered nothing"} ${strikes}x — skipping it for ${cooldown / 1000}s`
+    );
   }
 }
 
@@ -378,8 +409,9 @@ async function providerGet<T = string>(
 ): Promise<import("axios").AxiosResponse<T>> {
   if (isProviderSkipped(provider)) {
     // Not a request failure, but not an answer either: the resolver gives
-    // skipped hosts one more try before a miss is final (see providerSkips).
-    providerSkips += 1;
+    // skipped hosts one more try before a miss is final (see providerSkips) —
+    // unless the host's own edge said its origin is down.
+    if (!providerSilence.get(provider)?.originDown) providerSkips += 1;
     throw new ProviderSkippedError(provider);
   }
 

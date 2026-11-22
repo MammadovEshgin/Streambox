@@ -78,6 +78,30 @@ export function isStreamLinkExpired(streamUrl: string | null | undefined, now: n
   }
 }
 
+/**
+ * What the player's error says about the link.
+ *   gone      — the CDN refuses the link itself (401/403/404/410): it has
+ *               expired or been withdrawn, and reloading it answers the same.
+ *               Dizipal's CDN 410s its links about half an hour in; three
+ *               reloads were spent on each before a fresh one was asked for.
+ *   throttled — 429: the CDN is rate-limiting (HDFilm's, mid-film). Reloading
+ *               at once only adds requests to the count that tripped it.
+ *   other     — a dropped connection, a decoder error, a freeze: reload.
+ */
+export type StreamFailureKind = "gone" | "throttled" | "other";
+
+export function classifyStreamFailure(reason: string | null | undefined): StreamFailureKind {
+  const status = Number(reason?.match(/Response code:\s*(\d{3})/i)?.[1]);
+  if (status === 401 || status === 403 || status === 404 || status === 410) return "gone";
+  if (status === 429) return "throttled";
+  return "other";
+}
+
+/** How long to hold a reload: nothing normally, 4s/8s/12s when the CDN is throttling. */
+export function reloadDelayMs(kind: StreamFailureKind, attempt: number): number {
+  return kind === "throttled" ? Math.min(Math.max(attempt, 1), 3) * 4_000 : 0;
+}
+
 export type RecoveryState = {
   /** In-place reloads used in the current budget window. */
   attempts: number;

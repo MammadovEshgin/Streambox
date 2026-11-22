@@ -73,9 +73,11 @@ import {
 import { HlsWebPlayer, type HlsWebPlayerEvent } from "./player/HlsWebPlayer";
 import {
   STREAM_HEALTH_SAMPLE_MS,
+  classifyStreamFailure,
   isStreamLinkExpired,
   nextStallWatch,
   planStreamRecovery,
+  reloadDelayMs,
   type RecoveryState,
   type StallWatch,
 } from "./player/streamHealth";
@@ -526,6 +528,14 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const nativePlaybackStartedRef = useRef(false);
   // The last position seen advancing, for a player that reports 0 after an error.
   const lastPlaybackPositionRef = useRef(0);
+  // A reload held back because the CDN is rate-limiting (see reloadDelayMs).
+  const streamReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (streamReloadTimerRef.current) clearTimeout(streamReloadTimerRef.current);
+    },
+    []
+  );
   // Re-opens the current source even when a re-resolve hands back the same URL
   // (HDFilm's decoded stream is cached per page, so the URL often is the same).
   const [sourceGeneration, setSourceGeneration] = useState(0);
@@ -1539,8 +1549,8 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
   const recoverCurrentStream = useCallback(
     (reason?: string): boolean => {
       if (!videoPlayer || !directStreamUrl) return false;
-      // A fresh link is already on its way.
-      if (streamRefreshInFlightRef.current) return true;
+      // A fresh link, or a held-back reload, is already on its way.
+      if (streamRefreshInFlightRef.current || streamReloadTimerRef.current) return true;
 
       let resumeAt = 0;
       try {
@@ -1551,8 +1561,11 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
       // A player that just errored can report 0; the last position seen playing is the truth.
       if (resumeAt < 1) resumeAt = lastPlaybackPositionRef.current;
 
+      // A link the CDN refuses outright (410, 403…) is as dead as an expired
+      // one: reloading it answers the same, so go straight to a fresh link.
+      const failure = classifyStreamFailure(reason);
       const plan = planStreamRecovery(streamRecoveryStateRef.current, {
-        linkExpired: isStreamLinkExpired(directStreamUrl),
+        linkExpired: isStreamLinkExpired(directStreamUrl) || failure === "gone",
         maxAttempts: MAX_STREAM_RECOVERY_ATTEMPTS,
         now: Date.now(),
       });
@@ -1569,24 +1582,34 @@ export function PlayerScreen({ route, navigation }: PlayerScreenProps) {
         `[Player] Recovering stream in place (attempt ${plan.state.attempts}/${MAX_STREAM_RECOVERY_ATTEMPTS}) at ${resumeAt}s — ${reason ?? "unknown error"}`
       );
 
-      void videoPlayer
-        .replaceAsync({
-          uri: directStreamUrl,
-          headers: streamRequestHeaders(streamReferer),
-          contentType: directStreamType === "m3u8" ? ("hls" as ContentType) : undefined
-        })
-        .then(() => {
-          try {
-            if (resumeAt > 0) videoPlayer.currentTime = resumeAt;
-            videoPlayer.play();
-          } catch {
-            /* expo-video already torn down */
-          }
-        })
-        .catch((error: unknown) => {
-          debugLog("[Player] In-place recovery failed:", (error as Error)?.message ?? String(error));
-          setLoadError(t("player.errorStream"));
-        });
+      const reloading = playerResultRef.current;
+      const reload = () => {
+        streamReloadTimerRef.current = null;
+        // The viewer moved on (closed, another source) while the reload was held back.
+        if (playerResultRef.current !== reloading) return;
+        void videoPlayer
+          .replaceAsync({
+            uri: directStreamUrl,
+            headers: streamRequestHeaders(streamReferer),
+            contentType: directStreamType === "m3u8" ? ("hls" as ContentType) : undefined
+          })
+          .then(() => {
+            try {
+              if (resumeAt > 0) videoPlayer.currentTime = resumeAt;
+              videoPlayer.play();
+            } catch {
+              /* expo-video already torn down */
+            }
+          })
+          .catch((error: unknown) => {
+            debugLog("[Player] In-place recovery failed:", (error as Error)?.message ?? String(error));
+            setLoadError(t("player.errorStream"));
+          });
+      };
+      // A rate-limited CDN needs a pause, not another burst of requests.
+      const delay = reloadDelayMs(failure, plan.state.attempts);
+      if (delay > 0) streamReloadTimerRef.current = setTimeout(reload, delay);
+      else reload();
 
       return true;
     },

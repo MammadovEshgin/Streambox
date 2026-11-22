@@ -5,9 +5,11 @@ import {
   RECOVERY_BUDGET_RESET_MS,
   STREAM_FREEZE_MS,
   STREAM_REFRESH_MIN_INTERVAL_MS,
+  classifyStreamFailure,
   isStreamLinkExpired,
   nextStallWatch,
   planStreamRecovery,
+  reloadDelayMs,
   type RecoveryState,
   type StallWatch,
 } from "../src/screens/player/streamHealth";
@@ -95,4 +97,29 @@ test("an expired link is never reloaded; a fresh one is asked for at most once a
 
   const afterWait = planStreamRecovery(first.state, { linkExpired: true, maxAttempts: 3, now: 100_000 + STREAM_REFRESH_MIN_INTERVAL_MS + 1 });
   assert.equal(afterWait.step, "refresh");
+});
+
+test("a refused link goes straight to a fresh one; a rate-limited one waits before reloading", () => {
+  // Telemetry, 2026-11-20..22: Dizipal's CDN answered 410 about half an hour in
+  // and three reloads were spent on each dead link; HDFilm's answered 429 and
+  // was reloaded at once, into the same limit.
+  const exo = (code: number) => `A playback exception has occurred: Source error Response code: ${code}`;
+  assert.equal(classifyStreamFailure(exo(410)), "gone");
+  assert.equal(classifyStreamFailure(exo(403)), "gone");
+  assert.equal(classifyStreamFailure(exo(404)), "gone");
+  assert.equal(classifyStreamFailure(exo(429)), "throttled");
+  assert.equal(classifyStreamFailure(exo(500)), "other");
+  assert.equal(classifyStreamFailure("A playback exception has occurred: Source error java.net.ConnectException: Failed to connect"), "other");
+  assert.equal(classifyStreamFailure("A playback exception has occurred: MediaCodecVideoRenderer error, index=0"), "other");
+  assert.equal(classifyStreamFailure("freeze"), "other");
+  assert.equal(classifyStreamFailure(undefined), "other");
+
+  // A dead link is never reloaded, however much budget is left.
+  const state = { attempts: 0, lastRecoveryAt: 0, lastRefreshAt: 0 };
+  const gone = planStreamRecovery(state, { linkExpired: classifyStreamFailure(exo(410)) === "gone", maxAttempts: 3, now: 5_000 });
+  assert.equal(gone.step, "refresh");
+
+  assert.deepEqual([1, 2, 3, 4].map((attempt) => reloadDelayMs("throttled", attempt)), [4_000, 8_000, 12_000, 12_000]);
+  assert.equal(reloadDelayMs("other", 2), 0);
+  assert.equal(reloadDelayMs("gone", 1), 0);
 });

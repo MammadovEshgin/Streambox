@@ -4,6 +4,15 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-22
+
+- Faster "Not available" while Dizipal is down. Dizipal's site has been unreachable since
+  2026-11-21, and the app kept asking it twice for every title, taking around 15 seconds to
+  answer. It now recognises the outage, skips Dizipal, and checks back by itself for its return.
+- Improved: when a video stops mid-film because its link has expired, the player now gets a
+  fresh link straight away instead of retrying the dead one three times first. When the video
+  server asks the app to slow down, the player waits a few seconds before reloading.
+
 ## 2026-11-20 (2)
 
 - Fixed: a film could stop on the loading spinner partway through and stay there (*Past Lives*).

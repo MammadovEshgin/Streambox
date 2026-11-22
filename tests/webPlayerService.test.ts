@@ -2025,3 +2025,67 @@ test("a title that only begins with the target's letters is a different title", 
   assert.equal(scoreMatch("dune part two", "Dune"), 70);
   assert.equal(scoreMatch("planet dune", "Dune"), 40);
 });
+
+test("a provider whose origin is down behind its edge is set aside without doubling every miss", async () => {
+  // Dizipal, 2026-11-21: its domain answered 502 on every path (the edge up, the
+  // origin down). A 502 is not silence, so the breaker never opened, and it IS a
+  // 5xx, so each one read as "ask again": every title the other providers lacked
+  // ran the whole resolve twice and took 13-17s to say "Not available".
+  const originalGet = axios.get;
+  const originalPost = axios.post;
+  const originalDev = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
+  let dizipalRequests = 0;
+  let hdfilmSearches = 0;
+
+  axios.get = (async (url: string) => {
+    if (url.includes("dizipal")) {
+      dizipalRequests += 1;
+      throw Object.assign(new Error("Request failed with status code 502"), { response: { status: 502, data: "error code: 502" } });
+    }
+    if (url.includes("/search/")) {
+      hdfilmSearches += 1;
+      return { data: { results: [] } };
+    }
+    throw Object.assign(new Error("Request failed with status code 404"), { response: { status: 404 } });
+  }) as typeof axios.get;
+  axios.post = (async () => {
+    throw Object.assign(new Error("Request failed with status code 404"), { response: { status: 404 } });
+  }) as typeof axios.post;
+
+  try {
+    const first = await resolveWebPlayerUrl({ mediaType: "movie", title: "Outage Probe 4410", year: "2031" });
+    assert.equal(first.source, "not_found");
+    assert.equal(__internal.isProviderSkipped("Dizipal"), true, "two 502s from the edge open Dizipal's breaker");
+    const searchesWhileFindingOut = hdfilmSearches;
+    const dizipalRequestsWhileFindingOut = dizipalRequests;
+    assert.ok(dizipalRequestsWhileFindingOut >= 2);
+
+    // With the outage known, a miss is one pass: Dizipal is not asked, and its
+    // being skipped does not send the resolver round again.
+    hdfilmSearches = 0;
+    const second = await resolveWebPlayerUrl({ mediaType: "movie", title: "Outage Probe 4411", year: "2031" });
+    assert.equal(second.source, "not_found");
+    assert.equal(dizipalRequests, dizipalRequestsWhileFindingOut, "a provider known to be down is not asked");
+    assert.equal(__internal.isProviderSkipped("Dizipal"), true, "and the skip did not clear its breaker");
+    assert.ok(hdfilmSearches > 0, "the other providers are still asked");
+    assert.ok(
+      hdfilmSearches < searchesWhileFindingOut,
+      `one pass, not two (searched ${hdfilmSearches}x against ${searchesWhileFindingOut}x for the resolve that found the outage)`
+    );
+
+    // A site's own answers (404, 500) still prove it is up.
+    __internal.resetProviderSilence();
+    for (const status of [404, 500]) {
+      axios.get = (async () => {
+        throw Object.assign(new Error(`Request failed with status code ${status}`), { response: { status } });
+      }) as typeof axios.get;
+      for (let i = 0; i < 3; i++) await __internal.providerGet("Dizipal", "https://dizipal.example/x", {}).catch(() => undefined);
+      assert.equal(__internal.isProviderSkipped("Dizipal"), false, `${status} is the site's own answer`);
+    }
+  } finally {
+    axios.get = originalGet;
+    axios.post = originalPost;
+    (globalThis as any).__DEV__ = originalDev;
+  }
+});

@@ -188,7 +188,11 @@ test("a stream that freezes mid-film is watched for, reloaded, and re-resolved f
 
   // When reloading cannot help, a fresh link is resolved and playback resumes where it stopped.
   assert.equal(source.includes("const refreshStreamAtPosition = useCallback("), true);
-  assert.equal(source.includes("linkExpired: isStreamLinkExpired(directStreamUrl),"), true);
+  // …and at once when the link has expired or the CDN refuses it (410, 403).
+  assert.equal(source.includes('linkExpired: isStreamLinkExpired(directStreamUrl) || failure === "gone",'), true);
+  // A rate-limited CDN (429) is given a pause before the reload.
+  assert.equal(source.includes("const delay = reloadDelayMs(failure, plan.state.attempts);"), true);
+  assert.equal(source.includes("if (delay > 0) streamReloadTimerRef.current = setTimeout(reload, delay);"), true);
   assert.equal(source.includes("if (resumeAt > 1) pendingResumeSecondsRef.current = resumeAt;"), true);
   assert.equal(source.includes("videoPlayer.currentTime = resumeAt;"), true);
 

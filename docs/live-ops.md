@@ -144,7 +144,9 @@ order by 1 desc, 3 desc;
 Streams that stopped mid-film and were recovered (since 2026-11-20). `step` is `reload` (same
 link, same position) or `refresh` (a fresh link resolved, resumed at the position); `reason`
 is the player's error, or `freeze` when it stalled without one. Many rows for one `host` mean
-that CDN is misbehaving; `refresh` rows mean reloading was not enough. At most 8 per player:
+that CDN is misbehaving; `refresh` rows mean reloading was not enough (or, since 2026-11-22,
+that the CDN refused the link outright — a `Response code: 410/403` reason — and reloading was
+skipped). At most 8 per player:
 
 ```sql
 select occurred_at::date as day, metadata->>'host' as host, metadata->>'step' as step,

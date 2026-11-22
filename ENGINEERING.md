@@ -429,6 +429,26 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   fail the title instead of leaving the loader up. Telemetry: `player_stream_recovery`
   (`step: reload|refresh`, `reason`: the player's error or `freeze`, `host`,
   `positionMinutes`), and `player_silent_retry` carries the player's own error as `cause`.
+- **Recovery reads the player's error (2026-11-22, `classifyStreamFailure`).** The first three
+  days of `player_stream_recovery` showed two patterns reloading could not fix. Dizipal's CDN
+  (`*.superadjacentsoddenly.xyz`) answers **410** about half an hour in — the link is dead, yet
+  three reloads were spent on it before a fresh one was asked for; a refused link (401/403/404/
+  410) now goes straight to `refresh`. HDFilm's CDN (`*.rapidrame.com`) answers **429**
+  mid-film; an immediate reload only added to the count that tripped it, so a throttled reload
+  is held back 4s, then 8s, then 12s (`reloadDelayMs`). Decoder errors, dropped connections and
+  freezes reload at once as before.
+- **A provider whose origin is down behind its CDN is an outage, not an answer (2026-11-22).**
+  Dizipal's `dizipal2150.com` answered 502 on every path from 2026-11-21 ~12:00 UTC (edge up,
+  origin down; no higher numbered domain exists, and `dizipal2152.com` redirects to
+  `dizipal1.rest`, a differently built site that is not followed — see the clone note above).
+  A 502 comes back in 0.1s, so the silence breaker never opened, and as a 5xx each one counted
+  as a transient failure: every title the other providers lacked ran the whole resolve twice
+  and took 13-17s to say "Not available". `isOriginDownStatus` (502, 504, 520-530) now counts
+  as a breaker strike, and a provider skipped for that reason does not make the miss
+  provisional (`providerSkips` is for a phone that could not reach a healthy site), so a miss
+  is one pass again. The cooldown still grows 1 → 15 min and its probe finds the site when it
+  returns; nothing needs shipping for that. When Dizipal is back on a new number, bump the
+  floor and `/set_dizipal` as usual.
 - **Discovery rails hide films still in cinemas** (`src/api/releaseWindow.ts`). No provider
   carries a film until it is released online: TMDB `release_dates` type 4/5/6 (digital,
   physical, TV). A film shows once its earliest home release in any country is past, or 90
