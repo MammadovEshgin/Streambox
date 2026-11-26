@@ -1,19 +1,13 @@
-# Decoder Recovery Playbook
+# Provider Recovery Playbook
 
-When the user reports "playback isn't working" / "videos won't play" / "Still Alice
-shows ads but no video" / "black screen on POCO" — the upstream HDFilm decoder
-has almost certainly rotated. End-to-end recovery from this document takes
-~3 minutes.
+When the user reports "playback isn't working" / "videos won't play" / "it says
+Not available" / "everything got slow", one of the four providers has changed
+or gone down. This file says how to find out which, and how to fix what can be
+fixed. It is written as a runbook for an LLM: read it top to bottom on the
+first invocation; after that, start at "Triage".
 
-**Run `npm run check:hdfilm` FIRST.** If it says HEALTHY the decoder is fine and
-the problem is one of the other three providers' failure modes — jump straight
-to ["When the breakage is NOT HDFilm"](#when-the-breakage-is-not-hdfilm).
-"Everything got slow" and "it's in the app but says Not Available" are almost
-always Dizipal, not the decoder.
-
-This file is intentionally written as a runbook for an LLM. Read it top to
-bottom on the first invocation; on subsequent runs jump to the "Happy path"
-section.
+Last rewritten 2026-11-26. `ENGINEERING.md` §4 holds the dated notes for every
+provider change; this file is the procedure.
 
 ---
 
@@ -27,59 +21,156 @@ section.
 
 ---
 
-## Happy path (~3 min, ~80% of breakages)
+## Triage (start here)
 
-Run these from the repo root, in order. Stop and read if any step fails.
+**Start from telemetry, not from a script.** No tool outside a phone can see
+HDFilm any more (see "Hard constraints"), and the app records what every
+provider answered on every play. Run the queries in `docs/live-ops.md`
+("Which provider served each play", then the three HDFilm queries) with
+`npx supabase db query --linked "<sql>"`.
 
-```powershell
-# 1. Diagnose. Exit 0 = healthy (stop, nothing to do).
-#    Exit 1/3/4/5 = decoder broken. Exit 2 = network unreachable (you're on
-#    the wrong machine — see "Hard constraints" below).
-npm run check:hdfilm
+| What the last day shows | Meaning | What to do |
+| --- | --- | --- |
+| `hd:legal` in `tiers`; `hdfilm_session` `blocked` titled "451 - Yasal Nedenlerle Erisime Kapali" | HDFilm refuses that viewer's network on every request | Nothing in the app can pass it. Not a fault. |
+| `hd:no_stream` for viewers who had `hd:hit` before | HDFilm's player page or decoder changed | "HDFilm decoder" below |
+| `hd:no_page`, `page:web:timeout`, `recycled` rows | The hidden WebView session cannot read pages | `ENGINEERING.md` §4, the session notes |
+| `hd:no_match` for titles HDFilm lists | Search or title matching | Search by hand (see "Failure modes") |
+| `hd:no_player` | HDFilm's page for that title has no video | Nothing: they removed it |
+| No `dizipal` plays; `dp:miss` everywhere | Dizipal moved, or its player chain changed, or it is down | "Dizipal" below |
+| No `dizibal` plays | Dizibal changed or is down | "Dizibal" below |
+| `kultfilmler_session` `challenge_timeout` / `blocked` | Cloudflare does not let that phone's WebView in | Nothing: per network |
+| Long `durationMs` with `passes: 2` | A provider is timing out | Find the slow tier in `tiers` |
 
-# 2. If it IS broken, capture a live decoder body and read it (see below).
-#    Do NOT reach for `--write` first — see "Why brute force no longer works".
+"Everything got slow" and "it's in the app but says Not available" are most
+often Dizipal. "The wrong audio / lower quality plays" is most often HDFilm
+losing, so a lower tier answers.
 
-# 3. Validate. All tests must pass; typecheck must be clean.
-npm run typecheck
-npm test
+**Then check the site in a real browser before touching code.** If the
+provider's own page cannot play the video either (Dizipal on 2026-11-26: its
+player endpoint answered 520 for every title), it is their outage. Say so and
+stop.
 
-# 4. Ship.
-git add -A
-git commit -m "fix(resolver): handle new HDFilm decoder shape"
-git push origin v1.2.0
-git checkout main; git merge --ff-only v1.2.0; git push origin main; git checkout v1.2.0
+---
 
-# 5. Publish the OTA to the runtime the branch pins (check app.config.js first).
-$SHA = (git rev-parse --short HEAD).Trim()
-npx eas-cli@latest update --branch preview --platform android --message "HDFilm decoder recovery ($SHA)" --non-interactive
-# The output must say "Runtime version 1.2.0"; record the group ID in ENGINEERING.md.
+## HDFilm decoder (the happy path)
+
+Use this when telemetry shows `hd:no_stream` for viewers HDFilm accepts.
+
+### 1. Capture live pages in a real browser
+
+curl, axios and `npm run check:hdfilm` all get a challenge or a block page
+(since 2026-11-19). Use the Playwright browser:
+
+1. Open `https://www.hdfilmcehennemi.nl/dizi/streambox/` and wait until the
+   title is HDFilm's own 404 page ("404 Hata … Hdfilmcehennemi"), not "Just a
+   moment…". This is the page the app's hidden session holds.
+2. From that page, `fetch(url, { credentials: "same-origin" })` the film (or
+   episode) page, read its `rapidrame_id` (in the `.mobi` iframe's `data-src`),
+   then fetch `/rplayer/{rapidrame_id}/`.
+3. Save both bodies to files under `scripts/` (`browser_evaluate` with
+   `filename`; it saves a string result JSON-encoded, so `JSON.parse` it).
+4. **Capture at least twice.** The decoder's shape changes on every request.
+
+Find the page to fetch with the search, which answers plain requests:
+
+```bash
+curl -s -H 'X-Requested-With: fetch' -H 'Accept: application/json' \
+  'https://www.hdfilmcehennemi.nl/search/?q=inception' | head -c 300
 ```
 
-Users get the fix on their next background→foreground cycle (silent reload, no
-modal, no restart prompt — by design).
+The header value matters: with `XMLHttpRequest` the search returns a 404 page.
+
+### 2. Replay them through the real resolver
+
+Write a temporary script under `scripts/` (delete it afterwards) that:
+
+- sets `globalThis.__DEV__ = true` before importing anything from `src/`
+  (`debugLog` throws without it, and every resolve then returns nothing);
+- imports `hdfilmSession` and stands in for the WebView:
+  `hdfilmSession.subscribe(open => hdfilmSession.attachHost(open ? host : null))`
+  where `host.evaluate(script)` reads the URL (`fetch\("([^"]+)"`) and the id
+  (`id: (\d+)`) from the script and answers with
+  `hdfilmSession.handleMessage(JSON.stringify({ kf: "fetch", id, status: 200, challenged: false, body }))`
+  from the captures, and sends `{ kf: "page", ready: true }` once when opened;
+- calls `resolveWebPlayerUrl({ mediaType, title, originalTitle, tmdbId, year, castNames })`
+  and prints `result.source`, `result.streamUrl` and `result.trace`.
+
+A healthy run reads the film page and the rplayer page from the captures and
+ends with `source=direct` and `tiers` starting `hd:hit`. `hd:no_stream` with
+the captures served means the extraction or the interpreter needs work.
+
+### 3. Fix
+
+1. In the rplayer capture, find `sources: [{file: …}]`. Since 2026-11-19 it is
+   an inline call, `file:(function(){ …; return NAME(ARG); })()`; before that a
+   variable, `var <file> = <fn>([...])`. Read the decoder function it names.
+2. Ask one question: **does it use a JS construct the interpreter does not
+   model yet?**
+   - **No** → the bug is in the extraction, not the decoder. Check
+     `decodeRapidrameInlineSource`, `findRapidramePageFunction`,
+     `readCallArguments` and, for the variable form, `extractRapidrameParts`
+     in `WebPlayerService.ts`.
+   - **Yes** → widen the INTERPRETER (`rapidrameScript.ts`: parser +
+     evaluator). Never add another static scheme. Keep unknown calls bailing
+     so the body still fails closed.
+3. Add a test: `tests/hdfilmInlineSource.test.ts` for the page shape,
+   `tests/rapidrameScript.test.ts` for a decoder family (those build a payload
+   by running the provider's ENCODE direction, so a new shape is a few lines).
+4. Re-run the replay on every capture. A real fix returns a
+   `*.rapidrame.com/…/master.m3u8` URL for each.
+
+### 4. Validate and ship
+
+```powershell
+npm run typecheck
+npm test
+npm run lint          # 0 errors
+
+git add <the files you changed>
+git commit -m "fix(resolver): handle new HDFilm decoder shape"
+git push origin v1.2.0
+git push origin v1.2.0:main
+
+# Check app.config.js first: the runtime must be 1.2.0.
+npx eas-cli@latest update --branch preview --platform android --message "HDFilm decoder recovery" --non-interactive
+# The output must say "Runtime version 1.2.0"; record the group ID in ENGINEERING.md §3.
+```
+
+Run the push, the `main` push and the update as separate commands. Deploys
+need the owner's approval (`ENGINEERING.md` §7).
+
+Users get the fix after the app next checks (every cold start, and at most
+every 5 minutes on foreground): it downloads in the background and a
+"Restart now / Later" card appears, never during playback. Later means the
+next cold start.
+
+### Mind the rate limits
+
+The dev machine and the owner's phone share one public IP. HDFilm's `.mobi`
+host and its CDN (`*.rapidrame.com`) rate-limit per address: about 60 embed
+resolves in a few minutes drew `429` on everything for over an hour
+(2026-10-28) and broke the owner's phone. Space embed and stream requests
+(one title every 15–20 s), keep bulk checks to the search endpoint, and never
+poll a blocked host in a loop.
 
 ---
 
 ## Background context (so you don't re-derive it every time)
 
-**What's actually breaking.** HDFilm (`hdfilmcehennemi.nl` /
-`hdfilmcehennemi.mobi`) hides each stream URL inside an obfuscated parts array
-on the embed page, decoded by an inline function. Until Sep 2026 those were
-named `s_*` and `dc_XXXX(value_parts)`; **since 2026-09-08 both are random
-short identifiers** (`var avdp1 = h738([...])`), so nothing may key off those
-prefixes any more. The
-user-facing symptom of a decode failure is NOT usually "no video" — it is
-**"the wrong provider played"**: HDFilm silently loses, the resolver falls
-through to Dizipal/Dizibal, and the user gets a Turkish-dub-only stream (and a
-much slower load, because every play now walks the whole provider chain).
+**What's actually breaking.** HDFilm (`hdfilmcehennemi.nl`) hides each stream
+URL behind an obfuscated decoder on its player page. Until Sep 2026 the pieces
+were named `s_*` and `dc_XXXX(value_parts)`; **since 2026-09-08 every
+identifier is random** (`var avdp1 = h738([...])`), so nothing may key off a
+name. The user-facing symptom of a decode failure is usually NOT "no video" —
+it is **"the wrong provider played"**: HDFilm silently loses, a lower tier
+answers, and the user gets a Turkish-dub-only or lower-quality stream.
 
 **The decoder is randomized per request.** Function name, the number and order
 of pre-passes, the Caesar shifts, and the de-scramble constants all change on
 *every single fetch*. A sample of 15 fetches of one title produced 13 distinct
 shapes. There is no "current scheme" to pin down.
 
-**The de-scramble family changes too.** Three seen in production:
+**The de-scramble family changes too.**
 
 | when | family |
 | --- | --- |
@@ -88,6 +179,7 @@ shapes. There is no "current scheme" to pin down.
 | Sep 2026 | seeded shuffle: two literal seed strings derive an LCG + XOR seed, Fisher-Yates un-shuffles the chars, THEN rolling XOR |
 | 2026-09-20 | same family, but the key and the ops string are **spliced out of the parts** (`Array.splice`), the decoder is a function **expression** (`var x = function (p) {…}`), the call is `x("a\|b\|…".split("\|"))` instead of an array literal, and a decoy old-style `var y = z([…])` call precedes it |
 | 2026-10-22 | same family, but the key gains **the embed page's hostname** — `self.location.hostname`, `location['hostna'+'me']`, `window.location…`, `document.location…` or bare `location…`, varying per request — and the split character is random (`^`, `@`, …). The interpreter models read-only `location` / `self` / `window` / `document` for the page URL the caller passes (`runRapidrameDecoder(source, parts, pageUrl)`); without it the body fails closed |
+| 2026-11-19 | no parts variable at all: `sources: [{file:(function(){ …guards on a hidden data-v element…; return NAME(ARG); })()}]`. NAME is random per request, declared as a function declaration or an expression; ARG is `"a~b".split("~")` (any separator, `\/` escapes) on one request and an array literal on the next. `decodeRapidrameInlineSource` runs the call as written in the interpreter |
 
 The 2026-09-20 rotation broke three things at once, each fatal alone: the
 interpreter had no `splice`, the decoder lookup only found `function name(`,
@@ -111,9 +203,11 @@ covering numbers/strings/arrays, the arithmetic, bitwise, comparison and
 logical operators, `if`/`for`/`while`/`return`, function expressions and
 closures, and a handful of built-ins (`atob`, `String.fromCharCode`, the string
 and array methods the bodies use). No `eval`/`Function` — Hermes has neither,
-and executing provider JS would be a code-execution sink. It handles all three
-de-scramble families with no special casing, and **fails closed** (returns
-`null`, caller falls back) on anything outside that subset.
+and executing provider JS would be a code-execution sink. It handles every
+de-scramble family with no special casing, and **fails closed** (returns
+`null`, caller falls back) on anything outside that subset. It does not
+support nested function *declarations*; a nested function goes in as an
+expression.
 
 Guardrails that matter when you widen it: a step budget and string/array size
 caps bound a hostile body; `compileRegex` rejects any pattern with a
@@ -123,111 +217,110 @@ array, so a body cannot reach `constructor`, `__proto__` or any host object.
 
 ### Why brute force no longer works
 
-`npm run check:hdfilm -- --write` composes `reverse`/`base64`/`rot13` with a
-FIXED unmix constant and appends to `RAPIDRAME_PRE_UNMIX_TRANSFORMS`. Against a
-per-request-randomized decoder that is meaningless: any scheme it "derives"
-describes one response and is wrong for the next. `RAPIDRAME_PRE_UNMIX_TRANSFORMS`
-survives only as a fallback for old embeds. Treat `--write` as deprecated.
+`npm run check:hdfilm -- --write` composed `reverse`/`base64`/`rot13` with a
+FIXED unmix constant and appended to `RAPIDRAME_PRE_UNMIX_TRANSFORMS`. Against
+a per-request-randomized decoder that is meaningless: any scheme it "derives"
+describes one response and is wrong for the next.
+`RAPIDRAME_PRE_UNMIX_TRANSFORMS` survives only as a fallback for old embeds.
+The script itself can no longer reach HDFilm (see "Failure modes").
 
-### What to do instead
+**Two sources for one video.** A film page carries
+`<iframe data-src="https://hdfilmcehennemi.mobi/video/embed/{id}/?rapidrame_id={rid}">`:
 
-1. Capture a live embed body (the health check prints one, or fetch the iframe
-   URL from a movie page with the mobile UA).
-2. Find the `var <file> = <fn>([...])` assignment named by
-   `sources: [{file: <file>` and read `function <fn>`. Ask one question:
-   **does it use a JS construct the interpreter does not model yet?**
-   - **No** → the bug is in the extraction, not the decoder. Check the two
-     identifier regexes in `WebPlayerService.extractRapidrameStreamUrl` and
-     `decodeRapidrameByInterpretingDcBody`, and the parts-array window size.
-   - **Yes** → widen the INTERPRETER (parser + evaluator), never add another
-     static scheme. Keep unknown calls bailing so the body still fails closed.
-3. Verify against the LIVE site, not just tests. Decode a handful of titles and
-   fetch each decoded URL — a real fix returns `#EXTM3U`.
-3. Add a case to `tests/rapidrameScript.test.ts`. Those tests build a payload by
-   running the provider's ENCODE direction and assert the interpreter recovers
-   the URL — so a new shape is a handful of lines.
+1. the `.mobi` embed — plain HTML. Since 2026-11-15 it answers the app 404
+   (it loads only framed by HDFilm's own site), so it serves nothing;
+2. `https://www.hdfilmcehennemi.nl/rplayer/{rid}/` — the same video's player
+   on the main domain, named by that `rapidrame_id`. Older titles wrap its
+   decoder in `eval(function(p,a,c,k,e,d){...})` packer.js, which
+   `tryUnpackInlinePackerJs` expands first. Non-browser clients get an
+   "Uygulama desteklenmiyor" page, so the app reads it through the session.
 
-**Two embed flows.** The extractor handles both:
-1. `hdfilmcehennemi.mobi/video/embed/...` — plain HTML containing
-   `var s_X = dc_Y([...])`.
-2. `hdfilmcehennemi.nl/rplayer/...` — same content but wrapped in
-   `eval(function(p,a,c,k,e,d){...})` packer.js. `tryUnpackInlinePackerJs`
-   runs first and expands the block in-place before the regex sees it.
+The app asks both at once and prefers `.mobi` if it ever answers.
 
-**⚠ The Cloudflare challenge on `/dizi/` is a FIRST-REQUEST challenge, not a
-wall** (re-measured 2026-09-02, correcting the 2026-08-10 note that said HDFilm
-series were unreachable). `www.hdfilmcehennemi.nl/dizi/…` answers `403`
-`cf-mitigated: challenge` on the first request over a fresh connection and
-`200` on every request after it — 9/10 with connection reuse, 0/10 when each
-request opened a new connection. No cookie is set; the clearance rides on the
-connection, so **asking again is the entire fix**. `hdFilmGet()` in
-`WebPlayerService.ts` does that (2 retries) and it is why HDFilm series resolve
-natively again.
+**The gate.** Every page on the main origin except `/search/` refuses
+non-browser clients, and some networks are refused entirely with a 451 page.
+The dated story is in `ENGINEERING.md` §4 ("HDFilm (tier 1) today" and the two
+notes after it). In short: `hdFilmGet` tries a gated page natively once, then
+reads it through the hidden WebView session, and goes straight to the session
+for 30 minutes after it has met the gate.
 
-Before that retry existed, `findSeriesEpisodeUrl` / `checkVideoAvailability`
-read the first 403 as "HDFilm doesn't have it", so every series fell through to
-Dizipal — Turkish-dub-only and slower. If you see series quietly preferring
-Dizipal, check that retry first before suspecting the decoder.
-
-The `.mobi` embed host is not challenged but does not know `/rplayer/` ids, so
-there is still no way to translate between the two flows.
-
-If the user reports breakage on a *specific* title while the standard probes
-("Edge of Tomorrow", "The Devil Wears Prada 2") still work, the iframe
-attribute may have changed. Read `extractHdFilmEmbedUrl` in
-`src/services/WebPlayerService.ts` (~line 1125) and add the missing attribute.
-Recent example: lazy-loaded iframes use `data-src=` instead of `src=`.
+If the user reports breakage on a *specific* title while others play, look at
+that title's film page in the capture. An empty `player-container` means
+HDFilm removed the video (`hd:no_player`: Dune 2021, The Rings of Power). A
+player that is there but not found means the iframe attribute changed: read
+`extractHdFilmEmbedUrl` (it matches `src=`, `data-src=`, `data-lazy-src=`, and
+`data-video=`/`data-link=`/`data-url=`).
 
 ---
 
 ## When the breakage is NOT HDFilm
 
-`npm run check:hdfilm` only covers HDFilm. Two other classes of outage look
-identical to the user ("slow", "says not available") and the health check will
-report HEALTHY through both. Diagnosis order, worst-first:
-
 ### Dizipal moved (the usual cause of "everything got slow")
 
-`dizipalN.com` 301s to `dizipalN+1.com`, and the hops are **not** one per
+`dizipalN.com` 301s to a later `dizipalN`, and the hops are **not** one per
 rotation — on 2026-09-02 the chain from the then-configured `2079` to the live
 `2123` was 22 hops / 3.3s **per request**, and the resolver makes several. Past
 axios' 21-redirect ceiling the request fails outright, so a base that falls far
-enough behind takes Dizipal down rather than merely slowing it.
+enough behind takes Dizipal down rather than merely slowing it. It can also
+jump: 2150 → 2161 on 2026-11-26.
 
 ```powershell
-# Walk the chain and print where it actually lands.
-curl.exe -sSI https://dizipal2123.com/ | Select-String -Pattern 'location|HTTP/'
+# Walk the chain from the shipped floor and print where it lands.
+curl.exe -sSI https://dizipal2161.com/ | Select-String -Pattern 'location|HTTP/'
 ```
 
+Before trusting a higher number, check what the old domains redirect to: the
+22xx band is a different operator's clone, and on 2026-11-22 `dizipal2152.com`
+redirected to `dizipal1.rest`, a differently built site. Ask the owner before
+following either.
+
 Fixes, in order:
-1. `/set_dizipal https://<live host>` to the Telegram bot — updates Supabase for
-   every device.
+1. Ask the owner to send `/set_dizipal https://<live host>` to the Telegram
+   bot — it updates Supabase for every device. Never write that row yourself.
 2. Bump `HARDCODED_FALLBACK.dizipal` in `src/services/providerConfigService.ts`
-   and ship an OTA. `normaliseDizipalBaseUrl` compares the numeric suffix, so a
-   Supabase row that is BEHIND the shipped fallback is ignored automatically —
-   you no longer have to enumerate stale hosts.
+   (and the floor in `tests/providerConfigService.test.ts`) and ship an OTA.
+   `normaliseDizipalBaseUrl` compares the numeric suffix, so a Supabase row
+   that is BEHIND the shipped fallback is ignored automatically.
 
 Devices also self-heal within a session: `recordObservedBaseUrl` pins the
-post-redirect origin, and the pin now survives `refreshProviderConfigs()` (it is
+post-redirect origin, and the pin survives `refreshProviderConfigs()` (it is
 discarded the moment Supabase publishes a *different* base, so the operator can
 always take control back).
 
-### Dizipal renamed an endpoint (the usual cause of "it finds it but won't play")
+### Dizipal finds the title but nothing plays
 
-Search keeps answering 200 while nothing plays. Sept 2026:
-`/ajax-player-config` → `/ajax/player-config`. The app no longer depends on
-either — `decodeDizipalCfg` reads the base64 `data-cfg` attribute off the page,
-which is byte-identical to what the endpoint returned — and the network call
-survives only as a fallback that tries both paths.
+Search keeps answering 200 while nothing plays: the player chain changed, or
+their player is down. The chain today:
 
-```powershell
-# Healthy = base64 JSON with {"v":"https://…","t":"embed"}
-curl.exe -s https://dizipal2123.com/bolum/breaking-bad-1-sezon-1-bolum |
-  Select-String -Pattern 'data-cfg="([^"]+)"'
-```
+1. the watch page, asked for as `//film/{slug}` or `//bolum/{slug}` (the plain
+   path answers a Turnstile gate; a crawler user agent is the second door);
+2. its `#videoContainer[data-cfg]`, a 32-hex **single-use** token bound to the
+   PHP session that rendered the page — never cache or replay it;
+3. `POST /_pb` with `s=f:{slug}` (film) or `s=b:{slug}` (episode), the "player
+   beacon", on the same session;
+4. `POST /ajax-player-config` with `cfg=…` → `{success, config: {v, t}, enc}`;
+   since 2026-09-27 `v` is empty and `enc: {c, iv, k1, k2}` carries the embed
+   URL AES-256-CBC under `k1 XOR k2` (`decryptDizipalEnc`);
+5. the embed page's m3u8 (`resolveEmbedToM3u8`).
 
-The `dizipal_playback` check in `workers/provider-monitor` watches exactly this
-attribute, so a repeat should now page you instead of failing silently.
+**Find a changed step by recording a real browser, not by reading `main.js`.**
+Open an episode page in the Playwright browser and log every request and
+answer to the site (`page.on("request")` / `page.on("response")`). The `/_pb`
+beacon was found that way; it is not in `main.js`. Then compare with what the
+app sends (`fetchDizipalStreamUrl`, `postDizipalPlayerBeacon`,
+`postDizipalPlayerConfig`).
+
+If the browser gets an error at the same step, it is their outage. On
+2026-11-26 `/ajax-player-config` answered Cloudflare's 520 for every title, in
+the browser too. The app treats that endpoint's 5xx-at-the-edge as an outage
+of its own (`DIZIPAL_PLAYER` breaker): one render, no second pass, and the
+tier stands down until a probe succeeds.
+
+History, for orientation: the endpoint has been renamed before
+(`/ajax-player-config` ↔ `/ajax/player-config`, Sept 2026;
+`DIZIPAL_PLAYER_CONFIG_PATHS` tries the known ones on a 404), and until
+2026-09-25 `data-cfg` was base64 JSON that could be decoded without the POST
+(`decodeDizipalCfg` still accepts that form).
 
 ### Dizibal finds the title but nothing plays
 
@@ -248,7 +341,16 @@ curl.exe -sI "https://dizibal.org/video/bolum/<id>"
 
 `s.php` answering "Video bulunamadı" (404) means Dizibal has no video for that
 title either. A 403 "Erişim engellendi" there means the Referer lock changed.
-If the site itself moved domain, `/set_dizibal https://<new host>`.
+If the site itself moved domain, `/set_dizibal https://<new host>`. A title
+the search no longer lists was removed from their catalogue (Prison Break,
+2026-11-26).
+
+### Kült Filmler
+
+Tier 4, read through its own hidden WebView session because every path is
+behind Cloudflare's challenge. Whether a phone gets in is decided by
+Cloudflare per network (`kultfilmler_session`: `ready`, `challenge_timeout`,
+`blocked`). The chain and its players are in `ENGINEERING.md` §4.
 
 ---
 
@@ -256,61 +358,40 @@ If the site itself moved domain, `/set_dizibal https://<new host>`.
 
 ### `npm run check:hdfilm` reports "Could not fetch ANY embed page" (exit 2)
 
-Two very different causes — check which before concluding anything:
+This is now its only outcome. The script reads HDFilm's film pages with plain
+requests, and since 2026-11-19 those answer a Cloudflare challenge from every
+address, the owner's PC included. Exit 2 says nothing about the decoder. Use
+telemetry and the browser capture instead; the script is kept for the day the
+gate comes down.
 
-1. **You're not on the user's PC.** Cloudflare's WAF on hdfilmcehennemi blocks
-   datacenter / cloud / VPN IPs. **Do not try to work around this** — it's the
-   reason the cloud automation was abandoned. Tell the user the recovery must
-   run from their machine and stop.
-2. **The site changed shape.** Confirm by hand before believing (1):
-   ```bash
-   UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36'
-   # MUST send X-Requested-With: fetch. The literal value matters — with
-   # "XMLHttpRequest" (what the monitor's baseHeaders send) this 404s.
-   curl -s -A "$UA" -H 'X-Requested-With: fetch'      'https://www.hdfilmcehennemi.nl/search/?q=inception' | head -c 200
-   ```
-   A JSON `{"query":…,"results":[…]}` means the site is fine and the failure is
-   downstream. In Sep 2026 this exit-2 message was actively misleading: the
-   script's own private copy of the parts parser had gone stale and dropped
-   every probe as "no embed" **before** the health check ran, so it reported a
-   provider domain move while the site was up and only the decoder had changed.
-   That gate is now removed — parts extraction no longer blocks a probe.
+If you suspect the site changed shape, check the one endpoint that still
+answers plain requests:
 
-### How to capture a live decoder body
+```bash
+# MUST send X-Requested-With: fetch. With "XMLHttpRequest" this 404s.
+curl -s -H 'X-Requested-With: fetch' 'https://www.hdfilmcehennemi.nl/search/?q=inception' | head -c 200
+```
 
-1. Open `https://www.hdfilmcehennemi.nl/` in a real desktop browser (NOT curl —
-   curl also won't decompress the gzip by default, which has wasted time before;
-   pass `--compressed` if you must).
-2. Pick any movie. View the page source.
-3. Find the player iframe. Two patterns:
-   - `<iframe ... src="https://hdfilmcehennemi.mobi/video/embed/XXX/">`
-   - `<iframe ... data-src="https://www.hdfilmcehennemi.nl/rplayer/XXX/">`
-4. Open that iframe URL directly. View source.
-5. If you see `eval(function(p,a,c,k,e,d){...}`, the `dc_*()` function is inside
-   that packed block — `tryUnpackInlinePackerJs` expands it in the app; to read
-   it by hand, paste the block minus the outer `eval` into a JS console.
-6. Find `function dc_XXXXX(value_parts) { ... return unmix; }` and follow "What
-   to do instead" above.
+A JSON `{"query":…,"results":[…]}` means the site is up for this network. A
+451 page means this network is refused. A "Just a moment…" page means the
+search is being challenged too (seen intermittently from 2026-11-26; the app
+asks again up to twice).
 
-Remember to fetch it **more than once**. The body changes every request, and a
-single sample will mislead you into thinking a constant is fixed.
+### The session reads fail on phones but the capture replays fine
 
-Since 2026-11-19 none of this works with curl: every HDFilm page answers
-non-browser clients with a Cloudflare challenge, and `/rplayer/` with an
-"Uygulama desteklenmiyor" page. Use the Playwright browser instead — open
-`https://www.hdfilmcehennemi.nl/dizi/streambox/`, wait for "Just a moment…" to
-clear, then `fetch()` the film page and `/rplayer/{rapidrame_id}/` from that
-page (same-origin) and save the bodies. The config no longer has a parts
-variable either: look for `sources: [{file:(function(){ … return NAME(ARG); })()}]`
-(`decodeRapidrameInlineSource`), where both the decoder's form and the
-argument's form change between requests.
+Then the logic is right and the transport is not. Read `hdReads` and the
+`hdfilm_session` rows for the affected viewers before changing anything:
+`blocked` with the 451 title is the legal block; `challenge_timeout` is a
+challenge that phone's WebView did not pass; `recycled` is a WebView that
+stopped answering. From 2026-11-19 to 11-26 several rounds of fixes were
+shipped on guesses while the answer (451) was one telemetry field away.
 
 ### `git push` rejected (non-fast-forward)
 
 ```powershell
 git pull --rebase origin v1.2.0
 git push origin v1.2.0
-git checkout main; git merge --ff-only v1.2.0; git push origin main; git checkout v1.2.0
+git push origin v1.2.0:main
 ```
 
 ### `eas update` says EXPO_TOKEN missing or not authenticated
@@ -323,52 +404,49 @@ You can't do this for them.
 
 ## Learnings — read this before debugging any provider
 
-Distilled from the 2026-09-02 session, where three separate provider breakages
-had been mistaken for one. Every one of these cost real time; none of them is
-obvious from the code.
+Each of these cost real time; none is obvious from the code. Where a later
+change overtook a lesson's example, the note says so; the lesson stands.
 
-**1. A green decoder check does NOT mean the providers are fine.**
-`npm run check:hdfilm` covers exactly one flow: HDFilm movie embeds. It reported
-HEALTHY while Dizipal playback was 100% dead and every HDFilm series was falling
-through. Always reproduce the user's *actual* symptom end to end before
-believing any health check. The fastest way is a throwaway script that imports
-`resolveWebPlayerUrl` and runs the real titles — see step 3.
+**1. A green check does NOT mean the providers are fine.** In Sept 2026
+`npm run check:hdfilm` reported HEALTHY while Dizipal playback was 100% dead
+and every HDFilm series was falling through. Always reproduce the user's
+*actual* symptom end to end before believing any health check. (That script
+cannot reach HDFilm at all now; the principle applies to every check.)
 
 **2. "Search works" and "it plays" are different systems. Test the second.**
 Dizipal's `/ajax-search` answered 200 with correct results for the entire
 outage; only `/ajax-player-config` had moved. Every provider here has the same
-split, and a monitor (or a human) that only probes search will report healthy
-through a total playback failure. When a user says "it's in the app but says Not
-Available", go straight to the *playback* endpoint.
+split. When a user says "it's in the app but says Not Available", go straight
+to the *playback* step.
 
-**3. Reproduce with the real resolver, not a re-implementation.**
-Write a temp `scripts/_probe.ts`, `import { resolveWebPlayerUrl }` and
-`initialiseProviderConfigs`, set `globalThis.__DEV__ = true`, and run it with
-`npx tsx`. It works in node — AsyncStorage and the RN imports resolve fine — and
-the `debugLog` lines name the failing provider and status code immediately. It
-MUST live under the repo (node_modules resolution) and be deleted afterwards.
-Then assert the stream actually serves `#EXTM3U`; a returned URL is not proof of
-playback.
+**3. Reproduce with the real resolver, not a re-implementation.** Write a
+temporary script under `scripts/`, set `globalThis.__DEV__ = true`, import
+`resolveWebPlayerUrl`, and run it with `npx tsx`. It works in node — the
+`debugLog` lines name the failing provider and status immediately. Dizipal and
+Dizibal resolve live from this machine; HDFilm needs the captured pages and a
+stand-in session host (see the happy path). It MUST live under the repo and be
+deleted afterwards. A returned URL is not proof of playback: fetch the
+playlist and look for `#EXTM3U`.
 
 **4. Distinguish "slow" from "broken" — for these providers they are the same
 bug at different magnitudes.** Dizipal's rotation is a 301 chain, and the hops
-are not one per rotation. A base a few days stale is slow; one far enough behind
-crosses axios' 21-redirect ceiling and fails outright with
-`ERR_FR_TOO_MANY_REDIRECTS`. Always measure the chain (`maxRedirects: 0` in a
-loop, printing each `location`) rather than assuming "a few hops".
+are not one per rotation. A base a few days stale is slow; one far enough
+behind crosses axios' 21-redirect ceiling and fails outright with
+`ERR_FR_TOO_MANY_REDIRECTS`. Measure the chain rather than assuming "a few
+hops".
 
-**5. A 403 from Cloudflare is not necessarily a wall.** Test it with connection
-reuse AND without before concluding anything: `/dizi/` was 403 on the first
-request over a fresh TLS connection and 200 on every one after, with no cookie
-involved — 9/10 vs 0/10. A single `curl` (fresh connection every time) says
-"permanently blocked" and is wrong. This mistake sat in this very document for
-three weeks and cost every series its dual-audio stream.
+**5. Measure a 403 before calling it a wall — and measure it again later.** In
+Sept 2026 HDFilm's `/dizi/` 403 was a first-request challenge: 9/10 requests
+passed with connection reuse, 0/10 without, and a single `curl` said
+"permanently blocked" and was wrong. By 2026-11-11 the same 403 had become
+permanent for non-browser clients, and the retry that had been "the entire
+fix" was three wasted requests per page. Both conclusions were right on their
+day.
 
 **6. Prefer reading data the page already carries over calling an endpoint for
-it.** Dizipal's `data-cfg` attribute decodes to exactly what
-`/ajax-player-config` returned. Doing that locally removed two round-trips from
-every play *and* made the rename a non-event. Whenever a provider hands you an
-opaque blob that a later request just echoes back, decode it.
+it.** Until 2026-09-25 Dizipal's `data-cfg` decoded to exactly what
+`/ajax-player-config` returned, and decoding it locally made an endpoint
+rename a non-event. (It is a single-use token now, so the POST is back.)
 
 **7. Self-healing config must outlive the refresh that fights it.** The pin from
 `recordObservedBaseUrl` was being clobbered by `refreshProviderConfigs()` — the
@@ -376,12 +454,9 @@ retry path was undoing its own fix. If you add optimistic local state on top of
 remote config, define exactly when remote takes it back (here: the published
 base changing at all) and test both directions.
 
-**8. Order matters in the resolver chain, and fixing one provider can silently
-demote a better one.** Once Dizipal started working again it began winning
-series that HDFilm would have served with dual audio, because step 2 short
-circuits before step 2b's Turkish-title HDFilm retry. Fixing the HDFilm 403 was
-what actually restored quality. After any provider fix, re-check *which*
-provider serves each title, not just that something plays.
+**8. Fixing one provider can silently demote a better one.** After any provider
+fix, re-check *which* provider serves each title (`provider` in
+`player_resolve`), not just that something plays.
 
 **9. When you fix a class of failure, add the monitor check in the same
 change.** `dizipal_playback` exists because nothing would otherwise have caught
@@ -390,59 +465,64 @@ a repeat. Verify a new Worker check from Worker egress before trusting it —
 egress is treated differently from the user's residential IP by every one of
 these providers.
 
-**10. Correct this document when reality contradicts it.** The stale claim in
-§Background context ("HDFilm series are unreachable altogether") actively
-misdirected the investigation. If you disprove something here, rewrite it in the
-same commit and say when it was re-measured. (This section's own "`.github/`
-is intentionally empty" line was false when written — `ci.yml` already existed.
-Fixed 2026-09-08.)
-
----
-
-Added from the 2026-09-08 session, where HDFilm — **tier 1** — had been 100%
-dead and nothing had noticed.
+**10. Correct this document when reality contradicts it.** A stale claim here
+("HDFilm series are unreachable altogether") once misdirected an
+investigation for weeks; by November 2026 this file still opened with a check
+script that could no longer run and an update flow removed in June. If you
+disprove something here, rewrite it in the same commit and say when it was
+re-measured.
 
 **11. A diagnostic tool with its own copy of production parsing WILL lie to
 you.** `check-hdfilm-resolver.ts` kept a private `extractPartsArray` that still
 looked for `s_*`. When HDFilm renamed those identifiers, that copy matched
 nothing and dropped every probe as "no embed" *before* the health check ran —
-so the script reported "provider domain moved, or network/geo block" while the
-site was up and served every page fine. That message sent the investigation
-after DNS and Cloudflare for a while. The parts array now never gates a probe,
-and the health check itself calls the real `extractRapidrameStreamUrl`. If you
+so the script reported "provider domain moved" while the site was up. If you
 must duplicate production logic in a tool, make the duplicate non-blocking.
 
 **12. Prefix-based extraction is a liability; match the shape, not the name.**
 Both `sources: [{file: s_…}]` and `= dc_…(` were prefix matches, and both broke
-the day HDFilm switched to random short identifiers. The structure
-(`sources:` → identifier → `var <identifier> = <fn>([...])` → `function <fn>`)
-is what the page guarantees; the naming is not.
+the day HDFilm switched to random short identifiers. The structure is what the
+page guarantees; the naming is not.
 
 **13. "Cannot be monitored" is a finding to write down, not a gap to paper
-over.** The instinct after this outage is "add an HDFilm check to the monitor".
-Both available runners are datacenter IPs and both are 403'd, so such a check
-would fail forever and train everyone to ignore the alerts — the same trap as
-Dizibal's IP-banned pages (see the monitor README). Verify egress with
-`wrangler dev --remote` BEFORE adding a Worker check. Where no prober can
-reach, instrument the app instead: `player_resolve` telemetry carries the
-resolved `source`, and a sustained shift away from hdfilm/`direct` is the
-tier-1 outage signal.
+over.** Both available runners are datacenter IPs and both are 403'd by HDFilm,
+so a monitor check would fail forever and train everyone to ignore the alerts.
+Where no prober can reach, instrument the app instead: `player_resolve` carries
+the provider, each tier's outcome (`tiers`) and the HDFilm reads that failed
+(`hdReads`).
 
 **14. The header VALUE can matter, not just its presence.** HDFilm's
 `/search/?q=` returns the JSON payload only for `X-Requested-With: fetch`. With
-`XMLHttpRequest` — which is what the monitor's `baseHeaders` sends, and what
-most scrapers default to — it returns a **404 HTML page**. A probe that used
-the wrong value would have "proved" the search endpoint was gone.
+`XMLHttpRequest` it returns a **404 HTML page**. A probe that used the wrong
+value would have "proved" the search endpoint was gone.
 
-**15. A playback error is not a missing title.** `PlayerScreen` mapped any
-expo-video `status === "error"` on a direct source to
-`{ source: "not_found" }`, i.e. the "isn't in our catalog yet" card. ExoPlayer
-raises that status for ordinary hiccups — seeking past the buffered edge, one
-5xx segment, an expired CDN token, a track switch racing the initial buffer —
-so seeking or tapping the subtitle button early showed the viewer a
-"this title doesn't exist" card for a film that was playing a second ago.
-Reserve `not_found` for resolve-time exhaustion; recover a started stream in
-place (see `recoverCurrentStream`).
+**15. A playback error is not a missing title.** `PlayerScreen` once mapped any
+expo-video `status === "error"` on a direct source to "isn't in our catalog
+yet". ExoPlayer raises that status for ordinary hiccups — seeking past the
+buffered edge, one 5xx segment, an expired CDN token. Reserve `not_found` for
+resolve-time exhaustion; recover a started stream in place (see
+`recoverCurrentStream` and `src/screens/player/streamHealth.ts`).
+
+**16. Record which step failed before guessing why.** From 2026-11-19 HDFilm
+played for two viewers a day while every phone logged its session `ready`. Four
+plausible fixes were shipped over a week. The cause was a 451 legal-block page
+that passed for a ready session, and it was found the day after the app
+started recording each tier's outcome and the session page's title. When a
+failure cannot be reproduced off-device, ship the measurement first.
+
+**17. "Ready" must mean "the site's own page", not "anything but the
+challenge".** HDFilm's session accepted any page that was not titled "Just a
+moment…": a challenge page in another language and the 451 page both
+qualified. Test for the page you expect, and name the pages that mean stop.
+
+**18. The developer's phone is not the user base.** The owner's network is one
+HDFilm accepts, so every fix "worked" in testing. Count *viewers* a provider
+serves per day, not plays.
+
+**19. A provider can remove a title or break its own player.** Before debugging
+a miss, load the provider's page for that title in a browser: an empty player
+(HDFilm: Dune) or a player that errors there too (Dizipal, 2026-11-26) is not
+the app's bug.
 
 ---
 
@@ -454,109 +534,109 @@ place (see `recoverCurrentStream`).
   `eas update`** and never bump it to "reach more users". See `ENGINEERING.md` §2.
 - **OTA branch.** Always `preview`. That's the channel installed apps listen
   on (`updates.url` in `app.config.js`).
-- **Test count.** 461 tests as of 2026-09-17. If the count drops or any fail,
-  do not push.
-- **No resolver workflow in CI.** `.github/workflows/ci.yml` (typecheck / lint /
-  test) is fine and stays. What must NOT be added is anything that reaches
-  hdfilmcehennemi from CI: Cloudflare blocks GitHub's datacenter IPs, so a
-  resolver workflow fails with exit 2 on every run and produces false-alarm
-  emails. The same applies to Cloudflare Workers — re-verified 2026-09-08 with
-  `wrangler dev --remote`: both `www.hdfilmcehennemi.nl` and
-  `hdfilmcehennemi.mobi` answer **403 "Just a moment…"** for every path from
-  Worker egress. HDFilm health can only be observed from a residential IP:
-  `npm run check:hdfilm` on the user's PC, plus the `player_resolve` telemetry
-  event the app emits on every play.
-- **Where to run from.** The user's Windows PC at
-  `C:\Users\e.a.mammadov\Desktop\Personal projects\Streambox`. Their home IP is
-  what reaches the provider. Cloud VMs (Oracle, AWS, GitHub Actions) are all WAF-blocked.
+- **Tests.** 654 tests as of 2026-11-26. If the count drops or any fail, do not
+  push.
+- **No resolver workflow in CI, and no HDFilm check in the Worker monitor.**
+  `.github/workflows/ci.yml` (typecheck / lint / test) is fine and stays.
+  Cloudflare blocks GitHub's and Cloudflare Workers' datacenter IPs on
+  `www.hdfilmcehennemi.nl` and `hdfilmcehennemi.mobi` (403 "Just a moment…" on
+  every path; re-verified 2026-09-22 with `wrangler dev --remote`), so such a
+  check fails on every run and trains everyone to ignore the alerts.
+- **HDFilm can only be observed from phones and from a real browser.** Since
+  2026-11-19 plain requests are refused even from the owner's home IP. Use the
+  app's telemetry and the Playwright capture.
+- **Do not hunt for ways past a block with raw requests.** Trying header
+  variants against a bot check or a legal block is not this project's method
+  (and headers have never made a difference here). Record what a real browser
+  does and have the app do the same, or report that the site refuses.
+- **Where to run from.** The user's Windows PC. Its home IP is what reaches
+  Dizipal and Dizibal; cloud VMs are blocked by all of them.
 
 ---
 
 ## Architecture pointers (for unusual breakage)
 
-- The decoder interpreter lives in **`src/services/rapidrameScript.ts`**. Since
-  2026-09-08 it is a small but general JS interpreter, not a statement runner:
-  - `runRapidrameDecoder(functionSource, valueParts)` — the entry point. Parses
-    the live decoder body and calls it with the parts array.
+- The decoder interpreter lives in **`src/services/rapidrameScript.ts`**, a
+  small but general JS interpreter:
+  - `runRapidrameDecoder(functionSource, valueParts, pageUrl)` — the entry
+    point. Parses the live decoder body and calls it; `pageUrl` backs the
+    read-only `location` the body may consult.
   - `tokenize` / `Parser` — tokenizer (including regex-literal disambiguation)
-    and recursive-descent parser producing an AST. `Parser.parseFunctionDeclaration`
-    finds the decoder regardless of its name.
+    and recursive-descent parser producing an AST.
   - `Interpreter` — the AST walker. Supports arrays and element assignment,
     `if`/`for`/`while`/`return`/`break`/`continue`, multi-declarator `var`,
-    ternaries, closures, and the string/array built-ins the bodies use. All
-    three de-scramble families run through this one path with no special casing.
+    ternaries, closures, and the string/array built-ins the bodies use.
   - `bail` / `UnsupportedScript` — the fail-closed guard. Any construct or call
     outside the modelled subset aborts the decode rather than being skipped
     (skipping would produce a plausible-but-WRONG url).
-  - `compileRegex` — rejects quantifiers, groups and alternation, so a page
-    cannot hand the resolver a catastrophic-backtracking pattern.
+  - `compileRegex` — rejects quantifiers, groups and alternation.
   - `MAX_STEPS` / `MAX_STRING_LENGTH` / `MAX_ARRAY_LENGTH` — the budgets that
     bound a hostile or malformed body.
 - Provider glue stays in **`src/services/WebPlayerService.ts`**:
-  - `decodeRapidrameByInterpretingDcBody` — locates the decoder function named
-    by the parts assignment and delegates to the interpreter. Matches ANY
-    identifier: the `dc_`/`s_` prefixes are gone as of Sep 2026.
-  - `findVariableDeclaration` — whole-identifier `var|let|const <name>` lookup,
-    so `var s_a` is not found inside `var s_abc`.
-  - `RAPIDRAME_PRE_UNMIX_TRANSFORMS` — legacy static schemes, fallback ONLY.
-  - `tryUnpackInlinePackerJs` — expands `eval(function(p,a,c,k,e,d){...})`
-    packer.js blocks. Required for the `/rplayer/` flow.
-  - `extractRapidrameStreamUrl` — unpacks, then runs the source-variable lookup.
-  - `extractHdFilmEmbedUrl` — finds the iframe in the page HTML. Matches `src=`,
-    `data-src=`, `data-lazy-src=`, plus `data-video=`/`data-link=`/`data-url=`.
-  - `buildHdFilmResult` — ALWAYS returns native (`source: "direct"`) when a
-    stream URL was decoded. `webViewFallbackUrl` is the last-resort fallback if
-    the native stream dies at playback time (broken segment, expired token, geo
-    block) — it is NOT the path taken when extraction fails.
-  - `hdFilmGet` — every HDFilm page fetch goes through this. Retries twice past
-    a `403`/`503` Cloudflare challenge and rethrows anything else unchanged. If
-    HDFilm ever looks "missing" for content you can see in a browser, check here
-    first.
-  - `decodeDizipalCfg` — reads Dizipal's player config out of the page's base64
-    `data-cfg` attribute. Fails closed (returns null) on anything that isn't
-    `{v: "http…", t: "…"}`, so the caller falls back to
-    `requestDizipalPlayerConfig`, which tries `/ajax/player-config` then the
-    legacy `/ajax-player-config`.
+  - `hdFilmGet` — every HDFilm request goes through this. Search and `.mobi`
+    go natively; a gated page is tried natively once, then read through the
+    session (session first while it is open or the gate was met lately); a 451
+    sets HDFilm aside (`isHdfilmLegallyBlocked`).
+  - `extractHdFilmEmbedUrl` — finds the iframe in the film page.
+  - `resolveHdFilmNativeFallback` — asks the `.mobi` embed and the rplayer page
+    together (`firstHitByPriority`).
+  - `extractRapidrameStreamUrl` — unpacks (`tryUnpackInlinePackerJs`), then
+    reads the source: `decodeRapidrameInlineSource` for the inline call,
+    `decodeRapidrameByInterpretingDcBody` for the variable form,
+    `RAPIDRAME_PRE_UNMIX_TRANSFORMS` as the legacy fallback.
+  - `buildHdFilmResult` — returns a native result (`source: "direct"`) when a
+    stream URL was decoded, and a page result with no `streamUrl` otherwise,
+    which the resolver discards: the provider's page is never shown.
+    `webViewFallbackUrl` only marks the stream as HDFilm's, so a stream that
+    dies at playback asks the other providers.
+  - `fetchDizipalStreamUrl` → `fetchDizipalPlayerPage`,
+    `postDizipalPlayerBeacon`, `postDizipalPlayerConfig`, `decryptDizipalEnc`
+    — Dizipal's chain as listed above.
+  - `providerGet` — every native provider request: challenge retries and the
+    per-host breaker (`noteProviderSilence`, `isSettledOutage`).
+  - `resolveWebPlayerUrl` / `resolveWebPlayerUrlInner` — the passes, the tier
+    race (`firstNativeByPriority`) and the `trace` that telemetry records.
+- The hidden sessions: **`src/services/webSession.ts`** (the machinery),
+  **`hdfilmSession.ts`** and **`kultfilmlerSession.ts`** (one each), mounted by
+  **`src/components/common/WebSessionBridge.tsx`**.
 - Provider hosts live in **`src/services/providerConfigService.ts`**:
-  - `HARDCODED_FALLBACK` — bump `dizipal.baseUrl` here when the domain rotates
-    far enough to matter; it is also the reference for the numeric rule below.
+  - `HARDCODED_FALLBACK` — bump `dizipal.baseUrl` here when the domain rotates;
+    it is the floor for the numeric rule below.
   - `normaliseDizipalBaseUrl` / `parseDizipalSuffix` — Dizipal rotation only
     moves forward, so a published base with a LOWER `dizipalN` suffix than the
-    shipped one is ignored. Do not go back to enumerating stale hosts.
+    shipped one is ignored.
   - `recordObservedBaseUrl` / `adoptBaseline` — the self-heal pin and the rule
-    that decides when remote config takes it back (the published base changing).
-- Health check: **`scripts/check-hdfilm-resolver.ts`**. Its `--write`
-  auto-derive is deprecated (see above); the health check itself still works and
-  validates through `extractRapidrameStreamUrl`, so it reflects real playback —
-  **but it only covers HDFilm movie embeds.** A green run says nothing about
-  Dizipal, Dizibal, or HDFilm series.
-- Uptime monitor: **`workers/provider-monitor/`** (Cloudflare Cron, 12h). The
-  `dizipal_playback` check decodes the episode page's `data-cfg`, which is the
-  only check that would catch a playback-endpoint rename. Deploy with
+    that decides when remote config takes it back.
+- Player-side recovery: **`src/screens/player/streamHealth.ts`** and
+  `recoverCurrentStream` in `PlayerScreen.tsx`.
+- Health check script: **`scripts/check-hdfilm-resolver.ts`** — cannot reach
+  HDFilm since 2026-11-19 (always exit 2); kept for the day the gate drops.
+- Uptime monitor: **`workers/provider-monitor/`** (Cloudflare Cron, hourly).
+  It covers Dizipal and Dizibal, not HDFilm or Kült Filmler. Deploy with
   `npx wrangler deploy` from that folder.
-- Regression tests: **`tests/rapidrameScript.test.ts`** (decoder families),
-  **`tests/webPlayerService.test.ts`** (matching/scoring, cfg decode, challenge
-  retry) and **`tests/providerConfigService.test.ts`** (rotation + self-heal).
-- App-side OTA delivery: **`src/services/appUpdateService.ts`** (5-min poll)
-  and **`src/components/common/LiveOpsHost.tsx`** (silent reload on
-  background→foreground transition, suppressed during playback via
-  `isPlayerActive()`). Do not re-introduce a "Restart now" modal — the user
-  explicitly removed it.
+- Regression tests: `tests/rapidrameScript.test.ts` (decoder families),
+  `tests/hdfilmInlineSource.test.ts` (the inline source),
+  `tests/webSession.test.ts`, `tests/hdfilmSession.test.ts` and
+  `tests/hdfilmReads.test.ts` (the session and HDFilm reads),
+  `tests/providerOutages.test.ts` (451, Dizipal's player, settled outages),
+  `tests/webPlayerService.test.ts` (matching, scoring, Dizipal, breakers) and
+  `tests/providerConfigService.test.ts` (rotation and self-heal).
+- App-side OTA delivery: `src/services/appUpdateService.ts` (cold start, then
+  at most every 5 minutes on foreground) and
+  `src/components/common/LiveOpsHost.tsx` (a "Restart now / Later" card, held
+  back during playback via `isPlayerActive()`).
 
 ---
 
 ## What the user wants when they ask you to fix this
 
-Direct execution, not consultation. They've been through this loop enough
-times that they want the fix shipped, not options weighed. Run the happy
-path. If it works, tell them concisely: "fixed and shipped, OTA <sha>".
-If it doesn't, tell them which failure mode you hit and what you need from
-them. No long preambles, no walking through what you intend to do — just do
-it and report.
+Direct execution, not consultation. Run the triage. If something can be fixed,
+fix it and ship it (they ask for "commit and deploy" in the same breath), then
+tell them concisely what was broken, what you changed, and the OTA group ID.
+If the cause is on the provider's side — a legal block, their player down, a
+removed title — say that plainly, with the evidence, and do not ship guesses.
 
 When you ship successfully:
 - Confirm the commit SHA and the OTA group ID.
-- Remind them users get the fix on next background→foreground cycle.
-- Don't suggest "follow-ups" or "next steps" unless something genuinely
-  unexpected happened.
-
+- Remind them users get it after the next update check, via the restart card.
+- Tell them anything only they can do (`/set_dizipal <url>`, for instance).

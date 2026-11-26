@@ -27,16 +27,17 @@ For production builds, remove `EXPO_PUBLIC_TMDB_API_KEY` and `EXPO_PUBLIC_TMDB_A
 ## Custom domain
 
 The Worker is also served on `tmdb.streamboxapp.stream` (`routes` in
-`wrangler.jsonc`). Bakcell's mobile network can't reach `*.workers.dev`, and
-the app retries a request that gets no response on this host. Keep both
-hostnames on the same Worker.
+`wrangler.jsonc`). Bakcell's mobile network can't reach `*.workers.dev`, so
+since 2026-09-25 the app asks this host first and fails over to the
+workers.dev one (`src/api/tmdb.ts`). The two hostnames keep separate edge
+caches. Keep both on the same Worker.
 
 ## Notes
 
 - The Worker accepts `GET`, `HEAD`, and `OPTIONS` only.
 - `/3/movie/123` and `/movie/123` are both accepted.
 - Query params are forwarded except `api_key`, which is always stripped from client requests.
-- Search responses are cached for 5 minutes; other successful TMDB responses are cached for 6 hours.
+- Edge cache: film, collection and person records 24 hours; search and 404s 5 minutes; errors 30 seconds; everything else 6 hours (series gain episodes).
 - Requests are rate-limited per client IP (`cf-connecting-ip` only; `x-forwarded-for` is ignored). The limit is an abuse ceiling of `600` requests per `60` seconds — mobile carriers put many users behind one IP — and edge-cache hits don't count. Tune with `RATE_LIMIT_MAX_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS`.
 - CORS allows no browser origins unless they are listed in `ALLOWED_ORIGINS`; the mobile app sends no `Origin` header.
 - **Images.** `/t/p/{w92…w1280|h632|original}/{file}.{jpg,png,webp,svg}` is proxied from `image.tmdb.org`, cached at the edge for 30 days (`immutable`), and skips the API key check and the rate limiter. From 2026-10-16 the BunnyCDN edges that Azerbaijani DNS returns for `image.tmdb.org` (`79.127.134.x`) refuse connections, so the app loads every TMDB image here and falls back to `image.tmdb.org` on a retry (`src/api/tmdbImageHost.ts`). Any other path under `/t/p/` is a 404.

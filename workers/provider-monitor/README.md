@@ -6,9 +6,10 @@ Cloudflare Worker Cron monitor for streaming provider domains. It reads the curr
 
 - Dizipal home: `base_url/`
 - Dizipal search: `base_url/ajax-search?q=breaking%20bad`
-- Dizipal playback config: `base_url/bolum/breaking-bad-1-sezon-1-bolum`, then its `data-cfg`
-  POSTed to `base_url/ajax-player-config` on the page's session — the answer must yield an embed
-  URL (clear `config.v`, or `enc` decrypted as AES-256-CBC under `k1 XOR k2`)
+- Dizipal playback config: `base_url/bolum/breaking-bad-1-sezon-1-bolum`, then the player
+  beacon (`POST /_pb`, `s=b:{slug}`) and the page's `data-cfg` POSTed to
+  `base_url/ajax-player-config` on the page's session — the answer must yield an embed URL
+  (clear `config.v`, or `enc` decrypted as AES-256-CBC under `k1 XOR k2`)
 - Dizipal domain (DNS): does a newer `dizipalN` resolve? (DNS-over-HTTPS, 12 suffixes ahead)
 - Dizibal search: `base_url/ara/oneri?q=breaking%20bad` (JSON, lists `/series/breaking-bad`)
 - Dizibal player: `https://pilavyerplay.top/assets/js/s.php?s=yEILM0ysEtqZE5fmdNHeeg` with the
@@ -48,18 +49,23 @@ does not watch redirects (`watchRotation: false`) — the player host moving is 
 rotating. If Breaking Bad 1×1's `data-pv` slug ever 404s ("Video bulunamadı"), pick a new one
 from any episode page.
 
+Kült Filmler (tier 4) is not checked either: every path answers Cloudflare's challenge to
+Worker egress. The app reports it as `kultfilmler_session` telemetry.
+
 ### Why HDFilm is NOT checked here — and what covers it instead
 
 HDFilm is the app's **tier 1** provider, and this monitor cannot see it. It sits behind Cloudflare and challenges Cloudflare Worker egress: from a Worker, both `www.hdfilmcehennemi.nl` and `hdfilmcehennemi.mobi` return **403 "Just a moment…"** on every path (verified with `wrangler dev --remote`, 2026-09-08). GitHub Actions runners are datacenter IPs too and are blocked the same way. Any HDFilm check added here would fail permanently and train everyone to ignore the alerts — the same trap as Dizibal's IP-banned pages above.
 
 This is not theoretical. In Sept 2026 HDFilm changed its stream obfuscation, every title on it stopped playing, and **this monitor stayed entirely green** because it has never probed HDFilm at all. The outage surfaced only when a user noticed a series had "disappeared".
 
-Two things cover it instead, both from residential IPs:
+What covers it instead is the app's own telemetry, from viewers' phones:
 
-- `npm run check:hdfilm` on the user's PC — resolves live titles through the shipped decoder and asserts each produces a real `#EXTM3U` manifest.
-- The app's own `player_resolve` telemetry event, which records the provider that served each play. A sustained shift away from `hdfilm`/`direct`, or a jump in `not_found`, is the tier-1 outage signal.
+- `player_resolve` records the provider that served each play, each tier's outcome (`tiers`) and the HDFilm reads that failed (`hdReads`). HDFilm's share dropping, or a jump in `not_found`, is the tier-1 outage signal.
+- `hdfilm_session` and `hdfilm_legal_block` say whether a phone can reach HDFilm at all: since November 2026 every HDFilm page refuses non-browser clients, and some networks get a 451 legal-block page on every request.
 
-Do not add an HDFilm check here unless it stops challenging Worker egress — and verify that with `wrangler dev --remote` first. Re-verified 2026-09-22: still 403. There is no CI workflow for `check:hdfilm` and there must not be; one existed briefly and was deleted after it produced nothing but false alarms.
+The queries are in `docs/live-ops.md`. `npm run check:hdfilm` on the user's PC used to be the second cover; since 2026-11-19 plain requests are refused from there too and the script always exits 2.
+
+Do not add an HDFilm check here unless it stops challenging Worker egress — and verify that with `wrangler dev --remote` first. Re-verified 2026-09-22: still 403. There is no CI workflow that reaches HDFilm and there must not be; one existed briefly and was deleted after it produced nothing but false alarms.
 
 ### Why `dizipal_playback` exists
 
@@ -73,7 +79,7 @@ An endpoint is marked down after `FAILURE_THRESHOLD` consecutive failures, defau
 
 A challenged request is retried up to `CHALLENGE_RETRIES` (2) times before the endpoint is called down.
 
-On 2026-09-09 Dizipal started serving Cloudflare challenge pages to a *fraction* of requests. This monitor runs every 12 hours and took the first 403 as final, so three consecutive runs each happened to catch one and it paged **"Dizipal is down" for 36 hours** — while the same Worker egress answered 36/36 clean when re-probed by hand minutes later. The app has retried past this interstitial since 2026-09-02 (`PROVIDER_CHALLENGE_RETRIES` in `WebPlayerService.ts`); a monitor that does not model the client it is monitoring reports outages users never see.
+On 2026-09-09 Dizipal started serving Cloudflare challenge pages to a *fraction* of requests. This monitor then ran every 12 hours (it is hourly now) and took the first 403 as final, so three consecutive runs each happened to catch one and it paged **"Dizipal is down" for 36 hours** — while the same Worker egress answered 36/36 clean when re-probed by hand minutes later. The app has retried past this interstitial since 2026-09-02 (`PROVIDER_CHALLENGE_RETRIES` in `WebPlayerService.ts`); a monitor that does not model the client it is monitoring reports outages users never see.
 
 Only a genuine interstitial is retried — `isChallengeResponse` inspects the **body**, not just the status — so a real 403 still fails fast instead of tripling the run's latency.
 
@@ -143,9 +149,9 @@ The bot supports three admin-only commands:
 
 ```text
 /status
-/set_dizipal https://dizipal2134.com
+/set_dizipal https://dizipal2161.com
 /set_dizibal https://dizibal.org
-/set_dizipal https://dizipal2134.com force
+/set_dizipal https://dizipal2161.com force
 ```
 
 `/status` re-runs every check and reports rotations and scraper-shape changes. A `/set_` command

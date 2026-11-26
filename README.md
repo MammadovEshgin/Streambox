@@ -61,7 +61,7 @@ npm start
 | `npm test` | Run the test suite |
 | `npm run typecheck` | Type-check with `tsc` |
 | `npm run lint` | Lint with ESLint |
-| `npm run check:hdfilm` | Check the HDFilm stream decoder against live titles |
+| `npm run check:hdfilm` | HDFilm decoder check. HDFilm has refused plain requests since Nov 2026, so it can no longer reach the site; see `decoder-recovery.md` |
 
 ## Project Structure
 

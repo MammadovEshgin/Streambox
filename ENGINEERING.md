@@ -32,7 +32,7 @@ doubt, **stop and ask** rather than guess.
 | Provider search / stream resolution | `src/services/WebPlayerService.ts` (`scoreMatch`, `scoreHdFilmResult`, `scoreDizipalResult`, `probeDizipalDirectSlug`, `rankDizibalSuggestions`, `noteProviderSilence`) |
 | HDFilm decoder interpreter | `src/services/rapidrameScript.ts` (runbook: `decoder-recovery.md`) |
 | Provider base URLs (Supabase + shipped floor) | `src/services/providerConfigService.ts` |
-| Hidden WebView sessions past a Cloudflare challenge (Kült Filmler, HDFilm series pages) | `src/services/webSession.ts`, `src/services/kultfilmlerSession.ts`, `src/services/hdfilmSession.ts`, `src/components/common/WebSessionBridge.tsx` |
+| Hidden WebView sessions for sites that refuse non-browser clients (Kült Filmler; every HDFilm page but search) | `src/services/webSession.ts`, `src/services/kultfilmlerSession.ts`, `src/services/hdfilmSession.ts`, `src/components/common/WebSessionBridge.tsx` |
 | Player | `src/screens/PlayerScreen.tsx`; WebView policy `src/screens/player/playerWebViewPolicy.ts` |
 | TMDB client + Bakcell host failover | `src/api/tmdb.ts` |
 | Ratings client | `src/api/ratingsProxy.ts` |
@@ -67,9 +67,11 @@ nothing (their code survives only as the git tags `archive/release-1.0.2-legacy`
    build **and** a `runtimeVersion` bump. Prefer pure-JS solutions so a change stays
    OTA-deliverable (why the loader is SVG + Reanimated instead of Lottie).
 2. Never change `runtimeVersion` to "reach more users".
-3. On device, `appUpdateService` polls every 5 minutes and `LiveOpsHost` reloads silently on
-   the next background → foreground transition, suppressed during playback
-   (`isPlayerActive()`). There is intentionally no "Restart now" modal.
+3. On device, `appUpdateService` checks on every cold start and at most every 5 minutes on
+   foreground, and downloads an update in the background. `LiveOpsHost` then shows a
+   "Restart now / Later" card, never during playback (`isPlayerActive()`) or over an
+   announcement; Later means the update loads on the next cold start. (The silent
+   background → foreground reload of June 2026 was replaced by this card on 2026-06-18.)
 
 ---
 
@@ -91,7 +93,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
      Slugs match the directory names under `supabase/functions/`.
    - Database: `npx supabase db push` after `--dry-run` (see `docs/DATABASE.md`).
 
-### Current deployed state (2026-10-28)
+### Current deployed state (2026-11-26)
 
 | Piece | Version |
 |-------|---------|
@@ -155,10 +157,23 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 ## 4. Operational knowledge (hard-won — read before touching providers)
 
 ### Providers
-- **HDFilm (tier 1)** WAF-blocks every datacenter IP, so neither the Worker monitor nor CI can
-  see it. Health comes from `npm run check:hdfilm` on a residential connection and from the
-  app's `player_resolve` telemetry. Its obfuscation rotates; `rapidrameScript.ts` interprets
-  the live decoder body. Follow `decoder-recovery.md`.
+- **HDFilm (tier 1) today (2026-11-26).** Three things stand between the app and an HDFilm
+  stream; each has its dated note below.
+  1. *Some networks are refused outright.* Every request, the search included, answers **451**
+     ("Yasal Nedenlerle Erisime Kapali"). Most viewers are on such a network. The app cannot
+     pass it; it sets HDFilm aside for 30 minutes (`hd:legal`).
+  2. *Every page but `/search/` refuses non-browser clients* (Cloudflare's challenge on film,
+     series and episode pages; an app-block page on `/rplayer/`). The app reads them through
+     a hidden WebView session (`hdfilmSession`) that fetches same-origin.
+  3. *The stream URL is obfuscated*, and the obfuscation rotates. `rapidrameScript.ts`
+     interprets the live decoder; follow `decoder-recovery.md`.
+
+  Nothing outside a phone can check HDFilm. The Worker monitor and CI are datacenter IPs
+  (403), and since 2026-11-19 `npm run check:hdfilm` cannot read a gated page even from the
+  owner's PC (it exits 2). Health comes from telemetry: `player_resolve` (`tiers`,
+  `hdReads`), `hdfilm_session` and `hdfilm_legal_block`, with queries in `docs/live-ops.md`.
+  A change is verified by capturing pages in a real browser and replaying them through the
+  resolver (`decoder-recovery.md`).
 - **HDFilm's decoder keys off the embed page's own hostname (2026-10-22).** The key string
   gains `self.location.hostname` (also spelt `location['hostna'+'me']`, `window.location…`,
   `document.location…` or bare `location…`, varying per request), and the parts are split on a
@@ -166,73 +181,47 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   `document` objects for the page the embed came from (`runRapidrameDecoder(…, pageUrl)`), so
   every caller passes the embed's URL. Until then every HDFilm title fell through — 41
   `not_found` resolves on 10-22 against a usual ~7.
-- HDFilm `/dizi/` pages (the show and every episode) answer non-browser clients with Cloudflare's
-  managed challenge (403 `cf-mitigated: challenge`, `Connection: close`). Through 2026-11-10 a
-  native retry right after one usually passed; on 2026-11-11 phones went a whole day without a
-  pass, and every episode fell to Dizipal or "Not available" while films played. Headers make no
-  difference (tested: XHR, Accept-Language, full browser navigation headers). `hdFilmGet()` now
-  reads a series page that is still the challenge after its retries through **a hidden WebView
-  session** (`hdfilmSession`, same machinery as Kült Filmler's), which holds HDFilm's 8 KB
-  404 page at `/dizi/streambox/` and fetches gated pages same-origin; once that session is
-  open, they go to it first. Opened on demand (12s challenge budget, 3 min idle), and warmed
-  from a series detail page only when a gate was seen in the last 30 minutes. Films, search
-  and the `.mobi` host stay native. Telemetry: `hdfilm_session`.
-- **HDFilm app-blocks its `/rplayer/` embed too (2026-11-15).** Non-browser clients get a 403
-  "Uygulama desteklenmiyor" page (open-in-Chrome, `intent://…package=com.android.chrome`) in
-  place of the player, while the `.mobi` host 404s — so native HDFilm playback died (films and
-  episodes both). A browser-cleared same-origin fetch returns the real player, so `/rplayer/`
-  is on `isHdfilmSessionPath` alongside `/dizi/`, and `hdFilmGet()` reroutes a `/rplayer/`
-  response that is the app-block page (`isHdfilmAppBlockResponse`, matched by body — no
-  `cf-mitigated` header — on a 403, or on a 200 that still carries it) through the same session.
-  The decoder is unchanged; only the fetch moves into the WebView.
-- **Every HDFilm page is gated, and the source is inline (2026-11-19).** Film pages answer the
-  Cloudflare challenge too now (403 on every native try), so titles only HDFilm carries read
-  "Not available" (Verity, The Dog Stars). `isHdfilmSessionPath` is therefore every path on
-  the main origin except `/search/` (JSON, needs `X-Requested-With: fetch`, not gated);
-  `hdFilmGet` goes to the session first while it is open **or opening**, and film and series
-  detail pages both warm it (`scheduleHdfilmWarm`) unless a native request passed in the last
-  30 min. The `/rplayer/` config also changed: no parts variable, but
-  `sources: [{file:(function(){ …guards on a hidden data-v element…; return NAME(ARG); })()}]`,
-  where NAME is named afresh per request and written as a declaration or an expression, and
-  ARG is `"a~b".split("~")` (any separator, `/` escapes) on one request and an array literal
-  on the next. `decodeRapidrameInlineSource` runs the call as written — decoder and argument —
-  in the `rapidrameScript` interpreter (nested functions go in as expressions; declarations
-  are not supported there). With the session working since 11-15 but this decoder failing,
-  HDFilm served 0 plays for days: **a `ready` `hdfilm_session` with no `hdfilm` resolves
-  means the decoder, not the gate.** To verify without a phone: open `/dizi/streambox/` in the
-  Playwright browser, `fetch()` the page and its `/rplayer/{rapidrame_id}/` same-origin, save
-  the bodies, and run the resolver with a fake `hdfilmSession` host that answers from them.
-- **The session worked on two or three phones (2026-11-19 → 11-23).** After the gate, HDFilm
-  went from most plays for 4-7 viewers a day to 1-2 viewers, and `not_found` from ~10% to ~40%
-  of resolves, while every phone logged `hdfilm_session` `ready`. The split is in `loads`:
-  the phones HDFilm plays on reach `ready` after **two** page loads (challenge, then the 404
-  page); every other phone after **one**, in 0.2-4s, and never gets a stream. Those phones are
-  holding some other page that passed for ready. Which one is not known yet — `ready` now
-  records the page's `title` and the WebView's `engine`, and `player_resolve` records each
-  tier's outcome (`tiers`) and the HDFilm reads that failed (`hdReads`, e.g.
-  `page:native:cf rplayer:web:403app`). **Read those before changing the session again.**
-  The page loads fine in a desktop browser, and the captured pages resolve in ~1.2s through
-  the resolver, so matching and the decoder are not the problem. Shipped on 11-23, each for a
-  cause that is possible but unconfirmed:
-  - Cloudflare translates its challenge page's title ("Один момент…", "Un instant…" seen in
-    Kült Filmler's timeouts), and HDFilm's ready test only knew the English one. The probe
-    now exposes `challenge` (`_cf_chl_opt.cType` is a string only on the challenge page; the
-    object itself is on every page), and HDFilm is ready on its own title first.
-  - A read answered with the app-block page inside the session is asked once more with
-    `X-Requested-With: XMLHttpRequest` (an Android WebView names the hosting app in that
-    header unless the page sets it). `hdReads` shows `ok-xrw` when that helped.
-  - A session whose page never confirms a request script started (`ack`, 2.5s) is given a
-    new WebView once (`recycled` in telemetry), as is one whose renderer process died. A read
-    sent in a ready session times out after the request budget (9s), not challenge + request
-    (20s), and the page aborts its own fetch at 8s.
-  - Once a native request has met the gate, gated pages go straight to the session for 30
-    minutes (`isHdfilmGateUp`), a native gate answer is tried once, not three times, and it
-    is not counted as a failed request when the session then answers — that count was
-    sending every miss through a second pass. An error page read in the session is final.
-  - `/rplayer/` and `.mobi` are asked together (`firstHitByPriority`, `.mobi` preferred within
-    600ms), and search falls back to the session when the native request fails.
-- **HDFilm answers 451 to most viewers' networks (found 2026-11-26).** The 11-23 diagnostics
-  settled the question above: on 17 of 23 viewers the session's one-load "ready" page is titled
+- **How HDFilm's gate grew, and how the app reads past it (2026-11-11 → 11-23).**
+  - *11-11.* `/dizi/` pages (the show and every episode) answer non-browser clients with
+    Cloudflare's managed challenge (403 `cf-mitigated: challenge`); until then a native retry
+    usually passed. Headers make no difference (tested: XHR, Accept-Language, full browser
+    navigation headers). The fix (11-12) is the hidden WebView session, the same machinery as
+    Kült Filmler's: it holds HDFilm's 8 KB 404 page at `/dizi/streambox/` and runs each read
+    as a same-origin `fetch()`. 12s challenge budget; closed after 3 idle minutes.
+  - *11-15.* `/rplayer/` answers non-browser clients a 403 "Uygulama desteklenmiyor" page
+    (open-in-Chrome, `intent://…package=com.android.chrome`), matched by its body
+    (`isHdfilmAppBlockBody`: it has no `cf-mitigated` header, and a 200 can carry it), while
+    the `.mobi` embed host 404s. `/rplayer/` reads moved into the session; the decoder did
+    not change.
+  - *11-19.* Film pages are challenged too, so `isHdfilmSessionPath` is every path on the main
+    origin except `/search/` (JSON, needs `X-Requested-With: fetch`). Film and series detail
+    pages warm the session (`scheduleHdfilmWarm`) unless a native request passed in the last
+    30 minutes or the network is 451-blocked. The same week the `/rplayer/` config dropped
+    its parts variable for an inline call,
+    `sources: [{file:(function(){ …guards on a hidden data-v element…; return NAME(ARG); })()}]`,
+    where NAME is named afresh per request and written as a declaration or an expression, and
+    ARG is `"a~b".split("~")` (any separator, `/` escapes) on one request and an array literal
+    on the next. `decodeRapidrameInlineSource` runs the call as written in the
+    `rapidrameScript` interpreter (nested functions go in as expressions; declarations are not
+    supported there).
+  - *11-23.* Session hardening, all still in place. `hdFilmGet` goes to the session first
+    while it is open or opening, and for 30 minutes after a native request met the gate
+    (`isHdfilmGateUp`). A native gate answer is tried once, not three times, and is not
+    counted as a failed request when the session answers; an error page read in the session
+    is final. The page acknowledges each request (`ack`); a WebView that does not within 2.5s,
+    or whose renderer process died, is replaced once (`recycled`). A read that was sent times
+    out after 9s, not challenge + request (20s). The probe tells Cloudflare's challenge by
+    `_cf_chl_opt.cType`, not by its title, which is translated to the phone's language. A
+    read answered with the app-block page is asked once more with `X-Requested-With:
+    XMLHttpRequest` (`ok-xrw` in `hdReads` if that ever helps; not seen so far). Search falls
+    back to the session when the native request fails.
+  - *A `ready` session proves little by itself.* From 11-15 to 11-26 every phone logged
+    `ready` while HDFilm served at most two viewers a day: first because the decoder's shape
+    had changed (11-15 → 11-19), then because the "ready" page was the 451 page below. `loads`
+    and `title` on the `ready` event, and `tiers`/`hdReads` on `player_resolve`, say which.
+- **HDFilm answers 451 to most viewers' networks (found 2026-11-26).** The diagnostics shipped on
+  11-23 showed why HDFilm had fallen from most plays for 4-7 viewers a day to 1-2 since 11-19
+  (`not_found` from ~10% to ~40% of resolves): on 17 of 23 viewers the session's one-load "ready" page is titled
   **"451 - Yasal Nedenlerle Erisime Kapali"** and every search reads `search:native:451
   search:web:451`, natively and in the WebView, on WebView 92 through 158. It is HDFilm's own
   legal block for some networks (which ones is not known: no country is recorded; the six
@@ -250,7 +239,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   once (requests in flight when it opened no longer inflate `outages`), the second pass
   reopens only first-time outages (`reopenUnsettledProviders`), and a host silent through a
   second opening (`isSettledOutage`) is skipped without a second pass until its cooldown
-  (2, 4, … 15 min) lets one probe through.
+  (2, 4, … 15 min) lets one probe through. Retry on the player still clears everything.
 - **Dizipal moved to dizipal2161 with its player down (2026-11-26).** 2150 redirects there
   (2151-2160 never existed; the page says 2162 is next). Search, pages and `/_pb` answer, but
   `/ajax-player-config` returns Cloudflare's **520** for every title, in a real browser too,
@@ -262,14 +251,16 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   with the target's letters as a prefix match, so Dizipal's retry under TMDB's Turkish title
   "Canavar" (The Beast, 2026) accepted "Canavarcıklar" and played another film. Prefix and
   substring matches now need a word boundary ("Aliens" is not "Alien").
-- **HDFilm's second source, `/rplayer/{rapidrame_id}/` on the main domain, is the fallback
-  (2026-10-28).** The `.mobi` embed's `rapidrame_id` names it, so no extra page read is needed;
-  `resolveHdFilmNativeFallback` asks `.mobi` first (its streams carry the dual audio) and the
-  rplayer page when `.mobi` refuses (429) or decodes nothing. Its decoder is packed, so the
-  unpacker now unescapes the payload literal first (`unescapeJsStringLiteral`); its config keeps a
-  commented-out `//sources: [{file:atob(file_link)}]` ahead of the live one, so the source variable
-  is the first declared non-call; its captions are root-relative with `\u` labels. Streams come
-  from `*.rapidrame.com` and play with `streamRequestHeaders`.
+- **HDFilm has two sources for a video: the `.mobi` embed and `/rplayer/{rapidrame_id}/` on
+  the main domain (2026-10-28).** The `.mobi` embed's `rapidrame_id` names the rplayer page,
+  so no extra page read is needed. Since 2026-11-23 `resolveHdFilmNativeFallback` asks both at
+  once and prefers `.mobi` (its streams carry the dual audio) when it answers within 600ms of
+  the rplayer page; before, it asked `.mobi` first and waited out its failure. Since
+  2026-11-15 `.mobi` 404s for the app, so in practice the rplayer page, read through the
+  session, serves every play. The rplayer decoder is packed, so the unpacker unescapes the
+  payload literal first (`unescapeJsStringLiteral`); its config keeps a commented-out
+  `//sources: [{file:atob(file_link)}]` ahead of the live one; its captions are root-relative
+  with `\u` labels. Streams come from `*.rapidrame.com` and play with `streamRequestHeaders`.
 - HDFilm does not tokenize apostrophes: search `Rosemarys Baby`, not `Rosemary's Baby`.
 - **HDFilm's search matches the listed title literally, punctuation included** (2026-10-28):
   "The Hunger Games: The Ballad of Songbirds & Snakes" finds nothing, nor does it with the colon
@@ -365,7 +356,8 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   the real site came back. **Check the old domains' redirect target before trusting a higher
   `dizipalN.com`**: the 22xx band is the clone, and 2200, 2203-2205, 2207 and 2300 are SEO
   squatters serving "güncel adres" landing pages.
-- **Dizipal** rotates its numbered domain (`dizipalN.com` → `N+1`, currently 2150; 2141 went
+- **Dizipal** rotates its numbered domain (`dizipalN.com` → a higher `N`, currently 2161; it jumped
+  there from 2150 on 2026-11-26, and 2141 went
   dark without a redirect, so a device pinned to it reached 2142 only through Supabase). Hops are
   not one per rotation; a stale base costs seconds and past ~21 hops breaks axios.
   `normaliseDizipalBaseUrl` treats the shipped base as a **floor** — bump it when Dizipal
@@ -388,8 +380,10 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 - Dizipal lists films under **Turkish** titles, and its search rows carry the year, which is
   what disambiguates remakes. A film found only under its Turkish name is reached by the
   retry with TMDB's Turkish title (`getTurkishAlternativeTitle`).
-- Dizipal and HDFilm serve intermittent Cloudflare challenges; both go through `providerGet`
-  / `hdFilmGet` retries.
+- Dizipal serves intermittent Cloudflare challenges, and so does HDFilm's search since
+  2026-11-26: `providerGet` asks again up to twice (`PROVIDER_CHALLENGE_RETRIES`). HDFilm's
+  gated pages are different: the challenge there is permanent, so `hdFilmGet` tries natively
+  once and reads the page through the session.
 - **A provider that is DOWN must not cost the others their budget.** On 2026-09-24 Dizipal's
   origin went 502 behind DDoS-Guard: the domain still resolves, but every path hangs ~6s and
   then answers "502 - Bad Gateway". Four dead calls ate 24s of the resolver's 20s ceiling, so
@@ -400,7 +394,8 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   outage up to 15 minutes. Any HTTP reply — 404, 403, 500 — proves the host is alive and
   clears the record, so a provider is never skipped for saying "no". A skip is not a request
   failure, but a pass that **skipped** a provider never asked it, so its miss is not final:
-  `resolveWebPlayerUrl` clears the breakers and runs its second pass (`providerSkips`). Before
+  `resolveWebPlayerUrl` reopens that host and runs its second pass (`providerSkips`; since
+  2026-11-26 only for a host's first outage, see `isSettledOutage` above). Before
   that, two dropped HDFilm requests on one phone made every HDFilm-only title (*The Fall*,
   2026-10-24: ten episodes in a row) "Not available" in about a second until the cooldown ended
   or the app was killed — "clearing the cache" fixed it only by restarting the app. Retry on the
@@ -409,16 +404,17 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   `Dizibal player`), so a dead embed or player host never gets the provider's site skipped.
 - **The tiers run in parallel (2026-09-25).** They used to run one after another — HDFilm,
   Dizipal, then both again with the Turkish title, then Dizibal — so a title only Dizibal had
-  paid for every step before it (10-15s on "Watch"). `resolveWebPlayerUrlInner` now starts all
-  three at once, fetches the Turkish title once up front, and `firstNativeByPriority` answers
+  paid for every step before it (10-15s on "Watch"). `resolveWebPlayerUrlInner` now starts every
+  tier at once (four since Kült Filmler joined), fetches the Turkish title once up front, and `firstNativeByPriority` answers
   with the highest tier's stream (a lower tier waits ≤2.5s for a higher one still running).
   Measured from Baku: 0.9-1.5s for titles on HDFilm/Dizipal.
 - **Dizibal's series player host is slow**: `pilavyerplay.top/assets/js/s.php` takes 4-10s
   (the movie host `play2.` 0.2s). It gets `DIZIBAL_PLAYER_TIMEOUT_MS` (10s); at the shared 5s
   it timed out, tripped its breaker and every later title lost Dizibal. A series only Dizibal
   carries therefore still takes ~7s — that is the host, not the app.
-- Dizipal's rotation is announced by the **old domains**: 2120 … 2133 all 301 to the configured
-  2134. "Some higher `dizipalN.com` answers" is not the signal (see the clone band above).
+- Dizipal's rotation is announced by the **old domains**, which 301 to the live one (on
+  2026-11-26: 2149 → 2150 → 2161). "Some higher `dizipalN.com` answers" is not the signal
+  (see the clone band above).
 - **Dizibal** rebuilt its site in Sept 2026 (Laravel); the old `/api/*` JSON routes all 404.
   The resolver now follows the browser: `/ara/oneri?q=` (JSON search; Turkish titles, but it
   matches English names too; no TMDB ids, so the year from `meta` must fit) → the movie page or
@@ -450,7 +446,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   14s budget ends counts as transient, so the second pass asks again; a lapsed clearance
   mid-session reloads and retries once. Worker egress is challenged too (checked with
   `wrangler dev --remote`), so a server-side proxy is no way round it. Telemetry:
-  `kultfilmler_session` (`outcome: ready|challenge_timeout|blocked|load_error`, `ms`, `loads`,
+  `kultfilmler_session` (`outcome: ready|challenge_timeout|blocked|load_error|recycled`, `ms`, `loads`,
   and on a failure the page's last `title`, `visibility` and `challengeFrame`; `load_error` adds
   `error`). Since 2026-11-06 some networks get Cloudflare's block page rather than the
   challenge; the session gives up on it at once instead of waiting out the 20s.
@@ -470,7 +466,9 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   re-resolves once silently (`failPlayableTitle`), then shows the retryable stream error. The
   stall watchdog is 15s (`minBufferForPlayback: 4` + imagestoo's per-segment hostnames made cold
   starts outrun 8s). A resolve pass in which a request got no answer (timeout, 5xx, 403/429 —
-  never 404) is retried; a clean miss still answers after one pass.
+  never 404) is retried; a clean miss still answers after one pass. Not counted: an origin
+  that is down behind its edge (502/504/520-530), a 451 from HDFilm, and an HDFilm gate
+  answer that the session then resolves.
 - **A stream that stops mid-film is recovered, error or not (2026-11-20,
   `src/screens/player/streamHealth.ts`).** Provider CDNs freeze without reporting an error
   (connection open, no bytes): HDFilm's own web player carries a 5s "position has not moved"
@@ -506,8 +504,8 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
   as a breaker strike, and a provider skipped for that reason does not make the miss
   provisional (`providerSkips` is for a phone that could not reach a healthy site), so a miss
   is one pass again. The cooldown still grows 1 → 15 min and its probe finds the site when it
-  returns; nothing needs shipping for that. When Dizipal is back on a new number, bump the
-  floor and `/set_dizipal` as usual.
+  returns; nothing needs shipping for that. (It returned on 2150 on 2026-11-23 and moved to
+  2161 on 11-26, see above.)
 - **Discovery rails hide films still in cinemas** (`src/api/releaseWindow.ts`). No provider
   carries a film until it is released online: TMDB `release_dates` type 4/5/6 (digital,
   physical, TV). A film shows once its earliest home release in any country is past, or 90
@@ -669,8 +667,9 @@ wire protocol: `docs/watch-together.md`.
 - Temporary scripts live in `scripts/` and are deleted when done.
 - Keep the player **native**: never show a provider's own web player. The resolver returns a
   native stream or `not_found`; a failed HDFilm stream asks Dizipal/Dizibal for a native one
-  (`resolveNativeAlternativeToHdFilm`). The only WebViews left are trailer pages and the
-  app-owned hls.js surface (`dizipal_html5`). Keep `useNativeControls={false}`.
+  (`resolveNativeAlternativeToHdFilm`). The only WebViews a viewer sees are trailer pages and the
+  app-owned hls.js surface (`dizipal_html5`); the hidden provider sessions (`WebSessionBridge`)
+  render nothing and only fetch.
 - Match the surrounding code style; don't reformat unrelated code.
 
 ---

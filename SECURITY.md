@@ -24,7 +24,7 @@ In scope:
 
 Out of scope:
 
-- Third-party content providers (HDFilmCehennemi, Dizipal, Dizibal) — these are external services the app integrates with.
+- Third-party content providers (HDFilmCehennemi, Dizipal, Dizibal, Kült Filmler) — these are external services the app integrates with.
 - Vulnerabilities in transitive npm/Expo dependencies — please report those upstream and notify us if there's no available mitigation.
 - Social-engineering attacks against the maintainer or users.
 

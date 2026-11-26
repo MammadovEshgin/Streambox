@@ -26,7 +26,7 @@ the runtime, branches, deploy rules and hard guardrails; this file is only a sum
 | Topic | Doc |
 |---|---|
 | Runtime, deploys, providers, Watch Together, guardrails | `ENGINEERING.md` |
-| HDFilm decoder breakage runbook | `decoder-recovery.md` |
+| Provider breakage runbook (triage, HDFilm decoder, Dizipal, Dizibal) | `decoder-recovery.md` |
 | Database schema and migrations | `docs/DATABASE.md` |
 | Watch Together architecture and wire protocol | `docs/watch-together.md` |
 | OTA delivery, announcements, telemetry queries | `docs/live-ops.md` |

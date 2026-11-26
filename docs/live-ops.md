@@ -131,12 +131,16 @@ order by occurred_at desc
 limit 50;
 ```
 
-Which source served each play (a shift away from `hdfilm`/`direct`, or a jump in `not_found`, is the tier-1 outage signal):
+Which provider served each play. `provider` is `hdfilm`, `dizipal`, `dizibal` or
+`kultfilmler`, and empty when nothing was found (`source = 'not_found'`). A provider whose
+count drops to zero, or a jump in the empty row, is the outage signal; the per-viewer queries
+further down say why:
 
 ```sql
-select date_trunc('day', occurred_at) as day, metadata->>'source' as source, count(*)
+select occurred_at::date as day, coalesce(metadata->>'provider', 'not found') as provider,
+       count(*), count(distinct user_id) as viewers
 from public.app_telemetry_events
-where event_name = 'player_resolve'
+where event_name = 'player_resolve' and occurred_at > now() - interval '14 days'
 group by 1, 2
 order by 1 desc, 3 desc;
 ```
@@ -212,8 +216,10 @@ when Cloudflare's block page ("Attention Required!") comes up instead of a chall
 `load_error` at once when the WebView can't load the page (with the WebView's `error`). Each
 sets the provider aside for 3 minutes, or until the viewer presses Retry. A timeout carries what the page last reported: `loads: 0`
 means the WebView never loaded anything, `visibility: hidden` that it isn't being drawn, and a
-`challengeFrame` that stayed means the challenge wants interaction. Plays it served show as
-`provider = 'kultfilmler'` in `player_resolve`:
+`challengeFrame` that stayed means the challenge wants interaction. Since 2026-11-23 a `ready`
+row also carries the page's `title` and the WebView's `engine` version, and `recycled` means
+the WebView stopped answering and was replaced (`cause`: `no_ack`, `process_gone`). Plays it
+served show as `provider = 'kultfilmler'` in `player_resolve`:
 
 ```sql
 select occurred_at::date as day, metadata->>'outcome' as outcome, count(*),
@@ -226,27 +232,40 @@ group by 1, 2
 order by 1 desc, 2;
 ```
 
-HDFilm series-page sessions (since 2026-11-12): the same outcomes for the hidden WebView that
-reads HDFilm's `/dizi/` pages when native requests stay challenged, with a 12s challenge
-budget. Run the query above with `event_name = 'hdfilm_session'`. Many `ready` rows mean
-HDFilm is challenging phones; none means native requests are getting through. Since 2026-11-15 the session also
-serves HDFilm's `/rplayer/` embed when HDFilm app-blocks it (403 "desteklenmiyor"), so `ready`
-rows now also mean the player block is being lifted. Since 2026-11-20 film pages go through it
-too and detail pages warm it, so expect a `ready` row for most app sessions that open a title;
-`ready` rows with no `provider = 'hdfilm'` plays in `player_resolve` point at the decoder, not
-the gate.
+HDFilm. Every HDFilm page except the search refuses non-browser clients, so the app reads
+them through the same kind of hidden WebView (`hdfilm_session`, 12s challenge budget, warmed
+from film and series detail pages). The events, and how to read them:
 
-Since 2026-11-23 the events say which step fails. `ready` carries `loads` (page loads before
-ready: 2 is challenge-then-page, 1 is a page that needed no challenge or a page mistaken for
-the site), the page's `title` and the WebView's `engine` version; `recycled` means the WebView
-stopped answering and was replaced (`cause`: `no_ack`, `process_gone`). `player_resolve`
-carries `tiers` — each provider's outcome and milliseconds in the last pass, e.g.
-`hd:no_stream/2100 dp:miss/4 db:hit/900 kf:pending` (HDFilm stops at `no_match`, `no_episode`,
-`no_page`, `no_player` or `no_stream`) — `passes`, and `hdReads`: the HDFilm reads that did not
-simply succeed, as `step:via:outcome` (`via` is `native` or `web` for the session; outcomes are
-a status, `cf`, `app`, `403app`, `timeout`, `unavailable`, `ok-xrw`). Per viewer:
+- `hdfilm_session` `ready` carries `loads`, `title` and `engine`. Two loads is Cloudflare's
+  challenge followed by HDFilm's own 404 page ("404 Hata … Hdfilmcehennemi"): a working
+  session. One load in under half a second is a session reopened with its clearance still
+  valid.
+- `hdfilm_session` `blocked` with the title "451 - Yasal Nedenlerle Erisime Kapali" is
+  HDFilm's legal block: it refuses that viewer's network on every request, the search
+  included. Before 2026-11-26 the same page was logged as a one-load `ready`. Nothing in the
+  app can pass it. `hdfilm_legal_block` is sent once per app session with the page's `text`,
+  `more` and `links`.
+- `player_resolve` carries `tiers`: each provider's outcome and milliseconds in the last
+  pass, for example `hd:no_stream/2100 dp:miss/4 db:hit/900 kf:pending`. `hit`, `miss` and
+  `pending` (still running when the answer was given) apply to every tier. HDFilm also names
+  the step it stopped at: `legal` (the 451 block; not asked further for 30 minutes),
+  `no_match` (search), `no_episode`, `no_page` (the page could not be read), `no_player`
+  (the page has no video: HDFilm removed it or has not added one) and `no_stream` (the player
+  page or the decoder). `passes` is 2 when the resolve ran a second time.
+- `player_resolve` `hdReads` lists the HDFilm reads that did not simply succeed, as
+  `step:via:outcome`. `step` is `search`, `page`, `rplayer` or `embed`; `via` is `native` or
+  `web` (the session); the outcome is an HTTP status, `cf` (Cloudflare's challenge), `app` or
+  `403app` (HDFilm's app-block page), `timeout`, `unavailable` (the session is resting after
+  a failed challenge), `skipped` (the breaker) or `ok-xrw`. `page:native:cf` and
+  `embed:native:404` appear on healthy plays: the first native try is always challenged, and
+  the `.mobi` embed always refuses the app.
+
+Reading them together: many `hd:hit` rows mean HDFilm is healthy for the viewers it accepts.
+`hd:no_stream` across viewers who used to get `hd:hit` means the decoder or the player page
+changed (`decoder-recovery.md`). `hd:legal` is the block and not a fault of the app.
 
 ```sql
+-- Each play, per viewer.
 select left(user_id::text, 8) as viewer, metadata->>'source' as source,
        metadata->>'tiers' as tiers, metadata->>'hdReads' as hd_reads,
        (metadata->>'durationMs')::int as ms, occurred_at
@@ -254,6 +273,7 @@ from public.app_telemetry_events
 where event_name = 'player_resolve' and occurred_at > now() - interval '2 days'
 order by occurred_at desc;
 
+-- What each viewer's HDFilm session came to.
 select left(user_id::text, 8) as viewer, metadata->>'outcome' as outcome,
        metadata->>'loads' as loads, metadata->>'title' as title,
        metadata->>'engine' as engine, count(*)
@@ -261,14 +281,8 @@ from public.app_telemetry_events
 where event_name = 'hdfilm_session' and occurred_at > now() - interval '2 days'
 group by 1, 2, 3, 4, 5
 order by 1, 6 desc;
-```
 
-Since 2026-11-26, `hd:legal` in `tiers` means HDFilm answered **451** to that viewer's network
-(its own "closed for legal reasons" page) and was not asked further; the session logs
-`blocked` with that title. `hdfilm_legal_block` is sent once per app session with the page's
-`text`, `more` and `links`:
-
-```sql
+-- Viewers HDFilm refuses, and what its block page says.
 select left(user_id::text, 8) as viewer, max(occurred_at) as last_seen, count(*),
        max(metadata->>'text') as text, max(metadata->>'links') as links
 from public.app_telemetry_events

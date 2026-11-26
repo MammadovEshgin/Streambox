@@ -23,6 +23,11 @@ TMDB stays responsible for:
 - Movie and series posters, backdrops, collection artwork, and logos whenever available.
 - Franchise poster imagery. Custom Supabase poster URLs should not be used for franchise browsing.
 
+Since 2026-10-18 the app loads TMDB images through the TMDB proxy Worker
+(`tmdb.streamboxapp.stream/t/p/…`, cached at the edge for 30 days) and falls back to
+`image.tmdb.org`, whose edges for Azerbaijan refuse connections. The images are still TMDB's;
+only the delivery path changed (`workers/tmdb-proxy/README.md`).
+
 ## Runtime Rules
 
 - List, rail, and grid browsing must not call Supabase Edge rating functions.
