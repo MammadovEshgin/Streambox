@@ -95,7 +95,7 @@ Deploys happen **only when the owner approves them**. Typical sequence:
 
 | Piece | Version |
 |-------|---------|
-| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `95b54a7` → group `da808ecc-f34b-4e17-befd-392d6ccf1769` |
+| App OTA (runtime 1.2.0, `preview`) | `v1.2.0` @ `f2ee74f` → group `2f9363e8-f994-4955-a41a-ea02d7881638` |
 | `streambox-tmdb-proxy` | `9bb542c0` (also on `tmdb.streamboxapp.stream`; 24h edge TTL for film records; `/t/p/…` image proxy, 30-day edge TTL) |
 | `streambox-provider-monitor` | `338e4a0f` (hourly cron; classic Dizipal checks, hex `data-cfg` + `/_pb` beacon + player-config POST that must yield an embed URL, decrypting `enc`) |
 | `provider_configs` | rows `hdfilm`, `dizipal`, `dizibal`, `kultfilmler` (added 2026-10-23, priority 3) |
@@ -109,6 +109,7 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
 
 | Date | Commit | Update group | Summary |
 |------|--------|--------------|---------|
+| 2026-11-26 | `f2ee74f` | `2f9363e8-f994-4955-a41a-ea02d7881638` | HDFilm answers 451 ("Yasal Nedenlerle Erisime Kapali") to 17 of 23 viewers' networks, search included: recognised, HDFilm set aside 30 min (`hd:legal`), session `blocked` on that page, `hdfilm_legal_block` records its text; Dizipal floor 2150 → 2161, its `/ajax-player-config` 520 handled as an outage (`DIZIPAL_PLAYER`); a host silent through a second breaker opening is skipped without a second pass; series stages tell `no_player` from `no_episode` |
 | 2026-11-23 | `95b54a7` | `da808ecc-f34b-4e17-befd-392d6ccf1769` | HDFilm plays on 1-2 phones since the gate (`ready` after one page load everywhere else): `webSession` acks each request, replaces a WebView that stops answering, times a sent read out at 9s, returns error pages; challenge told apart from its translated title; `hdFilmGet` goes straight to the session while the gate is up, one native try, app-block page retried with `X-Requested-With`; `/rplayer/` and `.mobi` asked together; search falls back to the session; `player_resolve` carries `tiers`/`passes`/`hdReads`, `ready` carries `loads`/`title`/`engine` |
 | 2026-11-22 | `ff7d3dc` | `981706f2-b327-4019-8c48-2c2c85222cdc` | Dizipal origin down (502) since 11-21: `isOriginDownStatus` (502/504/520-530) is a breaker strike and its skips don't trigger the second resolve pass, so a miss is one pass, not 13-17s; player recovery classifies the error — refused link (401/403/404/410) → fresh link at once, 429 → reload held 4/8/12s |
 | 2026-11-20 (2) | `68f47f1` | `08b44529-f268-4218-8073-23d3336c499c` | Freeze watchdog for native streams (20s without progress → reload at position; `streamHealth.ts`); reload budget refills after 2 min; spent budget or expired link → fresh resolve resumed at position; HDFilm links remembered 10 min and forgotten before any re-resolve; `recoverFromHdFilmFailure` no longer leaves the loader up; `player_stream_recovery` telemetry and `cause` on `player_silent_retry` (Past Lives) |
