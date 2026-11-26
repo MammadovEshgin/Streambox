@@ -50,6 +50,14 @@ export type WebSessionOptions = {
   sessionUrl(origin: string): string;
   /** JS expression, run in the loaded page: true once the page is past the challenge. */
   readyExpression: string;
+  /**
+   * JS expression, run in the loaded page: true on a page of the site's own that
+   * turns this network away (a legal-block page, say). Like Cloudflare's block
+   * page, there is nothing to wait out.
+   */
+  blockedExpression?: string;
+  /** The session opened on a block page; `title` is that page's. */
+  onBlocked?(title: string): void;
   /** How long the challenge may take before the session gives up. */
   challengeTimeoutMs: number;
   /** One request inside a cleared session. */
@@ -98,19 +106,21 @@ type Phase = "closed" | "opening" | "ready";
  * you have been blocked"): the site turns this network away outright, so there
  * is no challenge to wait out.
  */
-export function webSessionPageProbe(readyExpression: string): string {
+export function webSessionPageProbe(readyExpression: string, blockedExpression = "false"): string {
   return `(function () {
   var text = document.body ? document.body.innerText : "";
   var chl = window._cf_chl_opt;
   var challenge = !!(chl && typeof chl.cType === "string" && chl.cType);
   var ready = false;
   try { ready = ${readyExpression}; } catch (e) {}
+  var siteBlocked = false;
+  try { siteBlocked = !!(${blockedExpression}); } catch (e) {}
   var engine = String(navigator.userAgent || "").split("Chrome/")[1];
   window.ReactNativeWebView.postMessage(JSON.stringify({
     kf: "page",
     ready: ready,
     engine: parseInt(engine, 10) || 0,
-    blocked: !!document.getElementById("cf-error-details") || /you have been blocked/i.test(text),
+    blocked: siteBlocked || !!document.getElementById("cf-error-details") || /you have been blocked/i.test(text),
     title: String(document.title || "").slice(0, 60),
     visibility: String(document.visibilityState || ""),
     challengeFrame: !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
@@ -146,7 +156,7 @@ true;`;
 }
 
 export function createWebSession(options: WebSessionOptions) {
-  const pageProbe = webSessionPageProbe(options.readyExpression);
+  const pageProbe = webSessionPageProbe(options.readyExpression, options.blockedExpression);
 
   let phase: Phase = "closed";
   let host: WebSessionHost | null = null;
@@ -297,6 +307,7 @@ export function createWebSession(options: WebSessionOptions) {
       if (typeof message.engine === "number" && message.engine > 0) engine = message.engine;
       if (message.blocked === true && phase === "opening") {
         giveUp("blocked");
+        options.onBlocked?.(lastPage.title);
         return;
       }
       if (message.ready !== true) return;

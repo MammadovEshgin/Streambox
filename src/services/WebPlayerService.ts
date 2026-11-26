@@ -26,7 +26,10 @@ import {
   isHdfilmAppBlockBody,
   isHdfilmAppBlockResponse,
   isHdfilmGateUp,
+  isHdfilmLegallyBlocked,
   isHdfilmSessionPath,
+  liftHdfilmLegalBlock,
+  noteHdfilmLegalBlock,
   noteHdfilmChallenge,
   noteHdfilmNativePass,
 } from "./hdfilmSession";
@@ -331,6 +334,29 @@ function isOriginDownStatus(status: number | undefined): boolean {
  */
 let providerSkips = 0;
 
+/**
+ * An outage the resolver should stop asking about inside one resolve: the
+ * host's edge said its origin is down, or the host stayed silent through a
+ * second opening of the breaker. The first opening may be the phone's own bad
+ * moment, so the resolver's second pass asks that host again; a host this
+ * phone still cannot reach after that (blocked by the network it is on, say)
+ * was costing every later resolve its timeouts twice over. 2026-11-26: two
+ * viewers whose network drops Dizibal waited 9-17s for each "Not available".
+ */
+const PROVIDER_SETTLED_OUTAGES = 2;
+
+function isSettledOutage(state: ProviderSilence | undefined): boolean {
+  return Boolean(state && (state.originDown || state.outages >= PROVIDER_SETTLED_OUTAGES));
+}
+
+/** Let the hosts set aside for a first, unsettled outage be asked again now. */
+function reopenUnsettledProviders(): void {
+  for (const [provider, state] of providerSilence) {
+    if (isSettledOutage(state) || state.skipUntil === 0) continue;
+    providerSilence.set(provider, { ...state, strikes: 0, skipUntil: 0 });
+  }
+}
+
 /** Thrown instead of making a request the breaker says will not be answered. */
 class ProviderSkippedError extends Error {
   constructor(provider: string) {
@@ -361,6 +387,7 @@ export function forgetProviderBackoff(): void {
   providerSilence.clear();
   liftKultfilmlerCooldown();
   hdfilmSession.liftCooldown();
+  liftHdfilmLegalBlock();
 }
 
 /** The host replied, so it is up — forget everything held against it. */
@@ -381,7 +408,10 @@ function noteProviderSilence(provider: string, error: unknown): void {
   const fresh = previous && now - previous.lastStrikeAt < PROVIDER_STRIKE_WINDOW_MS;
   const strikes = (fresh ? previous.strikes : 0) + 1;
   const opening = strikes >= PROVIDER_UNREACHABLE_STRIKES;
-  const outages = (previous?.outages ?? 0) + (opening ? 1 : 0);
+  // One outage per opening: requests already in flight when the breaker opened
+  // fail after it, and each used to count as a further outage.
+  const alreadyOpen = Boolean(previous && previous.skipUntil > now);
+  const outages = (previous?.outages ?? 0) + (opening && !alreadyOpen ? 1 : 0);
   const cooldown = Math.min(
     PROVIDER_UNREACHABLE_COOLDOWN_MS * 2 ** Math.max(0, outages - 1),
     PROVIDER_UNREACHABLE_MAX_COOLDOWN_MS
@@ -421,7 +451,7 @@ async function providerGet<T = string>(
     // Not a request failure, but not an answer either: the resolver gives
     // skipped hosts one more try before a miss is final (see providerSkips) —
     // unless the host's own edge said its origin is down.
-    if (!providerSilence.get(provider)?.originDown) providerSkips += 1;
+    if (!isSettledOutage(providerSilence.get(provider))) providerSkips += 1;
     throw new ProviderSkippedError(provider);
   }
 
@@ -465,11 +495,14 @@ async function hdFilmGet<T = string>(
   config: Parameters<typeof axios.get>[1]
 ): Promise<import("axios").AxiosResponse<T>> {
   hdfilmSession.setOrigin(getHdfilmBaseUrl());
+  const onHdfilmOrigin = isHdfilmOriginUrl(url);
+  if (onHdfilmOrigin && isHdfilmLegallyBlocked()) throw new HdfilmLegalBlockError();
   if (!isHdfilmSessionPath(url)) {
     try {
       return await providerGet<T>("HDFilm", url, config);
     } catch (error) {
       noteHdfilmRead(url, "native", describeRequestError(error));
+      if (onHdfilmOrigin) reportIfHdfilmLegalBlock(error);
       throw error;
     }
   }
@@ -498,6 +531,7 @@ async function hdFilmGet<T = string>(
   } catch (error) {
     if (!isHdfilmGateResponse(error)) {
       noteHdfilmRead(url, "native", describeRequestError(error));
+      reportIfHdfilmLegalBlock(error);
       // A 403/503 that is neither gate was left uncounted by `challengeIsFinal`.
       if (isCloudflareChallengeStatus((error as { response?: { status?: number } } | null)?.response?.status)) {
         noteProviderFailure(error);
@@ -520,6 +554,56 @@ async function hdFilmGet<T = string>(
   // ("unavailable") would only say the same again.
   if (sessionMiss === "timeout") noteProviderFailure({});
   throw gateError;
+}
+
+/** Thrown instead of asking HDFilm while it is known to be closed to this network. */
+class HdfilmLegalBlockError extends Error {
+  constructor() {
+    super("HDFilm is closed to this network (451)");
+    this.name = "HdfilmLegalBlockError";
+  }
+}
+
+function isHdfilmOriginUrl(url: string): boolean {
+  try {
+    return new URL(url).origin === hdfilmSession.getOrigin();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A 451 from HDFilm: remember it (see `isHdfilmLegallyBlocked`) and, once per
+ * app session, send what the page says. Its text and links are the only way to
+ * learn from here what the block is and whether the page names another address.
+ */
+let hdfilmLegalBlockReported = false;
+
+function reportIfHdfilmLegalBlock(error: unknown): void {
+  const response = (error as { response?: { status?: number; data?: unknown } } | null)?.response;
+  if (response?.status !== 451) return;
+  noteHdfilmLegalBlock();
+  if (hdfilmLegalBlockReported) return;
+  hdfilmLegalBlockReported = true;
+  const html = typeof response.data === "string" ? response.data : "";
+  const text = stripHtmlToText(html);
+  const links = [...html.matchAll(/href=["'](https?:[^"']+)["']/gi)].map((match) => match[1]);
+  trackEvent(
+    "hdfilm_legal_block",
+    "network",
+    { text: text.slice(0, 260), more: text.slice(260, 520), links: [...new Set(links)].slice(0, 6).join(" ").slice(0, 260) },
+    "warning"
+  );
+}
+
+/** A page's visible words: scripts, styles and tags dropped, whitespace collapsed. */
+function stripHtmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**
@@ -613,6 +697,7 @@ async function readHdFilmPageInSession<T>(
     const error = Object.assign(new Error(`HDFilm answered ${result.status}`), {
       response: { status: result.status, data: result.body ?? "", headers: {} },
     });
+    reportIfHdfilmLegalBlock(error);
     // A 403 or 404 inside a cleared browser is the site's answer. A 429 or a
     // 5xx is a bad moment, worth asking about again.
     if (result.status !== 403 && result.status !== 404) noteProviderFailure(error);
@@ -1088,6 +1173,7 @@ async function fetchHdFilmSearch(query: string): Promise<{ results?: string[] } 
     recordObservedBaseUrl("hdfilm", getResponseFinalOrigin(response));
     return response.data ?? null;
   } catch (error) {
+    if (isHdfilmLegallyBlocked()) throw error;
     if (!hdfilmSession.isReady() && !hdfilmSession.isOpening() && !isHdfilmGateUp()) throw error;
     const result = await hdfilmSession.fetchText(url, { headers });
     if (!result.ok) {
@@ -1500,24 +1586,6 @@ async function findSeriesEpisodeUrl(
 
   } catch (e: any) {
     debugLog(`[WebPlayer] Error fetching series page: ${seriesPageUrl}`, e?.message || String(e));
-    return null;
-  }
-}
-
-async function resolvePlayableSeriesEpisodeUrl(
-  seriesPageUrl: string,
-  seasonNumber: number,
-  episodeNumber: number
-): Promise<{ url: string; qualityWarning?: string; nativeFallback?: DizipalStreamInfo | null } | null> {
-  try {
-    const episodeUrl = await findSeriesEpisodeUrl(seriesPageUrl, seasonNumber, episodeNumber);
-    if (!episodeUrl) return null;
-
-    const check = await checkVideoAvailability(episodeUrl);
-    if (!check.available) return null;
-
-    return { url: episodeUrl, qualityWarning: check.qualityWarning, nativeFallback: check.nativeFallback };
-  } catch {
     return null;
   }
 }
@@ -3295,6 +3363,7 @@ async function postDizipalPlayerConfig(
 
   try {
     let response = await postTo(liveDizipalPlayerConfigPath);
+    noteProviderAnswered(DIZIPAL_PLAYER);
     if (response.status === 404) {
       for (const path of DIZIPAL_PLAYER_CONFIG_PATHS) {
         if (path === liveDizipalPlayerConfigPath) continue;
@@ -3308,11 +3377,23 @@ async function postDizipalPlayerConfig(
     }
     return response.data && typeof response.data === "object" ? response.data : null;
   } catch (error: any) {
-    noteProviderFailure(error);
+    // The player's backend down behind its edge is an outage, not a request to
+    // repeat: the next render's POST gets the same 520.
+    noteProviderSilence(DIZIPAL_PLAYER, error);
+    if (!isOriginDownStatus(error?.response?.status)) noteProviderFailure(error);
     debugLog("[WebPlayer] Dizipal player-config failed:", error?.message ?? error);
     return null;
   }
 }
+
+/**
+ * Breaker name for Dizipal's player-config endpoint on its own. The site can be
+ * up (search, pages, the beacon) while the endpoint that hands out the video
+ * is not: on 2026-11-26, the day it moved to dizipal2161, every title's POST
+ * answered Cloudflare's 520, in a real browser too. Each resolve was rendering
+ * the page twice and running a second pass to hear it again.
+ */
+const DIZIPAL_PLAYER = "Dizipal player";
 
 async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResult | null> {
   try {
@@ -3335,6 +3416,8 @@ async function fetchDizipalStreamUrl(pageUrl: string): Promise<DizipalStreamResu
         const cookieHeader =
           attempt === 0 ? null : [sessionCookie, beaconCookie ?? page.ctCookie].filter(Boolean).join("; ") || null;
         configResp = await postDizipalPlayerConfig(baseUrl, pageUrl, cfg, cookieHeader);
+        // Down behind its edge: a second render would only spend another cfg.
+        if (!configResp && providerSilence.get(DIZIPAL_PLAYER)?.originDown) return null;
       }
       if (!configResp?.success) {
         debugLog("[WebPlayer] Dizipal player-config rejected:", (configResp as any)?.message ?? "no answer");
@@ -3411,6 +3494,8 @@ type DizipalResolveResult = {
 };
 
 async function resolvePlayableDizipalUrl(request: WebPlayerRequest): Promise<DizipalResolveResult | null> {
+  // The player endpoint is down: no title can play, so none is looked up.
+  if (isProviderSkipped(DIZIPAL_PLAYER)) return null;
   const dizipalMatch = await searchDizipal(request.title, request.mediaType, request.year, request.originalTitle);
   if (!dizipalMatch) return null;
 
@@ -3569,7 +3654,7 @@ export async function resolveWebPlayerUrl(request: WebPlayerRequest): Promise<We
   // A provider the breaker skipped was never asked. The retry asks it: a host
   // that is really down costs one more timeout, inside the same 20s ceiling.
   const sawSkip = providerSkips !== skipsBefore;
-  if (sawSkip) providerSilence.clear();
+  if (sawSkip) reopenUnsettledProviders();
   const remaining = deadline - Date.now();
   if (remaining < 3_000) return traced(first);
 
@@ -3732,11 +3817,13 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest, trace: PassTr
     if (!match) return stoppedAt("no_match");
     if (isSeries) {
       if (!request.seasonNumber || !request.episodeNumber) return stoppedAt("no_episode");
-      const episodeResult = await resolvePlayableSeriesEpisodeUrl(match.url, request.seasonNumber, request.episodeNumber);
-      if (!episodeResult) return stoppedAt("no_episode");
+      const episodeUrl = await findSeriesEpisodeUrl(match.url, request.seasonNumber, request.episodeNumber);
+      if (!episodeUrl) return stoppedAt("no_episode");
+      const episodeCheck = await checkVideoAvailability(episodeUrl);
+      if (!episodeCheck.available) return stoppedAt(episodeCheck.reason ?? "no_player");
       return (
         considerHdFilmResult(
-          buildHdFilmResult(episodeResult.url, episodeResult.qualityWarning, episodeResult.nativeFallback)
+          buildHdFilmResult(episodeUrl, episodeCheck.qualityWarning, episodeCheck.nativeFallback)
         ) ?? stoppedAt("no_stream")
       );
     }
@@ -3762,8 +3849,10 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest, trace: PassTr
   };
 
   const hdfilmTier = async () => {
+    // Closed to this network: not asked at all (see isHdfilmLegallyBlocked).
+    if (isHdfilmLegallyBlocked()) return null;
     const direct = await hdfilmStream(request.title, request.originalTitle);
-    if (direct) return direct;
+    if (direct || isHdfilmLegallyBlocked()) return direct;
     const alt = await turkishTitle;
     return alt ? hdfilmStream(alt) : null;
   };
@@ -3791,7 +3880,7 @@ async function resolveWebPlayerUrlInner(request: WebPlayerRequest, trace: PassTr
 
   const result = await firstNativeByPriority(
     [
-      timed("hd", hdfilmTier(), () => hdfilmStage ?? "miss"),
+      timed("hd", hdfilmTier(), () => (isHdfilmLegallyBlocked() ? "legal" : hdfilmStage ?? "miss")),
       timed("dp", dizipalTier()),
       timed("db", dizibalTier()),
       timed("kf", kultfilmlerTier()),
@@ -4438,6 +4527,7 @@ export const __internal = {
   buildHdFilmResult,
   providerGet,
   isProviderSkipped,
+  isSettledOutage: (provider: string) => isSettledOutage(providerSilence.get(provider)),
   isStreamRefused,
   resolveEmbedToM3u8,
   resetProviderSilence: () => providerSilence.clear(),

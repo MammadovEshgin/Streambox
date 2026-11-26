@@ -263,4 +263,18 @@ group by 1, 2, 3, 4, 5
 order by 1, 6 desc;
 ```
 
+Since 2026-11-26, `hd:legal` in `tiers` means HDFilm answered **451** to that viewer's network
+(its own "closed for legal reasons" page) and was not asked further; the session logs
+`blocked` with that title. `hdfilm_legal_block` is sent once per app session with the page's
+`text`, `more` and `links`:
+
+```sql
+select left(user_id::text, 8) as viewer, max(occurred_at) as last_seen, count(*),
+       max(metadata->>'text') as text, max(metadata->>'links') as links
+from public.app_telemetry_events
+where event_name = 'hdfilm_legal_block'
+group by 1
+order by 2 desc;
+```
+
 Telemetry and audit logs are pruned after 90 days by the `streambox-event-log-cleanup` cron.

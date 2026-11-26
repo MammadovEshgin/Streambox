@@ -32,6 +32,13 @@ export const hdfilmSession = createWebSession({
     '!!document.body && (/hdfilm/i.test(document.title) || (!challenge && !/just a moment|attention required/i.test(document.title)))',
   // Shorter than Kült Filmler's 20s: Dizipal and Dizibal usually have the same
   // title, and the HDFilm tier holds the result back while it waits.
+  // HDFilm's own "451 - Yasal Nedenlerle Erisime Kapali" page (see
+  // isHdfilmLegallyBlocked). It has a body and no challenge, so it passed for
+  // ready on every phone that got it.
+  blockedExpression: 'String(document.title).indexOf("451") === 0 || /yasal nedenlerle/i.test(document.title)',
+  onBlocked: (title) => {
+    if (/451|yasal nedenlerle/i.test(title)) noteHdfilmLegalBlock();
+  },
   challengeTimeoutMs: 12_000,
   requestTimeoutMs: 8_000,
   idleCloseMs: 3 * 60_000,
@@ -102,13 +109,40 @@ export function isHdfilmGateUp(): boolean {
 }
 
 /**
+ * HDFilm closes itself to some networks: every request, the search included,
+ * answers **451** with a page titled "451 - Yasal Nedenlerle Erisime Kapali"
+ * ("closed to access for legal reasons"), natively and inside the WebView
+ * alike. The diagnostics shipped on 2026-11-23 showed this on 17 of 23 viewers:
+ * it is why HDFilm played for two or three people a day from the week it gated
+ * its pages. Nothing on such a network gets through, so for half an hour
+ * HDFilm is not asked at all: each resolve was spending eight requests, and on
+ * an old WebView the whole 20s, finding out again.
+ */
+const LEGAL_BLOCK_TRUST_MS = 30 * 60_000;
+let legalBlockUntil = 0;
+
+/** A request to HDFilm was answered 451. */
+export function noteHdfilmLegalBlock(): void {
+  legalBlockUntil = Date.now() + LEGAL_BLOCK_TRUST_MS;
+}
+
+export function isHdfilmLegallyBlocked(): boolean {
+  return Date.now() < legalBlockUntil;
+}
+
+/** The viewer pressed Retry (they may have changed network): ask HDFilm again. */
+export function liftHdfilmLegalBlock(): void {
+  legalBlockUntil = 0;
+}
+
+/**
  * From a film or series detail page: start the session now, so the title the
  * viewer plays does not wait on the challenge. Returns the cancel.
  */
 export function scheduleHdfilmWarm(): () => void {
   const timer = setTimeout(() => {
     const gateIsDown = lastNativePassAt > 0 && Date.now() - lastNativePassAt < NATIVE_PASS_TRUST_MS;
-    if (!gateIsDown) hdfilmSession.warm();
+    if (!gateIsDown && !isHdfilmLegallyBlocked()) hdfilmSession.warm();
   }, WARM_DELAY_MS);
   return () => clearTimeout(timer);
 }
@@ -117,4 +151,5 @@ export function scheduleHdfilmWarm(): () => void {
 export function __resetHdfilmChallengeForTests(): void {
   lastNativePassAt = 0;
   lastChallengedAt = 0;
+  legalBlockUntil = 0;
 }

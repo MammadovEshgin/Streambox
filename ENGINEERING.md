@@ -230,6 +230,33 @@ Full release notes are in `CHANGELOG.md`; commit IDs are post-rewrite (see §7).
     sending every miss through a second pass. An error page read in the session is final.
   - `/rplayer/` and `.mobi` are asked together (`firstHitByPriority`, `.mobi` preferred within
     600ms), and search falls back to the session when the native request fails.
+- **HDFilm answers 451 to most viewers' networks (found 2026-11-26).** The 11-23 diagnostics
+  settled the question above: on 17 of 23 viewers the session's one-load "ready" page is titled
+  **"451 - Yasal Nedenlerle Erisime Kapali"** and every search reads `search:native:451
+  search:web:451`, natively and in the WebView, on WebView 92 through 158. It is HDFilm's own
+  legal block for some networks (which ones is not known: no country is recorded; the six
+  viewers it works for include the owner in Baku). None of the 11-23 candidates was the cause,
+  and nothing in the app can get past it. So the app now only stops paying for it: a 451 sets
+  HDFilm aside for 30 minutes (`isHdfilmLegallyBlocked`; lifted by Retry), the tier reads
+  `hd:legal`, the session treats the page as blocked (`blockedExpression`), detail pages do
+  not warm it, and once per app session `hdfilm_legal_block` records the page's text and
+  links, in case it names another address. HDFilm also removes single titles: Dune (2021) and
+  The Rings of Power have their pages but an empty `player-container` (`hd:no_player`).
+- **A host this phone cannot reach is asked through two openings, then left alone
+  (2026-11-26).** `resolveWebPlayerUrl` used to clear the whole breaker whenever a pass had
+  skipped a host, so a host the viewer's network drops (Dizibal, for two viewers) was asked
+  again by every resolve's second pass: 9-17s per "Not available". An opening is now counted
+  once (requests in flight when it opened no longer inflate `outages`), the second pass
+  reopens only first-time outages (`reopenUnsettledProviders`), and a host silent through a
+  second opening (`isSettledOutage`) is skipped without a second pass until its cooldown
+  (2, 4, … 15 min) lets one probe through.
+- **Dizipal moved to dizipal2161 with its player down (2026-11-26).** 2150 redirects there
+  (2151-2160 never existed; the page says 2162 is next). Search, pages and `/_pb` answer, but
+  `/ajax-player-config` returns Cloudflare's **520** for every title, in a real browser too,
+  so nothing plays on the site itself. The endpoint has its own breaker name
+  (`DIZIPAL_PLAYER`): a 520 there is an outage, not a failed request — one render instead of
+  two, no second pass, and after two the whole Dizipal tier stands down for the cooldown.
+  Floor 2150 → 2161; the Supabase row still says 2149 (`/set_dizipal`).
 - **Title prefixes are whole words (2026-11-19).** `scoreMatch` took any listing that began
   with the target's letters as a prefix match, so Dizipal's retry under TMDB's Turkish title
   "Canavar" (The Beast, 2026) accepted "Canavarcıklar" and played another film. Prefix and

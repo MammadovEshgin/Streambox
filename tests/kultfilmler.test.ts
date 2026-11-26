@@ -214,7 +214,13 @@ test("a load error once the session is open leaves it alone", async () => {
 });
 
 test("the page probe reports Cloudflare's block page", () => {
-  assert.match(KULTFILMLER_PAGE_PROBE, /blocked: !!document\.getElementById\("cf-error-details"\) \|\| \/you have been blocked\/i\.test\(text\)/);
+  assert.ok(
+    KULTFILMLER_PAGE_PROBE.includes(
+      'blocked: siteBlocked || !!document.getElementById("cf-error-details") || /you have been blocked/i.test(text),'
+    )
+  );
+  // Kült Filmler names no block page of its own.
+  assert.ok(KULTFILMLER_PAGE_PROBE.includes("siteBlocked = !!(false);"));
 });
 
 test("Retry lifts the cooldown of a challenge that stalled", async () => {

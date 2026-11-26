@@ -4,6 +4,17 @@ Notable user-facing changes to StreamBox, newest first. The app updates over the
 runtime **1.2.0**; update IDs and technical detail for each release are in
 [`ENGINEERING.md`](ENGINEERING.md).
 
+## 2026-11-26
+
+- Found why HDFilm stopped playing for most people: HDFilm itself refuses some networks with a
+  "closed for legal reasons" page (error 451). The app cannot get past that, so on those
+  networks it now skips HDFilm straight away instead of spending up to 20 seconds asking, and
+  plays from the other sources when they have the title.
+- Dizipal is back at a new address (dizipal2161), which the app now uses. Its video player is
+  currently broken on Dizipal's own site, so its titles will not play until they repair it; the
+  app notices, skips it, and checks back by itself.
+- Shorter waits for "Not available" when a source cannot be reached from your network.
+
 ## 2026-11-23
 
 - More reliable HDFilm. Since HDFilm closed its pages to apps (2026-11-19) it was playing for
